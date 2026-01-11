@@ -2,14 +2,21 @@ package auth
 
 import (
 	"strings"
+	"sync"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
 
 type modelNameMappingTable struct {
-	// reverse maps channel -> alias (lower) -> original upstream model name.
-	reverse map[string]map[string]string
+	// reverse maps channel -> alias (lower) -> list of original upstream model names.
+	// Multiple upstream models can map to the same alias (e.g., opus -> [kiro-claude-opus-4-5-agentic, kiro-claude-opus-4-5]).
+	// Round-robin is applied across these models during resolution.
+	reverse map[string]map[string][]string
+
+	// cursors tracks round-robin state per channel:alias for multi-model aliases.
+	mu      sync.Mutex
+	cursors map[string]int
 }
 
 func compileModelNameMappingTable(mappings map[string][]internalconfig.ModelNameMapping) *modelNameMappingTable {
@@ -17,14 +24,14 @@ func compileModelNameMappingTable(mappings map[string][]internalconfig.ModelName
 		return &modelNameMappingTable{}
 	}
 	out := &modelNameMappingTable{
-		reverse: make(map[string]map[string]string, len(mappings)),
+		reverse: make(map[string]map[string][]string, len(mappings)),
 	}
 	for rawChannel, entries := range mappings {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
 		if channel == "" || len(entries) == 0 {
 			continue
 		}
-		rev := make(map[string]string, len(entries))
+		rev := make(map[string][]string, len(entries))
 		for _, entry := range entries {
 			name := strings.TrimSpace(entry.Name)
 			alias := strings.TrimSpace(entry.Alias)
@@ -35,10 +42,9 @@ func compileModelNameMappingTable(mappings map[string][]internalconfig.ModelName
 				continue
 			}
 			aliasKey := strings.ToLower(alias)
-			if _, exists := rev[aliasKey]; exists {
-				continue
-			}
-			rev[aliasKey] = name
+			// Allow multiple upstream names to map to the same alias.
+			// They are tried in order during resolution.
+			rev[aliasKey] = append(rev[aliasKey], name)
 		}
 		if len(rev) > 0 {
 			out.reverse[channel] = rev
@@ -108,11 +114,97 @@ func (m *Manager) resolveOAuthUpstreamModel(auth *Auth, requestedModel string) s
 	if rev == nil {
 		return ""
 	}
-	original := strings.TrimSpace(rev[key])
+	// Multiple upstream names may map to the same alias.
+	names := rev[key]
+	if len(names) == 0 {
+		return ""
+	}
+
+	// Single model: return directly without cursor overhead (existing behavior).
+	if len(names) == 1 {
+		original := strings.TrimSpace(names[0])
+		if original == "" || strings.EqualFold(original, requestedModel) {
+			return ""
+		}
+		return original
+	}
+
+	// Multiple models: apply round-robin selection with cursor increment.
+	cursorKey := channel + ":" + key
+	table.mu.Lock()
+	if table.cursors == nil {
+		table.cursors = make(map[string]int)
+	}
+	index := table.cursors[cursorKey]
+	table.cursors[cursorKey] = (index + 1) % len(names)
+	table.mu.Unlock()
+
+	original := strings.TrimSpace(names[index%len(names)])
 	if original == "" || strings.EqualFold(original, requestedModel) {
 		return ""
 	}
 	return original
+}
+
+// GetRemainingUpstreamModels returns the remaining upstream models for fallback after
+// the first model (returned by resolveOAuthUpstreamModel) fails. This function does NOT
+// modify the cursor - it's read-only for fallback purposes.
+// Returns nil if no mapping exists, single model mapping, or no remaining models.
+func (m *Manager) GetRemainingUpstreamModels(auth *Auth, requestedModel string) []string {
+	if m == nil || auth == nil {
+		return nil
+	}
+	channel := modelMappingChannel(auth)
+	if channel == "" {
+		return nil
+	}
+	key := strings.ToLower(strings.TrimSpace(requestedModel))
+	if key == "" {
+		return nil
+	}
+	raw := m.modelNameMappings.Load()
+	table, _ := raw.(*modelNameMappingTable)
+	if table == nil || table.reverse == nil {
+		return nil
+	}
+	rev := table.reverse[channel]
+	if rev == nil {
+		return nil
+	}
+	names := rev[key]
+	// No remaining models for single-model mappings or empty mappings.
+	if len(names) <= 1 {
+		return nil
+	}
+
+	// Read current cursor position (no modification - read-only for fallback).
+	// resolveOAuthUpstreamModel already incremented the cursor, so currentIndex
+	// points to the NEXT model. The last used model is at (currentIndex - 1).
+	cursorKey := channel + ":" + key
+	table.mu.Lock()
+	currentIndex := 0
+	if table.cursors != nil {
+		currentIndex = table.cursors[cursorKey]
+	}
+	table.mu.Unlock()
+
+	// Calculate the index of the model that was just returned by resolveOAuthUpstreamModel.
+	// Since cursor was incremented after selection, lastUsedIndex = currentIndex - 1.
+	lastUsedIndex := (currentIndex - 1 + len(names)) % len(names)
+
+	// Build remaining models list, starting from the model after lastUsedIndex.
+	remaining := make([]string, 0, len(names)-1)
+	for i := 1; i < len(names); i++ {
+		idx := (lastUsedIndex + i) % len(names)
+		model := strings.TrimSpace(names[idx])
+		if model != "" {
+			remaining = append(remaining, model)
+		}
+	}
+	if len(remaining) == 0 {
+		return nil
+	}
+	return remaining
 }
 
 // modelMappingChannel extracts the OAuth model mapping channel from an Auth object.
