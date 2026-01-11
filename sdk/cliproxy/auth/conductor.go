@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -265,13 +266,15 @@ func (m *Manager) Load(ctx context.Context) error {
 }
 
 // Execute performs a non-streaming execution using the configured selector and executor.
-// It supports multiple providers for the same model and round-robins the starting provider per model.
+// It supports multiple providers for the same model and round-robins across ALL keys
+// regardless of provider, ensuring fair distribution proportional to key count.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	rotated := m.rotateProviders(req.Model, normalized)
+	// No longer rotate providers - we now round-robin across all keys directly.
+	// Pass providers list for fallback but pickNext will select across all.
 
 	retryTimes, maxWait := m.retrySettings()
 	attempts := retryTimes + 1
@@ -281,14 +284,13 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
-		resp, errExec := m.executeProvidersOnce(ctx, rotated, func(execCtx context.Context, provider string) (cliproxyexecutor.Response, error) {
-			return m.executeWithProvider(execCtx, provider, req, opts)
-		})
+		// Execute with cross-provider key selection
+		resp, errExec := m.executeWithProvider(ctx, normalized[0], req, opts)
 		if errExec == nil {
 			return resp, nil
 		}
 		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, attempts, rotated, req.Model, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, attempts, normalized, req.Model, maxWait)
 		if !shouldRetry {
 			break
 		}
@@ -303,13 +305,14 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 }
 
 // ExecuteCount performs a non-streaming execution using the configured selector and executor.
-// It supports multiple providers for the same model and round-robins the starting provider per model.
+// It supports multiple providers for the same model and round-robins across ALL keys
+// regardless of provider, ensuring fair distribution proportional to key count.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	rotated := m.rotateProviders(req.Model, normalized)
+	// No longer rotate providers - we now round-robin across all keys directly.
 
 	retryTimes, maxWait := m.retrySettings()
 	attempts := retryTimes + 1
@@ -319,14 +322,13 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
-		resp, errExec := m.executeProvidersOnce(ctx, rotated, func(execCtx context.Context, provider string) (cliproxyexecutor.Response, error) {
-			return m.executeCountWithProvider(execCtx, provider, req, opts)
-		})
+		// Execute with cross-provider key selection
+		resp, errExec := m.executeCountWithProvider(ctx, normalized[0], req, opts)
 		if errExec == nil {
 			return resp, nil
 		}
 		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, attempts, rotated, req.Model, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, attempts, normalized, req.Model, maxWait)
 		if !shouldRetry {
 			break
 		}
@@ -341,13 +343,14 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 }
 
 // ExecuteStream performs a streaming execution using the configured selector and executor.
-// It supports multiple providers for the same model and round-robins the starting provider per model.
+// It supports multiple providers for the same model and round-robins across ALL keys
+// regardless of provider, ensuring fair distribution proportional to key count.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	rotated := m.rotateProviders(req.Model, normalized)
+	// No longer rotate providers - we now round-robin across all keys directly.
 
 	retryTimes, maxWait := m.retrySettings()
 	attempts := retryTimes + 1
@@ -357,14 +360,13 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
-		chunks, errStream := m.executeStreamProvidersOnce(ctx, rotated, func(execCtx context.Context, provider string) (<-chan cliproxyexecutor.StreamChunk, error) {
-			return m.executeStreamWithProvider(execCtx, provider, req, opts)
-		})
+		// Execute with cross-provider key selection
+		chunks, errStream := m.executeStreamWithProvider(ctx, normalized[0], req, opts)
 		if errStream == nil {
 			return chunks, nil
 		}
 		lastErr = errStream
-		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, attempts, rotated, req.Model, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, attempts, normalized, req.Model, maxWait)
 		if !shouldRetry {
 			break
 		}
@@ -395,7 +397,8 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 		}
 
 		entry := logEntryWithRequestID(ctx)
-		debugLogAuthSelection(entry, auth, provider, req.Model)
+		// Use auth.Provider for logging since pickNext may select from any provider
+		debugLogAuthSelection(entry, auth, auth.Provider, req.Model)
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -405,9 +408,15 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 		}
 		execReq := req
 		execReq.Model, execReq.Metadata = rewriteModelForAuth(routeModel, req.Metadata, auth)
-		execReq.Model, execReq.Metadata = m.applyOAuthModelMapping(auth, execReq.Model, execReq.Metadata)
+
+		// First attempt: use primary model from round-robin (cursor increments).
+		primaryModel, primaryMeta := m.applyOAuthModelMapping(auth, execReq.Model, execReq.Metadata)
+		execReq.Model = primaryModel
+		execReq.Metadata = primaryMeta
+
 		resp, errExec := executor.Execute(execCtx, auth, execReq, opts)
-		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
+		// Use auth.Provider for result tracking since we may have selected from a different provider
+		result := Result{AuthID: auth.ID, Provider: auth.Provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
 			result.Error = &Error{Message: errExec.Error()}
 			var se cliproxyexecutor.StatusError
@@ -418,7 +427,77 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 				result.RetryAfter = ra
 			}
 			m.MarkResult(execCtx, result)
-			lastErr = errExec
+
+			// Fallback: try remaining upstream models for this alias (if any).
+			aliasModel := execReq.Model
+			if originalModel, ok := execReq.Metadata[util.ModelMappingOriginalModelMetadataKey].(string); ok && originalModel != "" {
+				aliasModel = originalModel
+			} else {
+				// No mapping was applied, continue with next auth.
+				lastErr = errExec
+				continue
+			}
+
+			remainingModels := m.GetRemainingUpstreamModels(auth, aliasModel)
+			if len(remainingModels) == 0 {
+				// No fallback models, continue with next auth.
+				lastErr = errExec
+				continue
+			}
+
+			// Track all tried models for unified error message.
+			triedModels := []string{primaryModel}
+			var fallbackErr error = errExec
+
+			for _, fallbackModel := range remainingModels {
+				triedModels = append(triedModels, fallbackModel)
+				fallbackReq := req
+				fallbackReq.Model, fallbackReq.Metadata = rewriteModelForAuth(routeModel, req.Metadata, auth)
+				fallbackReq.Model = fallbackModel
+				// Preserve the original alias in metadata for response translation.
+				if fallbackReq.Metadata == nil {
+					fallbackReq.Metadata = make(map[string]any)
+				} else {
+					newMeta := make(map[string]any, len(fallbackReq.Metadata)+1)
+					for k, v := range fallbackReq.Metadata {
+						newMeta[k] = v
+					}
+					fallbackReq.Metadata = newMeta
+				}
+				fallbackReq.Metadata[util.ModelMappingOriginalModelMetadataKey] = aliasModel
+
+				fallbackResp, fallbackExecErr := executor.Execute(execCtx, auth, fallbackReq, opts)
+				fallbackResult := Result{AuthID: auth.ID, Provider: auth.Provider, Model: routeModel, Success: fallbackExecErr == nil}
+				if fallbackExecErr != nil {
+					fallbackResult.Error = &Error{Message: fallbackExecErr.Error()}
+					var fallbackSE cliproxyexecutor.StatusError
+					if errors.As(fallbackExecErr, &fallbackSE) && fallbackSE != nil {
+						fallbackResult.Error.HTTPStatus = fallbackSE.StatusCode()
+					}
+					if ra := retryAfterFromError(fallbackExecErr); ra != nil {
+						fallbackResult.RetryAfter = ra
+					}
+					m.MarkResult(execCtx, fallbackResult)
+					fallbackErr = fallbackExecErr
+					continue // Try next fallback model.
+				}
+				// Fallback succeeded.
+				m.MarkResult(execCtx, fallbackResult)
+				return fallbackResp, nil
+			}
+
+			// All models failed for this alias - return unified error.
+			lastErr = &Error{
+				Code:    "all_upstream_models_failed",
+				Message: fmt.Sprintf("All upstream models failed for alias '%s': %s", aliasModel, strings.Join(triedModels, ", ")),
+			}
+			// Preserve HTTP status from last error if available.
+			if fallbackErr != nil {
+				var se cliproxyexecutor.StatusError
+				if errors.As(fallbackErr, &se) && se != nil {
+					lastErr.(*Error).HTTPStatus = se.StatusCode()
+				}
+			}
 			continue
 		}
 		m.MarkResult(execCtx, result)
@@ -443,7 +522,8 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 		}
 
 		entry := logEntryWithRequestID(ctx)
-		debugLogAuthSelection(entry, auth, provider, req.Model)
+		// Use auth.Provider for logging since pickNext may select from any provider
+		debugLogAuthSelection(entry, auth, auth.Provider, req.Model)
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -453,9 +533,15 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 		}
 		execReq := req
 		execReq.Model, execReq.Metadata = rewriteModelForAuth(routeModel, req.Metadata, auth)
-		execReq.Model, execReq.Metadata = m.applyOAuthModelMapping(auth, execReq.Model, execReq.Metadata)
+
+		// First attempt: use primary model from round-robin (cursor increments).
+		primaryModel, primaryMeta := m.applyOAuthModelMapping(auth, execReq.Model, execReq.Metadata)
+		execReq.Model = primaryModel
+		execReq.Metadata = primaryMeta
+
 		resp, errExec := executor.CountTokens(execCtx, auth, execReq, opts)
-		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
+		// Use auth.Provider for result tracking since we may have selected from a different provider
+		result := Result{AuthID: auth.ID, Provider: auth.Provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
 			result.Error = &Error{Message: errExec.Error()}
 			var se cliproxyexecutor.StatusError
@@ -466,7 +552,77 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 				result.RetryAfter = ra
 			}
 			m.MarkResult(execCtx, result)
-			lastErr = errExec
+
+			// Fallback: try remaining upstream models for this alias (if any).
+			aliasModel := execReq.Model
+			if originalModel, ok := execReq.Metadata[util.ModelMappingOriginalModelMetadataKey].(string); ok && originalModel != "" {
+				aliasModel = originalModel
+			} else {
+				// No mapping was applied, continue with next auth.
+				lastErr = errExec
+				continue
+			}
+
+			remainingModels := m.GetRemainingUpstreamModels(auth, aliasModel)
+			if len(remainingModels) == 0 {
+				// No fallback models, continue with next auth.
+				lastErr = errExec
+				continue
+			}
+
+			// Track all tried models for unified error message.
+			triedModels := []string{primaryModel}
+			var fallbackErr error = errExec
+
+			for _, fallbackModel := range remainingModels {
+				triedModels = append(triedModels, fallbackModel)
+				fallbackReq := req
+				fallbackReq.Model, fallbackReq.Metadata = rewriteModelForAuth(routeModel, req.Metadata, auth)
+				fallbackReq.Model = fallbackModel
+				// Preserve the original alias in metadata for response translation.
+				if fallbackReq.Metadata == nil {
+					fallbackReq.Metadata = make(map[string]any)
+				} else {
+					newMeta := make(map[string]any, len(fallbackReq.Metadata)+1)
+					for k, v := range fallbackReq.Metadata {
+						newMeta[k] = v
+					}
+					fallbackReq.Metadata = newMeta
+				}
+				fallbackReq.Metadata[util.ModelMappingOriginalModelMetadataKey] = aliasModel
+
+				fallbackResp, fallbackExecErr := executor.CountTokens(execCtx, auth, fallbackReq, opts)
+				fallbackResult := Result{AuthID: auth.ID, Provider: auth.Provider, Model: routeModel, Success: fallbackExecErr == nil}
+				if fallbackExecErr != nil {
+					fallbackResult.Error = &Error{Message: fallbackExecErr.Error()}
+					var fallbackSE cliproxyexecutor.StatusError
+					if errors.As(fallbackExecErr, &fallbackSE) && fallbackSE != nil {
+						fallbackResult.Error.HTTPStatus = fallbackSE.StatusCode()
+					}
+					if ra := retryAfterFromError(fallbackExecErr); ra != nil {
+						fallbackResult.RetryAfter = ra
+					}
+					m.MarkResult(execCtx, fallbackResult)
+					fallbackErr = fallbackExecErr
+					continue // Try next fallback model.
+				}
+				// Fallback succeeded.
+				m.MarkResult(execCtx, fallbackResult)
+				return fallbackResp, nil
+			}
+
+			// All models failed for this alias - return unified error.
+			lastErr = &Error{
+				Code:    "all_upstream_models_failed",
+				Message: fmt.Sprintf("All upstream models failed for alias '%s': %s", aliasModel, strings.Join(triedModels, ", ")),
+			}
+			// Preserve HTTP status from last error if available.
+			if fallbackErr != nil {
+				var se cliproxyexecutor.StatusError
+				if errors.As(fallbackErr, &se) && se != nil {
+					lastErr.(*Error).HTTPStatus = se.StatusCode()
+				}
+			}
 			continue
 		}
 		m.MarkResult(execCtx, result)
@@ -491,7 +647,8 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 		}
 
 		entry := logEntryWithRequestID(ctx)
-		debugLogAuthSelection(entry, auth, provider, req.Model)
+		// Use auth.Provider for logging since pickNext may select from any provider
+		debugLogAuthSelection(entry, auth, auth.Provider, req.Model)
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -501,7 +658,12 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 		}
 		execReq := req
 		execReq.Model, execReq.Metadata = rewriteModelForAuth(routeModel, req.Metadata, auth)
-		execReq.Model, execReq.Metadata = m.applyOAuthModelMapping(auth, execReq.Model, execReq.Metadata)
+
+		// First attempt: use primary model from round-robin (cursor increments).
+		primaryModel, primaryMeta := m.applyOAuthModelMapping(auth, execReq.Model, execReq.Metadata)
+		execReq.Model = primaryModel
+		execReq.Metadata = primaryMeta
+
 		chunks, errStream := executor.ExecuteStream(execCtx, auth, execReq, opts)
 		if errStream != nil {
 			rerr := &Error{Message: errStream.Error()}
@@ -509,14 +671,103 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 			if errors.As(errStream, &se) && se != nil {
 				rerr.HTTPStatus = se.StatusCode()
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: rerr}
+			// Use auth.Provider for result tracking
+			result := Result{AuthID: auth.ID, Provider: auth.Provider, Model: routeModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
 			m.MarkResult(execCtx, result)
-			lastErr = errStream
+
+			// Fallback: try remaining upstream models for this alias (if any).
+			aliasModel := execReq.Model
+			if originalModel, ok := execReq.Metadata[util.ModelMappingOriginalModelMetadataKey].(string); ok && originalModel != "" {
+				aliasModel = originalModel
+			} else {
+				// No mapping was applied, continue with next auth.
+				lastErr = errStream
+				continue
+			}
+
+			remainingModels := m.GetRemainingUpstreamModels(auth, aliasModel)
+			if len(remainingModels) == 0 {
+				// No fallback models, continue with next auth.
+				lastErr = errStream
+				continue
+			}
+
+			// Track all tried models for unified error message.
+			triedModels := []string{primaryModel}
+			var fallbackErr error = errStream
+
+			for _, fallbackModel := range remainingModels {
+				triedModels = append(triedModels, fallbackModel)
+				fallbackReq := req
+				fallbackReq.Model, fallbackReq.Metadata = rewriteModelForAuth(routeModel, req.Metadata, auth)
+				fallbackReq.Model = fallbackModel
+				// Preserve the original alias in metadata for response translation.
+				if fallbackReq.Metadata == nil {
+					fallbackReq.Metadata = make(map[string]any)
+				} else {
+					newMeta := make(map[string]any, len(fallbackReq.Metadata)+1)
+					for k, v := range fallbackReq.Metadata {
+						newMeta[k] = v
+					}
+					fallbackReq.Metadata = newMeta
+				}
+				fallbackReq.Metadata[util.ModelMappingOriginalModelMetadataKey] = aliasModel
+
+				fallbackChunks, fallbackStreamErr := executor.ExecuteStream(execCtx, auth, fallbackReq, opts)
+				if fallbackStreamErr != nil {
+					fallbackRerr := &Error{Message: fallbackStreamErr.Error()}
+					var fallbackSE cliproxyexecutor.StatusError
+					if errors.As(fallbackStreamErr, &fallbackSE) && fallbackSE != nil {
+						fallbackRerr.HTTPStatus = fallbackSE.StatusCode()
+					}
+					fallbackResult := Result{AuthID: auth.ID, Provider: auth.Provider, Model: routeModel, Success: false, Error: fallbackRerr}
+					fallbackResult.RetryAfter = retryAfterFromError(fallbackStreamErr)
+					m.MarkResult(execCtx, fallbackResult)
+					fallbackErr = fallbackStreamErr
+					continue // Try next fallback model.
+				}
+				// Fallback succeeded - return the stream.
+				out := make(chan cliproxyexecutor.StreamChunk)
+				go func(streamCtx context.Context, streamAuth *Auth, streamChunks <-chan cliproxyexecutor.StreamChunk) {
+					defer close(out)
+					var failed bool
+					for chunk := range streamChunks {
+						if chunk.Err != nil && !failed {
+							failed = true
+							chunkRerr := &Error{Message: chunk.Err.Error()}
+							var chunkSE cliproxyexecutor.StatusError
+							if errors.As(chunk.Err, &chunkSE) && chunkSE != nil {
+								chunkRerr.HTTPStatus = chunkSE.StatusCode()
+							}
+							m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamAuth.Provider, Model: routeModel, Success: false, Error: chunkRerr})
+						}
+						out <- chunk
+					}
+					if !failed {
+						m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamAuth.Provider, Model: routeModel, Success: true})
+					}
+				}(execCtx, auth.Clone(), fallbackChunks)
+				return out, nil
+			}
+
+			// All models failed for this alias - return unified error.
+			lastErr = &Error{
+				Code:    "all_upstream_models_failed",
+				Message: fmt.Sprintf("All upstream models failed for alias '%s': %s", aliasModel, strings.Join(triedModels, ", ")),
+			}
+			// Preserve HTTP status from last error if available.
+			if fallbackErr != nil {
+				var se cliproxyexecutor.StatusError
+				if errors.As(fallbackErr, &se) && se != nil {
+					lastErr.(*Error).HTTPStatus = se.StatusCode()
+				}
+			}
 			continue
 		}
 		out := make(chan cliproxyexecutor.StreamChunk)
-		go func(streamCtx context.Context, streamAuth *Auth, streamProvider string, streamChunks <-chan cliproxyexecutor.StreamChunk) {
+		// Use auth.Provider for streaming result tracking
+		go func(streamCtx context.Context, streamAuth *Auth, streamChunks <-chan cliproxyexecutor.StreamChunk) {
 			defer close(out)
 			var failed bool
 			for chunk := range streamChunks {
@@ -527,14 +778,14 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 					if errors.As(chunk.Err, &se) && se != nil {
 						rerr.HTTPStatus = se.StatusCode()
 					}
-					m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Success: false, Error: rerr})
+					m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamAuth.Provider, Model: routeModel, Success: false, Error: rerr})
 				}
 				out <- chunk
 			}
 			if !failed {
-				m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Success: true})
+				m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamAuth.Provider, Model: routeModel, Success: true})
 			}
-		}(execCtx, auth.Clone(), provider, chunks)
+		}(execCtx, auth.Clone(), chunks)
 		return out, nil
 	}
 }
@@ -1145,16 +1396,17 @@ func (m *Manager) GetByID(id string) (*Auth, bool) {
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	m.mu.RLock()
-	executor, okExecutor := m.executors[provider]
-	if !okExecutor {
-		m.mu.RUnlock()
-		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
-	}
+	// Collect ALL candidates from ALL providers that support this model.
+	// This enables true cross-provider round-robin by key count.
 	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
-		if candidate.Provider != provider || candidate.Disabled {
+		if candidate.Disabled {
+			continue
+		}
+		// Check if this auth's provider has a registered executor
+		if _, hasExecutor := m.executors[candidate.Provider]; !hasExecutor {
 			continue
 		}
 		if _, used := tried[candidate.ID]; used {
@@ -1169,7 +1421,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	selected, errPick := m.selector.Pick(ctx, provider, model, opts, candidates)
+	// Pass empty provider to selector since we're doing cross-provider selection.
+	// The selector will round-robin based on model only.
+	selected, errPick := m.selector.Pick(ctx, "", model, opts, candidates)
 	if errPick != nil {
 		m.mu.RUnlock()
 		return nil, nil, errPick
@@ -1177,6 +1431,12 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if selected == nil {
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+	}
+	// Get the executor for the selected auth's provider
+	executor, okExecutor := m.executors[selected.Provider]
+	if !okExecutor {
+		m.mu.RUnlock()
+		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered for provider: " + selected.Provider}
 	}
 	authCopy := selected.Clone()
 	m.mu.RUnlock()
