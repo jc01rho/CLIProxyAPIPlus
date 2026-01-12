@@ -159,6 +159,25 @@ type RoutingConfig struct {
 	// Mode controls credential rotation scope.
 	// Supported values: "provider-based" (default), "key-based".
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+
+	// FallbackModels maps model names to their fallback model when all keys are blocked.
+	// Example: {"gemini-2.5-pro": "gemini-2.0-flash"}
+	FallbackModels map[string]string `yaml:"fallback-models,omitempty" json:"fallback-models,omitempty"`
+
+	// FallbackChain defines a global fallback chain for models. Maximum 20 items.
+	// The system tries models in order when the current model's keys are all blocked.
+	// Example: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
+	FallbackChain []string `yaml:"fallback-chain,omitempty" json:"fallback-chain,omitempty"`
+
+	// ProviderPriority maps model names to ordered provider lists.
+	// For each model, providers are tried in the specified order.
+	// Example: {"gemini-2.5-pro": ["gemini-vertex", "gemini-cli"]}
+	ProviderPriority map[string][]string `yaml:"provider-priority,omitempty" json:"provider-priority,omitempty"`
+
+	// ProviderOrder defines the global default provider order for all models.
+	// Used when a model doesn't have a specific ProviderPriority entry.
+	// Example: ["gemini-cli", "gemini-vertex", "gemini-api"]
+	ProviderOrder []string `yaml:"provider-order,omitempty" json:"provider-order,omitempty"`
 }
 
 // ModelNameMapping defines a model ID mapping for a specific channel.
@@ -1620,4 +1639,42 @@ func removeLegacyAuthBlock(root *yaml.Node) {
 		return
 	}
 	removeMapKey(root, "auth")
+}
+
+// ValidateRoutingConfig validates the routing configuration.
+// Returns an error if:
+// - FallbackChain exceeds 20 items
+// - Circular references exist in FallbackModels
+func ValidateRoutingConfig(cfg *RoutingConfig) error {
+	if cfg == nil {
+		return nil
+	}
+
+	// Check FallbackChain length (max 20)
+	if len(cfg.FallbackChain) > 20 {
+		return fmt.Errorf("fallback-chain exceeds maximum length of 20 (got %d)", len(cfg.FallbackChain))
+	}
+
+	// Check for circular references in FallbackModels
+	if len(cfg.FallbackModels) > 0 {
+		for startModel := range cfg.FallbackModels {
+			visited := make(map[string]bool)
+			current := startModel
+
+			for {
+				if visited[current] {
+					return fmt.Errorf("circular reference detected in fallback-models starting from %q", startModel)
+				}
+				visited[current] = true
+
+				next, ok := cfg.FallbackModels[current]
+				if !ok {
+					break
+				}
+				current = next
+			}
+		}
+	}
+
+	return nil
 }

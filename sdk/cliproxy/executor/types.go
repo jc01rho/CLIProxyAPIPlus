@@ -43,6 +43,12 @@ type Response struct {
 	Payload []byte
 	// Metadata exposes optional structured data for translators.
 	Metadata map[string]any
+
+	// ActualModel is the model that was actually used for the request.
+	// This may differ from the requested model if fallback was triggered.
+	ActualModel string
+	// ActualProvider is the provider that was actually used for the request.
+	ActualProvider string
 }
 
 // StreamChunk represents a single streaming payload unit emitted by provider executors.

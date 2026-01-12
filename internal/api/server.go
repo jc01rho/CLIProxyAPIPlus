@@ -600,6 +600,31 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/routing/mode", s.mgmt.PutRoutingMode)
 		mgmt.PATCH("/routing/mode", s.mgmt.PutRoutingMode)
 
+		// Fallback models configuration
+		mgmt.GET("/fallback/models", s.mgmt.GetFallbackModels)
+		mgmt.PUT("/fallback/models", s.mgmt.PutFallbackModels)
+		mgmt.PATCH("/fallback/models", s.mgmt.PutFallbackModels)
+
+		// Fallback chain configuration
+		mgmt.GET("/fallback/chain", s.mgmt.GetFallbackChain)
+		mgmt.PUT("/fallback/chain", s.mgmt.PutFallbackChain)
+		mgmt.PATCH("/fallback/chain", s.mgmt.PutFallbackChain)
+
+		// Provider priority configuration (global)
+		mgmt.GET("/provider-priority", s.mgmt.GetProviderPriority)
+		mgmt.PUT("/provider-priority", s.mgmt.PutProviderPriority)
+		mgmt.PATCH("/provider-priority", s.mgmt.PutProviderPriority)
+
+		// Provider priority for specific model
+		mgmt.GET("/provider-priority/:model", s.mgmt.GetProviderPriorityForModel)
+		mgmt.PUT("/provider-priority/:model", s.mgmt.PutProviderPriorityForModel)
+		mgmt.PATCH("/provider-priority/:model", s.mgmt.PutProviderPriorityForModel)
+
+		// Provider order configuration (global default)
+		mgmt.GET("/provider-order", s.mgmt.GetProviderOrder)
+		mgmt.PUT("/provider-order", s.mgmt.PutProviderOrder)
+		mgmt.PATCH("/provider-order", s.mgmt.PutProviderOrder)
+
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)
