@@ -16,7 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+const DefaultPanelGitHubRepository = "https://github.com/jc01rho/Cli-Proxy-API-Management-Center"
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
@@ -156,6 +156,9 @@ type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	// Mode controls credential rotation scope.
+	// Supported values: "provider-based" (default), "key-based".
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
 }
 
 // ModelNameMapping defines a model ID mapping for a specific channel.

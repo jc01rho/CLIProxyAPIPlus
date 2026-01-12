@@ -18,12 +18,24 @@ import (
 type RoundRobinSelector struct {
 	mu      sync.Mutex
 	cursors map[string]int
+	// Mode controls credential rotation scope.
+	// "key-based": uses model as key (rotates across all providers)
+	// "" or "provider-based": uses provider:model as key (default, provider-scoped rotation)
+	Mode string
 }
 
 // FillFirstSelector selects the first available credential (deterministic ordering).
 // This "burns" one account before moving to the next, which can help stagger
 // rolling-window subscription caps (e.g. chat message limits).
-type FillFirstSelector struct{}
+// When Mode is "key-based", it rotates through credentials using a cursor.
+type FillFirstSelector struct {
+	mu      sync.Mutex
+	cursors map[string]int
+	// Mode controls credential rotation scope.
+	// "key-based": uses model as key and rotates through credentials
+	// "" or "provider-based": uses provider:model as key and returns first available (default)
+	Mode string
+}
 
 type blockReason int
 
@@ -154,7 +166,13 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 	if err != nil {
 		return nil, err
 	}
-	key := provider + ":" + model
+	// Determine cursor key based on mode
+	var key string
+	if s.Mode == "key-based" {
+		key = model
+	} else {
+		key = provider + ":" + model
+	}
 	s.mu.Lock()
 	if s.cursors == nil {
 		s.cursors = make(map[string]int)
@@ -172,6 +190,8 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 }
 
 // Pick selects the first available auth for the provider in a deterministic manner.
+// When Mode is "key-based", it rotates through credentials using a cursor.
+// When Mode is "" or "provider-based", it returns the first available credential (default behavior).
 func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = ctx
 	_ = opts
@@ -180,6 +200,23 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 	if err != nil {
 		return nil, err
 	}
+	// In key-based mode, use cursor rotation like RoundRobinSelector
+	if s.Mode == "key-based" {
+		var key string
+		key = model
+		s.mu.Lock()
+		if s.cursors == nil {
+			s.cursors = make(map[string]int)
+		}
+		index := s.cursors[key]
+		if index >= 2_147_483_640 {
+			index = 0
+		}
+		s.cursors[key] = index + 1
+		s.mu.Unlock()
+		return available[index%len(available)], nil
+	}
+	// Default provider-based mode: return first available (original behavior)
 	return available[0], nil
 }
 
