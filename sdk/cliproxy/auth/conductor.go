@@ -1090,10 +1090,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					shouldSuspendModel = true
 					setModelQuota = true
 				case 408, 500, 502, 503, 504:
-					next := now.Add(1 * time.Minute)
+					next := now.Add(30 * time.Minute)
 					state.NextRetryAfter = next
+					suspendReason = "server_error"
+					shouldSuspendModel = true
 				default:
-					state.NextRetryAfter = time.Time{}
+					next := now.Add(30 * time.Minute)
+					state.NextRetryAfter = next
+					suspendReason = "generic_error"
+					shouldSuspendModel = true
 				}
 
 				auth.Status = StatusError
