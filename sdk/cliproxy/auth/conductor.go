@@ -126,6 +126,12 @@ type Manager struct {
 
 	// Auto refresh state
 	refreshCancel context.CancelFunc
+
+	// Fallback configuration for model fallback when all keys are blocked.
+	// fallbackModels maps model names to their fallback model.
+	fallbackModels atomic.Value // map[string]string
+	// fallbackChain is an ordered list of models to try in sequence.
+	fallbackChain atomic.Value // []string
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -185,6 +191,84 @@ func (m *Manager) SetRetryConfig(retry int, maxRetryInterval time.Duration) {
 	}
 	m.requestRetry.Store(int32(retry))
 	m.maxRetryInterval.Store(maxRetryInterval.Nanoseconds())
+}
+
+// SetFallbackConfig updates the fallback configuration for model failover.
+// fallbackModels maps model names to their fallback model when all keys are blocked.
+// fallbackChain is an ordered list of models to try in sequence.
+func (m *Manager) SetFallbackConfig(fallbackModels map[string]string, fallbackChain []string) {
+	if m == nil {
+		return
+	}
+	if fallbackModels != nil {
+		// Make a copy to avoid external mutation
+		copied := make(map[string]string, len(fallbackModels))
+		for k, v := range fallbackModels {
+			copied[k] = v
+		}
+		m.fallbackModels.Store(copied)
+	} else {
+		m.fallbackModels.Store((map[string]string)(nil))
+	}
+	if fallbackChain != nil {
+		// Make a copy to avoid external mutation
+		copied := make([]string, len(fallbackChain))
+		copy(copied, fallbackChain)
+		m.fallbackChain.Store(copied)
+	} else {
+		m.fallbackChain.Store(([]string)(nil))
+	}
+}
+
+// GetFallbackConfig returns the current fallback configuration.
+func (m *Manager) GetFallbackConfig() (fallbackModels map[string]string, fallbackChain []string) {
+	if m == nil {
+		return nil, nil
+	}
+	if v := m.fallbackModels.Load(); v != nil {
+		fallbackModels = v.(map[string]string)
+	}
+	if v := m.fallbackChain.Load(); v != nil {
+		fallbackChain = v.([]string)
+	}
+	return fallbackModels, fallbackChain
+}
+
+// getFallbackModel returns the next fallback model for the given model.
+// Returns empty string if no fallback is configured.
+// Priority: model-specific fallback > fallback chain
+func (m *Manager) getFallbackModel(model string, visited map[string]bool) string {
+	if m == nil || model == "" {
+		return ""
+	}
+
+	// Check model-specific fallback first
+	if v := m.fallbackModels.Load(); v != nil {
+		if fallbackModels, ok := v.(map[string]string); ok && fallbackModels != nil {
+			if fallback, exists := fallbackModels[model]; exists && fallback != "" {
+				if !visited[fallback] {
+					return fallback
+				}
+			}
+		}
+	}
+
+	// Check fallback chain
+	if v := m.fallbackChain.Load(); v != nil {
+		if chain, ok := v.([]string); ok && chain != nil {
+			// Find current model in chain and return next
+			for i, m := range chain {
+				if m == model && i+1 < len(chain) {
+					nextModel := chain[i+1]
+					if !visited[nextModel] {
+						return nextModel
+					}
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 // RegisterExecutor registers a provider executor with the manager.
@@ -268,7 +352,60 @@ func (m *Manager) Load(ctx context.Context) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins across ALL keys
 // regardless of provider, ensuring fair distribution proportional to key count.
+// When all keys for a model are blocked (modelCooldownError), it tries fallback models.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return m.executeWithFallback(ctx, providers, req, opts, make(map[string]bool), 0)
+}
+
+// executeWithFallback performs execution with fallback model support.
+// visited tracks models already tried to prevent infinite loops.
+// depth tracks recursion depth to enforce maximum 20 fallback attempts.
+func (m *Manager) executeWithFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, visited map[string]bool, depth int) (cliproxyexecutor.Response, error) {
+	const maxFallbackDepth = 20
+
+	// Mark current model as visited
+	originalModel := req.Model
+	visited[originalModel] = true
+
+	// Try execution with current model
+	resp, err := m.executeInternal(ctx, providers, req, opts)
+	if err == nil {
+		// Set actual model/provider if not already set
+		if resp.ActualModel == "" {
+			resp.ActualModel = req.Model
+		}
+		return resp, nil
+	}
+
+	// Check if this is a modelCooldownError and we should try fallback
+	_, isCooldown := err.(*modelCooldownError)
+	if !isCooldown {
+		return resp, err
+	}
+
+	// Check depth limit
+	if depth >= maxFallbackDepth {
+		return resp, err
+	}
+
+	// Get fallback model
+	fallbackModel := m.getFallbackModel(originalModel, visited)
+	if fallbackModel == "" {
+		return resp, err
+	}
+
+	// Try fallback model
+	fallbackReq := req
+	fallbackReq.Model = fallbackModel
+
+	entry := logEntryWithRequestID(ctx)
+	entry.Infof("All keys blocked for model %s, trying fallback model %s", originalModel, fallbackModel)
+
+	return m.executeWithFallback(ctx, providers, fallbackReq, opts, visited, depth+1)
+}
+
+// executeInternal performs the core execution logic without fallback.
+func (m *Manager) executeInternal(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -345,7 +482,56 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins across ALL keys
 // regardless of provider, ensuring fair distribution proportional to key count.
+// When all keys for a model are blocked (modelCooldownError), it tries fallback models.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
+	return m.executeStreamWithFallback(ctx, providers, req, opts, make(map[string]bool), 0)
+}
+
+// executeStreamWithFallback performs streaming execution with fallback model support.
+// visited tracks models already tried to prevent infinite loops.
+// depth tracks recursion depth to enforce maximum 20 fallback attempts.
+func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, visited map[string]bool, depth int) (<-chan cliproxyexecutor.StreamChunk, error) {
+	const maxFallbackDepth = 20
+
+	// Mark current model as visited
+	originalModel := req.Model
+	visited[originalModel] = true
+
+	// Try execution with current model
+	chunks, err := m.executeStreamInternal(ctx, providers, req, opts)
+	if err == nil {
+		return chunks, nil
+	}
+
+	// Check if this is a modelCooldownError and we should try fallback
+	_, isCooldown := err.(*modelCooldownError)
+	if !isCooldown {
+		return chunks, err
+	}
+
+	// Check depth limit
+	if depth >= maxFallbackDepth {
+		return chunks, err
+	}
+
+	// Get fallback model
+	fallbackModel := m.getFallbackModel(originalModel, visited)
+	if fallbackModel == "" {
+		return chunks, err
+	}
+
+	// Try fallback model
+	fallbackReq := req
+	fallbackReq.Model = fallbackModel
+
+	entry := logEntryWithRequestID(ctx)
+	entry.Infof("All keys blocked for model %s (stream), trying fallback model %s", originalModel, fallbackModel)
+
+	return m.executeStreamWithFallback(ctx, providers, fallbackReq, opts, visited, depth+1)
+}
+
+// executeStreamInternal performs the core streaming execution logic without fallback.
+func (m *Manager) executeStreamInternal(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}

@@ -149,13 +149,22 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 
-	resp, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
+	result, errMsg := h.ExecuteWithAuthManagerEx(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
 	}
 
+	// Set actual model/provider headers
+	if result.ActualModel != "" {
+		c.Header("X-Actual-Model", result.ActualModel)
+	}
+	if result.ActualProvider != "" {
+		c.Header("X-Actual-Provider", result.ActualProvider)
+	}
+
+	resp := result.Payload
 	// Decompress gzipped responses - Claude API sometimes returns gzip without Content-Encoding header
 	// This fixes title generation and other non-streaming responses that arrive compressed
 	if len(resp) >= 2 && resp[0] == 0x1f && resp[1] == 0x8b {

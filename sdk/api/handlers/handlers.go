@@ -45,6 +45,26 @@ type ErrorDetail struct {
 
 const idempotencyKeyMetadataKey = "idempotency_key"
 
+// Context keys for actual model/provider information
+type actualModelContextKey struct{}
+type actualProviderContextKey struct{}
+
+// GetActualModelFromContext returns the actual model used from context, if set.
+func GetActualModelFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(actualModelContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// GetActualProviderFromContext returns the actual provider used from context, if set.
+func GetActualProviderFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(actualProviderContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 const (
 	defaultStreamingKeepAliveSeconds = 0
 	defaultStreamingBootstrapRetries = 0
@@ -319,6 +339,26 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 // ExecuteWithAuthManager executes a non-streaming request via the core auth manager.
 // This path is the only supported execution route.
 func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, *interfaces.ErrorMessage) {
+	resp, errMsg := h.ExecuteWithAuthManagerEx(ctx, handlerType, modelName, rawJSON, alt)
+	if errMsg != nil {
+		return nil, errMsg
+	}
+	return resp.Payload, nil
+}
+
+// ExecuteResult contains the execution result with additional metadata.
+type ExecuteResult struct {
+	// Payload is the response body
+	Payload []byte
+	// ActualModel is the model that was actually used (may differ from requested if fallback occurred)
+	ActualModel string
+	// ActualProvider is the provider that was actually used
+	ActualProvider string
+}
+
+// ExecuteWithAuthManagerEx executes a non-streaming request and returns extended result.
+// This includes actual model/provider information for setting response headers.
+func (h *BaseAPIHandler) ExecuteWithAuthManagerEx(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (*ExecuteResult, *interfaces.ErrorMessage) {
 	providers, normalizedModel, metadata, errMsg := h.getRequestDetails(modelName)
 	if errMsg != nil {
 		return nil, errMsg
@@ -354,7 +394,11 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 		}
 		return nil, &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
 	}
-	return cloneBytes(resp.Payload), nil
+	return &ExecuteResult{
+		Payload:        cloneBytes(resp.Payload),
+		ActualModel:    resp.ActualModel,
+		ActualProvider: resp.ActualProvider,
+	}, nil
 }
 
 // ExecuteCountWithAuthManager executes a non-streaming request via the core auth manager.

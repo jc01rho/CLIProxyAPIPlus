@@ -85,7 +85,33 @@ routing:
   # - "key-based": Cursor key is "model" only. All credentials for a model share one rotation.
   #   Example: Provider A (15 keys) + Provider B (1 key) = 16 keys in one pool.
   #   Each key gets called equally (1/16 chance), preventing B's key from being exhausted faster.
-  mode: "provider-based"
+  mode: "key-based"
+  # Fallback models: when all keys for a model are blocked, use the fallback model instead.
+  # fallback-models:
+  #   gemini-2.5-pro: gemini-2.5-flash      # If gemini-2.5-pro keys are exhausted, use gemini-2.5-flash
+  #   claude-sonnet-4-20250514: gemini-2.5-pro  # If claude-sonnet is blocked, try gemini-pro
+  
+  # Fallback chain: global fallback order (max 20 models).
+  # Used when model-specific fallback is not defined.
+  # fallback-chain:
+  #   - gemini-2.5-pro
+  #   - gemini-2.5-flash
+  #   - claude-sonnet-4-20250514
+  
+  # Provider priority: order of providers to try for each model.
+  # provider-priority:
+  #   gemini-2.5-pro:
+  #     - vertex-ai      # Try Vertex AI first
+  #     - gemini-cli     # Then Gemini CLI
+  #   claude-sonnet-4-20250514:
+  #     - anthropic-api
+  #     - vertex-ai
+  
+  # Provider order: global default order for all models.
+  # provider-order:
+  #   - vertex-ai
+  #   - gemini-cli
+  #   - anthropic-api
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: false

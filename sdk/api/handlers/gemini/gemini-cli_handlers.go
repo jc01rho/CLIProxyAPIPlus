@@ -171,13 +171,20 @@ func (h *GeminiCLIAPIHandler) handleInternalGenerateContent(c *gin.Context, rawJ
 	modelName := modelResult.String()
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	resp, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
+	result, errMsg := h.ExecuteWithAuthManagerEx(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
 	}
-	_, _ = c.Writer.Write(resp)
+	// Set actual model/provider headers
+	if result.ActualModel != "" {
+		c.Header("X-Actual-Model", result.ActualModel)
+	}
+	if result.ActualProvider != "" {
+		c.Header("X-Actual-Provider", result.ActualProvider)
+	}
+	_, _ = c.Writer.Write(result.Payload)
 	cliCancel()
 }
 
