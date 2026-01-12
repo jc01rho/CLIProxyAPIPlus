@@ -511,9 +511,11 @@ func (s *Service) Run(ctx context.Context) error {
 	var watcherWrapper *WatcherWrapper
 	reloadCallback := func(newCfg *config.Config) {
 		previousStrategy := ""
+		previousMode := ""
 		s.cfgMu.RLock()
 		if s.cfg != nil {
 			previousStrategy = strings.ToLower(strings.TrimSpace(s.cfg.Routing.Strategy))
+			previousMode = strings.ToLower(strings.TrimSpace(s.cfg.Routing.Mode))
 		}
 		s.cfgMu.RUnlock()
 
@@ -527,6 +529,7 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 
 		nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
+		nextMode := strings.ToLower(strings.TrimSpace(newCfg.Routing.Mode))
 		normalizeStrategy := func(strategy string) string {
 			switch strategy {
 			case "fill-first", "fillfirst", "ff":
@@ -537,16 +540,17 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 		previousStrategy = normalizeStrategy(previousStrategy)
 		nextStrategy = normalizeStrategy(nextStrategy)
-		if s.coreManager != nil && previousStrategy != nextStrategy {
+		// Recreate selector if strategy OR mode changed
+		if s.coreManager != nil && (previousStrategy != nextStrategy || previousMode != nextMode) {
 			var selector coreauth.Selector
 			switch nextStrategy {
 			case "fill-first":
-				selector = &coreauth.FillFirstSelector{}
+				selector = &coreauth.FillFirstSelector{Mode: nextMode}
 			default:
-				selector = &coreauth.RoundRobinSelector{}
+				selector = &coreauth.RoundRobinSelector{Mode: nextMode}
 			}
 			s.coreManager.SetSelector(selector)
-			log.Infof("routing strategy updated to %s", nextStrategy)
+			log.Infof("routing strategy updated to %s (mode: %s)", nextStrategy, nextMode)
 		}
 
 		s.applyRetryConfig(newCfg)

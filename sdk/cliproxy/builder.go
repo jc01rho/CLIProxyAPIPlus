@@ -203,12 +203,16 @@ func (b *Builder) Build() (*Service, error) {
 		if b.cfg != nil {
 			strategy = strings.ToLower(strings.TrimSpace(b.cfg.Routing.Strategy))
 		}
+		mode := ""
+		if b.cfg != nil {
+			mode = strings.ToLower(strings.TrimSpace(b.cfg.Routing.Mode))
+		}
 		var selector coreauth.Selector
 		switch strategy {
 		case "fill-first", "fillfirst", "ff":
-			selector = &coreauth.FillFirstSelector{}
+			selector = &coreauth.FillFirstSelector{Mode: mode}
 		default:
-			selector = &coreauth.RoundRobinSelector{}
+			selector = &coreauth.RoundRobinSelector{Mode: mode}
 		}
 
 		coreManager = coreauth.NewManager(tokenStore, selector, nil)

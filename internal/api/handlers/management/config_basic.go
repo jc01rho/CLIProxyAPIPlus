@@ -298,6 +298,44 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 	h.persist(c)
 }
 
+func normalizeRoutingMode(mode string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	switch normalized {
+	case "", "provider-based":
+		return "provider-based", true
+	case "key-based":
+		return "key-based", true
+	default:
+		return "", false
+	}
+}
+
+// RoutingMode
+func (h *Handler) GetRoutingMode(c *gin.Context) {
+	mode, ok := normalizeRoutingMode(h.cfg.Routing.Mode)
+	if !ok {
+		c.JSON(200, gin.H{"mode": strings.TrimSpace(h.cfg.Routing.Mode)})
+		return
+	}
+	c.JSON(200, gin.H{"mode": mode})
+}
+func (h *Handler) PutRoutingMode(c *gin.Context) {
+	var body struct {
+		Value *string `json:"value"`
+	}
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	normalized, ok := normalizeRoutingMode(*body.Value)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid mode"})
+		return
+	}
+	h.cfg.Routing.Mode = normalized
+	h.persist(c)
+}
+
 // Proxy URL
 func (h *Handler) GetProxyURL(c *gin.Context) { c.JSON(200, gin.H{"proxy-url": h.cfg.ProxyURL}) }
 func (h *Handler) PutProxyURL(c *gin.Context) {
