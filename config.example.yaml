@@ -86,32 +86,66 @@ routing:
   #   Example: Provider A (15 keys) + Provider B (1 key) = 16 keys in one pool.
   #   Each key gets called equally (1/16 chance), preventing B's key from being exhausted faster.
   mode: "key-based"
-  # Fallback models: when all keys for a model are blocked, use the fallback model instead.
+  
+  # ============================================================================
+  # FALLBACK MODELS CONFIGURATION
+  # ============================================================================
+  # When all keys for a model are blocked (rate limited), the system automatically
+  # tries fallback models. Two methods available:
+  #
+  # 1. Per-model fallback (fallback-models): Specific model → specific fallback
+  # 2. Global fallback chain (fallback-chain): Sequential fallback for all models
+  #
+  # Priority: Per-model fallback is checked FIRST, then global chain.
+  # Maximum 20 fallback attempts to prevent infinite loops.
+  # ============================================================================
+  
+  # Per-model fallback: Map each model to its specific fallback model
+  # Format: "blocked-model": "fallback-model"
   # fallback-models:
-  #   gemini-2.5-pro: gemini-2.5-flash      # If gemini-2.5-pro keys are exhausted, use gemini-2.5-flash
-  #   claude-sonnet-4-20250514: gemini-2.5-pro  # If claude-sonnet is blocked, try gemini-pro
+  #   gemini-2.5-pro: gemini-2.5-flash           # If gemini-2.5-pro blocked → use gemini-2.5-flash
+  #   gemini-2.5-flash: gemini-2.0-flash         # If gemini-2.5-flash blocked → use gemini-2.0-flash
+  #   claude-sonnet-4-20250514: gemini-2.5-pro   # Cross-provider fallback supported
+  #   gpt-4o: claude-sonnet-4-20250514           # Chain: gpt-4o → claude → gemini
   
-  # Fallback chain: global fallback order (max 20 models).
-  # Used when model-specific fallback is not defined.
+  # Global fallback chain: Sequential fallback order for ALL models (max 20)
+  # When a model is blocked and has no per-model fallback, system finds it in chain
+  # and tries the NEXT model in the list.
   # fallback-chain:
-  #   - gemini-2.5-pro
-  #   - gemini-2.5-flash
-  #   - claude-sonnet-4-20250514
+  #   - gemini-2.5-pro           # First choice
+  #   - gemini-2.5-flash         # Second choice
+  #   - gemini-2.0-flash         # Third choice
+  #   - claude-sonnet-4-20250514 # Fourth choice
+  #   - gpt-4o                   # Fifth choice
   
-  # Provider priority: order of providers to try for each model.
+  # ============================================================================
+  # PROVIDER PRIORITY CONFIGURATION
+  # ============================================================================
+  # Control which provider is tried first when multiple providers support the same model.
+  # Two methods available:
+  #
+  # 1. Per-model priority (provider-priority): Specific order for each model
+  # 2. Global order (provider-order): Default order for all models
+  #
+  # Priority: Per-model priority is checked FIRST, then global order.
+  # ============================================================================
+  
+  # Per-model provider priority: Order of providers to try for specific models
   # provider-priority:
   #   gemini-2.5-pro:
-  #     - vertex-ai      # Try Vertex AI first
+  #     - vertex-ai      # Try Vertex AI first (usually faster/cheaper)
   #     - gemini-cli     # Then Gemini CLI
+  #     - aistudio       # Then AI Studio
   #   claude-sonnet-4-20250514:
-  #     - anthropic-api
-  #     - vertex-ai
+  #     - anthropic-api  # Direct API first
+  #     - vertex-ai      # Then Vertex AI
   
-  # Provider order: global default order for all models.
+  # Global provider order: Default order for models without specific priority
   # provider-order:
   #   - vertex-ai
   #   - gemini-cli
   #   - anthropic-api
+  #   - aistudio
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: false
