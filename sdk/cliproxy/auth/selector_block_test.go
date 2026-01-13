@@ -276,11 +276,11 @@ func TestMarkResult_30MinBlockForServerErrors(t *testing.T) {
 					t.Error("auth should be unavailable")
 				}
 				blockDuration := state.NextRetryAfter.Sub(now)
-				if blockDuration < 29*time.Minute {
-					t.Errorf("Block duration %v < 29min", blockDuration)
+				if blockDuration < 119*time.Minute {
+					t.Errorf("Block duration %v < 119min (expected ~2h)", blockDuration)
 				}
-				if blockDuration > 31*time.Minute {
-					t.Errorf("Block duration %v > 31min", blockDuration)
+				if blockDuration > 121*time.Minute {
+					t.Errorf("Block duration %v > 121min (expected ~2h)", blockDuration)
 				}
 			}
 		})

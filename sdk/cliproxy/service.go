@@ -442,6 +442,11 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 	}
 
+	// Validate auth states on startup by checking quota/validity
+	if s.coreManager != nil {
+		s.coreManager.ValidateOnStartup(ctx)
+	}
+
 	tokenResult, err := s.tokenProvider.Load(ctx, s.cfg)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return err
