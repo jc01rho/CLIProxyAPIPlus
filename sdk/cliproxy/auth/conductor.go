@@ -114,6 +114,9 @@ type Manager struct {
 	// providerOffsets tracks per-model provider rotation state for multi-provider routing.
 	providerOffsets map[string]int
 
+	// transientCache manages transient state (block status, quota) separately from Auth files.
+	transientCache *TransientStateCache
+
 	// Retry controls request retry behavior.
 	requestRetry     atomic.Int32
 	maxRetryInterval atomic.Int64
@@ -169,6 +172,33 @@ func (m *Manager) SetStore(store Store) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.store = store
+}
+
+// SetTransientCachePath sets the file path for transient state cache.
+// This creates a new TransientStateCache and loads any existing cached state.
+func (m *Manager) SetTransientCachePath(path string) {
+	if m == nil || path == "" {
+		return
+	}
+	m.mu.Lock()
+	m.transientCache = NewTransientStateCache(path)
+	m.mu.Unlock()
+}
+
+// GetTransientState returns the transient state for an auth ID.
+// Returns nil if no transient state exists or cache is not configured.
+func (m *Manager) GetTransientState(authID string) *TransientState {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	cache := m.transientCache
+	m.mu.RUnlock()
+
+	if cache == nil {
+		return nil
+	}
+	return cache.Get(authID)
 }
 
 // SetRoundTripperProvider register a provider that returns a per-auth RoundTripper.
@@ -346,6 +376,14 @@ func (m *Manager) Load(ctx context.Context) error {
 		auth.EnsureIndex()
 		m.auths[auth.ID] = auth.Clone()
 	}
+
+	// Load transient state cache if configured
+	if m.transientCache != nil {
+		if err := m.transientCache.Load(); err != nil {
+			log.Warnf("failed to load transient state cache: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1382,6 +1420,24 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 
 		_ = m.persist(ctx, auth)
+
+		// Also save transient state to cache
+		if m.transientCache != nil {
+			transientState := &TransientState{
+				Unavailable:    auth.Unavailable,
+				NextRetryAfter: auth.NextRetryAfter,
+				Quota:          auth.Quota,
+				LastError:      auth.LastError,
+			}
+			if len(auth.ModelStates) > 0 {
+				transientState.ModelStates = make(map[string]*ModelState, len(auth.ModelStates))
+				for k, v := range auth.ModelStates {
+					transientState.ModelStates[k] = v.Clone()
+				}
+			}
+			m.transientCache.Set(result.AuthID, transientState)
+			_ = m.transientCache.Save()
+		}
 	}
 	m.mu.Unlock()
 
@@ -1801,7 +1857,17 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	if auth.Metadata == nil {
 		return nil
 	}
-	_, err := m.store.Save(ctx, auth)
+
+	// Create a copy and clear transient fields before saving
+	// Transient state is managed separately in TransientStateCache
+	authToSave := auth.Clone()
+	authToSave.Unavailable = false
+	authToSave.NextRetryAfter = time.Time{}
+	authToSave.ModelStates = nil
+	authToSave.Quota = QuotaState{}
+	authToSave.LastError = nil
+
+	_, err := m.store.Save(ctx, authToSave)
 	return err
 }
 
