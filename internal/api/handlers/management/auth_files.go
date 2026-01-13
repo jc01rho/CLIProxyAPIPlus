@@ -368,106 +368,48 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 		c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read auth dir: %v", err)})
 		return
 	}
-
-	// Filter JSON files first
-	var jsonEntries []os.DirEntry
+	files := make([]gin.H, 0)
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
-			jsonEntries = append(jsonEntries, e)
+		if e.IsDir() {
+			continue
 		}
-	}
+		name := e.Name()
+		if !strings.HasSuffix(strings.ToLower(name), ".json") {
+			continue
+		}
+		if info, errInfo := e.Info(); errInfo == nil {
+			fileData := gin.H{"name": name, "size": info.Size(), "modtime": info.ModTime()}
 
-	// Process files in parallel using worker pool
-	type fileResult struct {
-		index int
-		data  gin.H
-	}
+			// Read file to get type, email, and tier info from metadata
+			full := filepath.Join(h.cfg.AuthDir, name)
+			if data, errRead := os.ReadFile(full); errRead == nil {
+				typeValue := gjson.GetBytes(data, "type").String()
+				emailValue := gjson.GetBytes(data, "email").String()
 
-	numWorkers := 16 // Limit concurrent file reads
-	if len(jsonEntries) < numWorkers {
-		numWorkers = len(jsonEntries)
-	}
-	if numWorkers == 0 {
-		c.JSON(200, gin.H{"files": []gin.H{}})
-		return
-	}
+				fileData["type"] = typeValue
+				fileData["email"] = emailValue
 
-	jobs := make(chan int, len(jsonEntries))
-	results := make(chan fileResult, len(jsonEntries))
-
-	// Start workers
-	var wg sync.WaitGroup
-	for w := 0; w < numWorkers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for idx := range jobs {
-				e := jsonEntries[idx]
-				name := e.Name()
-				info, errInfo := e.Info()
-				if errInfo != nil {
-					continue
-				}
-
-				fileData := gin.H{"name": name, "size": info.Size(), "modtime": info.ModTime()}
-
-				// Read file to get type, email, and tier info from metadata
-				full := filepath.Join(h.cfg.AuthDir, name)
-				if data, errRead := os.ReadFile(full); errRead == nil {
-					typeValue := gjson.GetBytes(data, "type").String()
-					emailValue := gjson.GetBytes(data, "email").String()
-
-					fileData["type"] = typeValue
-					fileData["email"] = emailValue
-
-					// For Antigravity files, read tier info from metadata.is_pro
-					if strings.EqualFold(typeValue, "antigravity") {
-						isPro := gjson.GetBytes(data, "metadata.is_pro")
-						if isPro.Exists() {
-							if isPro.Bool() {
-								fileData["tier"] = "pro"
-							} else {
-								fileData["tier"] = "free"
-							}
-						}
-						// Try to get tier_name from metadata.subscription_tier.name
-						tierName := gjson.GetBytes(data, "metadata.subscription_tier.name")
-						if tierName.Exists() && tierName.String() != "" {
-							fileData["tier_name"] = tierName.String()
+				// For Antigravity files, read tier info from metadata.is_pro
+				if strings.EqualFold(typeValue, "antigravity") {
+					isPro := gjson.GetBytes(data, "metadata.is_pro")
+					if isPro.Exists() {
+						if isPro.Bool() {
+							fileData["tier"] = "pro"
+						} else {
+							fileData["tier"] = "free"
 						}
 					}
+					// Try to get tier_name from metadata.subscription_tier.name
+					tierName := gjson.GetBytes(data, "metadata.subscription_tier.name")
+					if tierName.Exists() && tierName.String() != "" {
+						fileData["tier_name"] = tierName.String()
+					}
 				}
-
-				results <- fileResult{index: idx, data: fileData}
 			}
-		}()
-	}
 
-	// Send jobs
-	for i := range jsonEntries {
-		jobs <- i
-	}
-	close(jobs)
-
-	// Wait for all workers and close results
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Collect results and sort by original order
-	filesMap := make(map[int]gin.H)
-	for r := range results {
-		filesMap[r.index] = r.data
-	}
-
-	files := make([]gin.H, 0, len(jsonEntries))
-	for i := range jsonEntries {
-		if data, ok := filesMap[i]; ok {
-			files = append(files, data)
+			files = append(files, fileData)
 		}
 	}
-
 	c.JSON(200, gin.H{"files": files})
 }
 
