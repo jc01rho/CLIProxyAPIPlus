@@ -57,7 +57,11 @@ func (e *failOnceStreamExecutor) CountTokens(context.Context, *coreauth.Auth, co
 }
 
 func (e *failOnceStreamExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
-	return nil, &coreauth.Error{Code: "not_implemented", Message: "HttpRequest not implemented"}
+	return nil, &coreauth.Error{
+		Code:       "not_implemented",
+		Message:    "HttpRequest not implemented",
+		HTTPStatus: http.StatusNotImplemented,
+	}
 }
 
 func (e *failOnceStreamExecutor) Calls() int {

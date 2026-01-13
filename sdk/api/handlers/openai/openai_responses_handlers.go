@@ -103,13 +103,13 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	defer func() {
-		cliCancel()
-	}()
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	result, errMsg := h.ExecuteWithAuthManagerEx(cliCtx, h.HandlerType(), modelName, rawJSON, "")
+	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
+		cliCancel(errMsg.Error)
 		return
 	}
 	// Set actual model/provider headers
@@ -120,10 +120,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 		c.Header("X-Actual-Provider", result.ActualProvider)
 	}
 	_, _ = c.Writer.Write(result.Payload)
-	return
-
-	// no legacy fallback
-
+	cliCancel()
 }
 
 // handleStreamingResponse handles streaming responses for Gemini models.
