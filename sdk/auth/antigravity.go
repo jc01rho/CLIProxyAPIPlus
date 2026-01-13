@@ -226,6 +226,7 @@ waitForCallback:
 			}
 		}
 		metadata["is_pro"] = isAntigravityPaidTier(subscriptionInfo)
+		metadata["tier_fetched_at"] = time.Now().Unix()
 	}
 
 	fileName := sanitizeAntigravityFileName(email)
