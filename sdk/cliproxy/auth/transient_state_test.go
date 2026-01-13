@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -126,5 +127,223 @@ func TestTransientState_Clone_NilLastError(t *testing.T) {
 
 	if cloned.LastError != nil {
 		t.Error("Nil LastError should remain nil")
+	}
+}
+
+// ============================================
+// TransientStateCache Tests
+// ============================================
+
+func TestTransientStateCache_GetSet(t *testing.T) {
+	t.Parallel()
+
+	cache := NewTransientStateCache("/tmp/test_cache.json")
+
+	// Test Get on empty cache
+	result := cache.Get("auth-1")
+	if result != nil {
+		t.Error("Get on empty cache should return nil")
+	}
+
+	// Test Set and Get
+	state := &TransientState{
+		Unavailable: true,
+		Quota: QuotaState{
+			Exceeded: true,
+			Reason:   "test",
+		},
+	}
+
+	cache.Set("auth-1", state)
+
+	result = cache.Get("auth-1")
+	if result == nil {
+		t.Fatal("Get after Set should return state")
+	}
+
+	if !result.Unavailable {
+		t.Error("Unavailable should be true")
+	}
+
+	if !result.Quota.Exceeded {
+		t.Error("Quota.Exceeded should be true")
+	}
+
+	// Verify deep copy - modifying original shouldn't affect cached
+	state.Unavailable = false
+	result2 := cache.Get("auth-1")
+	if !result2.Unavailable {
+		t.Error("Cached state should not be affected by original modification")
+	}
+
+	// Verify deep copy - modifying returned shouldn't affect cached
+	result.Quota.Reason = "modified"
+	result3 := cache.Get("auth-1")
+	if result3.Quota.Reason != "test" {
+		t.Error("Cached state should not be affected by returned value modification")
+	}
+}
+
+func TestTransientStateCache_Delete(t *testing.T) {
+	t.Parallel()
+
+	cache := NewTransientStateCache("/tmp/test_cache.json")
+
+	// Set a state
+	cache.Set("auth-1", &TransientState{Unavailable: true})
+
+	// Verify it exists
+	if cache.Get("auth-1") == nil {
+		t.Fatal("State should exist after Set")
+	}
+
+	// Delete it
+	cache.Delete("auth-1")
+
+	// Verify it's gone
+	if cache.Get("auth-1") != nil {
+		t.Error("State should be nil after Delete")
+	}
+
+	// Delete non-existent should not panic
+	cache.Delete("non-existent")
+}
+
+func TestTransientStateCache_SetNil(t *testing.T) {
+	t.Parallel()
+
+	cache := NewTransientStateCache("/tmp/test_cache.json")
+
+	// Set a state
+	cache.Set("auth-1", &TransientState{Unavailable: true})
+
+	// Set nil should delete
+	cache.Set("auth-1", nil)
+
+	if cache.Get("auth-1") != nil {
+		t.Error("Setting nil should delete the entry")
+	}
+}
+
+func TestTransientStateCache_Len(t *testing.T) {
+	t.Parallel()
+
+	cache := NewTransientStateCache("/tmp/test_cache.json")
+
+	if cache.Len() != 0 {
+		t.Error("Empty cache should have length 0")
+	}
+
+	cache.Set("auth-1", &TransientState{})
+	cache.Set("auth-2", &TransientState{})
+
+	if cache.Len() != 2 {
+		t.Errorf("Cache should have length 2, got %d", cache.Len())
+	}
+
+	cache.Delete("auth-1")
+
+	if cache.Len() != 1 {
+		t.Errorf("Cache should have length 1 after delete, got %d", cache.Len())
+	}
+}
+
+func TestTransientStateCache_GetOrCreate(t *testing.T) {
+	t.Parallel()
+
+	cache := NewTransientStateCache("/tmp/test_cache.json")
+
+	// GetOrCreate on non-existent should create
+	state := cache.GetOrCreate("auth-1")
+	if state == nil {
+		t.Fatal("GetOrCreate should return non-nil state")
+	}
+
+	// Should be a new empty state
+	if state.Unavailable {
+		t.Error("New state should have Unavailable=false")
+	}
+
+	// Should now exist in cache
+	if cache.Len() != 1 {
+		t.Error("Cache should have 1 entry after GetOrCreate")
+	}
+
+	// GetOrCreate again should return existing
+	cache.Set("auth-1", &TransientState{Unavailable: true})
+	state2 := cache.GetOrCreate("auth-1")
+	if !state2.Unavailable {
+		t.Error("GetOrCreate should return existing state")
+	}
+}
+
+func TestTransientStateCache_Concurrent(t *testing.T) {
+	t.Parallel()
+
+	cache := NewTransientStateCache("/tmp/test_cache.json")
+
+	var wg sync.WaitGroup
+	numGoroutines := 100
+
+	// Concurrent writes
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			authID := "auth-" + string(rune('0'+id%10))
+			cache.Set(authID, &TransientState{
+				Unavailable: true,
+				Quota: QuotaState{
+					BackoffLevel: id,
+				},
+			})
+		}(i)
+	}
+
+	// Concurrent reads
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			authID := "auth-" + string(rune('0'+id%10))
+			_ = cache.Get(authID)
+		}(i)
+	}
+
+	// Concurrent deletes
+	for i := 0; i < numGoroutines/2; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			authID := "auth-" + string(rune('0'+id%10))
+			cache.Delete(authID)
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Should not panic and cache should be in consistent state
+	_ = cache.Len()
+}
+
+func TestTransientStateCache_NilCache(t *testing.T) {
+	t.Parallel()
+
+	var cache *TransientStateCache
+
+	// All operations on nil cache should not panic
+	if cache.Get("auth-1") != nil {
+		t.Error("Get on nil cache should return nil")
+	}
+
+	cache.Set("auth-1", &TransientState{}) // Should not panic
+	cache.Delete("auth-1")                 // Should not panic
+
+	if cache.Len() != 0 {
+		t.Error("Len on nil cache should return 0")
+	}
+
+	if cache.GetOrCreate("auth-1") != nil {
+		t.Error("GetOrCreate on nil cache should return nil")
 	}
 }
