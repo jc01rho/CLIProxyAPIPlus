@@ -491,14 +491,10 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		}
 	}
 
-	// For Antigravity provider, add tier info from metadata or fetch on-demand
+	// For Antigravity provider, add tier info from metadata
 	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
-		var tierDetermined bool
-
-		// First try to get from metadata (fast path - for newly authenticated keys)
 		if auth.Metadata != nil {
 			if isPro, ok := auth.Metadata["is_pro"].(bool); ok {
-				tierDetermined = true
 				if isPro {
 					entry["tier"] = "pro"
 				} else {
@@ -508,28 +504,6 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			if tier, ok := auth.Metadata["subscription_tier"].(map[string]any); ok {
 				if tierName, ok := tier["name"].(string); ok && tierName != "" {
 					entry["tier_name"] = tierName
-				}
-			}
-		}
-
-		// Fallback: fetch tier info on-demand for existing auth files without metadata
-		if !tierDetermined && auth.Metadata != nil {
-			if accessToken, ok := auth.Metadata["access_token"].(string); ok && accessToken != "" {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				subInfo, err := fetchAntigravitySubscriptionInfo(ctx, accessToken, http.DefaultClient)
-				cancel()
-				if err == nil && subInfo != nil {
-					isPro := isPaidTier(subInfo)
-					if isPro {
-						entry["tier"] = "pro"
-					} else {
-						entry["tier"] = "free"
-					}
-					if subInfo.CurrentTier != nil && subInfo.CurrentTier.Name != "" {
-						entry["tier_name"] = subInfo.CurrentTier.Name
-					} else if subInfo.PaidTier != nil && subInfo.PaidTier.Name != "" {
-						entry["tier_name"] = subInfo.PaidTier.Name
-					}
 				}
 			}
 		}
