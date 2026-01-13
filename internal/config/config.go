@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -114,6 +115,10 @@ type Config struct {
 	// This is useful when you want to login with a different account without logging out
 	// from your current session. Default: false.
 	IncognitoBrowser bool `yaml:"incognito-browser" json:"incognito-browser"`
+
+	// Warmup configures automatic credential warmup for rate limit timer reset.
+	// When enabled, the server periodically sends minimal requests to keep credentials active.
+	Warmup WarmupConfig `yaml:"warmup" json:"warmup"`
 
 	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
@@ -454,6 +459,33 @@ type OpenAICompatibilityModel struct {
 	Alias string `yaml:"alias" json:"alias"`
 }
 
+// WarmupConfig configures automatic credential warmup for rate limit timer reset.
+// When enabled, the server periodically sends minimal requests to keep credentials active.
+type WarmupConfig struct {
+	// Enabled toggles the warmup feature globally.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Providers maps provider names to their warmup configuration.
+	Providers map[string]ProviderWarmupConfig `yaml:"providers,omitempty" json:"providers,omitempty"`
+}
+
+// ProviderWarmupConfig configures warmup behavior for a specific provider.
+type ProviderWarmupConfig struct {
+	// Enabled toggles warmup for this specific provider.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Interval is the duration between warmup requests.
+	// Use Go duration format: "5h", "4h30m", "300m", etc.
+	Interval time.Duration `yaml:"interval" json:"interval"`
+
+	// Message is the simple text to send for warmup (default: "hi").
+	Message string `yaml:"message,omitempty" json:"message,omitempty"`
+
+	// Model optionally specifies which model to use for warmup.
+	// Empty means use provider's default model.
+	Model string `yaml:"model,omitempty" json:"model,omitempty"`
+}
+
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,
 // and returns it.
@@ -589,7 +621,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 // SanitizeOAuthModelMappings normalizes and deduplicates global OAuth model name mappings.
 // It trims whitespace, normalizes channel keys to lower-case, drops empty entries,
-// allows multiple aliases per upstream name, and ensures aliases are unique within each channel.
+// and allows multiple upstream models to map to the same alias (N:1 mapping).
 func (cfg *Config) SanitizeOAuthModelMappings() {
 	if cfg == nil || len(cfg.OAuthModelMappings) == 0 {
 		return
@@ -600,7 +632,9 @@ func (cfg *Config) SanitizeOAuthModelMappings() {
 		if channel == "" || len(mappings) == 0 {
 			continue
 		}
-		seenAlias := make(map[string]struct{}, len(mappings))
+		// Track (name, alias) pairs to avoid exact duplicates
+		type pair struct{ name, alias string }
+		seen := make(map[pair]struct{}, len(mappings))
 		clean := make([]ModelNameMapping, 0, len(mappings))
 		for _, mapping := range mappings {
 			name := strings.TrimSpace(mapping.Name)
@@ -611,11 +645,11 @@ func (cfg *Config) SanitizeOAuthModelMappings() {
 			if strings.EqualFold(name, alias) {
 				continue
 			}
-			aliasKey := strings.ToLower(alias)
-			if _, ok := seenAlias[aliasKey]; ok {
+			key := pair{strings.ToLower(name), strings.ToLower(alias)}
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seenAlias[aliasKey] = struct{}{}
+			seen[key] = struct{}{}
 			clean = append(clean, ModelNameMapping{Name: name, Alias: alias, Fork: mapping.Fork})
 		}
 		if len(clean) > 0 {

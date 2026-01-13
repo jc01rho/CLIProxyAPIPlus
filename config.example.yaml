@@ -312,6 +312,26 @@ ws-auth: false
 #   github-copilot:
 #     - "raptor-mini"
 
+# Warmup configuration for automatic credential warmup
+# Periodically sends minimal requests to keep rate limit timers active
+# This is useful for providers like Quora/Poe where rate limits reset after a period of inactivity
+# warmup:
+#   enabled: true
+#   providers:
+#     gemini-cli:
+#       enabled: true
+#       interval: 5h        # Warmup every 5 hours
+#       message: "hi"       # Minimal message to send
+#       model: ""           # Empty = use provider default (gemini-2.0-flash)
+#     antigravity:
+#       enabled: true
+#       interval: 4h30m
+#       message: "hello"
+#     anthropic:
+#       enabled: true
+#       interval: 5h
+#       message: "hi"
+
 # Optional payload configuration
 # payload:
 #   default: # Default rules only set parameters when they are missing in the payload.
