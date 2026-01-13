@@ -183,18 +183,6 @@ waitForCallback:
 		}
 	}
 
-	// Fetch subscription tier info
-	var subscriptionInfo *AntigravitySubscriptionInfo
-	if tokenResp.AccessToken != "" {
-		fetchedSubInfo, errSub := fetchAntigravitySubscriptionInfo(ctx, tokenResp.AccessToken, httpClient)
-		if errSub != nil {
-			log.Warnf("antigravity: failed to fetch subscription info: %v", errSub)
-		} else {
-			subscriptionInfo = fetchedSubInfo
-			log.Infof("antigravity: obtained subscription info")
-		}
-	}
-
 	now := time.Now()
 	metadata := map[string]any{
 		"type":          "antigravity",
@@ -211,23 +199,6 @@ waitForCallback:
 		metadata["project_id"] = projectID
 	}
 
-	// Store subscription tier info in metadata
-	if subscriptionInfo != nil {
-		if subscriptionInfo.CurrentTier != nil {
-			metadata["subscription_tier"] = map[string]any{
-				"id":   subscriptionInfo.CurrentTier.ID,
-				"name": subscriptionInfo.CurrentTier.Name,
-			}
-		}
-		if subscriptionInfo.PaidTier != nil {
-			metadata["subscription_paid_tier"] = map[string]any{
-				"id":   subscriptionInfo.PaidTier.ID,
-				"name": subscriptionInfo.PaidTier.Name,
-			}
-		}
-		metadata["is_pro"] = isAntigravityPaidTier(subscriptionInfo)
-	}
-
 	fileName := sanitizeAntigravityFileName(email)
 	label := email
 	if label == "" {
@@ -237,13 +208,6 @@ waitForCallback:
 	fmt.Println("Antigravity authentication successful")
 	if projectID != "" {
 		fmt.Printf("Using GCP project: %s\n", projectID)
-	}
-	if subscriptionInfo != nil && subscriptionInfo.CurrentTier != nil {
-		tierName := subscriptionInfo.CurrentTier.Name
-		if tierName == "" {
-			tierName = subscriptionInfo.CurrentTier.ID
-		}
-		fmt.Printf("Subscription tier: %s\n", tierName)
 	}
 	return &coreauth.Auth{
 		ID:       fileName,
@@ -474,92 +438,4 @@ func fetchAntigravityProjectID(ctx context.Context, accessToken string, httpClie
 	}
 
 	return projectID, nil
-}
-
-// AntigravitySubscriptionTier represents a subscription tier from the loadCodeAssist API.
-type AntigravitySubscriptionTier struct {
-	ID   string `json:"id"`
-	Name string `json:"name,omitempty"`
-}
-
-// AntigravitySubscriptionInfo contains subscription information from the loadCodeAssist API.
-type AntigravitySubscriptionInfo struct {
-	CurrentTier             *AntigravitySubscriptionTier  `json:"currentTier,omitempty"`
-	PaidTier                *AntigravitySubscriptionTier  `json:"paidTier,omitempty"`
-	AllowedTiers            []AntigravitySubscriptionTier `json:"allowedTiers,omitempty"`
-	CloudaicompanionProject string                        `json:"cloudaicompanionProject,omitempty"`
-	GcpManaged              bool                          `json:"gcpManaged,omitempty"`
-}
-
-// isAntigravityPaidTier checks if the subscription info indicates a paid tier (pro or ultra).
-func isAntigravityPaidTier(info *AntigravitySubscriptionInfo) bool {
-	if info == nil {
-		return false
-	}
-	var effectiveTier *AntigravitySubscriptionTier
-	if info.PaidTier != nil {
-		effectiveTier = info.PaidTier
-	} else {
-		effectiveTier = info.CurrentTier
-	}
-	if effectiveTier == nil || effectiveTier.ID == "" {
-		return false
-	}
-	id := strings.ToLower(effectiveTier.ID)
-	return strings.Contains(id, "pro") || strings.Contains(id, "ultra")
-}
-
-// fetchAntigravitySubscriptionInfo retrieves subscription tier info from the loadCodeAssist API.
-func fetchAntigravitySubscriptionInfo(ctx context.Context, accessToken string, httpClient *http.Client) (*AntigravitySubscriptionInfo, error) {
-	if strings.TrimSpace(accessToken) == "" {
-		return nil, fmt.Errorf("access token is empty")
-	}
-
-	loadReqBody := map[string]any{
-		"metadata": map[string]string{
-			"ideType":    "IDE_UNSPECIFIED",
-			"platform":   "PLATFORM_UNSPECIFIED",
-			"pluginType": "GEMINI",
-		},
-	}
-
-	rawBody, errMarshal := json.Marshal(loadReqBody)
-	if errMarshal != nil {
-		return nil, fmt.Errorf("marshal request body: %w", errMarshal)
-	}
-
-	endpointURL := fmt.Sprintf("%s/%s:loadCodeAssist", antigravityAPIEndpoint, antigravityAPIVersion)
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, strings.NewReader(string(rawBody)))
-	if errReq != nil {
-		return nil, fmt.Errorf("create request: %w", errReq)
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", antigravityAPIUserAgent)
-	req.Header.Set("X-Goog-Api-Client", antigravityAPIClient)
-	req.Header.Set("Client-Metadata", antigravityClientMetadata)
-
-	resp, errDo := httpClient.Do(req)
-	if errDo != nil {
-		return nil, fmt.Errorf("execute request: %w", errDo)
-	}
-	defer func() {
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("antigravity subscription info: close body error: %v", errClose)
-		}
-	}()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
-	}
-
-	var loadResp struct {
-		SubscriptionInfo *AntigravitySubscriptionInfo `json:"subscriptionInfo"`
-	}
-	if errDecode := json.NewDecoder(resp.Body).Decode(&loadResp); errDecode != nil {
-		return nil, fmt.Errorf("decode response: %w", errDecode)
-	}
-
-	return loadResp.SubscriptionInfo, nil
 }
