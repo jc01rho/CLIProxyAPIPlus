@@ -1,8 +1,13 @@
 package auth
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // TransientState holds runtime state that should NOT be persisted to Auth files.
@@ -128,4 +133,111 @@ func (c *TransientStateCache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.states)
+}
+
+// Load reads the cache from the file. If the file doesn't exist or is corrupted,
+// it starts with an empty cache and logs a warning.
+func (c *TransientStateCache) Load() error {
+	if c == nil || c.filePath == "" {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	data, err := os.ReadFile(c.filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Debugf("transient cache file not found: %s, starting with empty cache", c.filePath)
+			return nil
+		}
+		log.Warnf("failed to read transient cache file: %v, starting with empty cache", err)
+		return nil
+	}
+
+	if len(data) == 0 {
+		log.Debugf("transient cache file is empty: %s", c.filePath)
+		return nil
+	}
+
+	var loaded map[string]*TransientState
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		log.Warnf("failed to parse transient cache file: %v, starting with empty cache", err)
+		c.states = make(map[string]*TransientState)
+		return nil
+	}
+
+	if loaded == nil {
+		loaded = make(map[string]*TransientState)
+	}
+	c.states = loaded
+
+	log.Infof("loaded %d transient state(s) from cache", len(c.states))
+	return nil
+}
+
+// Save persists the cache to the file using atomic write (temp file + rename).
+// Returns error if write fails, but the caller may choose to ignore it.
+func (c *TransientStateCache) Save() error {
+	if c == nil || c.filePath == "" {
+		return nil
+	}
+
+	c.mu.RLock()
+	statesToSave := make(map[string]*TransientState, len(c.states))
+	for k, v := range c.states {
+		statesToSave[k] = v.Clone()
+	}
+	c.mu.RUnlock()
+
+	data, err := json.MarshalIndent(statesToSave, "", "  ")
+	if err != nil {
+		log.Warnf("failed to marshal transient cache: %v", err)
+		return err
+	}
+
+	// Ensure parent directory exists
+	dir := filepath.Dir(c.filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Warnf("failed to create cache directory: %v", err)
+		return err
+	}
+
+	// Atomic write: write to temp file, then rename
+	tempFile := c.filePath + ".tmp"
+	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+		log.Warnf("failed to write transient cache temp file: %v", err)
+		return err
+	}
+
+	if err := os.Rename(tempFile, c.filePath); err != nil {
+		log.Warnf("failed to rename transient cache temp file: %v", err)
+		// Clean up temp file
+		_ = os.Remove(tempFile)
+		return err
+	}
+
+	log.Debugf("saved %d transient state(s) to cache", len(statesToSave))
+	return nil
+}
+
+// SaveAsync saves the cache in a background goroutine.
+// Errors are logged but not returned.
+func (c *TransientStateCache) SaveAsync() {
+	if c == nil {
+		return
+	}
+	go func() {
+		if err := c.Save(); err != nil {
+			log.Warnf("async save of transient cache failed: %v", err)
+		}
+	}()
+}
+
+// FilePath returns the configured file path for the cache.
+func (c *TransientStateCache) FilePath() string {
+	if c == nil {
+		return ""
+	}
+	return c.filePath
 }
