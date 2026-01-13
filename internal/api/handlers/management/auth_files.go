@@ -380,23 +380,30 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 		if info, errInfo := e.Info(); errInfo == nil {
 			fileData := gin.H{"name": name, "size": info.Size(), "modtime": info.ModTime()}
 
-			// Read file to get type, email, and tier fields
+			// Read file to get type, email, and tier info from metadata
 			full := filepath.Join(h.cfg.AuthDir, name)
 			if data, errRead := os.ReadFile(full); errRead == nil {
 				typeValue := gjson.GetBytes(data, "type").String()
 				emailValue := gjson.GetBytes(data, "email").String()
-				tierValue := gjson.GetBytes(data, "tier").String()
-				tierName := gjson.GetBytes(data, "tier_name").String()
 
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
 
-				// Add tier info if available in file
-				if tierValue != "" {
-					fileData["tier"] = tierValue
-				}
-				if tierName != "" {
-					fileData["tier_name"] = tierName
+				// For Antigravity files, read tier info from metadata.is_pro
+				if strings.EqualFold(typeValue, "antigravity") {
+					isPro := gjson.GetBytes(data, "metadata.is_pro")
+					if isPro.Exists() {
+						if isPro.Bool() {
+							fileData["tier"] = "pro"
+						} else {
+							fileData["tier"] = "free"
+						}
+					}
+					// Try to get tier_name from metadata.subscription_tier.name
+					tierName := gjson.GetBytes(data, "metadata.subscription_tier.name")
+					if tierName.Exists() && tierName.String() != "" {
+						fileData["tier_name"] = tierName.String()
+					}
 				}
 			}
 
