@@ -497,20 +497,29 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 
 		// First try to get from metadata (fast path - for newly authenticated keys)
 		if auth.Metadata != nil {
-			// Check if tier info is cached and still valid (within 1 hour)
-			shouldFetch := false
+			// If tier info exists and is cached (within 1 hour), use it directly
 			if tierFetchedAt, ok := auth.Metadata["tier_fetched_at"].(float64); ok {
 				fetchedTime := time.Unix(int64(tierFetchedAt), 0)
-				if time.Since(fetchedTime) > time.Hour {
-					shouldFetch = true
+				// Cache is still valid (within 1 hour)
+				if time.Since(fetchedTime) <= time.Hour {
+					if isPro, ok := auth.Metadata["is_pro"].(bool); ok {
+						tierDetermined = true
+						if isPro {
+							entry["tier"] = "pro"
+						} else {
+							entry["tier"] = "free"
+						}
+					}
+					if tier, ok := auth.Metadata["subscription_tier"].(map[string]any); ok {
+						if tierName, ok := tier["name"].(string); ok && tierName != "" {
+							entry["tier_name"] = tierName
+						}
+					}
 				}
-			} else {
-				// No timestamp, need to fetch
-				shouldFetch = true
 			}
 
-			// If tier info exists and is fresh, use it
-			if !shouldFetch {
+			// Fallback: if is_pro exists without timestamp (legacy data), use it
+			if !tierDetermined {
 				if isPro, ok := auth.Metadata["is_pro"].(bool); ok {
 					tierDetermined = true
 					if isPro {
@@ -518,16 +527,16 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 					} else {
 						entry["tier"] = "free"
 					}
-				}
-				if tier, ok := auth.Metadata["subscription_tier"].(map[string]any); ok {
-					if tierName, ok := tier["name"].(string); ok && tierName != "" {
-						entry["tier_name"] = tierName
+					if tier, ok := auth.Metadata["subscription_tier"].(map[string]any); ok {
+						if tierName, ok := tier["name"].(string); ok && tierName != "" {
+							entry["tier_name"] = tierName
+						}
 					}
 				}
 			}
 		}
 
-		// Fallback: fetch tier info on-demand for existing auth files without metadata or when cache expired
+		// Fetch tier info on-demand for existing auth files without metadata or when cache expired
 		if !tierDetermined && auth.Metadata != nil {
 			if accessToken, ok := auth.Metadata["access_token"].(string); ok && accessToken != "" {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
