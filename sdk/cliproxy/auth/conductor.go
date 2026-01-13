@@ -1585,6 +1585,66 @@ func (m *Manager) GetByID(id string) (*Auth, bool) {
 	return auth.Clone(), true
 }
 
+// ListByProvider returns all auth entries for the specified provider.
+// Only active (non-disabled) entries are returned.
+func (m *Manager) ListByProvider(provider string) []*Auth {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	list := make([]*Auth, 0)
+	for _, auth := range m.auths {
+		if auth.Disabled {
+			continue
+		}
+		if strings.ToLower(auth.Provider) == provider {
+			list = append(list, auth.Clone())
+		}
+	}
+	return list
+}
+
+// ExecuteWithAuth executes a request using a specific auth credential directly.
+// This bypasses the normal selector/round-robin logic and uses the specified auth.
+// Primarily used for warmup operations where each credential must be exercised individually.
+func (m *Manager) ExecuteWithAuth(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if auth == nil {
+		return cliproxyexecutor.Response{}, &Error{Code: "auth_required", Message: "auth cannot be nil"}
+	}
+
+	m.mu.RLock()
+	executor, ok := m.executors[auth.Provider]
+	m.mu.RUnlock()
+
+	if !ok {
+		return cliproxyexecutor.Response{}, &Error{Code: "executor_not_found", Message: "executor not registered for provider: " + auth.Provider}
+	}
+
+	execCtx := ctx
+	if rt := m.roundTripperFor(auth); rt != nil {
+		execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
+		execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+	}
+
+	resp, err := executor.Execute(execCtx, auth, req, opts)
+
+	// Mark result for quota tracking
+	result := Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    req.Model,
+		Success:  err == nil,
+	}
+	if err != nil {
+		result.Error = &Error{Message: err.Error()}
+	}
+	m.MarkResult(execCtx, result)
+
+	return resp, err
+}
+
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	m.mu.RLock()
 	// Collect ALL candidates from ALL providers that support this model.

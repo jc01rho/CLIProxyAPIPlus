@@ -28,6 +28,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/warmup"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/claude"
@@ -169,6 +170,9 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	// warmupManager handles periodic credential warmup
+	warmupManager *warmup.Manager
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -295,6 +299,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	if optionState.keepAliveEnabled {
 		s.enableKeepAlive(optionState.keepAliveTimeout, optionState.keepAliveOnTimeout)
+	}
+
+	// Start warmup manager if enabled
+	if cfg.Warmup.Enabled {
+		s.warmupManager = warmup.NewManager(authManager)
+		s.warmupManager.Start(context.Background(), cfg)
 	}
 
 	// Create HTTP server
@@ -859,6 +869,11 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	// Stop warmup manager
+	if s.warmupManager != nil {
+		s.warmupManager.Stop()
+	}
+
 	// Shutdown the HTTP server.
 	if err := s.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
@@ -1037,6 +1052,11 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		}
 	} else {
 		log.Warnf("amp module is nil, skipping config update")
+	}
+
+	// Update warmup manager configuration
+	if s.warmupManager != nil {
+		s.warmupManager.UpdateConfig(cfg)
 	}
 
 	// Count client sources from configuration and auth store.

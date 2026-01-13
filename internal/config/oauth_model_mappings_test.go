@@ -54,3 +54,33 @@ func TestSanitizeOAuthModelMappings_AllowsMultipleAliasesForSameName(t *testing.
 		}
 	}
 }
+
+func TestSanitizeOAuthModelMappings_AllowsMultipleNamesToSameAlias(t *testing.T) {
+	// N:1 mapping: multiple upstream models map to the same alias
+	cfg := &Config{
+		OAuthModelMappings: map[string][]ModelNameMapping{
+			"gemini-cli": {
+				{Name: "gemini-2.5-pro", Alias: "my-best-model"},
+				{Name: "gemini-2.5-flash", Alias: "my-best-model"},
+				{Name: "gemini-2.0-flash", Alias: "my-best-model"},
+			},
+		},
+	}
+
+	cfg.SanitizeOAuthModelMappings()
+
+	mappings := cfg.OAuthModelMappings["gemini-cli"]
+	if len(mappings) != 3 {
+		t.Fatalf("expected 3 sanitized mappings (N:1), got %d", len(mappings))
+	}
+
+	expectedNames := []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"}
+	for i, exp := range expectedNames {
+		if mappings[i].Name != exp {
+			t.Fatalf("expected mapping %d name=%q, got %q", i, exp, mappings[i].Name)
+		}
+		if mappings[i].Alias != "my-best-model" {
+			t.Fatalf("expected mapping %d alias=my-best-model, got %q", i, mappings[i].Alias)
+		}
+	}
+}
