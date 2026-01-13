@@ -53,6 +53,39 @@ const (
 	geminiCLIClientMetadata = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
 )
 
+// SubscriptionTier represents a subscription tier from the loadCodeAssist API.
+type SubscriptionTier struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
+// SubscriptionInfo contains subscription information from the loadCodeAssist API.
+type SubscriptionInfo struct {
+	CurrentTier             *SubscriptionTier  `json:"currentTier,omitempty"`
+	PaidTier                *SubscriptionTier  `json:"paidTier,omitempty"`
+	AllowedTiers            []SubscriptionTier `json:"allowedTiers,omitempty"`
+	CloudaicompanionProject string             `json:"cloudaicompanionProject,omitempty"`
+	GcpManaged              bool               `json:"gcpManaged,omitempty"`
+}
+
+// isPaidTier checks if the subscription info indicates a paid tier (pro or ultra).
+func isPaidTier(info *SubscriptionInfo) bool {
+	if info == nil {
+		return false
+	}
+	var effectiveTier *SubscriptionTier
+	if info.PaidTier != nil {
+		effectiveTier = info.PaidTier
+	} else {
+		effectiveTier = info.CurrentTier
+	}
+	if effectiveTier == nil || effectiveTier.ID == "" {
+		return false
+	}
+	id := strings.ToLower(effectiveTier.ID)
+	return strings.Contains(id, "pro") || strings.Contains(id, "ultra")
+}
+
 type callbackForwarder struct {
 	provider string
 	server   *http.Server
@@ -434,6 +467,48 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
 		entry["id_token"] = claims
 	}
+
+	// Add quota state fields if quota is exceeded
+	if auth.Quota.Exceeded {
+		entry["quota_exceeded"] = true
+		entry["quota_reason"] = auth.Quota.Reason
+		if !auth.Quota.NextRecoverAt.IsZero() {
+			entry["quota_next_recover_at"] = auth.Quota.NextRecoverAt
+		}
+		entry["quota_backoff_level"] = auth.Quota.BackoffLevel
+	}
+
+	// Add model states summary if any models are blocked
+	if len(auth.ModelStates) > 0 {
+		blockedModels := []string{}
+		for modelID, state := range auth.ModelStates {
+			if state.Unavailable || state.Quota.Exceeded {
+				blockedModels = append(blockedModels, modelID)
+			}
+		}
+		if len(blockedModels) > 0 {
+			entry["blocked_models"] = blockedModels
+		}
+	}
+
+	// For Antigravity provider, add tier info from metadata
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		if auth.Metadata != nil {
+			if isPro, ok := auth.Metadata["is_pro"].(bool); ok {
+				if isPro {
+					entry["tier"] = "pro"
+				} else {
+					entry["tier"] = "free"
+				}
+			}
+			if tier, ok := auth.Metadata["subscription_tier"].(map[string]any); ok {
+				if tierName, ok := tier["name"].(string); ok && tierName != "" {
+					entry["tier_name"] = tierName
+				}
+			}
+		}
+	}
+
 	return entry
 }
 
@@ -1627,8 +1702,20 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			}
 		}
 
+		// Fetch subscription tier info
+		var subscriptionInfo *SubscriptionInfo
+		if strings.TrimSpace(tokenResp.AccessToken) != "" {
+			fetchedSubInfo, errSub := fetchAntigravitySubscriptionInfo(ctx, tokenResp.AccessToken, httpClient)
+			if errSub != nil {
+				log.Warnf("antigravity: failed to fetch subscription info: %v", errSub)
+			} else {
+				subscriptionInfo = fetchedSubInfo
+				log.Infof("antigravity: obtained subscription info")
+			}
+		}
+
 		now := time.Now()
-		metadata := map[string]any{
+		recordMetadata := map[string]any{
 			"type":          "antigravity",
 			"access_token":  tokenResp.AccessToken,
 			"refresh_token": tokenResp.RefreshToken,
@@ -1637,10 +1724,27 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			"expired":       now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 		}
 		if email != "" {
-			metadata["email"] = email
+			recordMetadata["email"] = email
 		}
 		if projectID != "" {
-			metadata["project_id"] = projectID
+			recordMetadata["project_id"] = projectID
+		}
+
+		// Store subscription tier info in metadata
+		if subscriptionInfo != nil {
+			if subscriptionInfo.CurrentTier != nil {
+				recordMetadata["subscription_tier"] = map[string]any{
+					"id":   subscriptionInfo.CurrentTier.ID,
+					"name": subscriptionInfo.CurrentTier.Name,
+				}
+			}
+			if subscriptionInfo.PaidTier != nil {
+				recordMetadata["subscription_paid_tier"] = map[string]any{
+					"id":   subscriptionInfo.PaidTier.ID,
+					"name": subscriptionInfo.PaidTier.Name,
+				}
+			}
+			recordMetadata["is_pro"] = isPaidTier(subscriptionInfo)
 		}
 
 		fileName := sanitizeAntigravityFileName(email)
@@ -1654,7 +1758,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			Provider: "antigravity",
 			FileName: fileName,
 			Label:    label,
-			Metadata: metadata,
+			Metadata: recordMetadata,
 		}
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
@@ -2183,6 +2287,61 @@ func callGeminiCLI(ctx context.Context, httpClient *http.Client, endpoint string
 	}
 
 	return nil
+}
+
+// fetchAntigravitySubscriptionInfo retrieves subscription tier info from the loadCodeAssist API.
+func fetchAntigravitySubscriptionInfo(ctx context.Context, accessToken string, httpClient *http.Client) (*SubscriptionInfo, error) {
+	if strings.TrimSpace(accessToken) == "" {
+		return nil, fmt.Errorf("access token is empty")
+	}
+
+	loadReqBody := map[string]any{
+		"metadata": map[string]string{
+			"ideType":    "IDE_UNSPECIFIED",
+			"platform":   "PLATFORM_UNSPECIFIED",
+			"pluginType": "GEMINI",
+		},
+	}
+
+	rawBody, errMarshal := json.Marshal(loadReqBody)
+	if errMarshal != nil {
+		return nil, fmt.Errorf("marshal request body: %w", errMarshal)
+	}
+
+	endpointURL := fmt.Sprintf("%s/%s:loadCodeAssist", geminiCLIEndpoint, geminiCLIVersion)
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, strings.NewReader(string(rawBody)))
+	if errReq != nil {
+		return nil, fmt.Errorf("create request: %w", errReq)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", geminiCLIUserAgent)
+	req.Header.Set("X-Goog-Api-Client", geminiCLIApiClient)
+	req.Header.Set("Client-Metadata", geminiCLIClientMetadata)
+
+	resp, errDo := httpClient.Do(req)
+	if errDo != nil {
+		return nil, fmt.Errorf("execute request: %w", errDo)
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("antigravity subscription info: close body error: %v", errClose)
+		}
+	}()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	var loadResp struct {
+		SubscriptionInfo *SubscriptionInfo `json:"subscriptionInfo"`
+	}
+	if errDecode := json.NewDecoder(resp.Body).Decode(&loadResp); errDecode != nil {
+		return nil, fmt.Errorf("decode response: %w", errDecode)
+	}
+
+	return loadResp.SubscriptionInfo, nil
 }
 
 func fetchGCPProjects(ctx context.Context, httpClient *http.Client) ([]interfaces.GCPProjectProjects, error) {
