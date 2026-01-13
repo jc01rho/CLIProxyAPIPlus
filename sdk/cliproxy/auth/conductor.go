@@ -349,6 +349,92 @@ func (m *Manager) Load(ctx context.Context) error {
 	return nil
 }
 
+// ValidateOnStartup checks all registered auths by making lightweight CountTokens calls.
+// Auths that fail validation are marked as blocked for 2 hours.
+// This helps identify quota-exceeded or invalid keys at startup before serving requests.
+func (m *Manager) ValidateOnStartup(ctx context.Context) {
+	m.mu.RLock()
+	auths := make([]*Auth, 0, len(m.auths))
+	for _, auth := range m.auths {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+			continue
+		}
+		auths = append(auths, auth.Clone())
+	}
+	m.mu.RUnlock()
+
+	if len(auths) == 0 {
+		log.Info("startup validation: no active auths to validate")
+		return
+	}
+
+	log.Infof("startup validation: checking %d auth(s) for quota/validity...", len(auths))
+
+	var wg sync.WaitGroup
+	for _, auth := range auths {
+		wg.Add(1)
+		go func(a *Auth) {
+			defer wg.Done()
+			m.validateSingleAuth(ctx, a)
+		}(auth)
+	}
+	wg.Wait()
+
+	log.Info("startup validation: completed")
+}
+
+// validateSingleAuth performs a lightweight validation check on a single auth.
+func (m *Manager) validateSingleAuth(ctx context.Context, auth *Auth) {
+	if auth == nil || auth.ID == "" {
+		return
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	executor := m.executorFor(provider)
+	if executor == nil {
+		log.Debugf("startup validation: no executor for auth %s (provider=%s), skipping", auth.ID, provider)
+		return
+	}
+
+	// Use a short timeout for validation
+	validateCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Build a minimal CountTokens request
+	req := cliproxyexecutor.Request{
+		Model:   "gemini-2.0-flash", // Use a common model for validation
+		Payload: []byte(`{"contents":[{"parts":[{"text":"test"}]}]}`),
+	}
+
+	// Try CountTokens as a lightweight validation
+	_, err := executor.CountTokens(validateCtx, auth, req, cliproxyexecutor.Options{})
+
+	if err != nil {
+		// Check if it's a quota/auth error
+		var statusErr cliproxyexecutor.StatusError
+		statusCode := 0
+		if errors.As(err, &statusErr) && statusErr != nil {
+			statusCode = statusErr.StatusCode()
+		}
+
+		// Mark as blocked based on error type
+		result := Result{
+			AuthID:   auth.ID,
+			Provider: auth.Provider,
+			Model:    req.Model,
+			Success:  false,
+			Error:    &Error{Message: err.Error(), HTTPStatus: statusCode},
+		}
+		m.MarkResult(ctx, result)
+
+		log.Warnf("startup validation: auth %s (provider=%s) failed validation (status=%d): %v",
+			auth.ID, auth.Provider, statusCode, err)
+	} else {
+		log.Infof("startup validation: auth %s (provider=%s) passed validation",
+			auth.ID, auth.Provider)
+	}
+}
+
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins across ALL keys
 // regardless of provider, ensuring fair distribution proportional to key count.
@@ -1239,12 +1325,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				statusCode := statusCodeFromResult(result.Error)
 				switch statusCode {
 				case 401:
-					next := now.Add(30 * time.Minute)
+					next := now.Add(2 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "unauthorized"
 					shouldSuspendModel = true
 				case 402, 403:
-					next := now.Add(30 * time.Minute)
+					next := now.Add(2 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "payment_required"
 					shouldSuspendModel = true
@@ -1276,12 +1362,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					shouldSuspendModel = true
 					setModelQuota = true
 				case 408, 500, 502, 503, 504:
-					next := now.Add(30 * time.Minute)
+					next := now.Add(2 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "server_error"
 					shouldSuspendModel = true
 				default:
-					next := now.Add(30 * time.Minute)
+					next := now.Add(2 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "generic_error"
 					shouldSuspendModel = true
@@ -1508,10 +1594,10 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	switch statusCode {
 	case 401:
 		auth.StatusMessage = "unauthorized"
-		auth.NextRetryAfter = now.Add(30 * time.Minute)
+		auth.NextRetryAfter = now.Add(2 * time.Hour)
 	case 402, 403:
 		auth.StatusMessage = "payment_required"
-		auth.NextRetryAfter = now.Add(30 * time.Minute)
+		auth.NextRetryAfter = now.Add(2 * time.Hour)
 	case 404:
 		auth.StatusMessage = "not_found"
 		auth.NextRetryAfter = now.Add(12 * time.Hour)
@@ -1533,7 +1619,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.NextRetryAfter = next
 	case 408, 500, 502, 503, 504:
 		auth.StatusMessage = "transient upstream error"
-		auth.NextRetryAfter = now.Add(1 * time.Minute)
+		auth.NextRetryAfter = now.Add(2 * time.Hour)
 	default:
 		if auth.StatusMessage == "" {
 			auth.StatusMessage = "request failed"
