@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -346,4 +348,191 @@ func TestTransientStateCache_NilCache(t *testing.T) {
 	if cache.GetOrCreate("auth-1") != nil {
 		t.Error("GetOrCreate on nil cache should return nil")
 	}
+}
+
+// ============================================
+// TransientStateCache Load/Save Tests
+// ============================================
+
+func TestTransientStateCache_LoadSave(t *testing.T) {
+	t.Parallel()
+
+	// Create temp file
+	tmpFile, err := os.CreateTemp("", "transient_cache_*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	// Create cache and add data
+	cache := NewTransientStateCache(tmpPath)
+	cache.Set("auth-1", &TransientState{
+		Unavailable: true,
+		Quota: QuotaState{
+			Exceeded: true,
+			Reason:   "test quota",
+		},
+	})
+	cache.Set("auth-2", &TransientState{
+		NextRetryAfter: time.Now().Add(time.Hour),
+	})
+
+	// Save
+	if err := cache.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Create new cache and load
+	cache2 := NewTransientStateCache(tmpPath)
+	if err := cache2.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// Verify data
+	if cache2.Len() != 2 {
+		t.Errorf("Expected 2 entries, got %d", cache2.Len())
+	}
+
+	state1 := cache2.Get("auth-1")
+	if state1 == nil {
+		t.Fatal("auth-1 not found after load")
+	}
+	if !state1.Unavailable {
+		t.Error("auth-1 Unavailable should be true")
+	}
+	if !state1.Quota.Exceeded {
+		t.Error("auth-1 Quota.Exceeded should be true")
+	}
+
+	state2 := cache2.Get("auth-2")
+	if state2 == nil {
+		t.Fatal("auth-2 not found after load")
+	}
+}
+
+func TestTransientStateCache_LoadMissingFile(t *testing.T) {
+	t.Parallel()
+
+	cache := NewTransientStateCache("/nonexistent/path/cache.json")
+
+	// Load should not error, just start empty
+	err := cache.Load()
+	if err != nil {
+		t.Errorf("Load of missing file should not error, got: %v", err)
+	}
+
+	if cache.Len() != 0 {
+		t.Error("Cache should be empty after loading missing file")
+	}
+}
+
+func TestTransientStateCache_LoadCorruptedFile(t *testing.T) {
+	t.Parallel()
+
+	// Create temp file with corrupted JSON
+	tmpFile, err := os.CreateTemp("", "corrupted_cache_*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.WriteString("{invalid json content")
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	cache := NewTransientStateCache(tmpPath)
+
+	// Load should not error, just start empty
+	err = cache.Load()
+	if err != nil {
+		t.Errorf("Load of corrupted file should not error, got: %v", err)
+	}
+
+	if cache.Len() != 0 {
+		t.Error("Cache should be empty after loading corrupted file")
+	}
+}
+
+func TestTransientStateCache_LoadEmptyFile(t *testing.T) {
+	t.Parallel()
+
+	// Create empty temp file
+	tmpFile, err := os.CreateTemp("", "empty_cache_*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	cache := NewTransientStateCache(tmpPath)
+
+	// Load should not error
+	err = cache.Load()
+	if err != nil {
+		t.Errorf("Load of empty file should not error, got: %v", err)
+	}
+
+	if cache.Len() != 0 {
+		t.Error("Cache should be empty after loading empty file")
+	}
+}
+
+func TestTransientStateCache_SaveCreatesDirectory(t *testing.T) {
+	t.Parallel()
+
+	// Create temp directory
+	tmpDir, err := os.MkdirTemp("", "cache_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Use a nested path that doesn't exist
+	nestedPath := filepath.Join(tmpDir, "nested", "dir", "cache.json")
+
+	cache := NewTransientStateCache(nestedPath)
+	cache.Set("auth-1", &TransientState{Unavailable: true})
+
+	// Save should create the directory
+	if err := cache.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(nestedPath); os.IsNotExist(err) {
+		t.Error("Cache file was not created")
+	}
+}
+
+func TestTransientStateCache_FilePath(t *testing.T) {
+	t.Parallel()
+
+	cache := NewTransientStateCache("/some/path/cache.json")
+	if cache.FilePath() != "/some/path/cache.json" {
+		t.Errorf("FilePath() = %q, want %q", cache.FilePath(), "/some/path/cache.json")
+	}
+
+	var nilCache *TransientStateCache
+	if nilCache.FilePath() != "" {
+		t.Error("FilePath() on nil cache should return empty string")
+	}
+}
+
+func TestTransientStateCache_NilOperations(t *testing.T) {
+	t.Parallel()
+
+	var cache *TransientStateCache
+
+	// All operations on nil cache should not panic
+	if err := cache.Load(); err != nil {
+		t.Errorf("Load on nil cache should not error, got: %v", err)
+	}
+
+	if err := cache.Save(); err != nil {
+		t.Errorf("Save on nil cache should not error, got: %v", err)
+	}
+
+	cache.SaveAsync() // Should not panic
 }
