@@ -382,9 +382,84 @@ func (m *Manager) Load(ctx context.Context) error {
 		if err := m.transientCache.Load(); err != nil {
 			log.Warnf("failed to load transient state cache: %v", err)
 		}
+
+		// Migrate transient state from existing Auth files to cache
+		m.migrateTransientStatesToCache(ctx)
 	}
 
 	return nil
+}
+
+// migrateTransientStatesToCache migrates transient state from existing Auth files to the cache.
+// This is called once during Load() to handle existing Auth files that may have transient state.
+func (m *Manager) migrateTransientStatesToCache(ctx context.Context) {
+	if m.transientCache == nil {
+		return
+	}
+
+	migratedCount := 0
+	for authID, auth := range m.auths {
+		if auth == nil {
+			continue
+		}
+
+		// Check if this auth has any transient state that needs migration
+		hasTransientState := auth.Unavailable ||
+			!auth.NextRetryAfter.IsZero() ||
+			len(auth.ModelStates) > 0 ||
+			auth.Quota.Exceeded ||
+			auth.LastError != nil
+
+		if !hasTransientState {
+			continue
+		}
+
+		// Check if already in cache (skip if already migrated)
+		if existing := m.transientCache.Get(authID); existing != nil {
+			continue
+		}
+
+		// Create transient state from auth
+		transientState := &TransientState{
+			Unavailable:    auth.Unavailable,
+			NextRetryAfter: auth.NextRetryAfter,
+			Quota:          auth.Quota,
+			LastError:      auth.LastError,
+		}
+		if len(auth.ModelStates) > 0 {
+			transientState.ModelStates = make(map[string]*ModelState, len(auth.ModelStates))
+			for k, v := range auth.ModelStates {
+				transientState.ModelStates[k] = v.Clone()
+			}
+		}
+
+		// Store in cache
+		m.transientCache.Set(authID, transientState)
+
+		// Clear transient fields from auth (will be saved on next persist)
+		auth.Unavailable = false
+		auth.NextRetryAfter = time.Time{}
+		auth.ModelStates = nil
+		auth.Quota = QuotaState{}
+		auth.LastError = nil
+
+		migratedCount++
+
+		// Persist the cleaned auth file
+		go func(a *Auth) {
+			if err := m.persist(ctx, a); err != nil {
+				log.Warnf("failed to persist migrated auth %s: %v", a.ID, err)
+			}
+		}(auth)
+	}
+
+	if migratedCount > 0 {
+		log.Infof("migrated transient state from %d auth file(s) to cache", migratedCount)
+		// Save the cache after migration
+		if err := m.transientCache.Save(); err != nil {
+			log.Warnf("failed to save transient cache after migration: %v", err)
+		}
+	}
 }
 
 // ValidateOnStartup checks all registered auths by making lightweight CountTokens calls.
