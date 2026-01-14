@@ -1,11 +1,15 @@
 # Binaries
 cli-proxy-api
 cliproxy
+
 *.exe
 
 # Configuration
 config.yaml
 .env
+.cli-proxy-api
+.sisyphus
+
 
 # Generated content
 bin/*

@@ -279,3 +279,253 @@ func (e *mockFallbackExecutor) CountTokens(ctx context.Context, auth *Auth, req 
 func (e *mockFallbackExecutor) HttpRequest(ctx context.Context, auth *Auth, req *http.Request) (*http.Response, error) {
 	return nil, nil
 }
+
+func TestGetFallbackModel_Chain(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	fallbackModels := map[string]string{
+		"opus":   "sonnet",
+		"sonnet": "glm-4.7",
+	}
+	manager.SetFallbackConfig(fallbackModels, nil)
+
+	tests := []struct {
+		name     string
+		model    string
+		expected string
+	}{
+		{"opus falls back to sonnet", "opus", "sonnet"},
+		{"sonnet falls back to glm-4.7", "sonnet", "glm-4.7"},
+		{"glm-4.7 has no fallback", "glm-4.7", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := manager.getFallbackModel(tt.model, make(map[string]bool))
+			if result != tt.expected {
+				t.Errorf("getFallbackModel(%q) = %q, want %q", tt.model, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetFallbackModel_NoFallback verifies that models without fallback configuration return empty string
+func TestGetFallbackModel_NoFallback(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	fallbackModels := map[string]string{
+		"opus":   "sonnet",
+		"sonnet": "glm-4.7",
+	}
+	manager.SetFallbackConfig(fallbackModels, nil)
+
+	tests := []struct {
+		name     string
+		model    string
+		expected string
+	}{
+		{"unknown-model has no fallback", "unknown-model", ""},
+		{"gpt-4o has no fallback", "gpt-4o", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := manager.getFallbackModel(tt.model, make(map[string]bool))
+			if result != tt.expected {
+				t.Errorf("getFallbackModel(%q) = %q, want %q", tt.model, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestExecuteWithFallback_RateLimitCascade verifies the fallback chain opus → sonnet → glm-4.7
+// when each model returns modelCooldownError (rate-limited)
+func TestExecuteWithFallback_RateLimitCascade(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+
+	// Configure fallback chain: opus → sonnet → glm-4.7
+	fallbackModels := map[string]string{
+		"opus":   "sonnet",
+		"sonnet": "glm-4.7",
+	}
+	manager.SetFallbackConfig(fallbackModels, nil)
+
+	// Register auth
+	availableAuth := &Auth{
+		ID:       "fallback-cascade-auth",
+		Provider: "test-provider",
+		Status:   StatusActive,
+		Metadata: map[string]any{"email": "test@example.com"},
+	}
+
+	if _, err := manager.Register(context.Background(), availableAuth); err != nil {
+		t.Fatalf("manager.Register: %v", err)
+	}
+
+	// Register models in registry
+	registry.GetGlobalRegistry().RegisterClient(availableAuth.ID, availableAuth.Provider, []*registry.ModelInfo{
+		{ID: "opus"},
+		{ID: "sonnet"},
+		{ID: "glm-4.7"},
+	})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(availableAuth.ID)
+	})
+
+	// Track which models were attempted via executor
+	var modelsAttempted []string
+
+	// Mock executor that tracks models and returns cooldown for opus/sonnet, success for glm-4.7
+	mockExecutor := &trackingFallbackExecutor{
+		identifier:      "test-provider",
+		modelsAttempted: &modelsAttempted,
+		modelResults: map[string]modelResult{
+			"opus":    {err: newModelCooldownError("opus", "test-provider", time.Minute)},
+			"sonnet":  {err: newModelCooldownError("sonnet", "test-provider", time.Minute)},
+			"glm-4.7": {resp: cliproxyexecutor.Response{Payload: []byte(`{"model":"glm-4.7"}`)}},
+		},
+	}
+	manager.RegisterExecutor(mockExecutor)
+
+	// Execute with model "opus"
+	req := cliproxyexecutor.Request{Model: "opus"}
+	resp, err := manager.Execute(context.Background(), []string{"test-provider"}, req, cliproxyexecutor.Options{})
+
+	// Should succeed with glm-4.7 response
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want nil", err)
+	}
+
+	if string(resp.Payload) != `{"model":"glm-4.7"}` {
+		t.Errorf("Execute() response = %s, want glm-4.7 response", string(resp.Payload))
+	}
+
+	// Verify fallback chain was traversed: opus → sonnet → glm-4.7
+	expectedModels := []string{"opus", "sonnet", "glm-4.7"}
+	if len(modelsAttempted) != len(expectedModels) {
+		t.Errorf("Models attempted = %v, want %v", modelsAttempted, expectedModels)
+	} else {
+		for i, model := range expectedModels {
+			if modelsAttempted[i] != model {
+				t.Errorf("Model at position %d = %q, want %q", i, modelsAttempted[i], model)
+			}
+		}
+	}
+}
+
+// TestExecuteWithFallback_AuthUnavailableNoFallback verifies that auth_unavailable error
+// does NOT trigger fallback (only modelCooldownError triggers fallback)
+func TestExecuteWithFallback_AuthUnavailableNoFallback(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+
+	// Configure fallback chain: opus → sonnet → glm-4.7
+	fallbackModels := map[string]string{
+		"opus":   "sonnet",
+		"sonnet": "glm-4.7",
+	}
+	manager.SetFallbackConfig(fallbackModels, nil)
+
+	// Register auth
+	availableAuth := &Auth{
+		ID:       "no-fallback-auth-unavailable",
+		Provider: "test-provider",
+		Status:   StatusActive,
+		Metadata: map[string]any{"email": "test@example.com"},
+	}
+
+	if _, err := manager.Register(context.Background(), availableAuth); err != nil {
+		t.Fatalf("manager.Register: %v", err)
+	}
+
+	// Register models in registry
+	registry.GetGlobalRegistry().RegisterClient(availableAuth.ID, availableAuth.Provider, []*registry.ModelInfo{
+		{ID: "opus"},
+		{ID: "sonnet"},
+		{ID: "glm-4.7"},
+	})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(availableAuth.ID)
+	})
+
+	// Track which models were attempted
+	var modelsAttempted []string
+
+	// Mock executor that returns auth_unavailable error for opus (NOT modelCooldownError)
+	mockExecutor := &trackingFallbackExecutor{
+		identifier:      "test-provider",
+		modelsAttempted: &modelsAttempted,
+		modelResults: map[string]modelResult{
+			"opus": {err: &Error{Code: "auth_unavailable", Message: "no auth available"}},
+		},
+	}
+	manager.RegisterExecutor(mockExecutor)
+
+	// Execute with model "opus"
+	req := cliproxyexecutor.Request{Model: "opus"}
+	_, err := manager.Execute(context.Background(), []string{"test-provider"}, req, cliproxyexecutor.Options{})
+
+	// Should fail with auth_unavailable error (no fallback)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want auth_unavailable error")
+	}
+
+	// Verify error is auth_unavailable
+	authErr, ok := err.(*Error)
+	if !ok {
+		t.Errorf("Execute() error type = %T, want *Error", err)
+	} else if authErr.Code != "auth_unavailable" {
+		t.Errorf("Execute() error code = %q, want %q", authErr.Code, "auth_unavailable")
+	}
+
+	// Verify ONLY opus was attempted (no fallback to sonnet or glm-4.7)
+	if len(modelsAttempted) != 1 {
+		t.Errorf("Models attempted = %v, want only [opus]", modelsAttempted)
+	} else if modelsAttempted[0] != "opus" {
+		t.Errorf("Model attempted = %q, want %q", modelsAttempted[0], "opus")
+	}
+}
+
+// trackingFallbackExecutor is a mock executor that tracks which models were attempted
+type trackingFallbackExecutor struct {
+	identifier      string
+	modelsAttempted *[]string
+	modelResults    map[string]modelResult
+}
+
+func (e *trackingFallbackExecutor) Identifier() string {
+	return e.identifier
+}
+
+func (e *trackingFallbackExecutor) Execute(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	// Track the model that was attempted
+	*e.modelsAttempted = append(*e.modelsAttempted, req.Model)
+
+	if result, ok := e.modelResults[req.Model]; ok {
+		return result.resp, result.err
+	}
+	return cliproxyexecutor.Response{}, &Error{Code: "model_not_found", Message: "model not configured in mock"}
+}
+
+func (e *trackingFallbackExecutor) ExecuteStream(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
+	*e.modelsAttempted = append(*e.modelsAttempted, req.Model)
+
+	if result, ok := e.modelResults[req.Model]; ok {
+		if result.err != nil {
+			return nil, result.err
+		}
+		ch := make(chan cliproxyexecutor.StreamChunk)
+		close(ch)
+		return ch, nil
+	}
+	return nil, &Error{Code: "model_not_found", Message: "model not configured in mock"}
+}
+
+func (e *trackingFallbackExecutor) Refresh(ctx context.Context, auth *Auth) (*Auth, error) {
+	return auth, nil
+}
+
+func (e *trackingFallbackExecutor) CountTokens(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e *trackingFallbackExecutor) HttpRequest(ctx context.Context, auth *Auth, req *http.Request) (*http.Response, error) {
+	return nil, nil
+}
