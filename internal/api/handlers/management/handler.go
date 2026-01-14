@@ -47,6 +47,7 @@ type Handler struct {
 	allowRemoteOverride bool
 	envSecret           string
 	logDir              string
+	tierCache           *coreauth.TierCache // Antigravity tier info cache
 }
 
 // NewHandler creates a new management handler instance.
@@ -63,6 +64,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		tokenStore:          sdkAuth.GetTokenStore(),
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
+		tierCache:           coreauth.NewTierCache(time.Hour), // 1 hour TTL
 	}
 	h.startAttemptCleanup()
 	return h

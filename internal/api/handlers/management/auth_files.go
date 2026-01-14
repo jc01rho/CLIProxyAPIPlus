@@ -434,6 +434,43 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
 		entry["id_token"] = claims
 	}
+
+	// Add quota state fields from TransientState if available
+	if h.authManager != nil {
+		if transientState := h.authManager.GetTransientState(auth.ID); transientState != nil {
+			// Override unavailable from transient state
+			entry["unavailable"] = transientState.Unavailable
+
+			// Add quota state fields if quota is exceeded
+			if transientState.Quota.Exceeded {
+				entry["quota_exceeded"] = true
+				entry["quota_reason"] = transientState.Quota.Reason
+				if !transientState.Quota.NextRecoverAt.IsZero() {
+					entry["quota_next_recover_at"] = transientState.Quota.NextRecoverAt
+				}
+				entry["quota_backoff_level"] = transientState.Quota.BackoffLevel
+			}
+
+			// Add model states summary if any models are blocked
+			if len(transientState.ModelStates) > 0 {
+				blockedModels := []string{}
+				for modelID, state := range transientState.ModelStates {
+					if state.Unavailable || state.Quota.Exceeded {
+						blockedModels = append(blockedModels, modelID)
+					}
+				}
+				if len(blockedModels) > 0 {
+					entry["blocked_models"] = blockedModels
+				}
+			}
+		}
+	}
+
+	// For Antigravity provider, add tier info from cache
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		h.addAntigravityTierInfo(auth, entry)
+	}
+
 	return entry
 }
 
@@ -475,6 +512,53 @@ func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
 		return nil
 	}
 	return result
+}
+
+// addAntigravityTierInfo adds tier information to the entry for Antigravity provider.
+func (h *Handler) addAntigravityTierInfo(auth *coreauth.Auth, entry gin.H) {
+	if h == nil || h.tierCache == nil {
+		return
+	}
+
+	// Try to get cached tier info
+	tierInfo := h.tierCache.Get(auth.ID)
+
+	// If cache miss or expired, fetch fresh info
+	if tierInfo == nil {
+		// Get access token from metadata
+		if auth.Metadata == nil {
+			return
+		}
+		accessToken, ok := auth.Metadata["access_token"].(string)
+		if !ok || accessToken == "" {
+			return
+		}
+
+		// Fetch subscription info
+		subInfo, err := coreauth.FetchAntigravitySubscriptionInfo(context.Background(), accessToken, nil)
+		if err != nil {
+			log.WithError(err).Warnf("antigravity: failed to fetch subscription info for %s", auth.ID)
+			return
+		}
+
+		// Build tier info from subscription
+		tierInfo = coreauth.BuildTierInfoFromSubscription(subInfo)
+		if tierInfo != nil {
+			h.tierCache.Set(auth.ID, tierInfo)
+		}
+	}
+
+	// Add tier info to entry
+	if tierInfo != nil {
+		if tierInfo.IsPro {
+			entry["tier"] = "pro"
+		} else {
+			entry["tier"] = "free"
+		}
+		if tierInfo.TierName != "" {
+			entry["tier_name"] = tierInfo.TierName
+		}
+	}
 }
 
 func authEmail(auth *coreauth.Auth) string {
