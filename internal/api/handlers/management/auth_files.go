@@ -466,10 +466,11 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		}
 	}
 
-	// For Antigravity provider, add tier info from cache
-	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
-		h.addAntigravityTierInfo(auth, entry)
-	}
+	// DISABLED: Synchronous tier fetch causes slow loading on /auth-files page
+	// Tier info will be fetched on-demand instead of during list
+	// if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+	// 	h.addAntigravityTierInfo(auth, entry)
+	// }
 
 	return entry
 }
