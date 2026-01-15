@@ -1644,17 +1644,22 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					setModelQuota = true
 					logKeyBlocked(auth.ID, auth.Provider, result.Model, "quota", 429, next.Sub(now))
 				case 408, 500, 502, 503, 504:
-					next := now.Add(2 * time.Hour)
+					next := now.Add(5 * time.Minute) // Changed from 2 hours to 5 minutes
 					state.NextRetryAfter = next
 					suspendReason = "server_error"
 					shouldSuspendModel = true
-					logKeyBlocked(auth.ID, auth.Provider, result.Model, "server_error", statusCode, 2*time.Hour)
+					logKeyBlocked(auth.ID, auth.Provider, result.Model, "server_error", statusCode, 5*time.Minute)
 				default:
-					next := now.Add(2 * time.Hour)
+					// Check for transient errors - use shorter block time
+					blockDuration := 5 * time.Minute
+					if result.Error != nil && isTransientError(result.Error) {
+						blockDuration = 1 * time.Minute
+					}
+					next := now.Add(blockDuration)
 					state.NextRetryAfter = next
 					suspendReason = "generic_error"
 					shouldSuspendModel = true
-					logKeyBlocked(auth.ID, auth.Provider, result.Model, "generic_error", statusCode, 2*time.Hour)
+					logKeyBlocked(auth.ID, auth.Provider, result.Model, "generic_error", statusCode, blockDuration)
 				}
 
 				auth.Status = StatusError
@@ -1890,6 +1895,24 @@ func isContextCancellationError(err *Error) bool {
 		strings.Contains(msg, "context deadline exceeded")
 }
 
+// isTransientError checks if the error is likely transient (network issues, timeouts, etc.)
+// These errors should have shorter blocking durations or no blocking at all
+func isTransientError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Message)
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "dial tcp") ||
+		strings.Contains(msg, "tls handshake") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "broken pipe")
+}
+
 func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, now time.Time) {
 	if auth == nil {
 		return
@@ -1898,6 +1921,16 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	// Don't mark auth unavailable for context cancellation errors
 	// These are client-side cancellations, not actual auth failures
 	if resultErr != nil && isContextCancellationError(resultErr) {
+		return
+	}
+
+	// Don't mark auth unavailable for transient network errors
+	if resultErr != nil && isTransientError(resultErr) {
+		log.WithFields(log.Fields{
+			"auth_id":  auth.ID,
+			"provider": auth.Provider,
+			"error":    resultErr.Message,
+		}).Debug("Transient error detected in auth failure, not blocking")
 		return
 	}
 
@@ -1939,11 +1972,12 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.NextRetryAfter = next
 	case 408, 500, 502, 503, 504:
 		auth.StatusMessage = "transient upstream error"
-		auth.NextRetryAfter = now.Add(2 * time.Hour)
+		auth.NextRetryAfter = now.Add(5 * time.Minute) // Changed from 2 hours to 5 minutes
 	default:
 		if auth.StatusMessage == "" {
 			auth.StatusMessage = "request failed"
 		}
+		auth.NextRetryAfter = now.Add(5 * time.Minute) // Add a reasonable default timeout
 	}
 }
 
