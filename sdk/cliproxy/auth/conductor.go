@@ -1862,10 +1862,28 @@ func statusCodeFromResult(err *Error) int {
 	return err.StatusCode()
 }
 
+// isContextCancellationError checks if the error is due to context cancellation
+// which should not mark the auth as unavailable (it's a client-side issue, not auth failure)
+func isContextCancellationError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Message)
+	return strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "context deadline exceeded")
+}
+
 func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, now time.Time) {
 	if auth == nil {
 		return
 	}
+
+	// Don't mark auth unavailable for context cancellation errors
+	// These are client-side cancellations, not actual auth failures
+	if resultErr != nil && isContextCancellationError(resultErr) {
+		return
+	}
+
 	auth.Unavailable = true
 	auth.Status = StatusError
 	auth.UpdatedAt = now
