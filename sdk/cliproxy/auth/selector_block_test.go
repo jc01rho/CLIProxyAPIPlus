@@ -214,7 +214,7 @@ func TestRoundRobinSelector_ConcurrentBlockHandling(t *testing.T) {
 	}
 }
 
-func TestMarkResult_30MinBlockForServerErrors(t *testing.T) {
+func TestMarkResult_5MinBlockForServerErrors(t *testing.T) {
 	t.Parallel()
 
 	manager := NewManager(nil, &RoundRobinSelector{}, NoopHook{})
@@ -276,11 +276,11 @@ func TestMarkResult_30MinBlockForServerErrors(t *testing.T) {
 					t.Error("auth should be unavailable")
 				}
 				blockDuration := state.NextRetryAfter.Sub(now)
-				if blockDuration < 119*time.Minute {
-					t.Errorf("Block duration %v < 119min (expected ~2h)", blockDuration)
+				if blockDuration < 4*time.Minute {
+					t.Errorf("Block duration %v < 4min (expected ~5min)", blockDuration)
 				}
-				if blockDuration > 121*time.Minute {
-					t.Errorf("Block duration %v > 121min (expected ~2h)", blockDuration)
+				if blockDuration > 6*time.Minute {
+					t.Errorf("Block duration %v > 6min (expected ~5min)", blockDuration)
 				}
 			}
 		})
