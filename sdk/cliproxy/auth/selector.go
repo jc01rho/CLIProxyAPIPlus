@@ -167,6 +167,7 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 			if resetIn < 0 {
 				resetIn = 0
 			}
+			logAllKeysExhausted(providerForError, model, cooldownCount, resetIn)
 			return nil, newModelCooldownError(model, providerForError, resetIn)
 		}
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
@@ -216,8 +217,9 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 
 	s.cursors[key] = index + 1
 	s.mu.Unlock()
-	// log.Debugf("available: %d, index: %d, key: %d", len(available), index, index%len(available))
-	return available[index%len(available)], nil
+	selected := available[index%len(available)]
+	logKeySelected(selected.ID, selected.Provider, model, fmt.Sprintf("round-robin index=%d", index))
+	return selected, nil
 }
 
 // Pick selects the first available auth for the provider in a deterministic manner.
@@ -245,10 +247,14 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 		}
 		s.cursors[key] = index + 1
 		s.mu.Unlock()
-		return available[index%len(available)], nil
+		selected := available[index%len(available)]
+		logKeySelected(selected.ID, selected.Provider, model, fmt.Sprintf("fill-first index=%d", index))
+		return selected, nil
 	}
 	// Default provider-based mode: return first available (original behavior)
-	return available[0], nil
+	selected := available[0]
+	logKeySelected(selected.ID, selected.Provider, model, "fill-first")
+	return selected, nil
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {

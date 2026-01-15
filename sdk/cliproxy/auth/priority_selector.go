@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -49,6 +50,7 @@ func (s *PrioritySelector) Pick(ctx context.Context, provider, model string, opt
 
 	var earliestReset time.Time
 	var cooldownCount int
+	var previousProvider string
 
 	// Try each provider in priority order
 	for _, providerName := range priorityList {
@@ -59,20 +61,31 @@ func (s *PrioritySelector) Pick(ctx context.Context, provider, model string, opt
 
 		auth, err := s.getInnerSelector().Pick(ctx, providerName, model, opts, providerAuths)
 		if err == nil {
+			logKeySelected(auth.ID, auth.Provider, model, fmt.Sprintf("priority-selector provider=%s", providerName))
 			return auth, nil
 		}
 
-		// If it's a cooldown error, track it and continue to next provider
+		// If it's a cooldown error, track it and continue
 		if cooldownErr, ok := err.(*modelCooldownError); ok {
 			cooldownCount++
 			resetTime := time.Now().Add(cooldownErr.resetIn)
 			if earliestReset.IsZero() || resetTime.Before(earliestReset) {
 				earliestReset = resetTime
 			}
+			// Log fallback if not the first provider
+			if previousProvider != "" {
+				logProviderFallback(previousProvider, providerName, model, "no available keys")
+			}
+			previousProvider = providerName
 			continue
 		}
 
 		// For other errors, continue to next provider
+		// Log fallback if not the first provider
+		if previousProvider != "" {
+			logProviderFallback(previousProvider, providerName, model, "no available keys")
+		}
+		previousProvider = providerName
 		continue
 	}
 

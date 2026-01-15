@@ -600,6 +600,8 @@ func (m *Manager) executeWithFallback(ctx context.Context, providers []string, r
 	entry := logEntryWithRequestID(ctx)
 	entry.Infof("All keys blocked for model %s, trying fallback model %s", originalModel, fallbackModel)
 
+	logFallbackTriggered(originalModel, fallbackModel, "key selection failed")
+
 	return m.executeWithFallback(ctx, providers, fallbackReq, opts, visited, depth+1)
 }
 
@@ -627,6 +629,7 @@ func (m *Manager) executeInternal(ctx context.Context, providers []string, req c
 		if !shouldRetry {
 			break
 		}
+		logCooldownWait("", req.Model, wait)
 		if errWait := waitForCooldown(ctx, wait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
 		}
@@ -663,6 +666,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		if !shouldRetry {
 			break
 		}
+		logCooldownWait("", req.Model, wait)
 		if errWait := waitForCooldown(ctx, wait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
 		}
@@ -721,6 +725,8 @@ func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []str
 	entry := logEntryWithRequestID(ctx)
 	entry.Infof("All keys blocked for model %s (stream), trying fallback model %s", originalModel, fallbackModel)
 
+	logFallbackTriggered(originalModel, fallbackModel, "key selection failed")
+
 	return m.executeStreamWithFallback(ctx, providers, fallbackReq, opts, visited, depth+1)
 }
 
@@ -748,6 +754,7 @@ func (m *Manager) executeStreamInternal(ctx context.Context, providers []string,
 		if !shouldRetry {
 			break
 		}
+		logCooldownWait("", req.Model, wait)
 		if errWait := waitForCooldown(ctx, wait); errWait != nil {
 			return nil, errWait
 		}
@@ -1563,6 +1570,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		if result.Success {
 			if result.Model != "" {
 				state := ensureModelState(auth, result.Model)
+				wasBlocked := state != nil && state.Unavailable
 				resetModelState(state, now)
 				updateAggregatedAvailability(auth, now)
 				if !hasModelError(auth, now) {
@@ -1573,6 +1581,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				auth.UpdatedAt = now
 				shouldResumeModel = true
 				clearModelQuota = true
+				if wasBlocked {
+					logKeyRecovered(auth.ID, auth.Provider, result.Model)
+				}
 			} else {
 				clearAuthStateOnSuccess(auth, now)
 			}
@@ -1596,16 +1607,19 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					state.NextRetryAfter = next
 					suspendReason = "unauthorized"
 					shouldSuspendModel = true
+					logKeyBlocked(auth.ID, auth.Provider, result.Model, "unauthorized", 401, 2*time.Hour)
 				case 402, 403:
 					next := now.Add(2 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "payment_required"
 					shouldSuspendModel = true
+					logKeyBlocked(auth.ID, auth.Provider, result.Model, "payment_required", statusCode, 2*time.Hour)
 				case 404:
 					next := now.Add(12 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "not_found"
 					shouldSuspendModel = true
+					logKeyBlocked(auth.ID, auth.Provider, result.Model, "not_found", 404, 12*time.Hour)
 				case 429:
 					var next time.Time
 					backoffLevel := state.Quota.BackoffLevel
@@ -1628,16 +1642,19 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					suspendReason = "quota"
 					shouldSuspendModel = true
 					setModelQuota = true
+					logKeyBlocked(auth.ID, auth.Provider, result.Model, "quota", 429, next.Sub(now))
 				case 408, 500, 502, 503, 504:
 					next := now.Add(2 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "server_error"
 					shouldSuspendModel = true
+					logKeyBlocked(auth.ID, auth.Provider, result.Model, "server_error", statusCode, 2*time.Hour)
 				default:
 					next := now.Add(2 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "generic_error"
 					shouldSuspendModel = true
+					logKeyBlocked(auth.ID, auth.Provider, result.Model, "generic_error", statusCode, 2*time.Hour)
 				}
 
 				auth.Status = StatusError
