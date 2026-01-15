@@ -20,7 +20,7 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-const defaultAPICallTimeout = 60 * time.Second
+const defaultAPICallTimeout = 90 * time.Second
 
 const (
 	geminiOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
@@ -169,7 +169,11 @@ func (h *Handler) APICall(c *gin.Context) {
 		requestBody = strings.NewReader(body.Data)
 	}
 
-	req, errNewRequest := http.NewRequestWithContext(c.Request.Context(), method, urlStr, requestBody)
+	// Use background context with timeout to prevent "context canceled" errors
+	// when frontend navigates away or request times out
+	ctx, cancel := context.WithTimeout(context.Background(), defaultAPICallTimeout)
+	defer cancel()
+	req, errNewRequest := http.NewRequestWithContext(ctx, method, urlStr, requestBody)
 	if errNewRequest != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to build request"})
 		return
