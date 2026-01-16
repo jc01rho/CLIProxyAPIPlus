@@ -78,6 +78,14 @@ quota-exceeded:
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), fill-first
+  mode: "" # "" (default): rotate per provider:model, "key-based": rotate per model only (ignores provider)
+  # fallback-models:       # (optional) auto-fallback on 429/401/5xx errors (chat/completion only)
+  #   gpt-4o: claude-sonnet-4-20250514
+  #   opus: sonnet
+  # fallback-chain:        # (optional) general fallback chain for models not in fallback-models
+  #   - glm-4.7
+  #   - grok-code-fast-1
+  # fallback-max-depth: 3  # (optional) maximum fallback depth (default: 3)
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: false

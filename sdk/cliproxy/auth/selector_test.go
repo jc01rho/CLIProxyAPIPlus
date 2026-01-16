@@ -175,3 +175,66 @@ func TestRoundRobinSelectorPick_Concurrent(t *testing.T) {
 	default:
 	}
 }
+
+func TestRoundRobinSelectorModeDefault(t *testing.T) {
+	t.Parallel()
+
+	selector := &RoundRobinSelector{}
+
+	auths := []*Auth{
+		{ID: "auth1", Provider: "openai", Status: StatusActive},
+		{ID: "auth2", Provider: "openai", Status: StatusActive},
+	}
+
+	auth1, err := selector.Pick(context.Background(), "openai", "gpt-4", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	auth2, err := selector.Pick(context.Background(), "openai", "gpt-4", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if auth1.ID == auth2.ID {
+		t.Errorf("expected different auths in round-robin, got same: %s", auth1.ID)
+	}
+}
+
+func TestRoundRobinSelectorModeKeyBased(t *testing.T) {
+	t.Parallel()
+
+	selector := &RoundRobinSelector{Mode: "key-based"}
+
+	authsOpenAI := []*Auth{
+		{ID: "openai1", Provider: "openai", Status: StatusActive},
+	}
+	authsClaude := []*Auth{
+		{ID: "claude1", Provider: "claude", Status: StatusActive},
+	}
+
+	_, err := selector.Pick(context.Background(), "openai", "gpt-4", cliproxyexecutor.Options{}, authsOpenAI)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_, err = selector.Pick(context.Background(), "claude", "gpt-4", cliproxyexecutor.Options{}, authsClaude)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if selector.cursors == nil {
+		t.Fatal("cursors map should be initialized")
+	}
+
+	if _, exists := selector.cursors["gpt-4"]; !exists {
+		t.Error("expected cursor key 'gpt-4' in key-based mode")
+	}
+
+	if _, exists := selector.cursors["openai:gpt-4"]; exists {
+		t.Error("should not have 'openai:gpt-4' key in key-based mode")
+	}
+	if _, exists := selector.cursors["claude:gpt-4"]; exists {
+		t.Error("should not have 'claude:gpt-4' key in key-based mode")
+	}
+}
