@@ -163,6 +163,22 @@ type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+
+	// Mode configures the routing mode.
+	// Supported values: "" (default, provider-scoped), "key-based" (model-only key).
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+
+	// FallbackModels maps original model names to fallback model names.
+	// When all credentials for the original model fail with 429/401/5xx,
+	// the request is automatically retried with the fallback model.
+	FallbackModels map[string]string `yaml:"fallback-models,omitempty" json:"fallback-models,omitempty"`
+
+	// FallbackChain is a general fallback chain for models not in FallbackModels.
+	// Models are tried in order when the original model fails.
+	FallbackChain []string `yaml:"fallback-chain,omitempty" json:"fallback-chain,omitempty"`
+
+	// FallbackMaxDepth limits the number of fallback attempts (default: 3).
+	FallbackMaxDepth int `yaml:"fallback-max-depth,omitempty" json:"fallback-max-depth,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

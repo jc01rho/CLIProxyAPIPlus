@@ -19,6 +19,7 @@ import (
 type RoundRobinSelector struct {
 	mu      sync.Mutex
 	cursors map[string]int
+	Mode    string // "key-based" or empty for default behavior
 }
 
 // FillFirstSelector selects the first available credential (deterministic ordering).
@@ -185,7 +186,12 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 	if err != nil {
 		return nil, err
 	}
-	key := provider + ":" + model
+	var key string
+	if s.Mode == "key-based" {
+		key = model
+	} else {
+		key = provider + ":" + model
+	}
 	s.mu.Lock()
 	if s.cursors == nil {
 		s.cursors = make(map[string]int)

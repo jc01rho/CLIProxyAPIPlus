@@ -133,6 +133,15 @@ type Manager struct {
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 
+	// fallbackModels stores model fallback mappings (original -> fallback).
+	fallbackModels atomic.Value
+
+	// fallbackChain stores the general fallback chain for models not in fallbackModels.
+	fallbackChain atomic.Value
+
+	// fallbackMaxDepth limits the number of fallback attempts.
+	fallbackMaxDepth atomic.Int32
+
 	// Auto refresh state
 	refreshCancel context.CancelFunc
 }
@@ -375,6 +384,64 @@ func (m *Manager) SetRetryConfig(retry int, maxRetryInterval time.Duration) {
 	m.maxRetryInterval.Store(maxRetryInterval.Nanoseconds())
 }
 
+func (m *Manager) SetFallbackModels(models map[string]string) {
+	if m == nil {
+		return
+	}
+	if models == nil {
+		models = make(map[string]string)
+	}
+	m.fallbackModels.Store(models)
+}
+
+func (m *Manager) getFallbackModel(originalModel string) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	models, ok := m.fallbackModels.Load().(map[string]string)
+	if !ok || models == nil {
+		return "", false
+	}
+	fallback, exists := models[originalModel]
+	return fallback, exists && fallback != ""
+}
+
+func (m *Manager) SetFallbackChain(chain []string, maxDepth int) {
+	if m == nil {
+		return
+	}
+	if chain == nil {
+		chain = []string{}
+	}
+	m.fallbackChain.Store(chain)
+	if maxDepth <= 0 {
+		maxDepth = 3
+	}
+	m.fallbackMaxDepth.Store(int32(maxDepth))
+}
+
+func (m *Manager) getFallbackChain() []string {
+	if m == nil {
+		return nil
+	}
+	chain, ok := m.fallbackChain.Load().([]string)
+	if !ok {
+		return nil
+	}
+	return chain
+}
+
+func (m *Manager) getFallbackMaxDepth() int {
+	if m == nil {
+		return 3
+	}
+	depth := m.fallbackMaxDepth.Load()
+	if depth <= 0 {
+		return 3
+	}
+	return int(depth)
+}
+
 // RegisterExecutor registers a provider executor with the manager.
 func (m *Manager) RegisterExecutor(executor ProviderExecutor) {
 	if executor == nil {
@@ -462,7 +529,58 @@ func (m *Manager) Load(ctx context.Context) error {
 
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
+// When all credentials fail with 429/401/5xx, it attempts fallback to an alternate model if configured.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	visited := make(map[string]struct{})
+	return m.executeWithFallback(ctx, providers, req, opts, visited)
+}
+
+func (m *Manager) executeWithFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, visited map[string]struct{}) (cliproxyexecutor.Response, error) {
+	originalModel := req.Model
+
+	if _, seen := visited[originalModel]; seen {
+		return cliproxyexecutor.Response{}, &Error{Code: "fallback_cycle", Message: "fallback cycle detected: model " + originalModel + " already tried"}
+	}
+	visited[originalModel] = struct{}{}
+
+	resp, err := m.executeOnce(ctx, providers, req, opts)
+	if err == nil {
+		return resp, nil
+	}
+
+	if m.shouldTriggerFallback(err) {
+		if fallbackModel, ok := m.getFallbackModel(originalModel); ok {
+			log.Debugf("fallback from %s to %s (via fallback-models)", originalModel, fallbackModel)
+			fallbackProviders := util.GetProviderName(fallbackModel)
+			if len(fallbackProviders) > 0 {
+				fallbackReq := req
+				fallbackReq.Model = fallbackModel
+				return m.executeWithFallback(ctx, fallbackProviders, fallbackReq, opts, visited)
+			}
+		}
+
+		maxDepth := m.getFallbackMaxDepth()
+		if len(visited) < maxDepth {
+			chain := m.getFallbackChain()
+			for _, chainModel := range chain {
+				if _, tried := visited[chainModel]; tried {
+					continue
+				}
+				log.Debugf("fallback from %s to %s (via fallback-chain, depth %d/%d)", originalModel, chainModel, len(visited), maxDepth)
+				chainProviders := util.GetProviderName(chainModel)
+				if len(chainProviders) > 0 {
+					chainReq := req
+					chainReq.Model = chainModel
+					return m.executeWithFallback(ctx, chainProviders, chainReq, opts, visited)
+				}
+			}
+		}
+	}
+
+	return cliproxyexecutor.Response{}, err
+}
+
+func (m *Manager) executeOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -493,6 +611,11 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return cliproxyexecutor.Response{}, lastErr
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+}
+
+func (m *Manager) shouldTriggerFallback(err error) bool {
+	status := statusCodeFromError(err)
+	return status == 429 || status == 401 || (status >= 500 && status < 600)
 }
 
 // ExecuteCount performs a non-streaming execution using the configured selector and executor.
@@ -532,7 +655,58 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
+// When all credentials fail with 429/401/5xx before stream starts, it attempts fallback to an alternate model if configured.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
+	visited := make(map[string]struct{})
+	return m.executeStreamWithFallback(ctx, providers, req, opts, visited)
+}
+
+func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, visited map[string]struct{}) (<-chan cliproxyexecutor.StreamChunk, error) {
+	originalModel := req.Model
+
+	if _, seen := visited[originalModel]; seen {
+		return nil, &Error{Code: "fallback_cycle", Message: "fallback cycle detected: model " + originalModel + " already tried"}
+	}
+	visited[originalModel] = struct{}{}
+
+	chunks, err := m.executeStreamOnce(ctx, providers, req, opts)
+	if err == nil {
+		return chunks, nil
+	}
+
+	if m.shouldTriggerFallback(err) {
+		if fallbackModel, ok := m.getFallbackModel(originalModel); ok {
+			log.Debugf("fallback from %s to %s (stream, via fallback-models)", originalModel, fallbackModel)
+			fallbackProviders := util.GetProviderName(fallbackModel)
+			if len(fallbackProviders) > 0 {
+				fallbackReq := req
+				fallbackReq.Model = fallbackModel
+				return m.executeStreamWithFallback(ctx, fallbackProviders, fallbackReq, opts, visited)
+			}
+		}
+
+		maxDepth := m.getFallbackMaxDepth()
+		if len(visited) < maxDepth {
+			chain := m.getFallbackChain()
+			for _, chainModel := range chain {
+				if _, tried := visited[chainModel]; tried {
+					continue
+				}
+				log.Debugf("fallback from %s to %s (stream, via fallback-chain, depth %d/%d)", originalModel, chainModel, len(visited), maxDepth)
+				chainProviders := util.GetProviderName(chainModel)
+				if len(chainProviders) > 0 {
+					chainReq := req
+					chainReq.Model = chainModel
+					return m.executeStreamWithFallback(ctx, chainProviders, chainReq, opts, visited)
+				}
+			}
+		}
+	}
+
+	return nil, err
+}
+
+func (m *Manager) executeStreamOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
