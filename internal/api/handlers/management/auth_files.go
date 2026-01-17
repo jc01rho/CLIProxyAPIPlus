@@ -434,6 +434,23 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
 		entry["id_token"] = claims
 	}
+	entry["quota"] = gin.H{
+		"exceeded":        auth.Quota.Exceeded,
+		"reason":          auth.Quota.Reason,
+		"next_recover_at": auth.Quota.NextRecoverAt,
+		"backoff_level":   auth.Quota.BackoffLevel,
+	}
+	if auth.LastError != nil {
+		entry["last_error"] = gin.H{
+			"code":        auth.LastError.Code,
+			"message":     auth.LastError.Message,
+			"retryable":   auth.LastError.Retryable,
+			"http_status": auth.LastError.HTTPStatus,
+		}
+	}
+	if !auth.NextRetryAfter.IsZero() {
+		entry["next_retry_after"] = auth.NextRetryAfter
+	}
 	return entry
 }
 
