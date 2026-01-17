@@ -771,6 +771,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		resp, errExec := executor.Execute(execCtx, auth, execReq, opts)
 		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
+			// Context cancellation is not an auth error - don't mark auth as failed
+			if errors.Is(errExec, context.Canceled) || errors.Is(errExec, context.DeadlineExceeded) {
+				return cliproxyexecutor.Response{}, errExec
+			}
 			result.Error = &Error{Message: errExec.Error()}
 			var se cliproxyexecutor.StatusError
 			if errors.As(errExec, &se) && se != nil {
@@ -820,6 +824,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		resp, errExec := executor.CountTokens(execCtx, auth, execReq, opts)
 		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
+			// Context cancellation is not an auth error - don't mark auth as failed
+			if errors.Is(errExec, context.Canceled) || errors.Is(errExec, context.DeadlineExceeded) {
+				return cliproxyexecutor.Response{}, errExec
+			}
 			result.Error = &Error{Message: errExec.Error()}
 			var se cliproxyexecutor.StatusError
 			if errors.As(errExec, &se) && se != nil {
@@ -868,6 +876,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
 		chunks, errStream := executor.ExecuteStream(execCtx, auth, execReq, opts)
 		if errStream != nil {
+			// Context cancellation is not an auth error - don't mark auth as failed
+			if errors.Is(errStream, context.Canceled) || errors.Is(errStream, context.DeadlineExceeded) {
+				return nil, errStream
+			}
 			rerr := &Error{Message: errStream.Error()}
 			var se cliproxyexecutor.StatusError
 			if errors.As(errStream, &se) && se != nil {
@@ -886,6 +898,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			for chunk := range streamChunks {
 				if chunk.Err != nil && !failed {
 					failed = true
+					// Context cancellation is not an auth error - don't mark auth as failed
+					if errors.Is(chunk.Err, context.Canceled) || errors.Is(chunk.Err, context.DeadlineExceeded) {
+						out <- chunk
+						continue
+					}
 					rerr := &Error{Message: chunk.Err.Error()}
 					var se cliproxyexecutor.StatusError
 					if errors.As(chunk.Err, &se) && se != nil {
@@ -935,6 +952,10 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 		resp, errExec := executor.Execute(execCtx, auth, execReq, opts)
 		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
+			// Context cancellation is not an auth error - don't mark auth as failed
+			if errors.Is(errExec, context.Canceled) || errors.Is(errExec, context.DeadlineExceeded) {
+				return cliproxyexecutor.Response{}, errExec
+			}
 			result.Error = &Error{Message: errExec.Error()}
 			var se cliproxyexecutor.StatusError
 			if errors.As(errExec, &se) && se != nil {
@@ -984,6 +1005,10 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 		resp, errExec := executor.CountTokens(execCtx, auth, execReq, opts)
 		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
+			// Context cancellation is not an auth error - don't mark auth as failed
+			if errors.Is(errExec, context.Canceled) || errors.Is(errExec, context.DeadlineExceeded) {
+				return cliproxyexecutor.Response{}, errExec
+			}
 			result.Error = &Error{Message: errExec.Error()}
 			var se cliproxyexecutor.StatusError
 			if errors.As(errExec, &se) && se != nil {
@@ -1032,6 +1057,10 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
 		chunks, errStream := executor.ExecuteStream(execCtx, auth, execReq, opts)
 		if errStream != nil {
+			// Context cancellation is not an auth error - don't mark auth as failed
+			if errors.Is(errStream, context.Canceled) || errors.Is(errStream, context.DeadlineExceeded) {
+				return nil, errStream
+			}
 			rerr := &Error{Message: errStream.Error()}
 			var se cliproxyexecutor.StatusError
 			if errors.As(errStream, &se) && se != nil {
@@ -1050,6 +1079,11 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 			for chunk := range streamChunks {
 				if chunk.Err != nil && !failed {
 					failed = true
+					// Context cancellation is not an auth error - don't mark auth as failed
+					if errors.Is(chunk.Err, context.Canceled) || errors.Is(chunk.Err, context.DeadlineExceeded) {
+						out <- chunk
+						continue
+					}
 					rerr := &Error{Message: chunk.Err.Error()}
 					var se cliproxyexecutor.StatusError
 					if errors.As(chunk.Err, &se) && se != nil {
