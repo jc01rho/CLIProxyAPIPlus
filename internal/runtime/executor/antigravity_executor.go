@@ -814,11 +814,14 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 
-	var authID, authLabel, authType, authValue string
+	var authID, authLabel, authType, authValue, authTier string
 	if auth != nil {
 		authID = auth.ID
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
+		if tierID, ok := auth.Metadata["tier_id"].(string); ok {
+			authTier = tierID
+		}
 	}
 
 	var lastStatus int
@@ -861,6 +864,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 			AuthLabel: authLabel,
 			AuthType:  authType,
 			AuthValue: authValue,
+			Tier:      authTier,
 		})
 
 		httpResp, errDo := httpClient.Do(httpReq)
@@ -1249,11 +1253,14 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		httpReq.Host = host
 	}
 
-	var authID, authLabel, authType, authValue string
+	var authID, authLabel, authType, authValue, authTier string
 	if auth != nil {
 		authID = auth.ID
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
+		if tierID, ok := auth.Metadata["tier_id"].(string); ok {
+			authTier = tierID
+		}
 	}
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       requestURL.String(),
@@ -1265,6 +1272,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		AuthLabel: authLabel,
 		AuthType:  authType,
 		AuthValue: authValue,
+		Tier:      authTier,
 	})
 
 	return httpReq, nil
