@@ -19,6 +19,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// AntigravityProjectInfo contains project ID and subscription tier info
+type AntigravityProjectInfo struct {
+	ProjectID string
+	TierID    string // "ultra", "pro", "standard", "free", or "unknown"
+	TierName  string // Display name from API (e.g., "Gemini Code Assist Pro")
+	IsPaid    bool   // true if tier is "pro" or "ultra"
+}
+
 const (
 	antigravityClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 	antigravityClientSecret = "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"
@@ -178,13 +186,19 @@ waitForCallback:
 
 	// Fetch project ID via loadCodeAssist (same approach as Gemini CLI)
 	projectID := ""
+	tierID := "unknown"
+	tierName := "Unknown"
+	tierIsPaid := false
 	if tokenResp.AccessToken != "" {
-		fetchedProjectID, errProject := fetchAntigravityProjectID(ctx, tokenResp.AccessToken, httpClient)
+		projectInfo, errProject := fetchAntigravityProjectInfo(ctx, tokenResp.AccessToken, httpClient)
 		if errProject != nil {
-			log.Warnf("antigravity: failed to fetch project ID: %v", errProject)
+			log.Warnf("antigravity: failed to fetch project info: %v", errProject)
 		} else {
-			projectID = fetchedProjectID
-			log.Infof("antigravity: obtained project ID %s", projectID)
+			projectID = projectInfo.ProjectID
+			tierID = projectInfo.TierID
+			tierName = projectInfo.TierName
+			tierIsPaid = projectInfo.IsPaid
+			log.Infof("antigravity: obtained project ID %s, tier %s", projectID, tierID)
 		}
 	}
 
@@ -196,6 +210,9 @@ waitForCallback:
 		"expires_in":    tokenResp.ExpiresIn,
 		"timestamp":     now.UnixMilli(),
 		"expired":       now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
+		"tier_id":       tierID,
+		"tier_name":     tierName,
+		"tier_is_paid":  tierIsPaid,
 	}
 	if email != "" {
 		metadata["email"] = email
@@ -362,6 +379,34 @@ func sanitizeAntigravityFileName(email string) string {
 	return fmt.Sprintf("antigravity-%s.json", replacer.Replace(email))
 }
 
+func extractTierInfo(resp map[string]any) (tierID, tierName string, isPaid bool) {
+	var effectiveTier map[string]any
+	if pt, ok := resp["paidTier"].(map[string]any); ok && pt != nil {
+		effectiveTier = pt
+	} else if ct, ok := resp["currentTier"].(map[string]any); ok {
+		effectiveTier = ct
+	}
+
+	if effectiveTier == nil {
+		return "unknown", "Unknown", false
+	}
+
+	id, _ := effectiveTier["id"].(string)
+	name, _ := effectiveTier["name"].(string)
+
+	idLower := strings.ToLower(id)
+	switch {
+	case strings.Contains(idLower, "ultra"):
+		return "ultra", name, true
+	case strings.Contains(idLower, "pro"):
+		return "pro", name, true
+	case strings.Contains(idLower, "standard"), strings.Contains(idLower, "free"):
+		return "free", name, false
+	default:
+		return id, name, false
+	}
+}
+
 // Antigravity API constants for project discovery
 const (
 	antigravityAPIEndpoint    = "https://cloudcode-pa.googleapis.com"
@@ -373,13 +418,14 @@ const (
 
 // FetchAntigravityProjectID exposes project discovery for external callers.
 func FetchAntigravityProjectID(ctx context.Context, accessToken string, httpClient *http.Client) (string, error) {
-	return fetchAntigravityProjectID(ctx, accessToken, httpClient)
+	info, err := fetchAntigravityProjectInfo(ctx, accessToken, httpClient)
+	if err != nil {
+		return "", err
+	}
+	return info.ProjectID, nil
 }
 
-// fetchAntigravityProjectID retrieves the project ID for the authenticated user via loadCodeAssist.
-// This uses the same approach as Gemini CLI to get the cloudaicompanionProject.
-func fetchAntigravityProjectID(ctx context.Context, accessToken string, httpClient *http.Client) (string, error) {
-	// Call loadCodeAssist to get the project
+func fetchAntigravityProjectInfo(ctx context.Context, accessToken string, httpClient *http.Client) (*AntigravityProjectInfo, error) {
 	loadReqBody := map[string]any{
 		"metadata": map[string]string{
 			"ideType":    "ANTIGRAVITY",
@@ -390,13 +436,13 @@ func fetchAntigravityProjectID(ctx context.Context, accessToken string, httpClie
 
 	rawBody, errMarshal := json.Marshal(loadReqBody)
 	if errMarshal != nil {
-		return "", fmt.Errorf("marshal request body: %w", errMarshal)
+		return nil, fmt.Errorf("marshal request body: %w", errMarshal)
 	}
 
 	endpointURL := fmt.Sprintf("%s/%s:loadCodeAssist", antigravityAPIEndpoint, antigravityAPIVersion)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, strings.NewReader(string(rawBody)))
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -406,7 +452,7 @@ func fetchAntigravityProjectID(ctx context.Context, accessToken string, httpClie
 
 	resp, errDo := httpClient.Do(req)
 	if errDo != nil {
-		return "", fmt.Errorf("execute request: %w", errDo)
+		return nil, fmt.Errorf("execute request: %w", errDo)
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -416,19 +462,20 @@ func fetchAntigravityProjectID(ctx context.Context, accessToken string, httpClie
 
 	bodyBytes, errRead := io.ReadAll(resp.Body)
 	if errRead != nil {
-		return "", fmt.Errorf("read response: %w", errRead)
+		return nil, fmt.Errorf("read response: %w", errRead)
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	var loadResp map[string]any
 	if errDecode := json.Unmarshal(bodyBytes, &loadResp); errDecode != nil {
-		return "", fmt.Errorf("decode response: %w", errDecode)
+		return nil, fmt.Errorf("decode response: %w", errDecode)
 	}
 
-	// Extract projectID from response
+	tierID, tierName, isPaid := extractTierInfo(loadResp)
+
 	projectID := ""
 	if id, ok := loadResp["cloudaicompanionProject"].(string); ok {
 		projectID = strings.TrimSpace(id)
@@ -442,7 +489,7 @@ func fetchAntigravityProjectID(ctx context.Context, accessToken string, httpClie
 	}
 
 	if projectID == "" {
-		tierID := "legacy-tier"
+		onboardTierID := "legacy-tier"
 		if tiers, okTiers := loadResp["allowedTiers"].([]any); okTiers {
 			for _, rawTier := range tiers {
 				tier, okTier := rawTier.(map[string]any)
@@ -451,21 +498,25 @@ func fetchAntigravityProjectID(ctx context.Context, accessToken string, httpClie
 				}
 				if isDefault, okDefault := tier["isDefault"].(bool); okDefault && isDefault {
 					if id, okID := tier["id"].(string); okID && strings.TrimSpace(id) != "" {
-						tierID = strings.TrimSpace(id)
+						onboardTierID = strings.TrimSpace(id)
 						break
 					}
 				}
 			}
 		}
 
-		projectID, err = antigravityOnboardUser(ctx, accessToken, tierID, httpClient)
+		projectID, err = antigravityOnboardUser(ctx, accessToken, onboardTierID, httpClient)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		return projectID, nil
 	}
 
-	return projectID, nil
+	return &AntigravityProjectInfo{
+		ProjectID: projectID,
+		TierID:    tierID,
+		TierName:  tierName,
+		IsPaid:    isPaid,
+	}, nil
 }
 
 // antigravityOnboardUser attempts to fetch the project ID via onboardUser by polling for completion.
