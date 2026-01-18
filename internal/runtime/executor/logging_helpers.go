@@ -32,6 +32,7 @@ type upstreamRequestLog struct {
 	AuthLabel string
 	AuthType  string
 	AuthValue string
+	Tier      string
 }
 
 type upstreamAttempt struct {
@@ -292,6 +293,9 @@ func formatAuthInfo(info upstreamRequestLog) string {
 	}
 	if trimmed := strings.TrimSpace(info.AuthLabel); trimmed != "" {
 		parts = append(parts, fmt.Sprintf("label=%s", trimmed))
+	}
+	if trimmed := strings.TrimSpace(info.Tier); trimmed != "" {
+		parts = append(parts, fmt.Sprintf("tier=%s", trimmed))
 	}
 
 	authType := strings.ToLower(strings.TrimSpace(info.AuthType))
