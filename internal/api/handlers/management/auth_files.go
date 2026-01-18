@@ -434,6 +434,15 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
 		entry["id_token"] = claims
 	}
+	// Add Antigravity tier info
+	if auth.Provider == "antigravity" && auth.Metadata != nil {
+		if tierID, ok := auth.Metadata["tier_id"].(string); ok {
+			entry["tier"] = tierID
+		}
+		if tierName, ok := auth.Metadata["tier_name"].(string); ok {
+			entry["tier_name"] = tierName
+		}
+	}
 	entry["quota"] = gin.H{
 		"exceeded":        auth.Quota.Exceeded,
 		"reason":          auth.Quota.Reason,
