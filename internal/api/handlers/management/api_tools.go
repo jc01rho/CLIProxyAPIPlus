@@ -411,6 +411,15 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 		return "", fmt.Errorf("antigravity oauth token refresh returned empty access_token")
 	}
 
+	// Preserve tier info before refresh
+	var tierID, tierName string
+	var tierIsPaid bool
+	if auth.Metadata != nil {
+		tierID, _ = auth.Metadata["tier_id"].(string)
+		tierName, _ = auth.Metadata["tier_name"].(string)
+		tierIsPaid, _ = auth.Metadata["tier_is_paid"].(bool)
+	}
+
 	if auth.Metadata == nil {
 		auth.Metadata = make(map[string]any)
 	}
@@ -425,6 +434,17 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 		auth.Metadata["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
 	}
 	auth.Metadata["type"] = "antigravity"
+
+	// Restore preserved tier info
+	if tierID != "" {
+		auth.Metadata["tier_id"] = tierID
+	}
+	if tierName != "" {
+		auth.Metadata["tier_name"] = tierName
+	}
+	if tierIsPaid {
+		auth.Metadata["tier_is_paid"] = tierIsPaid
+	}
 
 	if h != nil && h.authManager != nil {
 		auth.LastRefreshedAt = now

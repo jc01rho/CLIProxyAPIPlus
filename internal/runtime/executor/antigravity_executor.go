@@ -1117,6 +1117,11 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 		return auth, errUnmarshal
 	}
 
+	// Preserve tier info before refresh
+	tierID, _ := auth.Metadata["tier_id"].(string)
+	tierName, _ := auth.Metadata["tier_name"].(string)
+	tierIsPaid, _ := auth.Metadata["tier_is_paid"].(bool)
+
 	if auth.Metadata == nil {
 		auth.Metadata = make(map[string]any)
 	}
@@ -1132,6 +1137,18 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
 		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
 	}
+
+	// Restore preserved tier info
+	if tierID != "" {
+		auth.Metadata["tier_id"] = tierID
+	}
+	if tierName != "" {
+		auth.Metadata["tier_name"] = tierName
+	}
+	if tierIsPaid {
+		auth.Metadata["tier_is_paid"] = tierIsPaid
+	}
+
 	return auth, nil
 }
 
