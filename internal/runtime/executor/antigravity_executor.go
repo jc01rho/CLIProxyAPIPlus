@@ -1413,7 +1413,10 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 	template, _ = sjson.Set(template, "request.sessionId", generateStableSessionID(payload))
 
 	template, _ = sjson.Delete(template, "request.safetySettings")
-	template, _ = sjson.Set(template, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	// gemini-3-pro-high uses reasoning output that's incompatible with VALIDATED mode (causes malformed_function_call)
+	if !strings.Contains(modelName, "gemini-3-pro-high") {
+		template, _ = sjson.Set(template, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	}
 
 	if strings.Contains(modelName, "claude") {
 		gjson.Get(template, "request.tools").ForEach(func(key, tool gjson.Result) bool {
