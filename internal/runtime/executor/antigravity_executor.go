@@ -1223,7 +1223,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	payload = geminiToAntigravity(modelName, payload, projectID)
 	payload, _ = sjson.SetBytes(payload, "model", modelName)
 
-	if strings.Contains(modelName, "claude") {
+	if strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro-high") {
 		strJSON := string(payload)
 		paths := make([]string, 0)
 		util.Walk(gjson.ParseBytes(payload), "", "parametersJsonSchema", &paths)
@@ -1461,7 +1461,9 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 			})
 			return true
 		})
-	} else {
+	}
+
+	if !strings.Contains(modelName, "claude") {
 		template, _ = sjson.Delete(template, "request.generationConfig.maxOutputTokens")
 	}
 
