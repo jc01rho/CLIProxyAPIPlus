@@ -614,6 +614,16 @@ func (m *Manager) executeOnce(ctx context.Context, providers []string, req clipr
 }
 
 func (m *Manager) shouldTriggerFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		code := authErr.Code
+		if code == "auth_unavailable" || code == "auth_not_found" {
+			return true
+		}
+	}
 	status := statusCodeFromError(err)
 	return status == 429 || status == 401 || (status >= 500 && status < 600)
 }
