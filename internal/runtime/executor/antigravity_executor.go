@@ -1239,7 +1239,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		// Use the centralized schema cleaner to handle unsupported keywords,
 		// const->enum conversion, and flattening of types/anyOf.
 		strJSON = util.CleanJSONSchemaForAntigravity(strJSON)
-
 		payload = []byte(strJSON)
 	} else {
 		strJSON := string(payload)
@@ -1480,7 +1479,13 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 	template, _ = sjson.Set(template, "request.sessionId", generateStableSessionID(payload))
 
 	template, _ = sjson.Delete(template, "request.safetySettings")
-	template, _ = sjson.Set(template, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	if toolConfig := gjson.Get(template, "toolConfig"); toolConfig.Exists() && !gjson.Get(template, "request.toolConfig").Exists() {
+		template, _ = sjson.SetRaw(template, "request.toolConfig", toolConfig.Raw)
+		template, _ = sjson.Delete(template, "toolConfig")
+	}
+	if strings.Contains(modelName, "claude") {
+		template, _ = sjson.Set(template, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	}
 
 	// Clean tool parameters schema for all models (both Claude and Gemini)
 	// This handles unsupported keywords like anyOf, oneOf, $ref, complex type arrays, etc.
