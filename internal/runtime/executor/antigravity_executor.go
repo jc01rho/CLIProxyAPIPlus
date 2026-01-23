@@ -1266,6 +1266,12 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		}
 	}
 
+	if strings.Contains(modelName, "claude") {
+		payload, _ = sjson.SetBytes(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	} else {
+		payload, _ = sjson.DeleteBytes(payload, "request.generationConfig.maxOutputTokens")
+	}
+
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(payload))
 	if errReq != nil {
 		return nil, errReq
