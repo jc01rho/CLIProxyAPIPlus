@@ -726,7 +726,11 @@ func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
 		entries = wrapper.Items
 	}
 	h.cfg.OAuthModelAlias = sanitizedOAuthModelAlias(entries)
-	h.persist(c)
+	if h.persist(c) {
+		if h.authManager != nil {
+			h.authManager.SetOAuthModelAlias(h.cfg.OAuthModelAlias)
+		}
+	}
 }
 
 func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
@@ -766,14 +770,22 @@ func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 		if len(h.cfg.OAuthModelAlias) == 0 {
 			h.cfg.OAuthModelAlias = nil
 		}
-		h.persist(c)
+		if h.persist(c) {
+			if h.authManager != nil {
+				h.authManager.SetOAuthModelAlias(h.cfg.OAuthModelAlias)
+			}
+		}
 		return
 	}
 	if h.cfg.OAuthModelAlias == nil {
 		h.cfg.OAuthModelAlias = make(map[string][]config.OAuthModelAlias)
 	}
 	h.cfg.OAuthModelAlias[channel] = normalized
-	h.persist(c)
+	if h.persist(c) {
+		if h.authManager != nil {
+			h.authManager.SetOAuthModelAlias(h.cfg.OAuthModelAlias)
+		}
+	}
 }
 
 func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
@@ -797,7 +809,11 @@ func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
 	if len(h.cfg.OAuthModelAlias) == 0 {
 		h.cfg.OAuthModelAlias = nil
 	}
-	h.persist(c)
+	if h.persist(c) {
+		if h.authManager != nil {
+			h.authManager.SetOAuthModelAlias(h.cfg.OAuthModelAlias)
+		}
+	}
 }
 
 // codex-api-key: []CodexKey

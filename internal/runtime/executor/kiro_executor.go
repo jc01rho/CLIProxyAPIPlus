@@ -104,13 +104,13 @@ func getGlobalFingerprintManager() *kiroauth.FingerprintManager {
 // retryConfig holds configuration for socket retry logic.
 // Based on kiro2Api Python implementation patterns.
 type retryConfig struct {
-	MaxRetries       int           // Maximum number of retry attempts
-	BaseDelay        time.Duration // Base delay between retries (exponential backoff)
-	MaxDelay         time.Duration // Maximum delay cap
-	RetryableErrors  []string      // List of retryable error patterns
-	RetryableStatus  map[int]bool  // HTTP status codes to retry
-	FirstTokenTmout  time.Duration // Timeout for first token in streaming
-	StreamReadTmout  time.Duration // Timeout between stream chunks
+	MaxRetries      int           // Maximum number of retry attempts
+	BaseDelay       time.Duration // Base delay between retries (exponential backoff)
+	MaxDelay        time.Duration // Maximum delay cap
+	RetryableErrors []string      // List of retryable error patterns
+	RetryableStatus map[int]bool  // HTTP status codes to retry
+	FirstTokenTmout time.Duration // Timeout for first token in streaming
+	StreamReadTmout time.Duration // Timeout between stream chunks
 }
 
 // defaultRetryConfig returns the default retry configuration for Kiro socket operations.
@@ -482,12 +482,12 @@ func applyDynamicFingerprint(req *http.Request, auth *cliproxyauth.Auth) {
 		// Get token-specific fingerprint for dynamic UA generation
 		tokenKey := getTokenKey(auth)
 		fp := getGlobalFingerprintManager().GetFingerprint(tokenKey)
-		
+
 		// Use fingerprint-generated dynamic User-Agent
 		req.Header.Set("User-Agent", fp.BuildUserAgent())
 		req.Header.Set("X-Amz-User-Agent", fp.BuildAmzUserAgent())
 		req.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentModeSpec)
-		
+
 		log.Debugf("kiro: using dynamic fingerprint for token %s (SDK:%s, OS:%s/%s, Kiro:%s)",
 			tokenKey[:8]+"...", fp.SDKVersion, fp.OSType, fp.OSVersion, fp.KiroVersion)
 	} else {
@@ -506,10 +506,10 @@ func (e *KiroExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 	if strings.TrimSpace(accessToken) == "" {
 		return statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
-	
+
 	// Apply dynamic fingerprint-based headers
 	applyDynamicFingerprint(req, auth)
-	
+
 	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -670,7 +670,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 
 			// Apply dynamic fingerprint-based headers
 			applyDynamicFingerprint(httpReq, auth)
-			
+
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 			httpReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
@@ -1079,7 +1079,7 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 
 			// Apply dynamic fingerprint-based headers
 			applyDynamicFingerprint(httpReq, auth)
-			
+
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 			httpReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
@@ -1571,14 +1571,12 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 	modelMap := map[string]string{
 		// Amazon Q format (amazonq- prefix) - same API as Kiro
 		"amazonq-auto":                       "auto",
-		"amazonq-claude-opus-4-5":            "claude-opus-4.5",
 		"amazonq-claude-sonnet-4-5":          "claude-sonnet-4.5",
 		"amazonq-claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
 		"amazonq-claude-sonnet-4":            "claude-sonnet-4",
 		"amazonq-claude-sonnet-4-20250514":   "claude-sonnet-4",
 		"amazonq-claude-haiku-4-5":           "claude-haiku-4.5",
 		// Kiro format (kiro- prefix) - valid model names that should be preserved
-		"kiro-claude-opus-4-5":            "claude-opus-4.5",
 		"kiro-claude-sonnet-4-5":          "claude-sonnet-4.5",
 		"kiro-claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
 		"kiro-claude-sonnet-4":            "claude-sonnet-4",
@@ -1586,8 +1584,6 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		"kiro-claude-haiku-4-5":           "claude-haiku-4.5",
 		"kiro-auto":                       "auto",
 		// Native format (no prefix) - used by Kiro IDE directly
-		"claude-opus-4-5":            "claude-opus-4.5",
-		"claude-opus-4.5":            "claude-opus-4.5",
 		"claude-haiku-4-5":           "claude-haiku-4.5",
 		"claude-haiku-4.5":           "claude-haiku-4.5",
 		"claude-sonnet-4-5":          "claude-sonnet-4.5",
@@ -1597,14 +1593,10 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		"claude-sonnet-4-20250514":   "claude-sonnet-4",
 		"auto":                       "auto",
 		// Agentic variants (same backend model IDs, but with special system prompt)
-		"claude-opus-4.5-agentic":        "claude-opus-4.5",
-		"claude-sonnet-4.5-agentic":      "claude-sonnet-4.5",
-		"claude-sonnet-4-agentic":        "claude-sonnet-4",
-		"claude-haiku-4.5-agentic":       "claude-haiku-4.5",
-		"kiro-claude-opus-4-5-agentic":   "claude-opus-4.5",
-		"kiro-claude-sonnet-4-5-agentic": "claude-sonnet-4.5",
-		"kiro-claude-sonnet-4-agentic":   "claude-sonnet-4",
-		"kiro-claude-haiku-4-5-agentic":  "claude-haiku-4.5",
+		"claude-sonnet-4.5-agentic":     "claude-sonnet-4.5",
+		"claude-sonnet-4-agentic":       "claude-sonnet-4",
+		"claude-haiku-4.5-agentic":      "claude-haiku-4.5",
+		"kiro-claude-haiku-4-5-agentic": "claude-haiku-4.5",
 	}
 	if kiroID, ok := modelMap[model]; ok {
 		return kiroID
@@ -1633,12 +1625,6 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		// Default to Sonnet 4
 		log.Debugf("kiro: unknown Sonnet model '%s', mapping to claude-sonnet-4", model)
 		return "claude-sonnet-4"
-	}
-
-	// Check for Opus variants
-	if strings.Contains(modelLower, "opus") {
-		log.Debugf("kiro: unknown Opus model '%s', mapping to claude-opus-4.5", model)
-		return "claude-opus-4.5"
 	}
 
 	// Final fallback to Sonnet 4.5 (most commonly used model)
