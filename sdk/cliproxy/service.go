@@ -1521,6 +1521,47 @@ func generateKiroAgenticVariants(models []*ModelInfo) []*ModelInfo {
 	result := make([]*ModelInfo, 0, len(models)*2)
 	result = append(result, models...)
 
+	// [새로 추가] KiroExecutor가 지원하는 가상 Friendly ID들을 명시적으로 추가
+	// 이를 통해 사용자가 OAuthModelAlias에서 이 이름들을 타겟으로 사용할 수 있게 함
+	virtualModels := []struct {
+		ID          string
+		DisplayName string
+	}{
+		{"kiro-claude-opus-4-5", "Kiro Claude Opus 4.5"},
+		{"kiro-claude-sonnet-4-5", "Kiro Claude Sonnet 4.5"},
+		{"kiro-claude-sonnet-4", "Kiro Claude Sonnet 4"},
+		{"kiro-claude-haiku-4-5", "Kiro Claude Haiku 4.5"},
+		{"kiro-claude-opus-4-5-agentic", "Kiro Claude Opus 4.5 (Agentic)"},
+		{"kiro-claude-sonnet-4-5-agentic", "Kiro Claude Sonnet 4.5 (Agentic)"},
+		{"kiro-claude-sonnet-4-agentic", "Kiro Claude Sonnet 4 (Agentic)"},
+		{"kiro-claude-haiku-4-5-agentic", "Kiro Claude Haiku 4.5 (Agentic)"},
+	}
+
+	seen := make(map[string]bool)
+	for _, m := range models {
+		seen[m.ID] = true
+	}
+
+	// 가상 모델 중 아직 등록되지 않은 것만 추가
+	for _, vm := range virtualModels {
+		if !seen[vm.ID] {
+			virtual := &ModelInfo{
+				ID:                  vm.ID,
+				Object:              "model",
+				Created:             time.Now().Unix(),
+				OwnedBy:             "aws",
+				Type:                "kiro",
+				DisplayName:         vm.DisplayName,
+				Description:         "Virtual model compatible with Kiro Executor",
+				ContextLength:       200000,
+				MaxCompletionTokens: 64000,
+				Thinking:            &registry.ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+			}
+			result = append(result, virtual)
+			seen[vm.ID] = true
+		}
+	}
+
 	for _, m := range models {
 		if m == nil {
 			continue
