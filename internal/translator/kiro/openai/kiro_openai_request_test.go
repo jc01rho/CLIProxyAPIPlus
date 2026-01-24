@@ -13,7 +13,7 @@ func TestToolResultsAttachedToCurrentMessage(t *testing.T) {
 	// Sequence: user -> assistant (with tool_calls) -> tool (result) -> user
 	// The last user message should have the tool results attached
 	input := []byte(`{
-		"model": "kiro-claude-opus-4-5-agentic",
+		"model": "kiro-claude-sonnet-4-5-agentic",
 		"messages": [
 			{"role": "user", "content": "Hello, can you read a file for me?"},
 			{
@@ -78,7 +78,7 @@ func TestToolResultsInHistoryUserMessage(t *testing.T) {
 	// Sequence: user -> assistant (with tool_calls) -> tool (result) -> user -> assistant -> user
 	// The first user after tool should have tool results in history
 	input := []byte(`{
-		"model": "kiro-claude-opus-4-5-agentic",
+		"model": "kiro-claude-sonnet-4-5-agentic",
 		"messages": [
 			{"role": "user", "content": "Hello"},
 			{
@@ -146,7 +146,7 @@ func TestToolResultsInHistoryUserMessage(t *testing.T) {
 // TestToolResultsWithMultipleToolCalls verifies handling of multiple tool calls
 func TestToolResultsWithMultipleToolCalls(t *testing.T) {
 	input := []byte(`{
-		"model": "kiro-claude-opus-4-5-agentic",
+		"model": "kiro-claude-sonnet-4-5-agentic",
 		"messages": [
 			{"role": "user", "content": "Read two files for me"},
 			{
@@ -222,7 +222,7 @@ func TestToolResultsWithMultipleToolCalls(t *testing.T) {
 // the conversation ends with tool results (no following user message)
 func TestToolResultsAtEndOfConversation(t *testing.T) {
 	input := []byte(`{
-		"model": "kiro-claude-opus-4-5-agentic",
+		"model": "kiro-claude-sonnet-4-5-agentic",
 		"messages": [
 			{"role": "user", "content": "Read a file"},
 			{
@@ -280,7 +280,7 @@ func TestToolResultsFollowedByAssistant(t *testing.T) {
 	//   assistant: "I've read them"
 	//   user: "What did they say?"
 	input := []byte(`{
-		"model": "kiro-claude-opus-4-5-agentic",
+		"model": "kiro-claude-sonnet-4-5-agentic",
 		"messages": [
 			{"role": "user", "content": "Read two files for me"},
 			{
@@ -362,7 +362,7 @@ func TestToolResultsFollowedByAssistant(t *testing.T) {
 // TestAssistantEndsConversation verifies handling when assistant is the last message
 func TestAssistantEndsConversation(t *testing.T) {
 	input := []byte(`{
-		"model": "kiro-claude-opus-4-5-agentic",
+		"model": "kiro-claude-sonnet-4-5-agentic",
 		"messages": [
 			{"role": "user", "content": "Hello"},
 			{

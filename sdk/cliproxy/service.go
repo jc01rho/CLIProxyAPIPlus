@@ -1531,11 +1531,9 @@ func generateKiroAgenticVariants(models []*ModelInfo) []*ModelInfo {
 		ID          string
 		DisplayName string
 	}{
-		{"kiro-claude-opus-4-5", "Kiro Claude Opus 4.5"},
 		{"kiro-claude-sonnet-4-5", "Kiro Claude Sonnet 4.5"},
 		{"kiro-claude-sonnet-4", "Kiro Claude Sonnet 4"},
 		{"kiro-claude-haiku-4-5", "Kiro Claude Haiku 4.5"},
-		{"kiro-claude-opus-4-5-agentic", "Kiro Claude Opus 4.5 (Agentic)"},
 		{"kiro-claude-sonnet-4-5-agentic", "Kiro Claude Sonnet 4.5 (Agentic)"},
 		{"kiro-claude-sonnet-4-agentic", "Kiro Claude Sonnet 4 (Agentic)"},
 		{"kiro-claude-haiku-4-5-agentic", "Kiro Claude Haiku 4.5 (Agentic)"},
