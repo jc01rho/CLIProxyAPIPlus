@@ -395,12 +395,22 @@ func extractTierInfo(resp map[string]any) (tierID, tierName string, isPaid bool)
 	name, _ := effectiveTier["name"].(string)
 
 	idLower := strings.ToLower(id)
+	nameLower := strings.ToLower(name)
+
+	// Check tier by ID first, then by name patterns
 	switch {
 	case strings.Contains(idLower, "ultra"):
 		return "ultra", name, true
 	case strings.Contains(idLower, "pro"):
 		return "pro", name, true
 	case strings.Contains(idLower, "standard"), strings.Contains(idLower, "free"):
+		return "free", name, false
+	// Check by tier name patterns when ID doesn't match
+	case strings.Contains(nameLower, "google one ai pro"):
+		// "Gemini Code Assist in Google One AI Pro" -> Pro tier
+		return "pro", name, true
+	case strings.Contains(nameLower, "for individuals"):
+		// "Gemini Code Assist for individuals" -> Free tier
 		return "free", name, false
 	default:
 		return id, name, false
