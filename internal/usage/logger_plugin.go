@@ -76,6 +76,7 @@ type RequestStatistics struct {
 // apiStats holds aggregated metrics for a single API key.
 type apiStats struct {
 	TotalRequests int64
+	FailureCount  int64
 	TotalTokens   int64
 	Models        map[string]*modelStats
 }
@@ -83,6 +84,7 @@ type apiStats struct {
 // modelStats holds aggregated metrics for a specific model within an API.
 type modelStats struct {
 	TotalRequests int64
+	FailureCount  int64
 	TotalTokens   int64
 	Details       []RequestDetail
 }
@@ -123,6 +125,7 @@ type StatisticsSnapshot struct {
 // APISnapshot summarises metrics for a single API key.
 type APISnapshot struct {
 	TotalRequests int64                    `json:"total_requests"`
+	FailureCount  int64                    `json:"failure_count"`
 	TotalTokens   int64                    `json:"total_tokens"`
 	Models        map[string]ModelSnapshot `json:"models"`
 }
@@ -130,6 +133,7 @@ type APISnapshot struct {
 // ModelSnapshot summarises metrics for a specific model.
 type ModelSnapshot struct {
 	TotalRequests int64           `json:"total_requests"`
+	FailureCount  int64           `json:"failure_count"`
 	TotalTokens   int64           `json:"total_tokens"`
 	Details       []RequestDetail `json:"details"`
 }
@@ -212,6 +216,9 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 
 func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail RequestDetail) {
 	stats.TotalRequests++
+	if detail.Failed {
+		stats.FailureCount++
+	}
 	stats.TotalTokens += detail.Tokens.TotalTokens
 	modelStatsValue, ok := stats.Models[model]
 	if !ok {
@@ -219,6 +226,9 @@ func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail
 		stats.Models[model] = modelStatsValue
 	}
 	modelStatsValue.TotalRequests++
+	if detail.Failed {
+		modelStatsValue.FailureCount++
+	}
 	modelStatsValue.TotalTokens += detail.Tokens.TotalTokens
 	modelStatsValue.Details = append(modelStatsValue.Details, detail)
 }
@@ -242,6 +252,7 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 	for apiName, stats := range s.apis {
 		apiSnapshot := APISnapshot{
 			TotalRequests: stats.TotalRequests,
+			FailureCount:  stats.FailureCount,
 			TotalTokens:   stats.TotalTokens,
 			Models:        make(map[string]ModelSnapshot, len(stats.Models)),
 		}
@@ -250,6 +261,7 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 			copy(requestDetails, modelStatsValue.Details)
 			apiSnapshot.Models[modelName] = ModelSnapshot{
 				TotalRequests: modelStatsValue.TotalRequests,
+				FailureCount:  modelStatsValue.FailureCount,
 				TotalTokens:   modelStatsValue.TotalTokens,
 				Details:       requestDetails,
 			}
