@@ -1269,12 +1269,15 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 	}
 	channel := coreauth.OAuthModelAliasChannel(provider, authKind)
 	if channel == "" || len(cfg.OAuthModelAlias) == 0 {
+		log.Debugf("applyOAuthModelAlias: no channel or aliases (provider=%s, authKind=%s, channel=%s)", provider, authKind, channel)
 		return models
 	}
 	aliases := cfg.OAuthModelAlias[channel]
 	if len(aliases) == 0 {
+		log.Debugf("applyOAuthModelAlias: no aliases for channel=%s", channel)
 		return models
 	}
+	log.Debugf("applyOAuthModelAlias: processing %d aliases for channel=%s with %d models", len(aliases), channel, len(models))
 
 	type aliasEntry struct {
 		alias string
@@ -1354,6 +1357,7 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 			}
 			out = append(out, &clone)
 			addedAlias = true
+			log.Debugf("applyOAuthModelAlias: created alias model id=%s from target=%s", mappedID, id)
 		}
 
 		if !keepOriginal && !addedAlias {
@@ -1543,6 +1547,7 @@ func generateKiroAgenticVariants(models []*ModelInfo) []*ModelInfo {
 	}
 
 	// 가상 모델 중 아직 등록되지 않은 것만 추가
+	addedVirtuals := 0
 	for _, vm := range virtualModels {
 		if !seen[vm.ID] {
 			virtual := &ModelInfo{
@@ -1559,7 +1564,11 @@ func generateKiroAgenticVariants(models []*ModelInfo) []*ModelInfo {
 			}
 			result = append(result, virtual)
 			seen[vm.ID] = true
+			addedVirtuals++
 		}
+	}
+	if addedVirtuals > 0 {
+		log.Debugf("generateKiroAgenticVariants: added %d virtual models", addedVirtuals)
 	}
 
 	for _, m := range models {

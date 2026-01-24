@@ -5,6 +5,7 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	log "github.com/sirupsen/logrus"
 )
 
 type modelAliasEntry interface {
@@ -77,6 +78,7 @@ func (m *Manager) applyOAuthModelAlias(auth *Auth, requestedModel string) string
 	if upstreamModel == "" {
 		return requestedModel
 	}
+	log.Debugf("applyOAuthModelAlias: resolved alias %q -> %q (provider=%s)", requestedModel, upstreamModel, auth.Provider)
 	return upstreamModel
 }
 
