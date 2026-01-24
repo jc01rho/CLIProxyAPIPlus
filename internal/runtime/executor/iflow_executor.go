@@ -244,8 +244,10 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			log.Errorf("iflow executor: close response body error: %v", errClose)
 		}
 		appendAPIResponseChunk(ctx, e.cfg, data)
-		log.Debugf("iflow streaming error: status %d body %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
+		bodyStr := string(data)
+		summary := summarizeErrorBody(httpResp.Header.Get("Content-Type"), data)
+		log.Errorf("iflow streaming error: status %d, summary: %s, full body: %s", httpResp.StatusCode, summary, bodyStr)
+		err = statusErr{code: httpResp.StatusCode, msg: bodyStr}
 		return nil, err
 	}
 
