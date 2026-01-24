@@ -1577,9 +1577,15 @@ func generateKiroAgenticVariants(models []*ModelInfo) []*ModelInfo {
 			continue
 		}
 
+		// Skip if agentic variant already exists (from virtual models)
+		agenticID := m.ID + "-agentic"
+		if seen[agenticID] {
+			continue
+		}
+
 		// Create agentic variant
 		agentic := &ModelInfo{
-			ID:                  m.ID + "-agentic",
+			ID:                  agenticID,
 			Object:              m.Object,
 			Created:             m.Created,
 			OwnedBy:             m.OwnedBy,
@@ -1601,6 +1607,7 @@ func generateKiroAgenticVariants(models []*ModelInfo) []*ModelInfo {
 		}
 
 		result = append(result, agentic)
+		seen[agenticID] = true
 	}
 
 	return result
