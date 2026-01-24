@@ -190,7 +190,7 @@ waitForCallback:
 	tierName := "Unknown"
 	tierIsPaid := false
 	if tokenResp.AccessToken != "" {
-		projectInfo, errProject := fetchAntigravityProjectInfo(ctx, tokenResp.AccessToken, httpClient)
+		projectInfo, errProject := FetchAntigravityProjectInfo(ctx, tokenResp.AccessToken, httpClient)
 		if errProject != nil {
 			log.Warnf("antigravity: failed to fetch project info: %v", errProject)
 		} else {
@@ -418,14 +418,15 @@ const (
 
 // FetchAntigravityProjectID exposes project discovery for external callers.
 func FetchAntigravityProjectID(ctx context.Context, accessToken string, httpClient *http.Client) (string, error) {
-	info, err := fetchAntigravityProjectInfo(ctx, accessToken, httpClient)
+	info, err := FetchAntigravityProjectInfo(ctx, accessToken, httpClient)
 	if err != nil {
 		return "", err
 	}
 	return info.ProjectID, nil
 }
 
-func fetchAntigravityProjectInfo(ctx context.Context, accessToken string, httpClient *http.Client) (*AntigravityProjectInfo, error) {
+// FetchAntigravityProjectInfo fetches project ID and tier info from the Antigravity API.
+func FetchAntigravityProjectInfo(ctx context.Context, accessToken string, httpClient *http.Client) (*AntigravityProjectInfo, error) {
 	loadReqBody := map[string]any{
 		"metadata": map[string]string{
 			"ideType":    "ANTIGRAVITY",
