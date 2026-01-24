@@ -3,10 +3,10 @@ package management
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -436,12 +436,20 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
 		entry["id_token"] = claims
 	}
-	// Add Antigravity tier info
+	// Add Antigravity tier info (fetch if missing)
 	if auth.Provider == "antigravity" && auth.Metadata != nil {
-		if tierID, ok := auth.Metadata["tier_id"].(string); ok {
+		tierID, _ := auth.Metadata["tier_id"].(string)
+		tierName, _ := auth.Metadata["tier_name"].(string)
+
+		// If tier info missing, try to fetch it
+		if tierID == "" {
+			tierID, tierName = h.fetchAndCacheAntigravityTier(auth)
+		}
+
+		if tierID != "" {
 			entry["tier"] = tierID
 		}
-		if tierName, ok := auth.Metadata["tier_name"].(string); ok {
+		if tierName != "" {
 			entry["tier_name"] = tierName
 		}
 	}
@@ -463,6 +471,52 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		entry["next_retry_after"] = auth.NextRetryAfter
 	}
 	return entry
+}
+
+// fetchAndCacheAntigravityTier fetches tier info for an antigravity auth and caches it in metadata.
+// Returns tierID, tierName. On error, returns empty strings.
+func (h *Handler) fetchAndCacheAntigravityTier(auth *coreauth.Auth) (string, string) {
+	if auth == nil || auth.Provider != "antigravity" || auth.Metadata == nil {
+		return "", ""
+	}
+
+	// Check if already has tier info
+	if tierID, ok := auth.Metadata["tier_id"].(string); ok && tierID != "" {
+		tierName, _ := auth.Metadata["tier_name"].(string)
+		return tierID, tierName
+	}
+
+	// Get access token
+	accessToken, ok := auth.Metadata["access_token"].(string)
+	if !ok || strings.TrimSpace(accessToken) == "" {
+		return "", ""
+	}
+
+	// Fetch tier info
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	httpClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
+	projectInfo, err := sdkAuth.FetchAntigravityProjectInfo(ctx, accessToken, httpClient)
+	if err != nil {
+		log.Debugf("antigravity: failed to fetch tier for %s: %v", auth.ID, err)
+		return "", ""
+	}
+
+	// Cache in metadata
+	auth.Metadata["tier_id"] = projectInfo.TierID
+	auth.Metadata["tier_name"] = projectInfo.TierName
+	auth.Metadata["tier_is_paid"] = projectInfo.IsPaid
+
+	// Try to persist to disk if authManager is available
+	if h.authManager != nil {
+		if _, err := h.authManager.Update(ctx, auth); err != nil {
+			log.Debugf("antigravity: failed to persist tier for %s: %v", auth.ID, err)
+		}
+	}
+
+	log.Infof("antigravity: fetched tier %s for existing auth %s", projectInfo.TierID, auth.ID)
+	return projectInfo.TierID, projectInfo.TierName
 }
 
 func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
@@ -1719,13 +1773,19 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		}
 
 		projectID := ""
+		tierID := "unknown"
+		tierName := "Unknown"
+		tierIsPaid := false
 		if strings.TrimSpace(tokenResp.AccessToken) != "" {
-			fetchedProjectID, errProject := sdkAuth.FetchAntigravityProjectID(ctx, tokenResp.AccessToken, httpClient)
+			projectInfo, errProject := sdkAuth.FetchAntigravityProjectInfo(ctx, tokenResp.AccessToken, httpClient)
 			if errProject != nil {
-				log.Warnf("antigravity: failed to fetch project ID: %v", errProject)
+				log.Warnf("antigravity: failed to fetch project info: %v", errProject)
 			} else {
-				projectID = fetchedProjectID
-				log.Infof("antigravity: obtained project ID %s", projectID)
+				projectID = projectInfo.ProjectID
+				tierID = projectInfo.TierID
+				tierName = projectInfo.TierName
+				tierIsPaid = projectInfo.IsPaid
+				log.Infof("antigravity: obtained project ID %s, tier %s", projectID, tierID)
 			}
 		}
 
@@ -1737,6 +1797,9 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			"expires_in":    tokenResp.ExpiresIn,
 			"timestamp":     now.UnixMilli(),
 			"expired":       now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
+			"tier_id":       tierID,
+			"tier_name":     tierName,
+			"tier_is_paid":  tierIsPaid,
 		}
 		if email != "" {
 			metadata["email"] = email
