@@ -30,6 +30,7 @@ import (
 	iflowauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/qwen"
+	traeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/trae"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -2580,6 +2581,7 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 }
 
 const kiroCallbackPort = 9876
+const traeCallbackPort = 9877
 
 func (h *Handler) RequestKiroToken(c *gin.Context) {
 	ctx := context.Background()
@@ -2858,6 +2860,95 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid method, use 'aws', 'google', or 'github'"})
 	}
+}
+
+func (h *Handler) RequestTraeToken(c *gin.Context) {
+	ctx := context.Background()
+	state := fmt.Sprintf("trae-%d", time.Now().UnixNano())
+
+	RegisterOAuthSession(state, "trae")
+
+	go func() {
+		traeAuth := traeauth.NewTraeAuth(h.cfg)
+
+		pkceCodes, err := traeauth.GeneratePKCECodes()
+		if err != nil {
+			log.Errorf("failed to generate PKCE codes: %v", err)
+			SetOAuthSessionError(state, "failed to generate PKCE codes")
+			return
+		}
+
+		server := traeauth.NewOAuthServer(traeCallbackPort)
+		if err := server.Start(); err != nil {
+			log.Errorf("failed to start OAuth server: %v", err)
+			SetOAuthSessionError(state, "failed to start OAuth server")
+			return
+		}
+		defer func() {
+			_ = server.Stop(context.Background())
+		}()
+
+		redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", traeCallbackPort)
+
+		authURL, _, err := traeAuth.GenerateAuthURL(redirectURI, state, pkceCodes)
+		if err != nil {
+			log.Errorf("failed to generate auth URL: %v", err)
+			SetOAuthSessionError(state, "failed to generate auth URL")
+			return
+		}
+
+		SetOAuthSessionError(state, "auth_url|"+authURL)
+
+		result, err := server.WaitForCallback(5 * time.Minute)
+		if err != nil {
+			log.Errorf("failed to wait for callback: %v", err)
+			SetOAuthSessionError(state, "failed to wait for callback: "+err.Error())
+			return
+		}
+
+		if result.Error != "" {
+			log.Errorf("OAuth error: %s", result.Error)
+			SetOAuthSessionError(state, "OAuth error: "+result.Error)
+			return
+		}
+
+		bundle, err := traeAuth.ExchangeCodeForTokens(ctx, redirectURI, result.Code, result.State, pkceCodes)
+		if err != nil {
+			log.Errorf("failed to exchange code for tokens: %v", err)
+			SetOAuthSessionError(state, "failed to exchange code for tokens")
+			return
+		}
+
+		idPart := strings.ReplaceAll(bundle.TokenData.Email, "@", "_")
+		idPart = strings.ReplaceAll(idPart, ".", "_")
+		if idPart == "" {
+			idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+		}
+		fileName := fmt.Sprintf("trae-%s.json", idPart)
+
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "trae",
+			FileName: fileName,
+			Metadata: map[string]any{
+				"access_token":  bundle.TokenData.AccessToken,
+				"refresh_token": bundle.TokenData.RefreshToken,
+				"email":         bundle.TokenData.Email,
+				"expires_at":    bundle.TokenData.Expire,
+				"last_refresh":  bundle.LastRefresh,
+			},
+		}
+
+		if _, err := h.saveTokenRecord(ctx, record); err != nil {
+			log.Errorf("failed to save token: %v", err)
+			SetOAuthSessionError(state, "failed to save token")
+			return
+		}
+
+		CompleteOAuthSession(state)
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "state": state})
 }
 
 // generateKiroPKCE generates PKCE code verifier and challenge for Kiro OAuth.
