@@ -239,3 +239,25 @@ func (o *TraeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Tra
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}, nil
 }
+
+// CreateTokenStorage creates a TraeTokenStorage object from a TraeTokenData object.
+func (o *TraeAuth) CreateTokenStorage(tokenData *TraeTokenData) *TraeTokenStorage {
+	storage := &TraeTokenStorage{
+		AccessToken:  tokenData.AccessToken,
+		RefreshToken: tokenData.RefreshToken,
+		LastRefresh:  time.Now().Format(time.RFC3339),
+		Email:        tokenData.Email,
+		Expire:       tokenData.Expire,
+	}
+
+	return storage
+}
+
+// UpdateTokenStorage updates an existing token storage with new token data
+func (o *TraeAuth) UpdateTokenStorage(storage *TraeTokenStorage, tokenData *TraeTokenData) {
+	storage.AccessToken = tokenData.AccessToken
+	storage.RefreshToken = tokenData.RefreshToken
+	storage.LastRefresh = time.Now().Format(time.RFC3339)
+	storage.Email = tokenData.Email
+	storage.Expire = tokenData.Expire
+}
