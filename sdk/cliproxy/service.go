@@ -396,8 +396,6 @@ func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
 		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
 	case "trae":
 		s.coreManager.RegisterExecutor(executor.NewTraeExecutor(s.cfg))
-	case "ampcode":
-		s.coreManager.RegisterExecutor(executor.NewAmpCodeExecutor(s.cfg))
 	case "github-copilot":
 		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(s.cfg))
 	default:
