@@ -2866,38 +2866,38 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 	ctx := context.Background()
 	state := fmt.Sprintf("trae-%d", time.Now().UnixNano())
 
+	traeAuth := traeauth.NewTraeAuth(h.cfg)
+
+	pkceCodes, err := traeauth.GeneratePKCECodes()
+	if err != nil {
+		log.Errorf("failed to generate PKCE codes: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
+		return
+	}
+
+	server := traeauth.NewOAuthServer(traeCallbackPort)
+	if err := server.Start(); err != nil {
+		log.Errorf("failed to start OAuth server: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start OAuth server"})
+		return
+	}
+
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", traeCallbackPort)
+
+	authURL, _, err := traeAuth.GenerateAuthURL(redirectURI, state, pkceCodes)
+	if err != nil {
+		_ = server.Stop(context.Background())
+		log.Errorf("failed to generate auth URL: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate auth URL"})
+		return
+	}
+
 	RegisterOAuthSession(state, "trae")
 
 	go func() {
-		traeAuth := traeauth.NewTraeAuth(h.cfg)
-
-		pkceCodes, err := traeauth.GeneratePKCECodes()
-		if err != nil {
-			log.Errorf("failed to generate PKCE codes: %v", err)
-			SetOAuthSessionError(state, "failed to generate PKCE codes")
-			return
-		}
-
-		server := traeauth.NewOAuthServer(traeCallbackPort)
-		if err := server.Start(); err != nil {
-			log.Errorf("failed to start OAuth server: %v", err)
-			SetOAuthSessionError(state, "failed to start OAuth server")
-			return
-		}
 		defer func() {
 			_ = server.Stop(context.Background())
 		}()
-
-		redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", traeCallbackPort)
-
-		authURL, _, err := traeAuth.GenerateAuthURL(redirectURI, state, pkceCodes)
-		if err != nil {
-			log.Errorf("failed to generate auth URL: %v", err)
-			SetOAuthSessionError(state, "failed to generate auth URL")
-			return
-		}
-
-		SetOAuthSessionError(state, "auth_url|"+authURL)
 
 		result, err := server.WaitForCallback(5 * time.Minute)
 		if err != nil {
@@ -2948,7 +2948,7 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 		CompleteOAuthSession(state)
 	}()
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "state": state})
+	c.JSON(http.StatusOK, gin.H{"url": authURL, "state": state})
 }
 
 // generateKiroPKCE generates PKCE code verifier and challenge for Kiro OAuth.
