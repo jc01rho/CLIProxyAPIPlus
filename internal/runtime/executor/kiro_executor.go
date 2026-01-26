@@ -909,30 +909,11 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				return resp, err
 			}
 
-			// Fallback for usage if missing from upstream
-			if usageInfo.TotalTokens == 0 {
-				if enc, encErr := getTokenizer(req.Model); encErr == nil {
-					if inp, countErr := countOpenAIChatTokens(enc, opts.OriginalRequest); countErr == nil {
-						usageInfo.InputTokens = inp
-					}
-				}
-				if len(content) > 0 {
-					// Use tiktoken for more accurate output token calculation
-					if enc, encErr := getTokenizer(req.Model); encErr == nil {
-						if tokenCount, countErr := enc.Count(content); countErr == nil {
-							usageInfo.OutputTokens = int64(tokenCount)
-						}
-					}
-					// Fallback to character count estimation if tiktoken fails
-					if usageInfo.OutputTokens == 0 {
-						usageInfo.OutputTokens = int64(len(content) / 4)
-						if usageInfo.OutputTokens == 0 {
-							usageInfo.OutputTokens = 1
-						}
-					}
-				}
-				usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens
-			}
+			// Validate and estimate missing token counts
+			// Kiro API may return credit-based usage instead of token counts
+			// or may provide incomplete tokenUsage data
+			// This ensures we always have valid token counts for accurate billing
+			validateAndEstimateTokens(&usageInfo, content, opts.OriginalRequest, req.Model)
 
 			appendAPIResponseChunk(ctx, e.cfg, []byte(content))
 			reporter.publish(ctx, usageInfo)
@@ -1564,6 +1545,69 @@ func getEffectiveProfileArnWithWarning(auth *cliproxyauth.Auth, profileArn strin
 	return profileArn
 }
 
+// validateAndEstimateTokens ensures usageInfo has valid token counts.
+// Falls back to estimation if counts are missing or zero.
+// content: response text content (for output token estimation)
+// requestPayload: original request payload (for input token estimation)
+// model: model name (for tokenizer selection)
+func validateAndEstimateTokens(usageInfo *usage.Detail, content string, requestPayload []byte, model string) {
+	// If we already have both input and output tokens, nothing to do
+	if usageInfo.InputTokens > 0 && usageInfo.OutputTokens > 0 {
+		// Recalculate total if it doesn't match
+		expectedTotal := usageInfo.InputTokens + usageInfo.OutputTokens + usageInfo.ReasoningTokens
+		if usageInfo.TotalTokens == 0 || usageInfo.TotalTokens != expectedTotal {
+			usageInfo.TotalTokens = expectedTotal
+			log.Debugf("kiro: recalculated TotalTokens from sum: %d", usageInfo.TotalTokens)
+		}
+		return
+	}
+
+	// Estimate missing input tokens
+	if usageInfo.InputTokens == 0 && len(requestPayload) > 0 {
+		if enc, err := getTokenizer(model); err == nil {
+			// Try Claude format first (Kiro uses Claude API format)
+			if inp, err := countClaudeChatTokens(enc, requestPayload); err == nil && inp > 0 {
+				usageInfo.InputTokens = inp
+				log.Debugf("kiro: estimated InputTokens from Claude format: %d", inp)
+			} else if inp, err := countOpenAIChatTokens(enc, requestPayload); err == nil && inp > 0 {
+				// Fallback to OpenAI format
+				usageInfo.InputTokens = inp
+				log.Debugf("kiro: estimated InputTokens from OpenAI format: %d", inp)
+			} else {
+				// Final fallback: estimate from request size
+				usageInfo.InputTokens = int64(len(requestPayload) / 4)
+				if usageInfo.InputTokens == 0 {
+					usageInfo.InputTokens = 1
+				}
+				log.Debugf("kiro: estimated InputTokens from size: %d", usageInfo.InputTokens)
+			}
+		}
+	}
+
+	// Estimate missing output tokens
+	if usageInfo.OutputTokens == 0 && len(content) > 0 {
+		if enc, err := getTokenizer(model); err == nil {
+			if tokenCount, err := enc.Count(content); err == nil && tokenCount > 0 {
+				usageInfo.OutputTokens = int64(tokenCount)
+				log.Debugf("kiro: estimated OutputTokens from content: %d", usageInfo.OutputTokens)
+			}
+		}
+		// Fallback to character count estimation
+		if usageInfo.OutputTokens == 0 {
+			usageInfo.OutputTokens = int64(len(content) / 4)
+			if usageInfo.OutputTokens == 0 {
+				usageInfo.OutputTokens = 1
+			}
+			log.Debugf("kiro: estimated OutputTokens from size: %d", usageInfo.OutputTokens)
+		}
+	}
+
+	// Recalculate total tokens
+	usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens + usageInfo.ReasoningTokens
+	log.Infof("kiro: final token counts - Input: %d, Output: %d, Reasoning: %d, Total: %d",
+		usageInfo.InputTokens, usageInfo.OutputTokens, usageInfo.ReasoningTokens, usageInfo.TotalTokens)
+}
+
 // mapModelToKiro maps external model names to Kiro model IDs.
 // Supports both Kiro and Amazon Q prefixes since they use the same API.
 // Agentic variants (-agentic suffix) map to the same backend model IDs.
@@ -2115,6 +2159,15 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		}
 	}
 
+	// Validate and estimate missing token counts before returning
+	// This ensures we always have valid token counts, even if Kiro API
+	// doesn't provide tokenUsage data or provides incomplete data
+	// Note: We don't have requestPayload here, only content, so we can only estimate output tokens
+	// Input tokens will be validated in Execute() or streamToChannel()
+	if usageInfo.OutputTokens == 0 && content.Len() > 0 {
+		validateAndEstimateTokens(&usageInfo, cleanedContent, nil, "")
+	}
+
 	return cleanedContent, toolUses, usageInfo, stopReason, nil
 }
 
@@ -2394,6 +2447,9 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 	// Ensure usage is published even on early return
 	defer func() {
+		// Validate and estimate missing token counts before publishing
+		// This ensures we always have valid token counts for streaming responses
+		validateAndEstimateTokens(&totalUsage, accumulatedContent.String(), claudeBody, model)
 		reporter.publish(ctx, totalUsage)
 	}()
 
