@@ -2875,18 +2875,43 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 		return
 	}
 
-	server := traeauth.NewOAuthServer(traeCallbackPort)
-	if err := server.Start(); err != nil {
-		log.Errorf("failed to start OAuth server: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start OAuth server"})
-		return
-	}
+	isWebUI := isWebUIRequest(c)
+	var server *traeauth.OAuthServer
+	var forwarder *callbackForwarder
+	var redirectURI string
 
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", traeCallbackPort)
+	if isWebUI {
+		targetURL, errTarget := h.managementCallbackURL("/trae/callback")
+		if errTarget != nil {
+			log.WithError(errTarget).Error("failed to compute trae callback target")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
+			return
+		}
+		var errStart error
+		if forwarder, errStart = startCallbackForwarder(traeCallbackPort, "trae", targetURL); errStart != nil {
+			log.WithError(errStart).Error("failed to start trae callback forwarder")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
+			return
+		}
+		redirectURI = targetURL
+	} else {
+		server = traeauth.NewOAuthServer(traeCallbackPort)
+		if err := server.Start(); err != nil {
+			log.Errorf("failed to start OAuth server: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start OAuth server"})
+			return
+		}
+		redirectURI = fmt.Sprintf("http://127.0.0.1:%d/callback", traeCallbackPort)
+	}
 
 	authURL, _, err := traeAuth.GenerateAuthURL(redirectURI, state, pkceCodes)
 	if err != nil {
-		_ = server.Stop(context.Background())
+		if server != nil {
+			_ = server.Stop(context.Background())
+		}
+		if forwarder != nil {
+			stopCallbackForwarderInstance(traeCallbackPort, forwarder)
+		}
 		log.Errorf("failed to generate auth URL: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate auth URL"})
 		return
@@ -2896,23 +2921,78 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 
 	go func() {
 		defer func() {
-			_ = server.Stop(context.Background())
+			if server != nil {
+				_ = server.Stop(context.Background())
+			}
+			if forwarder != nil {
+				stopCallbackForwarderInstance(traeCallbackPort, forwarder)
+			}
 		}()
 
-		result, err := server.WaitForCallback(5 * time.Minute)
-		if err != nil {
-			log.Errorf("failed to wait for callback: %v", err)
-			SetOAuthSessionError(state, "failed to wait for callback: "+err.Error())
+		var code, resultState string
+
+		if isWebUI {
+			waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-trae-%s.oauth", state))
+			waitForFile := func(path string, timeout time.Duration) (map[string]string, error) {
+				deadline := time.Now().Add(timeout)
+				for {
+					if !IsOAuthSessionPending(state, "trae") {
+						return nil, errOAuthSessionNotPending
+					}
+					if time.Now().After(deadline) {
+						SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
+						return nil, fmt.Errorf("timeout waiting for OAuth callback")
+					}
+					data, errRead := os.ReadFile(path)
+					if errRead == nil {
+						var m map[string]string
+						_ = json.Unmarshal(data, &m)
+						_ = os.Remove(path)
+						return m, nil
+					}
+					time.Sleep(500 * time.Millisecond)
+				}
+			}
+
+			resultMap, errWait := waitForFile(waitFile, 5*time.Minute)
+			if errWait != nil {
+				if errors.Is(errWait, errOAuthSessionNotPending) {
+					return
+				}
+				log.Errorf("failed to wait for callback file: %v", errWait)
+				return
+			}
+			if errStr := resultMap["error"]; errStr != "" {
+				log.Errorf("OAuth error from file: %s", errStr)
+				SetOAuthSessionError(state, "OAuth error: "+errStr)
+				return
+			}
+			code = resultMap["code"]
+			resultState = resultMap["state"]
+		} else {
+			result, err := server.WaitForCallback(5 * time.Minute)
+			if err != nil {
+				log.Errorf("failed to wait for callback: %v", err)
+				SetOAuthSessionError(state, "failed to wait for callback: "+err.Error())
+				return
+			}
+
+			if result.Error != "" {
+				log.Errorf("OAuth error: %s", result.Error)
+				SetOAuthSessionError(state, "OAuth error: "+result.Error)
+				return
+			}
+			code = result.Code
+			resultState = result.State
+		}
+
+		if resultState != state {
+			log.Errorf("state mismatch: expected %s, got %s", state, resultState)
+			SetOAuthSessionError(state, "state mismatch")
 			return
 		}
 
-		if result.Error != "" {
-			log.Errorf("OAuth error: %s", result.Error)
-			SetOAuthSessionError(state, "OAuth error: "+result.Error)
-			return
-		}
-
-		bundle, err := traeAuth.ExchangeCodeForTokens(ctx, redirectURI, result.Code, result.State, pkceCodes)
+		bundle, err := traeAuth.ExchangeCodeForTokens(ctx, redirectURI, code, resultState, pkceCodes)
 		if err != nil {
 			log.Errorf("failed to exchange code for tokens: %v", err)
 			SetOAuthSessionError(state, "failed to exchange code for tokens")
