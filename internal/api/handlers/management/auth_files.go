@@ -2866,16 +2866,37 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 	ctx := context.Background()
 	state := fmt.Sprintf("trae-%d", time.Now().UnixNano())
 
+	// Get provider from query parameter (default: github)
+	provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
+	if provider == "" {
+		provider = "github"
+	}
+
+	// Validate provider
+	if provider != "github" && provider != "google" {
+		log.Errorf("[trae] invalid provider: %s", provider)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid provider, must be 'github' or 'google'"})
+		return
+	}
+
+	log.Debugf("Initializing Trae authentication (state=%s, provider=%s)", state, provider)
+
 	traeAuth := traeauth.NewTraeAuth(h.cfg)
 
+	// Generate PKCE codes (required for Google, not used for GitHub)
 	pkceCodes, err := traeauth.GeneratePKCECodes()
 	if err != nil {
-		log.Errorf("failed to generate PKCE codes: %v", err)
+		log.Errorf("[trae] failed to generate PKCE codes: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
 		return
 	}
 
 	isWebUI := isWebUIRequest(c)
+	if isWebUI {
+		log.Debugf("[trae] Web UI mode detected (state=%s, provider=%s)", state, provider)
+	} else {
+		log.Debugf("[trae] CLI mode detected (state=%s, provider=%s)", state, provider)
+	}
 	var server *traeauth.OAuthServer
 	var forwarder *callbackForwarder
 	var redirectURI string
@@ -2904,7 +2925,14 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 		redirectURI = fmt.Sprintf("http://127.0.0.1:%d/callback", traeCallbackPort)
 	}
 
-	authURL, _, err := traeAuth.GenerateAuthURL(redirectURI, state, pkceCodes)
+	// Generate auth URL based on provider
+	var authURL string
+	if provider == "github" {
+		authURL, err = traeAuth.GenerateGitHubAuthURL(redirectURI, state)
+	} else { // google
+		authURL, err = traeAuth.GenerateGoogleAuthURL(redirectURI, state, pkceCodes)
+	}
+
 	if err != nil {
 		if server != nil {
 			_ = server.Stop(context.Background())
@@ -2992,11 +3020,35 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 			return
 		}
 
-		bundle, err := traeAuth.ExchangeCodeForTokens(ctx, redirectURI, code, resultState, pkceCodes)
-		if err != nil {
-			log.Errorf("failed to exchange code for tokens: %v", err)
-			SetOAuthSessionError(state, "failed to exchange code for tokens")
-			return
+		// Exchange code for tokens based on provider
+		var bundle *traeauth.TraeAuthBundle
+		if provider == "github" {
+			tokenData, errExchange := traeAuth.ExchangeGitHubCode(ctx, code)
+			if errExchange != nil {
+				log.Errorf("failed to exchange GitHub code: %v", errExchange)
+				SetOAuthSessionError(state, "failed to exchange code for tokens")
+				return
+			}
+
+			// Format token with JWT prefix
+			formattedToken := fmt.Sprintf("Cloud-IDE-JWT %s", tokenData.Token)
+			bundle = &traeauth.TraeAuthBundle{
+				TokenData: traeauth.TraeTokenData{
+					AccessToken:  formattedToken,
+					RefreshToken: "",
+					Email:        tokenData.Email,
+					Expire:       tokenData.ExpiresAt,
+				},
+				LastRefresh: time.Now().Format(time.RFC3339),
+			}
+		} else { // google
+			bundle, err = traeAuth.ExchangeGoogleCode(ctx, code, pkceCodes)
+			if err != nil {
+				log.Errorf("failed to exchange Google code: %v", err)
+				SetOAuthSessionError(state, "failed to exchange code for tokens")
+				return
+			}
+			bundle.LastRefresh = time.Now().Format(time.RFC3339)
 		}
 
 		idPart := strings.ReplaceAll(bundle.TokenData.Email, "@", "_")
@@ -3011,11 +3063,12 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 			Provider: "trae",
 			FileName: fileName,
 			Metadata: map[string]any{
-				"access_token":  bundle.TokenData.AccessToken,
-				"refresh_token": bundle.TokenData.RefreshToken,
-				"email":         bundle.TokenData.Email,
-				"expires_at":    bundle.TokenData.Expire,
-				"last_refresh":  bundle.LastRefresh,
+				"access_token":   bundle.TokenData.AccessToken,
+				"refresh_token":  bundle.TokenData.RefreshToken,
+				"email":          bundle.TokenData.Email,
+				"expires_at":     bundle.TokenData.Expire,
+				"last_refresh":   bundle.LastRefresh,
+				"oauth_provider": provider, // Track which OAuth provider was used
 			},
 		}
 
@@ -3028,7 +3081,7 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 		CompleteOAuthSession(state)
 	}()
 
-	c.JSON(http.StatusOK, gin.H{"url": authURL, "state": state})
+	c.JSON(http.StatusOK, gin.H{"url": authURL, "state": state, "provider": provider})
 }
 
 // generateKiroPKCE generates PKCE code verifier and challenge for Kiro OAuth.
