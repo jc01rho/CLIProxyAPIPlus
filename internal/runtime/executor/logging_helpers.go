@@ -393,3 +393,25 @@ func logWithRequestID(ctx context.Context) *log.Entry {
 	}
 	return log.WithField("request_id", requestID)
 }
+
+// logDetailedAPIError logs detailed error information for API errors at Warn/Error level.
+// This function logs the full error body, URL, status code, and provider information.
+// 4xx errors are logged at Warn level, 5xx errors at Error level.
+func logDetailedAPIError(ctx context.Context, provider string, url string, statusCode int, contentType string, body []byte) {
+	entry := logWithRequestID(ctx)
+
+	// 4xx는 Warn, 5xx는 Error
+	logFn := entry.Warnf
+	if statusCode >= 500 {
+		logFn = entry.Errorf
+	}
+
+	// 전체 에러 바디 로깅 (단, 너무 길면 잘라냄)
+	bodyStr := string(body)
+	if len(bodyStr) > 4096 {
+		bodyStr = bodyStr[:4096] + "...[truncated]"
+	}
+
+	logFn("[%s] API error - URL: %s, Status: %d, Content-Type: %s, Response: %s",
+		provider, url, statusCode, contentType, bodyStr)
+}

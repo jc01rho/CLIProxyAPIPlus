@@ -51,3 +51,7 @@ _bmad-output/*
 .DS_Store
 ._*
 *.bak
+*.json
+.cli-proxy-api/
+.sisyphus/
+.tldr/
