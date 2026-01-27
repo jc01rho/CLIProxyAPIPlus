@@ -22,9 +22,29 @@ import (
 )
 
 const (
+	// DEPRECATED: Placeholder values - kept for backward compatibility
 	traeAuthURL  = "https://www.trae.ai/login"
 	traeTokenURL = "https://www.trae.ai/api/oauth/token" // Placeholder, subject to verification
 	traeClientID = "ono9krqynydwx5"
+
+	// Real discovered values from Trae OAuth implementation
+	// Backend API base URL for Trae services
+	traeBackendURL = "https://mssdk-sg.trae.ai"
+
+	// GitHub OAuth configuration
+	// Client ID for GitHub OAuth integration with Trae
+	githubClientID = "Iv23li49AhCcfdXa9zKZ"
+	// Platform ID for GitHub provider in Trae system
+	githubPlatformID = "2334"
+
+	// Google OAuth configuration
+	// Client ID for Google OAuth integration with Trae
+	googleClientID = "976659970787-kghev18c2tsnbt19o3lmpbc3tngq8obl.apps.googleusercontent.com"
+	// Platform ID for Google provider in Trae system
+	googlePlatformID = "2333"
+
+	// JWT format identifier used by Trae Cloud IDE
+	traeJWTFormat = "Cloud-IDE-JWT"
 )
 
 // PKCECodes holds PKCE verification codes for OAuth2 PKCE flow
