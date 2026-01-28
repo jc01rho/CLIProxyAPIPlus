@@ -37,12 +37,6 @@ const (
 	// Platform ID for GitHub provider in Trae system
 	githubPlatformID = "2334"
 
-	// Google OAuth configuration
-	// Client ID for Google OAuth integration with Trae
-	googleClientID = "976659970787-kghev18c2tsnbt19o3lmpbc3tngq8obl.apps.googleusercontent.com"
-	// Platform ID for Google provider in Trae system
-	googlePlatformID = "2333"
-
 	// JWT format identifier used by Trae Cloud IDE
 	traeJWTFormat = "Cloud-IDE-JWT"
 )
