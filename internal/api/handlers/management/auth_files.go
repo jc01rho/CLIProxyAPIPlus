@@ -2866,43 +2866,21 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 	ctx := context.Background()
 	state := fmt.Sprintf("trae-%d", time.Now().UnixNano())
 
-	// Get provider from query parameter (default: github)
-	provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
-	if provider == "" {
-		provider = "github"
-	}
-
-	// Validate provider
-	if provider != "github" && provider != "google" {
-		log.Errorf("[trae] invalid provider: %s", provider)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid provider, must be 'github' or 'google'"})
-		return
-	}
-
-	log.Debugf("Initializing Trae authentication (state=%s, provider=%s)", state, provider)
-
-	traeAuth := traeauth.NewTraeAuth(h.cfg)
-
-	// Generate PKCE codes (required for Google, not used for GitHub)
-	pkceCodes, err := traeauth.GeneratePKCECodes()
-	if err != nil {
-		log.Errorf("[trae] failed to generate PKCE codes: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
-		return
-	}
+	log.Debugf("Initializing Trae Native OAuth authentication (state=%s)", state)
 
 	isWebUI := isWebUIRequest(c)
 	if isWebUI {
-		log.Debugf("[trae] Web UI mode detected (state=%s, provider=%s)", state, provider)
+		log.Debugf("[trae] Web UI mode detected (state=%s)", state)
 	} else {
-		log.Debugf("[trae] CLI mode detected (state=%s, provider=%s)", state, provider)
+		log.Debugf("[trae] CLI mode detected (state=%s)", state)
 	}
+
 	var server *traeauth.OAuthServer
 	var forwarder *callbackForwarder
-	var redirectURI string
+	var callbackURL string
 
 	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/trae/callback")
+		targetURL, errTarget := h.managementCallbackURL("/trae/authorize")
 		if errTarget != nil {
 			log.WithError(errTarget).Error("failed to compute trae callback target")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
@@ -2914,7 +2892,7 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
 		}
-		redirectURI = targetURL
+		callbackURL = fmt.Sprintf("http://127.0.0.1:%d/authorize", traeCallbackPort)
 	} else {
 		server = traeauth.NewOAuthServer(traeCallbackPort)
 		if err := server.Start(); err != nil {
@@ -2922,17 +2900,11 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start OAuth server"})
 			return
 		}
-		redirectURI = fmt.Sprintf("http://127.0.0.1:%d/callback", traeCallbackPort)
+		callbackURL = fmt.Sprintf("http://127.0.0.1:%d/authorize", traeCallbackPort)
 	}
 
-	// Generate auth URL based on provider
-	var authURL string
-	if provider == "github" {
-		authURL, err = traeAuth.GenerateGitHubAuthURL(redirectURI, state)
-	} else { // google
-		authURL, err = traeAuth.GenerateGoogleAuthURL(redirectURI, state, pkceCodes)
-	}
-
+	appVersion := "1.0.0"
+	authURL, loginTraceID, err := traeauth.GenerateNativeAuthURL(callbackURL, appVersion)
 	if err != nil {
 		if server != nil {
 			_ = server.Stop(context.Background())
@@ -2940,7 +2912,7 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 		if forwarder != nil {
 			stopCallbackForwarderInstance(traeCallbackPort, forwarder)
 		}
-		log.Errorf("failed to generate auth URL: %v", err)
+		log.Errorf("failed to generate native auth URL: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate auth URL"})
 		return
 	}
@@ -2957,11 +2929,11 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 			}
 		}()
 
-		var code, resultState string
+		var nativeResult *traeauth.NativeOAuthResult
 
 		if isWebUI {
 			waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-trae-%s.oauth", state))
-			waitForFile := func(path string, timeout time.Duration) (map[string]string, error) {
+			waitForFile := func(path string, timeout time.Duration) (*traeauth.NativeOAuthResult, error) {
 				deadline := time.Now().Add(timeout)
 				for {
 					if !IsOAuthSessionPending(state, "trae") {
@@ -2973,16 +2945,19 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 					}
 					data, errRead := os.ReadFile(path)
 					if errRead == nil {
-						var m map[string]string
-						_ = json.Unmarshal(data, &m)
+						var result traeauth.NativeOAuthResult
+						if errParse := json.Unmarshal(data, &result); errParse != nil {
+							return nil, fmt.Errorf("failed to parse callback data: %w", errParse)
+						}
 						_ = os.Remove(path)
-						return m, nil
+						return &result, nil
 					}
 					time.Sleep(500 * time.Millisecond)
 				}
 			}
 
-			resultMap, errWait := waitForFile(waitFile, 5*time.Minute)
+			var errWait error
+			nativeResult, errWait = waitForFile(waitFile, 5*time.Minute)
 			if errWait != nil {
 				if errors.Is(errWait, errOAuthSessionNotPending) {
 					return
@@ -2990,71 +2965,40 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 				log.Errorf("failed to wait for callback file: %v", errWait)
 				return
 			}
-			if errStr := resultMap["error"]; errStr != "" {
-				log.Errorf("OAuth error from file: %s", errStr)
-				SetOAuthSessionError(state, "OAuth error: "+errStr)
-				return
-			}
-			code = resultMap["code"]
-			resultState = resultMap["state"]
 		} else {
-			result, err := server.WaitForCallback(5 * time.Minute)
-			if err != nil {
-				log.Errorf("failed to wait for callback: %v", err)
-				SetOAuthSessionError(state, "failed to wait for callback: "+err.Error())
+			var errWait error
+			nativeResult, errWait = server.WaitForNativeCallback(5 * time.Minute)
+			if errWait != nil {
+				log.Errorf("failed to wait for native callback: %v", errWait)
+				SetOAuthSessionError(state, "failed to wait for callback: "+errWait.Error())
 				return
 			}
-
-			if result.Error != "" {
-				log.Errorf("OAuth error: %s", result.Error)
-				SetOAuthSessionError(state, "OAuth error: "+result.Error)
-				return
-			}
-			code = result.Code
-			resultState = result.State
 		}
 
-		if resultState != state {
-			log.Errorf("state mismatch: expected %s, got %s", state, resultState)
-			SetOAuthSessionError(state, "state mismatch")
+		if nativeResult.Error != "" {
+			log.Errorf("Native OAuth error: %s", nativeResult.Error)
+			SetOAuthSessionError(state, "OAuth error: "+nativeResult.Error)
 			return
 		}
 
-		// Exchange code for tokens based on provider
-		var bundle *traeauth.TraeAuthBundle
-		if provider == "github" {
-			tokenData, errExchange := traeAuth.ExchangeGitHubCode(ctx, code)
-			if errExchange != nil {
-				log.Errorf("failed to exchange GitHub code: %v", errExchange)
-				SetOAuthSessionError(state, "failed to exchange code for tokens")
-				return
-			}
-
-			// Format token with JWT prefix
-			formattedToken := fmt.Sprintf("Cloud-IDE-JWT %s", tokenData.Token)
-			bundle = &traeauth.TraeAuthBundle{
-				TokenData: traeauth.TraeTokenData{
-					AccessToken:  formattedToken,
-					RefreshToken: "",
-					Email:        tokenData.Email,
-					Expire:       tokenData.ExpiresAt,
-				},
-				LastRefresh: time.Now().Format(time.RFC3339),
-			}
-		} else { // google
-			bundle, err = traeAuth.ExchangeGoogleCode(ctx, code, pkceCodes)
-			if err != nil {
-				log.Errorf("failed to exchange Google code: %v", err)
-				SetOAuthSessionError(state, "failed to exchange code for tokens")
-				return
-			}
-			bundle.LastRefresh = time.Now().Format(time.RFC3339)
+		if nativeResult.UserJWT == nil {
+			log.Error("No UserJWT in native callback result")
+			SetOAuthSessionError(state, "No token received")
+			return
 		}
 
-		idPart := strings.ReplaceAll(bundle.TokenData.Email, "@", "_")
+		email := ""
+		if nativeResult.UserInfo != nil {
+			email = nativeResult.UserInfo.ScreenName
+		}
+		idPart := strings.ReplaceAll(email, "@", "_")
 		idPart = strings.ReplaceAll(idPart, ".", "_")
 		if idPart == "" {
-			idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+			if nativeResult.UserInfo != nil && nativeResult.UserInfo.UserID != "" {
+				idPart = nativeResult.UserInfo.UserID
+			} else {
+				idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+			}
 		}
 		fileName := fmt.Sprintf("trae-%s.json", idPart)
 
@@ -3063,13 +3007,24 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 			Provider: "trae",
 			FileName: fileName,
 			Metadata: map[string]any{
-				"access_token":   bundle.TokenData.AccessToken,
-				"refresh_token":  bundle.TokenData.RefreshToken,
-				"email":          bundle.TokenData.Email,
-				"expires_at":     bundle.TokenData.Expire,
-				"last_refresh":   bundle.LastRefresh,
-				"oauth_provider": provider, // Track which OAuth provider was used
+				"access_token":    nativeResult.UserJWT.Token,
+				"refresh_token":   nativeResult.UserJWT.RefreshToken,
+				"client_id":       nativeResult.UserJWT.ClientID,
+				"token_expire_at": nativeResult.UserJWT.TokenExpireAt,
+				"user_id":         "",
+				"screen_name":     "",
+				"host":            nativeResult.Host,
+				"user_region":     nativeResult.UserRegion,
+				"login_trace_id":  loginTraceID,
+				"last_refresh":    time.Now().Format(time.RFC3339),
 			},
+		}
+
+		if nativeResult.UserInfo != nil {
+			record.Metadata["user_id"] = nativeResult.UserInfo.UserID
+			record.Metadata["screen_name"] = nativeResult.UserInfo.ScreenName
+			record.Metadata["avatar_url"] = nativeResult.UserInfo.AvatarUrl
+			record.Metadata["tenant_id"] = nativeResult.UserInfo.TenantID
 		}
 
 		if _, err := h.saveTokenRecord(ctx, record); err != nil {
@@ -3081,7 +3036,11 @@ func (h *Handler) RequestTraeToken(c *gin.Context) {
 		CompleteOAuthSession(state)
 	}()
 
-	c.JSON(http.StatusOK, gin.H{"url": authURL, "state": state, "provider": provider})
+	c.JSON(http.StatusOK, gin.H{
+		"url":            authURL,
+		"state":          state,
+		"login_trace_id": loginTraceID,
+	})
 }
 
 // generateKiroPKCE generates PKCE code verifier and challenge for Kiro OAuth.
