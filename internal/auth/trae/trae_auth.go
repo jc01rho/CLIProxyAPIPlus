@@ -31,12 +31,6 @@ const (
 	// Backend API base URL for Trae services
 	traeBackendURL = "https://mssdk-sg.trae.ai"
 
-	// GitHub OAuth configuration
-	// Client ID for GitHub OAuth integration with Trae
-	githubClientID = "Iv23li49AhCcfdXa9zKZ"
-	// Platform ID for GitHub provider in Trae system
-	githubPlatformID = "2334"
-
 	// JWT format identifier used by Trae Cloud IDE
 	traeJWTFormat = "Cloud-IDE-JWT"
 )
