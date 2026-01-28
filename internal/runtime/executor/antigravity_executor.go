@@ -163,6 +163,14 @@ attemptLoop:
 				return resp, err
 			}
 
+			log.WithFields(log.Fields{
+				"auth_id":  auth.ID,
+				"provider": e.Identifier(),
+				"model":    baseModel,
+				"url":      httpReq.URL.String(),
+				"method":   httpReq.Method,
+			}).Infof("external HTTP request: %s %s", httpReq.Method, httpReq.URL.String())
+
 			httpResp, errDo := httpClient.Do(httpReq)
 			if errDo != nil {
 				recordAPIResponseError(ctx, e.cfg, errDo)
@@ -1208,6 +1216,18 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	auth.Metadata["type"] = antigravityAuthType
 	if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
 		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
+		log.Infof("antigravity executor: blocking auth %s for 30 minutes due to project id failure", auth.ID)
+		if auth.ModelStates == nil {
+			auth.ModelStates = make(map[string]*cliproxyauth.ModelState)
+		}
+		auth.ModelStates[""] = &cliproxyauth.ModelState{
+			Status:         cliproxyauth.StatusDisabled,
+			Unavailable:    true,
+			NextRetryAfter: time.Now().Add(30 * time.Minute),
+			UpdatedAt:      time.Now(),
+			LastError:      &cliproxyauth.Error{Code: "project_id_failed", Message: errProject.Error()},
+			StatusMessage:  "blocked due to project id failure",
+		}
 	}
 
 	// Restore preserved tier info
