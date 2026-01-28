@@ -5,6 +5,7 @@ package trae
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -26,6 +27,8 @@ type OAuthServer struct {
 	port int
 	// resultChan is a channel for sending OAuth results
 	resultChan chan *OAuthResult
+	// nativeResultChan is a channel for sending Native OAuth results
+	nativeResultChan chan *NativeOAuthResult
 	// errorChan is a channel for sending OAuth errors
 	errorChan chan error
 	// mu is a mutex for protecting server state
@@ -46,6 +49,18 @@ type OAuthResult struct {
 	Error string
 }
 
+// NativeOAuthResult contains the result of the Trae Native OAuth callback.
+type NativeOAuthResult struct {
+	UserJWT      *UserJWT  `json:"user_jwt"`
+	UserInfo     *UserInfo `json:"user_info"`
+	Scope        string    `json:"scope"`
+	RefreshToken string    `json:"refresh_token"`
+	LoginTraceID string    `json:"login_trace_id"`
+	Host         string    `json:"host"`
+	UserRegion   string    `json:"user_region"`
+	Error        string    `json:"error,omitempty"`
+}
+
 // NewOAuthServer creates a new OAuth callback server.
 // It initializes the server with the specified port and creates channels
 // for handling OAuth results and errors.
@@ -57,9 +72,10 @@ type OAuthResult struct {
 //   - *OAuthServer: A new OAuthServer instance
 func NewOAuthServer(port int) *OAuthServer {
 	return &OAuthServer{
-		port:       port,
-		resultChan: make(chan *OAuthResult, 1),
-		errorChan:  make(chan error, 1),
+		port:             port,
+		resultChan:       make(chan *OAuthResult, 1),
+		nativeResultChan: make(chan *NativeOAuthResult, 1),
+		errorChan:        make(chan error, 1),
 	}
 }
 
@@ -83,6 +99,7 @@ func (s *OAuthServer) Start() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", s.handleCallback)
+	mux.HandleFunc("/authorize", s.handleAuthorize)
 	mux.HandleFunc("/success", s.handleSuccess)
 
 	s.server = &http.Server{
@@ -286,6 +303,74 @@ func (s *OAuthServer) sendResult(result *OAuthResult) {
 		log.Debug("OAuth result sent to channel")
 	default:
 		log.Warn("OAuth result channel is full, result dropped")
+	}
+}
+
+func (s *OAuthServer) sendNativeResult(result *NativeOAuthResult) {
+	select {
+	case s.nativeResultChan <- result:
+		log.Debug("Native OAuth result sent to channel")
+	default:
+		log.Warn("Native OAuth result channel is full, result dropped")
+	}
+}
+
+func (s *OAuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	log.Debug("Received Native OAuth authorize callback")
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := r.URL.Query()
+
+	userJwtStr := query.Get("userJwt")
+	if userJwtStr == "" {
+		log.Error("No userJwt parameter received")
+		s.sendNativeResult(&NativeOAuthResult{Error: "no_user_jwt"})
+		http.Error(w, "No userJwt parameter", http.StatusBadRequest)
+		return
+	}
+
+	var userJWT UserJWT
+	if err := json.Unmarshal([]byte(userJwtStr), &userJWT); err != nil {
+		log.Errorf("Failed to parse userJwt: %v", err)
+		s.sendNativeResult(&NativeOAuthResult{Error: "invalid_user_jwt"})
+		http.Error(w, "Invalid userJwt format", http.StatusBadRequest)
+		return
+	}
+
+	userInfoStr := query.Get("userInfo")
+	var userInfo UserInfo
+	if userInfoStr != "" {
+		if err := json.Unmarshal([]byte(userInfoStr), &userInfo); err != nil {
+			log.Warnf("Failed to parse userInfo: %v", err)
+		}
+	}
+
+	result := &NativeOAuthResult{
+		UserJWT:      &userJWT,
+		UserInfo:     &userInfo,
+		Scope:        query.Get("scope"),
+		RefreshToken: query.Get("refreshToken"),
+		LoginTraceID: query.Get("loginTraceID"),
+		Host:         query.Get("host"),
+		UserRegion:   query.Get("userRegion"),
+	}
+
+	s.sendNativeResult(result)
+	http.Redirect(w, r, "/success", http.StatusFound)
+}
+
+func (s *OAuthServer) WaitForNativeCallback(timeout time.Duration) (*NativeOAuthResult, error) {
+	select {
+	case result := <-s.nativeResultChan:
+		return result, nil
+	case err := <-s.errorChan:
+		return nil, err
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("timeout waiting for Native OAuth callback")
 	}
 }
 
