@@ -30,7 +30,6 @@ var aiAPIPrefixes = []string{
 }
 
 const skipGinLogKey = "__gin_skip_request_logging__"
-const modelNameKey = "__gin_model_name__"
 const requestBodyKey = "__gin_request_body__"
 
 // GinLogrusLogger returns a Gin middleware handler that logs HTTP requests and responses
@@ -113,15 +112,12 @@ func GinLogrusLogger() gin.HandlerFunc {
 		logLine := fmt.Sprintf("%3d | %13v | %15s | %-7s \"%s\"", statusCode, latency, clientIP, method, path)
 
 		if isAIAPIPath(path) && (modelName != "" || authKeyName != "") {
-			var parts []string
-			if modelName != "" {
-				parts = append(parts, modelName)
-			}
-			if authKeyName != "" {
-				parts = append(parts, authKeyName)
-			}
-			if len(parts) > 0 {
-				logLine = logLine + " | " + fmt.Sprintf("%s (%s)", parts[0], authKeyName)
+			if modelName != "" && authKeyName != "" {
+				logLine = logLine + " | " + fmt.Sprintf("%s (%s)", modelName, authKeyName)
+			} else if modelName != "" {
+				logLine = logLine + " | " + modelName
+			} else if authKeyName != "" {
+				logLine = logLine + " | " + authKeyName
 			}
 		}
 
