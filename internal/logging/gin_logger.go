@@ -31,6 +31,21 @@ var aiAPIPrefixes = []string{
 
 const skipGinLogKey = "__gin_skip_request_logging__"
 const requestBodyKey = "__gin_request_body__"
+const providerAuthContextKey = "cliproxy.provider_auth"
+
+func getProviderAuthFromContext(c *gin.Context) (provider, authID, authLabel string) {
+	if c == nil || c.Request == nil {
+		return "", "", ""
+	}
+	ctx := c.Request.Context()
+	if ctx == nil {
+		return "", "", ""
+	}
+	if v, ok := ctx.Value(providerAuthContextKey).(map[string]string); ok {
+		return v["provider"], v["auth_id"], v["auth_label"]
+	}
+	return "", "", ""
+}
 
 // GinLogrusLogger returns a Gin middleware handler that logs HTTP requests and responses
 // using logrus. It captures request details including method, path, status code, latency,
@@ -105,19 +120,36 @@ func GinLogrusLogger() gin.HandlerFunc {
 			}
 		}
 
+		provider, authID, authLabel := getProviderAuthFromContext(c)
+		providerInfo := ""
+		if provider != "" {
+			displayAuth := authLabel
+			if displayAuth == "" {
+				displayAuth = authID
+			}
+			if displayAuth != "" {
+				providerInfo = fmt.Sprintf("%s:%s", provider, displayAuth)
+			} else {
+				providerInfo = provider
+			}
+		}
+
 		if requestID == "" {
 			requestID = "--------"
 		}
 
 		logLine := fmt.Sprintf("%3d | %13v | %15s | %-7s \"%s\"", statusCode, latency, clientIP, method, path)
 
-		if isAIAPIPath(path) && (modelName != "" || authKeyName != "") {
-			if modelName != "" && authKeyName != "" {
-				logLine = logLine + " | " + fmt.Sprintf("%s (%s)", modelName, authKeyName)
+		if isAIAPIPath(path) && (modelName != "" || providerInfo != "" || authKeyName != "") {
+			if modelName != "" && providerInfo != "" {
+				logLine = logLine + " | " + fmt.Sprintf("%s | %s", modelName, providerInfo)
 			} else if modelName != "" {
 				logLine = logLine + " | " + modelName
-			} else if authKeyName != "" {
-				logLine = logLine + " | " + authKeyName
+			} else if providerInfo != "" {
+				logLine = logLine + " | " + providerInfo
+			}
+			if authKeyName != "" && providerInfo == "" {
+				logLine = logLine + " | (" + authKeyName + ")"
 			}
 		}
 
