@@ -30,6 +30,8 @@ var aiAPIPrefixes = []string{
 }
 
 const skipGinLogKey = "__gin_skip_request_logging__"
+const modelNameKey = "__gin_model_name__"
+const requestBodyKey = "__gin_request_body__"
 
 // GinLogrusLogger returns a Gin middleware handler that logs HTTP requests and responses
 // using logrus. It captures request details including method, path, status code, latency,
@@ -50,6 +52,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 		if isAIAPIPath(path) && c.Request.Body != nil {
 			requestBody, _ = io.ReadAll(c.Request.Body)
 			c.Request.Body = io.NopCloser(bytes.NewReader(requestBody))
+			c.Set(requestBodyKey, requestBody)
 		}
 
 		// Only generate request ID for AI API paths
@@ -84,6 +87,13 @@ func GinLogrusLogger() gin.HandlerFunc {
 		errorMessage := c.Errors.ByType(gin.ErrorTypePrivate).String()
 
 		modelName := ""
+		if len(requestBody) == 0 {
+			if storedBody, exists := c.Get(requestBodyKey); exists {
+				if bodyBytes, ok := storedBody.([]byte); ok {
+					requestBody = bodyBytes
+				}
+			}
+		}
 		if len(requestBody) > 0 {
 			modelName = gjson.GetBytes(requestBody, "model").String()
 			modelName = strings.TrimSpace(modelName)
@@ -184,4 +194,24 @@ func shouldSkipGinRequestLogging(c *gin.Context) bool {
 	}
 	flag, ok := val.(bool)
 	return ok && flag
+}
+
+// GetRequestBody retrieves the request body from context or reads it from the request.
+// This allows handlers to read the body multiple times.
+func GetRequestBody(c *gin.Context) []byte {
+	if c == nil {
+		return nil
+	}
+	if body, exists := c.Get(requestBodyKey); exists {
+		if bodyBytes, ok := body.([]byte); ok {
+			return bodyBytes
+		}
+	}
+	if c.Request.Body != nil {
+		body, _ := io.ReadAll(c.Request.Body)
+		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+		c.Set(requestBodyKey, body)
+		return body
+	}
+	return nil
 }
