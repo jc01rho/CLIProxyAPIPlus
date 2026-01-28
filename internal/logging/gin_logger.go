@@ -4,8 +4,10 @@
 package logging
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 // aiAPIPrefixes defines path prefixes for AI API requests that should have request ID tracking.
@@ -30,9 +33,9 @@ const skipGinLogKey = "__gin_skip_request_logging__"
 
 // GinLogrusLogger returns a Gin middleware handler that logs HTTP requests and responses
 // using logrus. It captures request details including method, path, status code, latency,
-// client IP, and any error messages. Request ID is only added for AI API requests.
+// client IP, model name, and auth key name. Request ID is only added for AI API requests.
 //
-// Output format (AI API): [2025-12-23 20:14:10] [info ] | a1b2c3d4 | 200 |       23.559s | ...
+// Output format (AI API): [2025-12-23 20:14:10] [info ] | a1b2c3d4 | 200 |       23.559s | ... | model (auth)
 // Output format (others): [2025-12-23 20:14:10] [info ] | -------- | 200 |       23.559s | ...
 //
 // Returns:
@@ -42,6 +45,12 @@ func GinLogrusLogger() gin.HandlerFunc {
 		start := time.Now()
 		path := c.Request.URL.Path
 		raw := util.MaskSensitiveQuery(c.Request.URL.RawQuery)
+
+		var requestBody []byte
+		if isAIAPIPath(path) && c.Request.Body != nil {
+			requestBody, _ = io.ReadAll(c.Request.Body)
+			c.Request.Body = io.NopCloser(bytes.NewReader(requestBody))
+		}
 
 		// Only generate request ID for AI API paths
 		var requestID string
@@ -74,10 +83,38 @@ func GinLogrusLogger() gin.HandlerFunc {
 		method := c.Request.Method
 		errorMessage := c.Errors.ByType(gin.ErrorTypePrivate).String()
 
+		modelName := ""
+		if len(requestBody) > 0 {
+			modelName = gjson.GetBytes(requestBody, "model").String()
+			modelName = strings.TrimSpace(modelName)
+		}
+
+		authKeyName := ""
+		if apiKey, exists := c.Get("apiKey"); exists {
+			if keyStr, ok := apiKey.(string); ok {
+				authKeyName = keyStr
+			}
+		}
+
 		if requestID == "" {
 			requestID = "--------"
 		}
+
 		logLine := fmt.Sprintf("%3d | %13v | %15s | %-7s \"%s\"", statusCode, latency, clientIP, method, path)
+
+		if isAIAPIPath(path) && (modelName != "" || authKeyName != "") {
+			var parts []string
+			if modelName != "" {
+				parts = append(parts, modelName)
+			}
+			if authKeyName != "" {
+				parts = append(parts, authKeyName)
+			}
+			if len(parts) > 0 {
+				logLine = logLine + " | " + fmt.Sprintf("%s (%s)", parts[0], authKeyName)
+			}
+		}
+
 		if errorMessage != "" {
 			logLine = logLine + " | " + errorMessage
 		}
