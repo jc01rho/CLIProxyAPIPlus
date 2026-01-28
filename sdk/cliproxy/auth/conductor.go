@@ -55,6 +55,28 @@ const (
 	quotaBackoffMax       = 30 * time.Minute
 )
 
+const providerAuthContextKey = "cliproxy.provider_auth"
+
+// SetProviderAuthInContext stores provider auth info in context for logging
+func SetProviderAuthInContext(ctx context.Context, provider, authID, authLabel string) context.Context {
+	return context.WithValue(ctx, providerAuthContextKey, map[string]string{
+		"provider":   provider,
+		"auth_id":    authID,
+		"auth_label": authLabel,
+	})
+}
+
+// GetProviderAuthFromContext retrieves provider auth info from context
+func GetProviderAuthFromContext(ctx context.Context) (provider, authID, authLabel string) {
+	if ctx == nil {
+		return "", "", ""
+	}
+	if v, ok := ctx.Value(providerAuthContextKey).(map[string]string); ok {
+		return v["provider"], v["auth_id"], v["auth_label"]
+	}
+	return "", "", ""
+}
+
 var quotaCooldownDisabled atomic.Bool
 
 // SetQuotaCooldownDisabled toggles quota cooldown scheduling globally.
@@ -801,6 +823,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
+		execCtx = SetProviderAuthInContext(execCtx, provider, auth.ID, auth.Label)
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
@@ -854,6 +877,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
+		execCtx = SetProviderAuthInContext(execCtx, provider, auth.ID, auth.Label)
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
@@ -907,6 +931,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
+		execCtx = SetProviderAuthInContext(execCtx, provider, auth.ID, auth.Label)
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
@@ -994,6 +1019,7 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
+		execCtx = SetProviderAuthInContext(execCtx, provider, auth.ID, auth.Label)
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
@@ -1047,6 +1073,7 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
+		execCtx = SetProviderAuthInContext(execCtx, provider, auth.ID, auth.Label)
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
@@ -1100,6 +1127,7 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
+		execCtx = SetProviderAuthInContext(execCtx, provider, auth.ID, auth.Label)
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
