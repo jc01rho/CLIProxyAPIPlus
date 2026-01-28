@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -558,8 +559,9 @@ func (m *Manager) executeWithFallback(ctx context.Context, providers []string, r
 	}
 
 	if m.shouldTriggerFallback(err) {
+		fallbackReason := m.getFallbackReason(err)
 		if fallbackModel, ok := m.getFallbackModel(originalModel); ok {
-			log.Debugf("fallback from %s to %s (via fallback-models)", originalModel, fallbackModel)
+			log.Infof("fallback from %s to %s (via fallback-models, reason: %s)", originalModel, fallbackModel, fallbackReason)
 			fallbackProviders := util.GetProviderName(fallbackModel)
 			if len(fallbackProviders) > 0 {
 				fallbackReq := req
@@ -575,7 +577,7 @@ func (m *Manager) executeWithFallback(ctx context.Context, providers []string, r
 				if _, tried := visited[chainModel]; tried {
 					continue
 				}
-				log.Debugf("fallback from %s to %s (via fallback-chain, depth %d/%d)", originalModel, chainModel, len(visited), maxDepth)
+				log.Infof("fallback from %s to %s (via fallback-chain, depth %d/%d, reason: %s)", originalModel, chainModel, len(visited), maxDepth, fallbackReason)
 				chainProviders := util.GetProviderName(chainModel)
 				if len(chainProviders) > 0 {
 					chainReq := req
@@ -633,6 +635,33 @@ func (m *Manager) shouldTriggerFallback(err error) bool {
 	return status == 429 || status == 401 || (status >= 500 && status < 600)
 }
 
+func (m *Manager) getFallbackReason(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		code := authErr.Code
+		if code == "auth_unavailable" {
+			return "auth_unavailable"
+		}
+		if code == "auth_not_found" {
+			return "auth_not_found"
+		}
+	}
+	status := statusCodeFromError(err)
+	switch status {
+	case 429:
+		return "quota_exceeded"
+	case 401:
+		return "unauthorized"
+	case 500, 502, 503, 504:
+		return "server_error"
+	default:
+		return fmt.Sprintf("http_%d", status)
+	}
+}
+
 // ExecuteCount performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -686,8 +715,9 @@ func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []str
 	}
 
 	if m.shouldTriggerFallback(err) {
+		fallbackReason := m.getFallbackReason(err)
 		if fallbackModel, ok := m.getFallbackModel(originalModel); ok {
-			log.Debugf("fallback from %s to %s (stream, via fallback-models)", originalModel, fallbackModel)
+			log.Infof("fallback from %s to %s (stream, via fallback-models, reason: %s)", originalModel, fallbackModel, fallbackReason)
 			fallbackProviders := util.GetProviderName(fallbackModel)
 			if len(fallbackProviders) > 0 {
 				fallbackReq := req
@@ -703,7 +733,7 @@ func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []str
 				if _, tried := visited[chainModel]; tried {
 					continue
 				}
-				log.Debugf("fallback from %s to %s (stream, via fallback-chain, depth %d/%d)", originalModel, chainModel, len(visited), maxDepth)
+				log.Infof("fallback from %s to %s (stream, via fallback-chain, depth %d/%d, reason: %s)", originalModel, chainModel, len(visited), maxDepth, fallbackReason)
 				chainProviders := util.GetProviderName(chainModel)
 				if len(chainProviders) > 0 {
 					chainReq := req
@@ -1540,7 +1570,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	setModelQuota := false
 
 	m.mu.Lock()
+	var authLabel, provider string
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
+		authLabel = auth.Label
+		provider = auth.Provider
 		now := time.Now()
 
 		if result.Success {
@@ -1633,6 +1666,25 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		_ = m.persist(ctx, auth)
 	}
 	m.mu.Unlock()
+
+	if !result.Success {
+		errorCode := ""
+		errorMessage := ""
+		statusCode := statusCodeFromResult(result.Error)
+		if result.Error != nil {
+			errorCode = result.Error.Code
+			errorMessage = result.Error.Message
+		}
+
+		log.WithFields(log.Fields{
+			"auth_id":     result.AuthID,
+			"auth_label":  authLabel,
+			"provider":    provider,
+			"model":       result.Model,
+			"error_code":  errorCode,
+			"status_code": statusCode,
+		}).Warnf("request failed: %s", errorMessage)
+	}
 
 	if clearModelQuota && result.Model != "" {
 		registry.GetGlobalRegistry().ClearModelQuotaExceeded(result.AuthID, result.Model)
@@ -1847,6 +1899,12 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	case 402, 403:
 		auth.StatusMessage = "payment_required"
 		auth.NextRetryAfter = now.Add(30 * time.Minute)
+	case 400:
+		// INVALID_ARGUMENT - request error, not auth failure
+		// Clear any previous retry delay so auth remains usable immediately
+		auth.Unavailable = false
+		auth.Status = StatusActive
+		auth.NextRetryAfter = time.Time{}
 	case 404:
 		auth.StatusMessage = "not_found"
 		auth.NextRetryAfter = now.Add(12 * time.Hour)

@@ -153,6 +153,14 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		AuthValue: authValue,
 	})
 
+	log.WithFields(log.Fields{
+		"auth_id":  authID,
+		"provider": e.Identifier(),
+		"model":    baseModel,
+		"url":      url,
+		"method":   http.MethodPost,
+	}).Infof("external HTTP request: POST %s", url)
+
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
