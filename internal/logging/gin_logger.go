@@ -5,6 +5,7 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -88,6 +89,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 			requestID = GenerateRequestID()
 			SetGinRequestID(c, requestID)
 			ctx := WithRequestID(c.Request.Context(), requestID)
+			ctx = context.WithValue(ctx, "gin", c)
 			c.Request = c.Request.WithContext(ctx)
 		}
 
