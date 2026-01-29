@@ -51,6 +51,9 @@ func (h *Handler) PostOAuthCallback(c *gin.Context) {
 		}
 		if code == "" {
 			code = strings.TrimSpace(q.Get("code"))
+			if code == "" && canonicalProvider == "trae" {
+				code = strings.TrimSpace(q.Get("userJwt"))
+			}
 		}
 		if errMsg == "" {
 			errMsg = strings.TrimSpace(q.Get("error"))
