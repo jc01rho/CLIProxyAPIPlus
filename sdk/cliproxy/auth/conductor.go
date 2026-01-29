@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
@@ -56,14 +57,22 @@ const (
 )
 
 const providerAuthContextKey = "cliproxy.provider_auth"
+const GinProviderAuthKey = "providerAuth"
 
-// SetProviderAuthInContext stores provider auth info in context for logging
+// SetProviderAuthInContext stores provider auth info in context for logging.
+// It also stores the info in gin.Context if available for middleware access.
 func SetProviderAuthInContext(ctx context.Context, provider, authID, authLabel string) context.Context {
-	return context.WithValue(ctx, providerAuthContextKey, map[string]string{
+	authInfo := map[string]string{
 		"provider":   provider,
 		"auth_id":    authID,
 		"auth_label": authLabel,
-	})
+	}
+
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
+		ginCtx.Set(GinProviderAuthKey, authInfo)
+	}
+
+	return context.WithValue(ctx, providerAuthContextKey, authInfo)
 }
 
 // GetProviderAuthFromContext retrieves provider auth info from context
