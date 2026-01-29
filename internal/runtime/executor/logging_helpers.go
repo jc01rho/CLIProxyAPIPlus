@@ -14,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -412,6 +413,20 @@ func logDetailedAPIError(ctx context.Context, provider string, url string, statu
 		bodyStr = bodyStr[:4096] + "...[truncated]"
 	}
 
+	// Extract auth info from context for logging
+	providerDisplay := provider
+	if ctxProvider, _, authLabel := cliproxyauth.GetProviderAuthFromContext(ctx); ctxProvider != "" {
+		displayAuth := authLabel
+		if displayAuth == "" {
+			if _, authID, _ := cliproxyauth.GetProviderAuthFromContext(ctx); authID != "" {
+				displayAuth = authID
+			}
+		}
+		if displayAuth != "" {
+			providerDisplay = fmt.Sprintf("%s:%s", provider, displayAuth)
+		}
+	}
+
 	logFn("[%s] API error - URL: %s, Status: %d, Content-Type: %s, Response: %s",
-		provider, url, statusCode, contentType, bodyStr)
+		providerDisplay, url, statusCode, contentType, bodyStr)
 }

@@ -32,9 +32,22 @@ var aiAPIPrefixes = []string{
 const skipGinLogKey = "__gin_skip_request_logging__"
 const requestBodyKey = "__gin_request_body__"
 const providerAuthContextKey = "cliproxy.provider_auth"
+const ginProviderAuthKey = "providerAuth"
 
 func getProviderAuthFromContext(c *gin.Context) (provider, authID, authLabel string) {
-	if c == nil || c.Request == nil {
+	if c == nil {
+		return "", "", ""
+	}
+
+	// First try to get from Gin context (set by conductor.go)
+	if v, exists := c.Get(ginProviderAuthKey); exists {
+		if authInfo, ok := v.(map[string]string); ok {
+			return authInfo["provider"], authInfo["auth_id"], authInfo["auth_label"]
+		}
+	}
+
+	// Fallback to request context
+	if c.Request == nil {
 		return "", "", ""
 	}
 	ctx := c.Request.Context()
