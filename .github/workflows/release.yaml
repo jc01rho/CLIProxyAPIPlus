@@ -37,3 +37,9 @@ jobs:
           VERSION: ${{ env.VERSION }}
           COMMIT: ${{ env.COMMIT }}
           BUILD_DATE: ${{ env.BUILD_DATE }}
+      - name: Discord Notification
+        if: success()
+        run: |
+          curl -X POST ${{ secrets.DISCORD_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d '{"content": "✅ **CLIProxyAPIPlus** Build Complete!\n\n**Version:** '${{ env.VERSION }}'\n**Commit:** '${{ env.COMMIT }}'\n**Build Date:** '${{ env.BUILD_DATE }}'\n\n🔗 [Release](https://github.com/'${{ github.repository }}'/releases/tag/'${{ env.VERSION }}')"}'
