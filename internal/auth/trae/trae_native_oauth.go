@@ -34,7 +34,7 @@ func GenerateNativeAuthURL(callbackURL string, appVersion string) (authURL strin
 	params.Add("plugin_version", appVersion)
 	params.Add("auth_type", "local")
 	params.Add("client_id", traeClientID)
-	params.Add("redirect", "1")
+	params.Add("redirect", "0")
 	params.Add("login_trace_id", loginTraceID)
 	params.Add("auth_callback_url", callbackURL)
 	params.Add("machine_id", machineID)
