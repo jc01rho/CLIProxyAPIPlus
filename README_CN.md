@@ -52,7 +52,7 @@ mkdir -p ~/cli-proxy && cd ~/cli-proxy
 cat > docker-compose.yml << 'EOF'
 services:
   cli-proxy-api:
-    image: 17600006524/cli-proxy-api-plus:latest
+    image: eceasy/cli-proxy-api-plus:latest
     container_name: cli-proxy-api-plus
     ports:
       - "8317:8317"
@@ -64,7 +64,7 @@ services:
 EOF
 
 # 下载示例配置
-curl -o config.yaml https://raw.githubusercontent.com/linlang781/CLIProxyAPIPlus/main/config.example.yaml
+curl -o config.yaml https://raw.githubusercontent.com/router-for-me/CLIProxyAPIPlus/main/config.example.yaml
 
 # 拉取并启动
 docker compose pull && docker compose up -d
@@ -93,7 +93,7 @@ docker compose pull && docker compose up -d
 
 该项目仅接受第三方供应商支持的 Pull Request。任何非第三方供应商支持的 Pull Request 都将被拒绝。
 
-如果需要提交任何非第三方供应商支持的 Pull Request，请提交到主线版本。
+如果需要提交任何非第三方供应商支持的 Pull Request，请提交到[主线](https://github.com/router-for-me/CLIProxyAPI)版本。
 
 ## 许可证
 
