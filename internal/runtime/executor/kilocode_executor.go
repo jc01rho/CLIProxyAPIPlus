@@ -32,7 +32,7 @@ type KilocodeExecutor struct {
 // Examples:
 //   - "kilocode-grok-code-fast-1" → "grok-code-fast-1"
 //   - "kilocode-glm-4-7" → "glm-4.7"
-//   - "kilocode-minimax-m2-1" → "minimax-m2.1"
+//   - "kilocode-kimi-k2-5" → "kimi-k2.5"
 func normalizeKilocodeModelForAPI(model string) string {
 	// Strip "kilocode-" prefix
 	normalized := strings.TrimPrefix(model, "kilocode-")
@@ -43,9 +43,9 @@ func normalizeKilocodeModelForAPI(model string) string {
 		normalized = strings.Replace(normalized, "glm-4-", "glm-4.", 1)
 	}
 
-	// minimax-m2-1 → minimax-m2.1
-	if strings.HasPrefix(normalized, "minimax-m2-") {
-		normalized = strings.Replace(normalized, "minimax-m2-", "minimax-m2.", 1)
+	// kimi-k2-5 → kimi-k2.5
+	if strings.HasPrefix(normalized, "kimi-k2-") {
+		normalized = strings.Replace(normalized, "kimi-k2-", "kimi-k2.", 1)
 	}
 
 	return normalized
