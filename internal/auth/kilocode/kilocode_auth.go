@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 )
@@ -316,6 +317,61 @@ func (k *KilocodeAuth) LoadAndValidateToken(ctx context.Context, storage *Kiloco
 // isHTTPSuccess checks if the status code indicates success (2xx).
 func isHTTPSuccess(statusCode int) bool {
 	return statusCode >= 200 && statusCode < 300
+}
+
+// FetchModels retrieves available models from the Kilocode API and filters for free models.
+// This method fetches the list of AI models available from Kilocode and returns only
+// those that are free (pricing.prompt == "0" && pricing.completion == "0").
+//
+// Parameters:
+//   - ctx: The context for the request
+//   - token: The access token for authentication
+//
+// Returns:
+//   - []*registry.ModelInfo: The list of available free models converted to internal format
+//   - error: An error if the request fails
+func (k *KilocodeAuth) FetchModels(ctx context.Context, token string) ([]*registry.ModelInfo, error) {
+	if token == "" {
+		return nil, fmt.Errorf("kilocode: access token is required")
+	}
+
+	// Make request to Kilocode models endpoint
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.GetAPIEndpoint()+"/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("kilocode: failed to create models request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := k.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("kilocode: failed to fetch models: %w", err)
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("kilocode fetch models: close body error: %v", errClose)
+		}
+	}()
+
+	if !isHTTPSuccess(resp.StatusCode) {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("kilocode: models API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// Parse the API response
+	var apiResponse registry.KilocodeAPIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResponse); err != nil {
+		return nil, fmt.Errorf("kilocode: failed to parse models response: %w", err)
+	}
+
+	// Convert API models to internal format (filters for free models automatically)
+	models := registry.ConvertKilocodeAPIModels(apiResponse.Data)
+
+	maskedToken := maskToken(token)
+	log.Debugf("kilocode: fetched %d free models with token %s", len(models), maskedToken)
+
+	return models, nil
 }
 
 // maskToken masks a token for safe logging by showing only first and last few characters.
