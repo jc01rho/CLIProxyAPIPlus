@@ -331,11 +331,16 @@ func (e *KilocodeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth)
 }
 
 // applyHeaders sets the required headers for Kilocode API requests.
+// These headers mimic the official Kilocode VS Code extension to enable free model access.
 func (e *KilocodeExecutor) applyHeaders(r *http.Request, token string) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set("Accept", "application/json")
-	// VS Code 확장처럼 보이게 하는 헤더 (무료 모델 활성화)
+	// Kilocode extension default headers (from src/api/providers/constants.ts)
+	r.Header.Set("HTTP-Referer", "https://kilocode.ai")
+	r.Header.Set("X-Title", "Kilo Code")
+	r.Header.Set("X-KiloCode-Version", "5.2.2")
+	r.Header.Set("User-Agent", "Kilo-Code/5.2.2")
+	// Editor identification header
 	r.Header.Set("X-KiloCode-EditorName", "Visual Studio Code 1.96.0")
-	r.Header.Set("X-KiloCode-Version", "3.18.5")
 }
