@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -77,9 +78,16 @@ func NewTraeExecutor(cfg *config.Config) *TraeExecutor {
 }
 
 func convertModelName(model string) string {
+	// Known valid Trae models:
+	// - gpt-5-2-codex
+	// - gpt-4o
+	// - deepseek-V3
+	// - deepseek-R1
+	// - aws_sdk_claude37_sonnet
+
 	switch model {
 	case "claude-3-5-sonnet-20240620", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet":
-		return "claude3.5"
+		return model // Return as is, "claude3.5" is invalid
 	case "claude-3-7-sonnet-20250219", "claude-3-7-sonnet", "claude-3-7":
 		return "aws_sdk_claude37_sonnet"
 	case "gpt-4o-mini", "gpt-4o-mini-2024-07-18", "gpt-4o-latest":
@@ -93,8 +101,32 @@ func convertModelName(model string) string {
 	}
 }
 
-func generateDeviceInfo() (deviceID, machineID, deviceBrand string) {
-	deviceID = fmt.Sprintf("%d", rand.Int63())
+func extractUserIDFromToken(accessToken string) string {
+	parts := strings.Split(accessToken, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Data.ID
+}
+
+func generateDeviceInfo(userID string) (deviceID, machineID, deviceBrand string) {
+	if userID != "" {
+		deviceID = userID
+	} else {
+		deviceID = fmt.Sprintf("%d", rand.Int63())
+	}
 
 	bytes := make([]byte, 32)
 	for i := range bytes {
@@ -123,13 +155,13 @@ func generateSessionIDFromMessages(messages []OpenAIMessage) string {
 	return cacheKey
 }
 
-func convertOpenAIToTrae(openAIReq *OpenAIRequest) (*TraeRequest, error) {
+func convertOpenAIToTrae(openAIReq *OpenAIRequest, userID string) (*TraeRequest, error) {
 	if len(openAIReq.Messages) == 0 {
 		return nil, fmt.Errorf("no messages provided")
 	}
 
 	sessionID := generateSessionIDFromMessages(openAIReq.Messages)
-	deviceID, machineID, deviceBrand := generateDeviceInfo()
+	deviceID, machineID, deviceBrand := generateDeviceInfo(userID)
 
 	contextResolvers := []ContextResolver{
 		{
@@ -236,13 +268,18 @@ func (e *TraeExecutor) Identifier() string {
 }
 
 // traeCreds extracts access token and host from auth metadata.
+// Supports both "token" and "access_token" field names for compatibility.
 func traeCreds(auth *coreauth.Auth) (accessToken, host, appID string) {
-	host = "https://trae-api-sg.mchost.guru"
-	appID = "trae_ide"
+	// Default to v1 API host discovered from MITM analysis
+	host = "https://api22-normal-alisg.mchost.guru"
+	appID = "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8"
 	if auth == nil || auth.Metadata == nil {
 		return "", host, appID
 	}
+	// Check "access_token" first, then fall back to "token"
 	if v, ok := auth.Metadata["access_token"].(string); ok && v != "" {
+		accessToken = v
+	} else if v, ok := auth.Metadata["token"].(string); ok && v != "" {
 		accessToken = v
 	}
 	if v, ok := auth.Metadata["host"].(string); ok && v != "" {
@@ -270,7 +307,7 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req cli
 		return resp, fmt.Errorf("trae: failed to parse OpenAI request: %w", err)
 	}
 
-	traeReq, err := convertOpenAIToTrae(&openAIReq)
+	traeReq, err := convertOpenAIToTrae(&openAIReq, extractUserIDFromToken(accessToken))
 	if err != nil {
 		return resp, fmt.Errorf("trae: failed to convert request: %w", err)
 	}
@@ -286,19 +323,22 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req cli
 		return resp, err
 	}
 
-	deviceID, machineID, deviceBrand := generateDeviceInfo()
+	deviceID, machineID, deviceBrand := generateDeviceInfo(extractUserIDFromToken(accessToken))
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-app-id", appID)
-	httpReq.Header.Set("x-ide-version", "1.2.10")
-	httpReq.Header.Set("x-ide-version-code", "20250325")
+	httpReq.Header.Set("x-ide-version", "3.5.25")
+	httpReq.Header.Set("x-ide-version-code", "20260120")
 	httpReq.Header.Set("x-ide-version-type", "stable")
-	httpReq.Header.Set("x-device-cpu", "AMD")
+	httpReq.Header.Set("x-device-cpu", "Intel")
 	httpReq.Header.Set("x-device-id", deviceID)
 	httpReq.Header.Set("x-machine-id", machineID)
 	httpReq.Header.Set("x-device-brand", deviceBrand)
-	httpReq.Header.Set("x-device-type", "windows")
+	httpReq.Header.Set("x-device-type", "mac")
+	httpReq.Header.Set("x-os-version", "macOS 15.7.3")
 	httpReq.Header.Set("x-ide-token", accessToken)
+	httpReq.Header.Set("x-ahanet-timeout", "86400")
+	httpReq.Header.Set("User-Agent", "TraeClient/TTNet")
 	httpReq.Header.Set("accept", "*/*")
 	httpReq.Header.Set("Connection", "keep-alive")
 
@@ -333,6 +373,7 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req cli
 
 	var fullResponse string
 	var lastFinishReason string
+	var promptTokens, completionTokens, totalTokens int
 	reader := bufio.NewReader(httpResp.Body)
 
 	for {
@@ -382,6 +423,18 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req cli
 					lastFinishReason = outputData.FinishReason
 				}
 
+			case "token_usage":
+				var usageData struct {
+					PromptTokens     int `json:"prompt_tokens"`
+					CompletionTokens int `json:"completion_tokens"`
+					TotalTokens      int `json:"total_tokens"`
+				}
+				if err := json.Unmarshal([]byte(data), &usageData); err == nil {
+					promptTokens = usageData.PromptTokens
+					completionTokens = usageData.CompletionTokens
+					totalTokens = usageData.TotalTokens
+				}
+
 			case "done":
 				var doneData struct {
 					FinishReason string `json:"finish_reason"`
@@ -413,9 +466,9 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req cli
 			},
 		},
 		"usage": map[string]interface{}{
-			"prompt_tokens":     0,
-			"completion_tokens": 0,
-			"total_tokens":      0,
+			"prompt_tokens":     promptTokens,
+			"completion_tokens": completionTokens,
+			"total_tokens":      totalTokens,
 		},
 	}
 
@@ -440,7 +493,7 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, r
 		return nil, fmt.Errorf("trae: failed to parse OpenAI request: %w", err)
 	}
 
-	traeReq, err := convertOpenAIToTrae(&openAIReq)
+	traeReq, err := convertOpenAIToTrae(&openAIReq, extractUserIDFromToken(accessToken))
 	if err != nil {
 		return nil, fmt.Errorf("trae: failed to convert request: %w", err)
 	}
@@ -456,19 +509,22 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, r
 		return nil, err
 	}
 
-	deviceID, machineID, deviceBrand := generateDeviceInfo()
+	deviceID, machineID, deviceBrand := generateDeviceInfo(extractUserIDFromToken(accessToken))
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-app-id", appID)
-	httpReq.Header.Set("x-ide-version", "1.2.10")
-	httpReq.Header.Set("x-ide-version-code", "20250325")
+	httpReq.Header.Set("x-ide-version", "3.5.25")
+	httpReq.Header.Set("x-ide-version-code", "20260120")
 	httpReq.Header.Set("x-ide-version-type", "stable")
-	httpReq.Header.Set("x-device-cpu", "AMD")
+	httpReq.Header.Set("x-device-cpu", "Intel")
 	httpReq.Header.Set("x-device-id", deviceID)
 	httpReq.Header.Set("x-machine-id", machineID)
 	httpReq.Header.Set("x-device-brand", deviceBrand)
-	httpReq.Header.Set("x-device-type", "windows")
+	httpReq.Header.Set("x-device-type", "mac")
+	httpReq.Header.Set("x-os-version", "macOS 15.7.3")
 	httpReq.Header.Set("x-ide-token", accessToken)
+	httpReq.Header.Set("x-ahanet-timeout", "86400")
+	httpReq.Header.Set("User-Agent", "TraeClient/TTNet")
 	httpReq.Header.Set("accept", "*/*")
 	httpReq.Header.Set("Connection", "keep-alive")
 
@@ -592,7 +648,44 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, r
 						}
 					}
 
-				case "done":
+				case "thought":
+					var thoughtData struct {
+						Thought          string `json:"thought"`
+						ReasoningContent string `json:"reasoning_content"`
+					}
+					if err := json.Unmarshal([]byte(data), &thoughtData); err != nil {
+						continue
+					}
+
+					content := thoughtData.Thought
+					if content == "" {
+						content = thoughtData.ReasoningContent
+					}
+
+					if content != "" {
+						openAIResponse := map[string]interface{}{
+							"id":      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
+							"object":  "chat.completion.chunk",
+							"created": time.Now().Unix(),
+							"model":   baseModel,
+							"choices": []map[string]interface{}{
+								{
+									"index": 0,
+									"delta": map[string]interface{}{
+										"content": content,
+									},
+									"finish_reason": nil,
+								},
+							},
+						}
+						responseJSON, _ := json.Marshal(openAIResponse)
+						ch <- cliproxyexecutor.StreamChunk{
+							Payload: append([]byte("data: "), append(responseJSON, []byte("\n\n")...)...),
+							Err:     nil,
+						}
+					}
+
+				case "turn_completion", "done":
 					var doneData struct {
 						FinishReason string `json:"finish_reason"`
 					}
