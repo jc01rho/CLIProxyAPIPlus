@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	kilocodeBaseURL  = "https://api.kilo.ai/api/openrouter/v1"
+	kilocodeBaseURL  = "https://kilo.ai/api/openrouter"
 	kilocodeChatPath = "/chat/completions"
 	kilocodeAuthType = "kilocode"
 )
