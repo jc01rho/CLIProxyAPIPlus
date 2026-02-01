@@ -719,6 +719,68 @@ func GetOpenAIModels() []*ModelInfo {
 	}
 }
 
+// GetTraeModels returns the Trae-specific model definitions (v1 API models + OpenAI models)
+func GetTraeModels() []*ModelInfo {
+	// V1 API working models (tested and confirmed)
+	v1Models := []*ModelInfo{
+		{
+			ID:                  "gpt-4o",
+			Object:              "model",
+			Created:             1715367600,
+			OwnedBy:             "openai",
+			Type:                "openai",
+			Version:             "gpt-4o-2024-05-13",
+			DisplayName:         "GPT-4o",
+			Description:         "OpenAI GPT-4o via Trae v1 API",
+			ContextLength:       128000,
+			MaxCompletionTokens: 16384,
+			SupportedParameters: []string{"tools"},
+		},
+		{
+			ID:                  "deepseek-V3",
+			Object:              "model",
+			Created:             1735689600,
+			OwnedBy:             "deepseek",
+			Type:                "deepseek",
+			DisplayName:         "DeepSeek V3",
+			Description:         "DeepSeek V3 via Trae v1 API",
+			ContextLength:       128000,
+			MaxCompletionTokens: 8192,
+			SupportedParameters: []string{"tools"},
+		},
+		{
+			ID:                  "deepseek-R1",
+			Object:              "model",
+			Created:             1737504000,
+			OwnedBy:             "deepseek",
+			Type:                "deepseek",
+			DisplayName:         "DeepSeek R1",
+			Description:         "DeepSeek R1 (Reasoner) via Trae v1 API",
+			ContextLength:       128000,
+			MaxCompletionTokens: 8192,
+			SupportedParameters: []string{"tools"},
+			Thinking:            &ThinkingSupport{Levels: []string{"low", "medium", "high"}},
+		},
+		{
+			ID:                  "aws_sdk_claude37_sonnet",
+			Object:              "model",
+			Created:             1740009600,
+			OwnedBy:             "anthropic",
+			Type:                "anthropic",
+			DisplayName:         "Claude 3.7 Sonnet",
+			Description:         "Anthropic Claude 3.7 Sonnet via Trae v1 API (AWS SDK)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 8192,
+			SupportedParameters: []string{"tools"},
+			Thinking:            &ThinkingSupport{Levels: []string{"low", "medium", "high"}},
+		},
+	}
+
+	// Combine v1 models with OpenAI models (for v3 API - future support)
+	openAIModels := GetOpenAIModels()
+	return append(v1Models, openAIModels...)
+}
+
 // GetQwenModels returns the standard Qwen model definitions
 func GetQwenModels() []*ModelInfo {
 	return []*ModelInfo{
