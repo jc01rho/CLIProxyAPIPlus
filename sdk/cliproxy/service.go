@@ -822,7 +822,7 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = s.fetchKilocodeModels(a)
 		models = applyExcludedModels(models, excluded)
 	case "trae":
-		models = registry.GetOpenAIModels()
+		models = registry.GetTraeModels()
 		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
