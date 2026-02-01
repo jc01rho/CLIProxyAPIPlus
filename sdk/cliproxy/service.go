@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
-	kilocodeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kilocode"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	traeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/trae"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -1439,47 +1438,20 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 	return models
 }
 
-// fetchKilocodeModels attempts to fetch models dynamically from Kilocode API.
-// It extracts the access token from auth attributes/metadata and calls the Kilocode API.
-// Only free models (pricing.prompt == "0" && pricing.completion == "0") are returned.
-// If dynamic fetch fails, it returns an empty slice as Kilocode has no static fallback.
 func (s *Service) fetchKilocodeModels(a *coreauth.Auth) []*ModelInfo {
 	if a == nil {
 		log.Debug("kilocode: auth is nil, no models available")
 		return nil
 	}
 
-	// Extract token from auth attributes
 	token := s.extractKilocodeToken(a)
 	if token == "" {
 		log.Debug("kilocode: no valid token in auth, no models available")
 		return nil
 	}
 
-	// Create KilocodeAuth instance
-	kAuth := kilocodeauth.NewKilocodeAuth(s.cfg)
-	if kAuth == nil {
-		log.Warn("kilocode: failed to create KilocodeAuth instance, no models available")
-		return nil
-	}
-
-	// Use timeout context for API call
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	// Attempt to fetch dynamic models (filters for free models automatically)
-	models, err := kAuth.FetchModels(ctx, token)
-	if err != nil {
-		log.Warnf("kilocode: failed to fetch models: %v, no models available", err)
-		return nil
-	}
-
-	if len(models) == 0 {
-		log.Debug("kilocode: API returned no free models")
-		return nil
-	}
-
-	log.Infof("kilocode: successfully fetched %d free models from API", len(models))
+	models := registry.GetKilocodeModels()
+	log.Infof("kilocode: loaded %d static models", len(models))
 	return models
 }
 
