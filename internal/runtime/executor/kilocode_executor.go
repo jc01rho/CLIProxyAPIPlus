@@ -335,4 +335,7 @@ func (e *KilocodeExecutor) applyHeaders(r *http.Request, token string) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set("Accept", "application/json")
+	// VS Code 확장처럼 보이게 하는 헤더 (무료 모델 활성화)
+	r.Header.Set("X-KiloCode-EditorName", "Visual Studio Code 1.96.0")
+	r.Header.Set("X-KiloCode-Version", "3.18.5")
 }
