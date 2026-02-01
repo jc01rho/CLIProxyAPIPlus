@@ -69,6 +69,43 @@ type OpenAIRequest struct {
 	Stream   bool            `json:"stream"`
 }
 
+type GetDetailParamRequest struct {
+	Function   string `json:"function"`
+	NeedPrompt bool   `json:"need_prompt"`
+	PolyPrompt bool   `json:"poly_prompt"`
+}
+
+type GetDetailParamResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		ConfigInfoList []struct {
+			Function        string `json:"function"`
+			ModelDetailList []struct {
+				ModelName            string   `json:"model_name"`
+				EncryptedModelParams string   `json:"encrypted_model_params"`
+				DisplayName          string   `json:"display_name"`
+				Tags                 []string `json:"tags"`
+			} `json:"model_detail_list"`
+		} `json:"config_info_list"`
+	} `json:"data"`
+}
+
+type TraeV3Request struct {
+	EncryptedModelParams string                 `json:"encrypted_model_params"`
+	Model                string                 `json:"model"`
+	Messages             []TraeV3Message        `json:"messages"`
+	Stream               bool                   `json:"stream"`
+	MaxTokens            int                    `json:"max_tokens,omitempty"`
+	Temperature          float64                `json:"temperature,omitempty"`
+	AgentTaskContext     map[string]interface{} `json:"agent_task_context"`
+}
+
+type TraeV3Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type TraeExecutor struct {
 	cfg *config.Config
 }
@@ -99,6 +136,91 @@ func convertModelName(model string) string {
 	default:
 		return model
 	}
+}
+
+// isV3Model checks if the model requires v3 API (builder_v3)
+// These models are only available through the v3 agent API endpoint
+func isV3Model(model string) bool {
+	v3Models := map[string]bool{
+		// GPT-5 family
+		"gpt-5": true, "gpt-5.1": true, "gpt-5.2": true, "gpt-5-medium": true, "gpt-5.2-codex": true,
+		"gpt-5-high": true, "gpt-5-mini": true,
+		// Gemini 3 family
+		"gemini-3-pro": true, "gemini-3-flash": true, "gemini-3-pro-200k": true, "gemini-3-flash-solo": true,
+		// Kimi K2
+		"kimi-k2": true, "kimi-k2-0905": true,
+		// DeepSeek V3.1
+		"deepseek-v3.1": true,
+	}
+	return v3Models[model]
+}
+
+func (e *TraeExecutor) getEncryptedModelParams(ctx context.Context, accessToken, host, appID, modelName string) (string, error) {
+	reqBody := GetDetailParamRequest{
+		Function:   "builder_v3",
+		NeedPrompt: false,
+		PolyPrompt: true,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("trae: failed to marshal get_detail_param request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/ide/v1/get_detail_param", host)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonData))
+	if err != nil {
+		return "", err
+	}
+
+	deviceID, machineID, deviceBrand := generateDeviceInfo(extractUserIDFromToken(accessToken))
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-app-id", appID)
+	httpReq.Header.Set("x-ide-version", "3.5.25")
+	httpReq.Header.Set("x-ide-version-code", "20260120")
+	httpReq.Header.Set("x-ide-version-type", "stable")
+	httpReq.Header.Set("x-device-cpu", "Intel")
+	httpReq.Header.Set("x-device-id", deviceID)
+	httpReq.Header.Set("x-machine-id", machineID)
+	httpReq.Header.Set("x-device-brand", deviceBrand)
+	httpReq.Header.Set("x-device-type", "mac")
+	httpReq.Header.Set("x-os-version", "macOS 15.7.3")
+	httpReq.Header.Set("x-ide-token", accessToken)
+	httpReq.Header.Set("User-Agent", "TraeClient/TTNet")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("trae: get_detail_param request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("trae: failed to read get_detail_param response: %w", err)
+	}
+
+	var paramResp GetDetailParamResponse
+	if err := json.Unmarshal(body, &paramResp); err != nil {
+		return "", fmt.Errorf("trae: failed to parse get_detail_param response: %w", err)
+	}
+
+	if paramResp.Code != 0 {
+		return "", fmt.Errorf("trae: get_detail_param failed: %s", paramResp.Message)
+	}
+
+	for _, configInfo := range paramResp.Data.ConfigInfoList {
+		if configInfo.Function == "builder_v3" {
+			for _, modelDetail := range configInfo.ModelDetailList {
+				if modelDetail.ModelName == modelName {
+					return modelDetail.EncryptedModelParams, nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("trae: model '%s' not found in get_detail_param response", modelName)
 }
 
 func extractUserIDFromToken(accessToken string) string {
@@ -299,6 +421,10 @@ func (e *TraeExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req cli
 		return resp, fmt.Errorf("trae: missing access token")
 	}
 
+	if isV3Model(baseModel) {
+		return e.executeV3(ctx, auth, req, opts, accessToken, host, appID)
+	}
+
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
 
@@ -486,6 +612,10 @@ func (e *TraeExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, r
 	accessToken, host, appID := traeCreds(auth)
 	if accessToken == "" {
 		return nil, fmt.Errorf("trae: missing access token")
+	}
+
+	if isV3Model(baseModel) {
+		return e.executeStreamV3(ctx, auth, req, opts, accessToken, host, appID)
 	}
 
 	var openAIReq OpenAIRequest
@@ -784,4 +914,348 @@ func (e *TraeExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req
 
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)
+}
+
+func (e *TraeExecutor) executeV3(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, accessToken, host, appID string) (resp cliproxyexecutor.Response, err error) {
+	baseModel := req.Model
+
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	defer reporter.trackFailure(ctx, &err)
+
+	var openAIReq OpenAIRequest
+	if err := json.Unmarshal(req.Payload, &openAIReq); err != nil {
+		return resp, fmt.Errorf("trae: failed to parse OpenAI request: %w", err)
+	}
+
+	encryptedParams, err := e.getEncryptedModelParams(ctx, accessToken, host, appID, baseModel)
+	if err != nil {
+		return resp, err
+	}
+
+	var messages []TraeV3Message
+	for _, msg := range openAIReq.Messages {
+		content := ""
+		switch c := msg.Content.(type) {
+		case string:
+			content = c
+		case []interface{}:
+			for _, part := range c {
+				if m, ok := part.(map[string]interface{}); ok {
+					if text, ok := m["text"].(string); ok {
+						content += text
+					}
+				}
+			}
+		}
+		messages = append(messages, TraeV3Message{
+			Role:    msg.Role,
+			Content: content,
+		})
+	}
+
+	v3Req := TraeV3Request{
+		EncryptedModelParams: encryptedParams,
+		Model:                baseModel,
+		Messages:             messages,
+		Stream:               false,
+		AgentTaskContext:     map[string]interface{}{},
+	}
+
+	jsonData, err := json.Marshal(v3Req)
+	if err != nil {
+		return resp, fmt.Errorf("trae: failed to marshal v3 request: %w", err)
+	}
+
+	v3Host := "https://coresg-normal.trae.ai"
+	url := fmt.Sprintf("%s/api/agent/v3/create_agent_task", v3Host)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonData))
+	if err != nil {
+		return resp, err
+	}
+
+	deviceID, machineID, deviceBrand := generateDeviceInfo(extractUserIDFromToken(accessToken))
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-app-id", appID)
+	httpReq.Header.Set("x-ide-version", "3.5.25")
+	httpReq.Header.Set("x-ide-version-code", "20260120")
+	httpReq.Header.Set("x-ide-version-type", "stable")
+	httpReq.Header.Set("x-device-cpu", "Intel")
+	httpReq.Header.Set("x-device-id", deviceID)
+	httpReq.Header.Set("x-machine-id", machineID)
+	httpReq.Header.Set("x-device-brand", deviceBrand)
+	httpReq.Header.Set("x-device-type", "mac")
+	httpReq.Header.Set("x-os-version", "macOS 15.7.3")
+	httpReq.Header.Set("x-ide-token", accessToken)
+	httpReq.Header.Set("User-Agent", "TraeClient/TTNet")
+
+	authID := ""
+	if auth != nil {
+		authID = auth.ID
+	}
+	log.WithFields(log.Fields{
+		"auth_id":  authID,
+		"provider": e.Identifier(),
+		"model":    baseModel,
+		"url":      url,
+		"method":   http.MethodPost,
+	}).Infof("external HTTP request (v3): POST %s", url)
+
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return resp, fmt.Errorf("trae: v3 request failed: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(httpResp.Body)
+		return resp, fmt.Errorf("trae: v3 API error %d: %s", httpResp.StatusCode, string(respBody))
+	}
+
+	var fullResponse string
+	reader := bufio.NewReader(httpResp.Body)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return resp, fmt.Errorf("trae: error reading v3 response: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data:")
+		data = strings.TrimSpace(data)
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		for _, choice := range chunk.Choices {
+			fullResponse += choice.Delta.Content
+		}
+	}
+
+	openAIResp := map[string]interface{}{
+		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   baseModel,
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": fullResponse,
+				},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     0,
+			"completion_tokens": 0,
+			"total_tokens":      0,
+		},
+	}
+
+	respJSON, err := json.Marshal(openAIResp)
+	if err != nil {
+		return resp, fmt.Errorf("trae: failed to marshal response: %w", err)
+	}
+
+	resp.Payload = respJSON
+	return resp, nil
+}
+
+func (e *TraeExecutor) executeStreamV3(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, accessToken, host, appID string) (<-chan cliproxyexecutor.StreamChunk, error) {
+	baseModel := req.Model
+
+	var openAIReq OpenAIRequest
+	if err := json.Unmarshal(req.Payload, &openAIReq); err != nil {
+		return nil, fmt.Errorf("trae: failed to parse OpenAI request: %w", err)
+	}
+
+	encryptedParams, err := e.getEncryptedModelParams(ctx, accessToken, host, appID, baseModel)
+	if err != nil {
+		return nil, err
+	}
+
+	var messages []TraeV3Message
+	for _, msg := range openAIReq.Messages {
+		content := ""
+		switch c := msg.Content.(type) {
+		case string:
+			content = c
+		case []interface{}:
+			for _, part := range c {
+				if m, ok := part.(map[string]interface{}); ok {
+					if text, ok := m["text"].(string); ok {
+						content += text
+					}
+				}
+			}
+		}
+		messages = append(messages, TraeV3Message{
+			Role:    msg.Role,
+			Content: content,
+		})
+	}
+
+	v3Req := TraeV3Request{
+		EncryptedModelParams: encryptedParams,
+		Model:                baseModel,
+		Messages:             messages,
+		Stream:               true,
+		AgentTaskContext:     map[string]interface{}{},
+	}
+
+	jsonData, err := json.Marshal(v3Req)
+	if err != nil {
+		return nil, fmt.Errorf("trae: failed to marshal v3 request: %w", err)
+	}
+
+	v3Host := "https://coresg-normal.trae.ai"
+	url := fmt.Sprintf("%s/api/agent/v3/create_agent_task", v3Host)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, err
+	}
+
+	deviceID, machineID, deviceBrand := generateDeviceInfo(extractUserIDFromToken(accessToken))
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-app-id", appID)
+	httpReq.Header.Set("x-ide-version", "3.5.25")
+	httpReq.Header.Set("x-ide-version-code", "20260120")
+	httpReq.Header.Set("x-ide-version-type", "stable")
+	httpReq.Header.Set("x-device-cpu", "Intel")
+	httpReq.Header.Set("x-device-id", deviceID)
+	httpReq.Header.Set("x-machine-id", machineID)
+	httpReq.Header.Set("x-device-brand", deviceBrand)
+	httpReq.Header.Set("x-device-type", "mac")
+	httpReq.Header.Set("x-os-version", "macOS 15.7.3")
+	httpReq.Header.Set("x-ide-token", accessToken)
+	httpReq.Header.Set("User-Agent", "TraeClient/TTNet")
+
+	authID := ""
+	if auth != nil {
+		authID = auth.ID
+	}
+	log.WithFields(log.Fields{
+		"auth_id":  authID,
+		"provider": e.Identifier(),
+		"model":    baseModel,
+		"url":      url,
+		"method":   http.MethodPost,
+	}).Infof("external HTTP stream request (v3): POST %s", url)
+
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("trae: v3 stream request failed: %w", err)
+	}
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		return nil, fmt.Errorf("trae: v3 stream API error %d: %s", httpResp.StatusCode, string(respBody))
+	}
+
+	chunkChan := make(chan cliproxyexecutor.StreamChunk, 100)
+
+	go func() {
+		defer close(chunkChan)
+		defer httpResp.Body.Close()
+
+		reader := bufio.NewReader(httpResp.Body)
+		for {
+			line, err := reader.ReadString('\n')
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				chunkChan <- cliproxyexecutor.StreamChunk{Err: err}
+				return
+			}
+
+			line = strings.TrimSpace(line)
+			if line == "" || !strings.HasPrefix(line, "data:") {
+				continue
+			}
+
+			data := strings.TrimPrefix(line, "data:")
+			data = strings.TrimSpace(data)
+			if data == "[DONE]" {
+				doneChunk := map[string]interface{}{
+					"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   baseModel,
+					"choices": []map[string]interface{}{
+						{
+							"index":         0,
+							"delta":         map[string]interface{}{},
+							"finish_reason": "stop",
+						},
+					},
+				}
+				doneJSON, _ := json.Marshal(doneChunk)
+				chunkChan <- cliproxyexecutor.StreamChunk{Payload: []byte("data: " + string(doneJSON) + "\n\n")}
+				chunkChan <- cliproxyexecutor.StreamChunk{Payload: []byte("data: [DONE]\n\n")}
+				break
+			}
+
+			var chunk struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				continue
+			}
+
+			for _, choice := range chunk.Choices {
+				if choice.Delta.Content == "" {
+					continue
+				}
+				openAIChunk := map[string]interface{}{
+					"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   baseModel,
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"delta": map[string]interface{}{
+								"content": choice.Delta.Content,
+							},
+							"finish_reason": nil,
+						},
+					},
+				}
+				chunkJSON, _ := json.Marshal(openAIChunk)
+				chunkChan <- cliproxyexecutor.StreamChunk{Payload: []byte("data: " + string(chunkJSON) + "\n\n")}
+			}
+		}
+	}()
+
+	return chunkChan, nil
 }
