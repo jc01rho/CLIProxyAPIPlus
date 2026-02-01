@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -25,6 +26,29 @@ const (
 // KilocodeExecutor handles requests to the Kilocode API.
 type KilocodeExecutor struct {
 	cfg *config.Config
+}
+
+// normalizeKilocodeModelForAPI strips "kilocode-" prefix and normalizes model names for API calls.
+// Examples:
+//   - "kilocode-grok-code-fast-1" → "grok-code-fast-1"
+//   - "kilocode-glm-4-7" → "glm-4.7"
+//   - "kilocode-kimi-k2-5" → "kimi-k2.5"
+func normalizeKilocodeModelForAPI(model string) string {
+	// Strip "kilocode-" prefix
+	normalized := strings.TrimPrefix(model, "kilocode-")
+
+	// Convert version numbers from hyphens to dots
+	// glm-4-7 → glm-4.7
+	if strings.HasPrefix(normalized, "glm-4-") {
+		normalized = strings.Replace(normalized, "glm-4-", "glm-4.", 1)
+	}
+
+	// kimi-k2-5 → kimi-k2.5
+	if strings.HasPrefix(normalized, "kimi-k2-") {
+		normalized = strings.Replace(normalized, "kimi-k2-", "kimi-k2.", 1)
+	}
+
+	return normalized
 }
 
 // NewKilocodeExecutor constructs a new executor instance.
@@ -78,17 +102,20 @@ func (e *KilocodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
+	normalizedModel := normalizeKilocodeModelForAPI(req.Model)
+
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 	originalPayload := bytes.Clone(req.Payload)
 	if len(opts.OriginalRequest) > 0 {
 		originalPayload = bytes.Clone(opts.OriginalRequest)
 	}
-	originalTranslated := sdktranslator.TranslateRequest(from, to, req.Model, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, req.Model, bytes.Clone(req.Payload), false)
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, req.Model, to.String(), "", body, originalTranslated, requestedModel)
+	originalTranslated := sdktranslator.TranslateRequest(from, to, normalizedModel, originalPayload, false)
+	body := sdktranslator.TranslateRequest(from, to, normalizedModel, bytes.Clone(req.Payload), false)
+	requestedModel := payloadRequestedModel(opts, normalizedModel)
+	body = applyPayloadConfigWithRoot(e.cfg, normalizedModel, to.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.SetBytes(body, "stream", false)
+	body, _ = sjson.SetBytes(body, "model", normalizedModel)
 
 	url := kilocodeBaseURL + kilocodeChatPath
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -166,17 +193,20 @@ func (e *KilocodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
+	normalizedModel := normalizeKilocodeModelForAPI(req.Model)
+
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 	originalPayload := bytes.Clone(req.Payload)
 	if len(opts.OriginalRequest) > 0 {
 		originalPayload = bytes.Clone(opts.OriginalRequest)
 	}
-	originalTranslated := sdktranslator.TranslateRequest(from, to, req.Model, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, req.Model, bytes.Clone(req.Payload), true)
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, req.Model, to.String(), "", body, originalTranslated, requestedModel)
+	originalTranslated := sdktranslator.TranslateRequest(from, to, normalizedModel, originalPayload, false)
+	body := sdktranslator.TranslateRequest(from, to, normalizedModel, bytes.Clone(req.Payload), true)
+	requestedModel := payloadRequestedModel(opts, normalizedModel)
+	body = applyPayloadConfigWithRoot(e.cfg, normalizedModel, to.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.SetBytes(body, "stream", true)
+	body, _ = sjson.SetBytes(body, "model", normalizedModel)
 	// Enable stream options for usage stats in stream
 	body, _ = sjson.SetBytes(body, "stream_options.include_usage", true)
 
@@ -283,42 +313,20 @@ func (e *KilocodeExecutor) CountTokens(_ context.Context, _ *cliproxyauth.Auth, 
 }
 
 // Refresh validates the Kilocode token is still working.
-// Kilocode tokens don't expire traditionally, so we just validate.
+// Kilocode API only supports /chat/completions endpoint, so we skip validation
+// and return the auth as-is. Token validation will happen naturally during actual requests.
 func (e *KilocodeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	if auth == nil {
 		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
 	}
 
-	// Get the Kilocode token
 	token := metaStringValue(auth.Metadata, "token")
 	if token == "" {
 		return auth, nil
 	}
 
-	// Validate the token by making a simple API call
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, kilocodeBaseURL+"/models", nil)
-	if err != nil {
-		return nil, statusErr{code: http.StatusUnauthorized, msg: fmt.Sprintf("kilocode token validation failed: %v", err)}
-	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, statusErr{code: http.StatusUnauthorized, msg: fmt.Sprintf("kilocode token validation failed: %v", err)}
-	}
-	defer func() {
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("kilocode executor: close response body error: %v", errClose)
-		}
-	}()
-
-	if !isHTTPSuccess(resp.StatusCode) {
-		return nil, statusErr{code: http.StatusUnauthorized, msg: "kilocode token is invalid"}
-	}
-
+	// Kilocode API only supports /chat/completions, so we skip token validation here
+	// Token validity will be checked during actual API requests
 	return auth, nil
 }
 
