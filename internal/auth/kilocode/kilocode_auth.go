@@ -247,35 +247,20 @@ func (k *KilocodeAuth) WaitForAuthorization(ctx context.Context, deviceCode *Dev
 
 // GetAPIEndpoint returns the Kilocode API endpoint URL for OpenRouter compatibility.
 func (k *KilocodeAuth) GetAPIEndpoint() string {
-	return "https://api.kilo.ai/api/openrouter/v1"
+	return "https://kilo.ai/api/openrouter"
 }
 
 // ValidateToken checks if a Kilocode access token is valid.
+// Since Kilocode API only supports /chat/completions, we skip validation here.
+// Token validity will be verified during actual API requests.
 func (k *KilocodeAuth) ValidateToken(ctx context.Context, token string) (bool, error) {
 	if token == "" {
 		return false, nil
 	}
 
-	// Try to make a simple API call to validate the token
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.GetAPIEndpoint()+"/models", nil)
-	if err != nil {
-		return false, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := k.httpClient.Do(req)
-	if err != nil {
-		return false, err
-	}
-	defer func() {
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("kilocode validate token: close body error: %v", errClose)
-		}
-	}()
-
-	return isHTTPSuccess(resp.StatusCode), nil
+	// Kilocode API only supports /chat/completions endpoint
+	// We assume token is valid if it's not empty; actual validation happens during requests
+	return true, nil
 }
 
 // CreateTokenStorage creates a new KilocodeTokenStorage from auth bundle.
