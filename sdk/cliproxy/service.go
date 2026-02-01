@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	kilocodeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kilocode"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	traeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/trae"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -818,6 +819,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	case "kiro":
 		models = s.fetchKiroModels(a)
 		models = applyExcludedModels(models, excluded)
+	case "kilocode":
+		models = s.fetchKilocodeModels(a)
+		models = applyExcludedModels(models, excluded)
 	case "trae":
 		models = registry.GetOpenAIModels()
 		models = applyExcludedModels(models, excluded)
@@ -1433,6 +1437,86 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 
 	log.Infof("kiro: successfully fetched %d models from API (including agentic variants)", len(models))
 	return models
+}
+
+// fetchKilocodeModels attempts to fetch models dynamically from Kilocode API.
+// It extracts the access token from auth attributes/metadata and calls the Kilocode API.
+// Only free models (pricing.prompt == "0" && pricing.completion == "0") are returned.
+// If dynamic fetch fails, it returns an empty slice as Kilocode has no static fallback.
+func (s *Service) fetchKilocodeModels(a *coreauth.Auth) []*ModelInfo {
+	if a == nil {
+		log.Debug("kilocode: auth is nil, no models available")
+		return nil
+	}
+
+	// Extract token from auth attributes
+	token := s.extractKilocodeToken(a)
+	if token == "" {
+		log.Debug("kilocode: no valid token in auth, no models available")
+		return nil
+	}
+
+	// Create KilocodeAuth instance
+	kAuth := kilocodeauth.NewKilocodeAuth(s.cfg)
+	if kAuth == nil {
+		log.Warn("kilocode: failed to create KilocodeAuth instance, no models available")
+		return nil
+	}
+
+	// Use timeout context for API call
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Attempt to fetch dynamic models (filters for free models automatically)
+	models, err := kAuth.FetchModels(ctx, token)
+	if err != nil {
+		log.Warnf("kilocode: failed to fetch models: %v, no models available", err)
+		return nil
+	}
+
+	if len(models) == 0 {
+		log.Debug("kilocode: API returned no free models")
+		return nil
+	}
+
+	log.Infof("kilocode: successfully fetched %d free models from API", len(models))
+	return models
+}
+
+// extractKilocodeToken extracts Kilocode access token from auth attributes and metadata.
+// It supports both config-based tokens (stored in Attributes) and file-based tokens (stored in Metadata).
+func (s *Service) extractKilocodeToken(a *coreauth.Auth) string {
+	if a == nil {
+		return ""
+	}
+
+	var token string
+
+	// Priority 1: Try to get from Attributes (config.yaml source)
+	if a.Attributes != nil {
+		token = strings.TrimSpace(a.Attributes["token"])
+		if token == "" {
+			token = strings.TrimSpace(a.Attributes["access_token"])
+		}
+	}
+
+	// Priority 2: If not found in Attributes, try Metadata (JSON file source)
+	if token == "" && a.Metadata != nil {
+		if tokenVal, ok := a.Metadata["token"]; ok {
+			if tokenStr, isStr := tokenVal.(string); isStr {
+				token = strings.TrimSpace(tokenStr)
+			}
+		}
+		if token == "" {
+			if accessTokenVal, ok := a.Metadata["access_token"]; ok {
+				if accessTokenStr, isStr := accessTokenVal.(string); isStr {
+					token = strings.TrimSpace(accessTokenStr)
+				}
+			}
+		}
+	}
+
+	return token
 }
 
 // extractKiroTokenData extracts KiroTokenData from auth attributes and metadata.
