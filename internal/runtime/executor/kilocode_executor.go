@@ -42,6 +42,9 @@ func normalizeKilocodeModelForAPI(model string) string {
 	// Strip "kilocode-" prefix
 	normalized := strings.TrimPrefix(resolved, "kilocode-")
 
+	// Strip ":free" suffix - Kilocode API doesn't use this suffix
+	normalized = strings.TrimSuffix(normalized, ":free")
+
 	// Convert version numbers from hyphens to dots (legacy format support)
 	// glm-4-7 → glm-4.7
 	if strings.HasPrefix(normalized, "glm-4-") {
@@ -53,6 +56,7 @@ func normalizeKilocodeModelForAPI(model string) string {
 		normalized = strings.Replace(normalized, "kimi-k2-", "kimi-k2.", 1)
 	}
 
+	log.Debugf("[DEBUG] normalizeKilocodeModelForAPI: input=%s -> output=%s", model, normalized)
 	return normalized
 }
 
