@@ -111,7 +111,9 @@ func (e *KilocodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
+	log.Infof("[KILOCODE-EXEC] Execute: req.Model=%s", req.Model)
 	normalizedModel := normalizeKilocodeModelForAPI(req.Model)
+	log.Infof("[KILOCODE-EXEC] Execute: normalizedModel=%s", normalizedModel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
