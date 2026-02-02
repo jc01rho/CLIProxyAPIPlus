@@ -149,6 +149,7 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 		return ""
 	}
 	if channel == "" {
+		log.Debugf("resolveUpstreamModelFromAliasTable: empty channel for provider=%s", auth.Provider)
 		return ""
 	}
 
@@ -165,10 +166,16 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 	raw := m.oauthModelAlias.Load()
 	table, _ := raw.(*oauthModelAliasTable)
 	if table == nil || table.reverse == nil {
+		log.Debugf("resolveUpstreamModelFromAliasTable: no alias table for channel=%s", channel)
 		return ""
 	}
 	rev := table.reverse[channel]
 	if rev == nil {
+		var availableChannels []string
+		for k := range table.reverse {
+			availableChannels = append(availableChannels, k)
+		}
+		log.Debugf("resolveUpstreamModelFromAliasTable: no entries for channel=%s (available: %v)", channel, availableChannels)
 		return ""
 	}
 
