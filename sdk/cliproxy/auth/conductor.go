@@ -58,6 +58,8 @@ const (
 
 const providerAuthContextKey = "cliproxy.provider_auth"
 const GinProviderAuthKey = "providerAuth"
+const fallbackInfoContextKey = "cliproxy.fallback_info"
+const GinFallbackInfoKey = "fallbackInfo"
 
 // SetProviderAuthInContext stores provider auth info in context for logging.
 // It also stores the info in gin.Context if available for middleware access.
@@ -84,6 +86,36 @@ func GetProviderAuthFromContext(ctx context.Context) (provider, authID, authLabe
 		return v["provider"], v["auth_id"], v["auth_label"]
 	}
 	return "", "", ""
+}
+
+// SetFallbackInfoInContext stores fallback information for logging.
+// Only stores if requestedModel and actualModel differ.
+func SetFallbackInfoInContext(ctx context.Context, requestedModel, actualModel string) context.Context {
+	if requestedModel == "" || actualModel == "" || requestedModel == actualModel {
+		return ctx
+	}
+
+	fallbackInfo := map[string]string{
+		"requested_model": requestedModel,
+		"actual_model":    actualModel,
+	}
+
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
+		ginCtx.Set(GinFallbackInfoKey, fallbackInfo)
+	}
+
+	return context.WithValue(ctx, fallbackInfoContextKey, fallbackInfo)
+}
+
+// GetFallbackInfoFromContext retrieves fallback info from context.
+func GetFallbackInfoFromContext(ctx context.Context) (requestedModel, actualModel string) {
+	if ctx == nil {
+		return "", ""
+	}
+	if v, ok := ctx.Value(fallbackInfoContextKey).(map[string]string); ok {
+		return v["requested_model"], v["actual_model"]
+	}
+	return "", ""
 }
 
 var quotaCooldownDisabled atomic.Bool
@@ -573,10 +605,11 @@ func (m *Manager) Load(ctx context.Context) error {
 // When all credentials fail with 429/401/5xx, it attempts fallback to an alternate model if configured.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	visited := make(map[string]struct{})
-	return m.executeWithFallback(ctx, providers, req, opts, visited)
+	originalRequestedModel := req.Model
+	return m.executeWithFallback(ctx, providers, req, opts, visited, originalRequestedModel)
 }
 
-func (m *Manager) executeWithFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, visited map[string]struct{}) (cliproxyexecutor.Response, error) {
+func (m *Manager) executeWithFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, visited map[string]struct{}, originalRequestedModel string) (cliproxyexecutor.Response, error) {
 	originalModel := req.Model
 
 	if _, seen := visited[originalModel]; seen {
@@ -586,6 +619,10 @@ func (m *Manager) executeWithFallback(ctx context.Context, providers []string, r
 
 	resp, err := m.executeOnce(ctx, providers, req, opts)
 	if err == nil {
+		// Store fallback info if we used a different model than originally requested
+		if originalRequestedModel != "" && originalRequestedModel != req.Model {
+			ctx = SetFallbackInfoInContext(ctx, originalRequestedModel, req.Model)
+		}
 		return resp, nil
 	}
 
@@ -597,7 +634,7 @@ func (m *Manager) executeWithFallback(ctx context.Context, providers []string, r
 			if len(fallbackProviders) > 0 {
 				fallbackReq := req
 				fallbackReq.Model = fallbackModel
-				return m.executeWithFallback(ctx, fallbackProviders, fallbackReq, opts, visited)
+				return m.executeWithFallback(ctx, fallbackProviders, fallbackReq, opts, visited, originalRequestedModel)
 			}
 		}
 
@@ -613,7 +650,7 @@ func (m *Manager) executeWithFallback(ctx context.Context, providers []string, r
 				if len(chainProviders) > 0 {
 					chainReq := req
 					chainReq.Model = chainModel
-					return m.executeWithFallback(ctx, chainProviders, chainReq, opts, visited)
+					return m.executeWithFallback(ctx, chainProviders, chainReq, opts, visited, originalRequestedModel)
 				}
 			}
 		}
@@ -729,10 +766,11 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // When all credentials fail with 429/401/5xx before stream starts, it attempts fallback to an alternate model if configured.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
 	visited := make(map[string]struct{})
-	return m.executeStreamWithFallback(ctx, providers, req, opts, visited)
+	originalRequestedModel := req.Model
+	return m.executeStreamWithFallback(ctx, providers, req, opts, visited, originalRequestedModel)
 }
 
-func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, visited map[string]struct{}) (<-chan cliproxyexecutor.StreamChunk, error) {
+func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, visited map[string]struct{}, originalRequestedModel string) (<-chan cliproxyexecutor.StreamChunk, error) {
 	originalModel := req.Model
 
 	if _, seen := visited[originalModel]; seen {
@@ -742,6 +780,9 @@ func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []str
 
 	chunks, err := m.executeStreamOnce(ctx, providers, req, opts)
 	if err == nil {
+		if originalRequestedModel != "" && originalRequestedModel != req.Model {
+			ctx = SetFallbackInfoInContext(ctx, originalRequestedModel, req.Model)
+		}
 		return chunks, nil
 	}
 
@@ -753,7 +794,7 @@ func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []str
 			if len(fallbackProviders) > 0 {
 				fallbackReq := req
 				fallbackReq.Model = fallbackModel
-				return m.executeStreamWithFallback(ctx, fallbackProviders, fallbackReq, opts, visited)
+				return m.executeStreamWithFallback(ctx, fallbackProviders, fallbackReq, opts, visited, originalRequestedModel)
 			}
 		}
 
@@ -769,7 +810,7 @@ func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []str
 				if len(chainProviders) > 0 {
 					chainReq := req
 					chainReq.Model = chainModel
-					return m.executeStreamWithFallback(ctx, chainProviders, chainReq, opts, visited)
+					return m.executeStreamWithFallback(ctx, chainProviders, chainReq, opts, visited, originalRequestedModel)
 				}
 			}
 		}
