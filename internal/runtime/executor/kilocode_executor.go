@@ -283,15 +283,24 @@ func (e *KilocodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 			line := scanner.Bytes()
 			appendAPIResponseChunk(ctx, e.cfg, line)
 
+			// Skip empty lines (SSE keepalive)
+			if len(line) == 0 {
+				continue
+			}
+
+			// Skip non-data lines (SSE comments like ": OPENROUTER PROCESSING", event types, etc.)
+			// This prevents JSON parse errors when OpenRouter sends keepalive comments
+			if !bytes.HasPrefix(line, dataTag) {
+				continue
+			}
+
 			// Parse SSE data
-			if bytes.HasPrefix(line, dataTag) {
-				data := bytes.TrimSpace(line[5:])
-				if bytes.Equal(data, []byte("[DONE]")) {
-					continue
-				}
-				if detail, ok := parseOpenAIStreamUsage(line); ok {
-					reporter.publish(ctx, detail)
-				}
+			data := bytes.TrimSpace(line[5:])
+			if bytes.Equal(data, []byte("[DONE]")) {
+				continue
+			}
+			if detail, ok := parseOpenAIStreamUsage(line); ok {
+				reporter.publish(ctx, detail)
 			}
 
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), body, bytes.Clone(line), &param)
