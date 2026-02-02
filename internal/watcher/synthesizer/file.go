@@ -100,8 +100,9 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 			Status:   status,
 			Disabled: disabled,
 			Attributes: map[string]string{
-				"source": full,
-				"path":   full,
+				"source":    full,
+				"path":      full,
+				"auth_kind": "oauth",
 			},
 			ProxyURL:  proxyURL,
 			Metadata:  metadata,
