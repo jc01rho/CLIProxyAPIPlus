@@ -182,17 +182,16 @@ func getKilocodeContextLength(contextLength int) int {
 	return DefaultKilocodeContextLength
 }
 
-// ResolveKilocodeModelAlias resolves short model aliases to full OpenRouter format.
-// This ensures that short names like "kimi" or "glm" are expanded to include the
-// ":free" suffix required by Kilocode API for free tier access.
+// ResolveKilocodeModelAlias normalizes model names for Kilocode API.
+// It strips the "kilocode-" prefix if present and passes through the model name.
+//
+// Model alias resolution (e.g., "kimi" → "moonshotai/kimi-k2.5:free") should be
+// configured via openai-compatibility.models[] in config.yaml, NOT hardcoded here.
 //
 // Examples:
-//   - "kimi" → "moonshotai/kimi-k2.5:free"
-//   - "kimi2" → "moonshotai/kimi-k2.5:free"
-//   - "kimi-k2.5" → "moonshotai/kimi-k2.5:free"
-//   - "glm" → "z-ai/glm-4.7:free"
+//   - "kilocode-moonshotai/kimi-k2.5:free" → "moonshotai/kimi-k2.5:free"
 //   - "moonshotai/kimi-k2.5:free" → "moonshotai/kimi-k2.5:free" (unchanged)
-//   - "unknown" → "unknown" (unchanged)
+//   - "kimi" → "kimi" (unchanged - config alias handles this BEFORE executor)
 func ResolveKilocodeModelAlias(alias string) string {
 	alias = strings.TrimSpace(alias)
 	if alias == "" {
@@ -200,74 +199,7 @@ func ResolveKilocodeModelAlias(alias string) string {
 	}
 
 	// Strip kilocode- prefix if present
-	normalizedAlias := strings.TrimPrefix(alias, "kilocode-")
-
-	// Explicit alias mappings for common short names
-	explicitAliases := map[string]string{
-		"kimi":      "moonshotai/kimi-k2.5:free",
-		"kimi2":     "moonshotai/kimi-k2.5:free",
-		"kimi-k2":   "moonshotai/kimi-k2.5:free",
-		"kimi-k2.5": "moonshotai/kimi-k2.5:free",
-		"glm":       "z-ai/glm-4.7:free",
-		"glm4":      "z-ai/glm-4.7:free",
-		"glm-4":     "z-ai/glm-4.7:free",
-		"glm-4.7":   "z-ai/glm-4.7:free",
-		"minimax":   "minimax/minimax-m2.1:free",
-		"trinity":   "arcee-ai/trinity-large-preview:free",
-		"corethink": "corethink:free",
-	}
-
-	lowerAlias := strings.ToLower(normalizedAlias)
-	if resolved, ok := explicitAliases[lowerAlias]; ok {
-		return resolved
-	}
-
-	// If already has :free suffix, it's likely a full OpenRouter ID
-	if strings.HasSuffix(normalizedAlias, ":free") {
-		return normalizedAlias
-	}
-
-	// Get static model list
-	models := GetKilocodeModels()
-
-	// Try exact match first (minus kilocode- prefix)
-	for _, model := range models {
-		modelID := strings.TrimPrefix(model.ID, "kilocode-")
-		// Check exact match without :free suffix
-		baseName := strings.TrimSuffix(modelID, ":free")
-		if strings.EqualFold(baseName, normalizedAlias) {
-			return modelID
-		}
-	}
-
-	// Try partial match (alias is part of model name)
-	for _, model := range models {
-		modelID := strings.TrimPrefix(model.ID, "kilocode-")
-		baseName := strings.TrimSuffix(modelID, ":free")
-
-		// Extract the last segment after / (e.g., "kimi-k2.5" from "moonshotai/kimi-k2.5")
-		parts := strings.Split(baseName, "/")
-		modelName := parts[len(parts)-1]
-		lowerModelName := strings.ToLower(modelName)
-
-		// Check if alias matches the model name part
-		if strings.EqualFold(modelName, normalizedAlias) {
-			return modelID
-		}
-
-		// Check if alias is a prefix of the model name (e.g., "kimi" matches "kimi-k2.5")
-		if strings.HasPrefix(lowerModelName, lowerAlias) {
-			return modelID
-		}
-
-		// Check if alias is contained in the model name
-		if strings.Contains(lowerModelName, lowerAlias) {
-			return modelID
-		}
-	}
-
-	// No match found, return original alias
-	return alias
+	return strings.TrimPrefix(alias, "kilocode-")
 }
 
 // GetKilocodeModels returns a static list of free Kilocode models.
