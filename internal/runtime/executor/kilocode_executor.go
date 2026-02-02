@@ -107,7 +107,9 @@ func (e *KilocodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
+	log.Debugf("kilocode executor Execute: incoming model=%s", req.Model)
 	normalizedModel := normalizeKilocodeModelForAPI(req.Model)
+	log.Debugf("kilocode executor Execute: normalized model=%s", normalizedModel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
@@ -198,7 +200,9 @@ func (e *KilocodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
+	log.Debugf("kilocode executor ExecuteStream: incoming model=%s", req.Model)
 	normalizedModel := normalizeKilocodeModelForAPI(req.Model)
+	log.Debugf("kilocode executor ExecuteStream: normalized model=%s", normalizedModel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
