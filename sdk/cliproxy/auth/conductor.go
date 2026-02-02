@@ -627,9 +627,9 @@ func (m *Manager) executeWithFallback(ctx context.Context, providers []string, r
 	}
 
 	if m.shouldTriggerFallback(err) {
-		fallbackReason := m.getFallbackReason(err)
+		reason, statusCode, errMsg := m.getDetailedFallbackInfo(err)
 		if fallbackModel, ok := m.getFallbackModel(originalModel); ok {
-			log.Infof("fallback from %s to %s (via fallback-models, reason: %s)", originalModel, fallbackModel, fallbackReason)
+			log.Infof("fallback from %s to %s (via fallback-models, reason: %s, status: %d, error: %s)", originalModel, fallbackModel, reason, statusCode, errMsg)
 			fallbackProviders := util.GetProviderName(fallbackModel)
 			if len(fallbackProviders) > 0 {
 				fallbackReq := req
@@ -645,7 +645,7 @@ func (m *Manager) executeWithFallback(ctx context.Context, providers []string, r
 				if _, tried := visited[chainModel]; tried {
 					continue
 				}
-				log.Infof("fallback from %s to %s (via fallback-chain, depth %d/%d, reason: %s)", originalModel, chainModel, len(visited), maxDepth, fallbackReason)
+				log.Infof("fallback from %s to %s (via fallback-chain, depth %d/%d, reason: %s, status: %d, error: %s)", originalModel, chainModel, len(visited), maxDepth, reason, statusCode, errMsg)
 				chainProviders := util.GetProviderName(chainModel)
 				if len(chainProviders) > 0 {
 					chainReq := req
@@ -730,6 +730,38 @@ func (m *Manager) getFallbackReason(err error) string {
 	}
 }
 
+// getDetailedFallbackInfo returns detailed fallback information including error message
+func (m *Manager) getDetailedFallbackInfo(err error) (reason string, statusCode int, errMsg string) {
+	if err == nil {
+		return "unknown", 0, ""
+	}
+
+	statusCode = statusCodeFromError(err)
+	errMsg = err.Error()
+
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		if authErr.Code == "auth_unavailable" {
+			return "auth_unavailable", statusCode, authErr.Message
+		}
+		if authErr.Code == "auth_not_found" {
+			return "auth_not_found", statusCode, authErr.Message
+		}
+	}
+
+	switch statusCode {
+	case 429:
+		reason = "quota_exceeded"
+	case 401:
+		reason = "unauthorized"
+	case 500, 502, 503, 504:
+		reason = "server_error"
+	default:
+		reason = fmt.Sprintf("http_%d", statusCode)
+	}
+	return reason, statusCode, errMsg
+}
+
 // ExecuteCount performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -787,9 +819,9 @@ func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []str
 	}
 
 	if m.shouldTriggerFallback(err) {
-		fallbackReason := m.getFallbackReason(err)
+		reason, statusCode, errMsg := m.getDetailedFallbackInfo(err)
 		if fallbackModel, ok := m.getFallbackModel(originalModel); ok {
-			log.Infof("fallback from %s to %s (stream, via fallback-models, reason: %s)", originalModel, fallbackModel, fallbackReason)
+			log.Infof("fallback from %s to %s (stream, via fallback-models, reason: %s, status: %d, error: %s)", originalModel, fallbackModel, reason, statusCode, errMsg)
 			fallbackProviders := util.GetProviderName(fallbackModel)
 			if len(fallbackProviders) > 0 {
 				fallbackReq := req
@@ -805,7 +837,7 @@ func (m *Manager) executeStreamWithFallback(ctx context.Context, providers []str
 				if _, tried := visited[chainModel]; tried {
 					continue
 				}
-				log.Infof("fallback from %s to %s (stream, via fallback-chain, depth %d/%d, reason: %s)", originalModel, chainModel, len(visited), maxDepth, fallbackReason)
+				log.Infof("fallback from %s to %s (stream, via fallback-chain, depth %d/%d, reason: %s, status: %d, error: %s)", originalModel, chainModel, len(visited), maxDepth, reason, statusCode, errMsg)
 				chainProviders := util.GetProviderName(chainModel)
 				if len(chainProviders) > 0 {
 					chainReq := req
