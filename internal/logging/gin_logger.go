@@ -158,13 +158,14 @@ func GinLogrusLogger() gin.HandlerFunc {
 		if isAIAPIPath(path) && (modelName != "" || providerInfo != "" || authKeyName != "") {
 			if modelName != "" && providerInfo != "" {
 				logLine = logLine + " | " + fmt.Sprintf("%s | %s", modelName, providerInfo)
+			} else if modelName != "" && authKeyName != "" {
+				logLine = logLine + " | " + fmt.Sprintf("%s | %s", modelName, authKeyName)
 			} else if modelName != "" {
 				logLine = logLine + " | " + modelName
 			} else if providerInfo != "" {
 				logLine = logLine + " | " + providerInfo
-			}
-			if authKeyName != "" && providerInfo == "" {
-				logLine = logLine + " | (" + authKeyName + ")"
+			} else if authKeyName != "" {
+				logLine = logLine + " | " + authKeyName
 			}
 		}
 
