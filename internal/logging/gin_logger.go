@@ -34,6 +34,8 @@ const skipGinLogKey = "__gin_skip_request_logging__"
 const requestBodyKey = "__gin_request_body__"
 const providerAuthContextKey = "cliproxy.provider_auth"
 const ginProviderAuthKey = "providerAuth"
+const fallbackInfoContextKey = "cliproxy.fallback_info"
+const ginFallbackInfoKey = "fallbackInfo"
 
 func getProviderAuthFromContext(c *gin.Context) (provider, authID, authLabel string) {
 	if c == nil {
@@ -59,6 +61,30 @@ func getProviderAuthFromContext(c *gin.Context) (provider, authID, authLabel str
 		return v["provider"], v["auth_id"], v["auth_label"]
 	}
 	return "", "", ""
+}
+
+func getFallbackInfoFromContext(c *gin.Context) (requestedModel, actualModel string) {
+	if c == nil {
+		return "", ""
+	}
+
+	if v, exists := c.Get(ginFallbackInfoKey); exists {
+		if info, ok := v.(map[string]string); ok {
+			return info["requested_model"], info["actual_model"]
+		}
+	}
+
+	if c.Request == nil {
+		return "", ""
+	}
+	ctx := c.Request.Context()
+	if ctx == nil {
+		return "", ""
+	}
+	if v, ok := ctx.Value(fallbackInfoContextKey).(map[string]string); ok {
+		return v["requested_model"], v["actual_model"]
+	}
+	return "", ""
 }
 
 // GinLogrusLogger returns a Gin middleware handler that logs HTTP requests and responses
@@ -136,6 +162,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 		}
 
 		provider, authID, authLabel := getProviderAuthFromContext(c)
+		requestedModel, actualModel := getFallbackInfoFromContext(c)
 		providerInfo := ""
 		if provider != "" {
 			displayAuth := authLabel
@@ -156,12 +183,17 @@ func GinLogrusLogger() gin.HandlerFunc {
 		logLine := fmt.Sprintf("%3d | %13v | %15s | %-7s \"%s\"", statusCode, latency, clientIP, method, path)
 
 		if isAIAPIPath(path) && (modelName != "" || providerInfo != "" || authKeyName != "") {
-			if modelName != "" && providerInfo != "" {
-				logLine = logLine + " | " + fmt.Sprintf("%s | %s", modelName, providerInfo)
-			} else if modelName != "" && authKeyName != "" {
-				logLine = logLine + " | " + fmt.Sprintf("%s | %s", modelName, authKeyName)
-			} else if modelName != "" {
-				logLine = logLine + " | " + modelName
+			displayModelName := modelName
+			if requestedModel != "" && actualModel != "" && requestedModel != actualModel {
+				displayModelName = fmt.Sprintf("%s → %s", requestedModel, actualModel)
+			}
+
+			if displayModelName != "" && providerInfo != "" {
+				logLine = logLine + " | " + fmt.Sprintf("%s | %s", displayModelName, providerInfo)
+			} else if displayModelName != "" && authKeyName != "" {
+				logLine = logLine + " | " + fmt.Sprintf("%s | %s", displayModelName, authKeyName)
+			} else if displayModelName != "" {
+				logLine = logLine + " | " + displayModelName
 			} else if providerInfo != "" {
 				logLine = logLine + " | " + providerInfo
 			} else if authKeyName != "" {

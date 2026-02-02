@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
@@ -29,15 +30,19 @@ type KilocodeExecutor struct {
 }
 
 // normalizeKilocodeModelForAPI strips "kilocode-" prefix and normalizes model names for API calls.
+// It first resolves short aliases to full OpenRouter format, then applies normalization.
 // Examples:
-//   - "kilocode-grok-code-fast-1" → "grok-code-fast-1"
+//   - "kimi" → "moonshotai/kimi-k2.5:free"
+//   - "kilocode-moonshotai/kimi-k2.5:free" → "moonshotai/kimi-k2.5:free"
 //   - "kilocode-glm-4-7" → "glm-4.7"
-//   - "kilocode-kimi-k2-5" → "kimi-k2.5"
 func normalizeKilocodeModelForAPI(model string) string {
-	// Strip "kilocode-" prefix
-	normalized := strings.TrimPrefix(model, "kilocode-")
+	// First, resolve short aliases to full OpenRouter format (e.g., "kimi" → "moonshotai/kimi-k2.5:free")
+	resolved := registry.ResolveKilocodeModelAlias(model)
 
-	// Convert version numbers from hyphens to dots
+	// Strip "kilocode-" prefix
+	normalized := strings.TrimPrefix(resolved, "kilocode-")
+
+	// Convert version numbers from hyphens to dots (legacy format support)
 	// glm-4-7 → glm-4.7
 	if strings.HasPrefix(normalized, "glm-4-") {
 		normalized = strings.Replace(normalized, "glm-4-", "glm-4.", 1)
