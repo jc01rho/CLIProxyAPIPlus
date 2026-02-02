@@ -5,6 +5,7 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	log "github.com/sirupsen/logrus"
 )
 
 type modelAliasEntry interface {
@@ -73,10 +74,14 @@ func (m *Manager) SetOAuthModelAlias(aliases map[string][]internalconfig.OAuthMo
 // applyOAuthModelAlias resolves the upstream model from OAuth model alias.
 // If an alias exists, the returned model is the upstream model.
 func (m *Manager) applyOAuthModelAlias(auth *Auth, requestedModel string) string {
+	channel := modelAliasChannel(auth)
+	log.Debugf("[DEBUG] applyOAuthModelAlias: provider=%s model=%s channel=%s auth_kind=%v", auth.Provider, requestedModel, channel, auth.Attributes)
 	upstreamModel := m.resolveOAuthUpstreamModel(auth, requestedModel)
 	if upstreamModel == "" {
+		log.Debugf("[DEBUG] applyOAuthModelAlias: no alias found, returning original model=%s", requestedModel)
 		return requestedModel
 	}
+	log.Debugf("[DEBUG] applyOAuthModelAlias: resolved %s -> %s", requestedModel, upstreamModel)
 	return upstreamModel
 }
 
@@ -147,6 +152,7 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 		return ""
 	}
 	if channel == "" {
+		log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: empty channel for provider=%s", auth.Provider)
 		return ""
 	}
 
@@ -163,12 +169,19 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 	raw := m.oauthModelAlias.Load()
 	table, _ := raw.(*oauthModelAliasTable)
 	if table == nil || table.reverse == nil {
+		log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: no alias table loaded")
 		return ""
 	}
 	rev := table.reverse[channel]
 	if rev == nil {
+		var availableChannels []string
+		for k := range table.reverse {
+			availableChannels = append(availableChannels, k)
+		}
+		log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: no entries for channel=%s, available=%v", channel, availableChannels)
 		return ""
 	}
+	log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: channel=%s has %d aliases, looking for candidates=%v", channel, len(rev), candidates)
 
 	for _, candidate := range candidates {
 		key := strings.ToLower(strings.TrimSpace(candidate))
