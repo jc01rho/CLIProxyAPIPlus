@@ -19,9 +19,13 @@ import (
 )
 
 const (
-	kilocodeBaseURL  = "https://kilo.ai/api/openrouter"
+	// Kilocode API base URL - must match VS Code extension format
+	// VS Code extension uses: getKiloUrlFromToken("https://api.kilo.ai/api/", token) + "openrouter/"
+	kilocodeBaseURL  = "https://api.kilo.ai/api/openrouter"
 	kilocodeChatPath = "/chat/completions"
 	kilocodeAuthType = "kilocode"
+	// Kilocode VS Code extension version - used for API compatibility
+	kilocodeVersion = "3.26.0"
 )
 
 // KilocodeExecutor handles requests to the Kilocode API.
@@ -30,31 +34,26 @@ type KilocodeExecutor struct {
 }
 
 // normalizeKilocodeModelForAPI strips "kilocode-" prefix and normalizes model names for API calls.
-// It first resolves short aliases to full OpenRouter format, then applies normalization.
-// Examples:
-//   - "kimi" → "moonshotai/kimi-k2.5:free"
-//   - "kilocode-moonshotai/kimi-k2.5:free" → "moonshotai/kimi-k2.5:free"
-//   - "kilocode-glm-4-7" → "glm-4.7"
+// Preserves ":free" suffix which Kilocode API requires for free model access.
 func normalizeKilocodeModelForAPI(model string) string {
-	// First, resolve short aliases to full OpenRouter format (e.g., "kimi" → "moonshotai/kimi-k2.5:free")
 	resolved := registry.ResolveKilocodeModelAlias(model)
-
-	// Strip "kilocode-" prefix
 	normalized := strings.TrimPrefix(resolved, "kilocode-")
 
-	// Strip ":free" suffix - Kilocode API doesn't use this suffix
-	normalized = strings.TrimSuffix(normalized, ":free")
+	freeSuffix := ""
+	if strings.HasSuffix(normalized, ":free") {
+		freeSuffix = ":free"
+		normalized = strings.TrimSuffix(normalized, ":free")
+	}
 
-	// Convert version numbers from hyphens to dots (legacy format support)
-	// glm-4-7 → glm-4.7
 	if strings.HasPrefix(normalized, "glm-4-") {
 		normalized = strings.Replace(normalized, "glm-4-", "glm-4.", 1)
 	}
 
-	// kimi-k2-5 → kimi-k2.5
 	if strings.HasPrefix(normalized, "kimi-k2-") {
 		normalized = strings.Replace(normalized, "kimi-k2-", "kimi-k2.", 1)
 	}
+
+	normalized = normalized + freeSuffix
 
 	log.Debugf("[DEBUG] normalizeKilocodeModelForAPI: input=%s -> output=%s", model, normalized)
 	return normalized
@@ -350,21 +349,16 @@ func (e *KilocodeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth)
 	return auth, nil
 }
 
-// applyHeaders sets the required headers for Kilocode API requests.
-// These headers mimic the official Kilocode VS Code extension to enable free model access.
 const kilocodeTesterHeader = "X-Kilocode-Tester"
 
 func (e *KilocodeExecutor) applyHeaders(r *http.Request, token string) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set("Accept", "application/json")
-	// Kilocode extension default headers (from src/api/providers/constants.ts)
 	r.Header.Set("HTTP-Referer", "https://kilocode.ai")
 	r.Header.Set("X-Title", "Kilo Code")
-	r.Header.Set("X-KiloCode-Version", "5.2.2")
-	r.Header.Set("User-Agent", "Kilo-Code/5.2.2")
-	// Free model access - suppress warnings for free tier usage
+	r.Header.Set("X-KiloCode-Version", kilocodeVersion)
+	r.Header.Set("User-Agent", "Kilo-Code/"+kilocodeVersion)
 	r.Header.Set(kilocodeTesterHeader, "SUPPRESS")
-	// Editor identification header
 	r.Header.Set("X-KiloCode-EditorName", "Visual Studio Code 1.96.0")
 }
