@@ -188,6 +188,7 @@ func getKilocodeContextLength(contextLength int) int {
 //
 // Examples:
 //   - "kimi" → "moonshotai/kimi-k2.5:free"
+//   - "kimi2" → "moonshotai/kimi-k2.5:free"
 //   - "kimi-k2.5" → "moonshotai/kimi-k2.5:free"
 //   - "glm" → "z-ai/glm-4.7:free"
 //   - "moonshotai/kimi-k2.5:free" → "moonshotai/kimi-k2.5:free" (unchanged)
@@ -201,6 +202,26 @@ func ResolveKilocodeModelAlias(alias string) string {
 	// Strip kilocode- prefix if present
 	normalizedAlias := strings.TrimPrefix(alias, "kilocode-")
 
+	// Explicit alias mappings for common short names
+	explicitAliases := map[string]string{
+		"kimi":      "moonshotai/kimi-k2.5:free",
+		"kimi2":     "moonshotai/kimi-k2.5:free",
+		"kimi-k2":   "moonshotai/kimi-k2.5:free",
+		"kimi-k2.5": "moonshotai/kimi-k2.5:free",
+		"glm":       "z-ai/glm-4.7:free",
+		"glm4":      "z-ai/glm-4.7:free",
+		"glm-4":     "z-ai/glm-4.7:free",
+		"glm-4.7":   "z-ai/glm-4.7:free",
+		"minimax":   "minimax/minimax-m2.1:free",
+		"trinity":   "arcee-ai/trinity-large-preview:free",
+		"corethink": "corethink:free",
+	}
+
+	lowerAlias := strings.ToLower(normalizedAlias)
+	if resolved, ok := explicitAliases[lowerAlias]; ok {
+		return resolved
+	}
+
 	// If already has :free suffix, it's likely a full OpenRouter ID
 	if strings.HasSuffix(normalizedAlias, ":free") {
 		return normalizedAlias
@@ -208,9 +229,6 @@ func ResolveKilocodeModelAlias(alias string) string {
 
 	// Get static model list
 	models := GetKilocodeModels()
-
-	// Convert alias to lowercase for case-insensitive matching
-	lowerAlias := strings.ToLower(normalizedAlias)
 
 	// Try exact match first (minus kilocode- prefix)
 	for _, model := range models {
