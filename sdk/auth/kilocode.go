@@ -98,5 +98,8 @@ func (a KilocodeAuthenticator) Login(ctx context.Context, cfg *config.Config, op
 		Label:    label,
 		Storage:  tokenStorage,
 		Metadata: metadata,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
 	}, nil
 }

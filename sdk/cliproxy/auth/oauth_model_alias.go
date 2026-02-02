@@ -5,7 +5,6 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	log "github.com/sirupsen/logrus"
 )
 
 type modelAliasEntry interface {
@@ -74,13 +73,10 @@ func (m *Manager) SetOAuthModelAlias(aliases map[string][]internalconfig.OAuthMo
 // applyOAuthModelAlias resolves the upstream model from OAuth model alias.
 // If an alias exists, the returned model is the upstream model.
 func (m *Manager) applyOAuthModelAlias(auth *Auth, requestedModel string) string {
-	channel := modelAliasChannel(auth)
-	log.Debugf("applyOAuthModelAlias: provider=%s model=%s channel=%s", auth.Provider, requestedModel, channel)
 	upstreamModel := m.resolveOAuthUpstreamModel(auth, requestedModel)
 	if upstreamModel == "" {
 		return requestedModel
 	}
-	log.Debugf("applyOAuthModelAlias: resolved alias %q -> %q (provider=%s)", requestedModel, upstreamModel, auth.Provider)
 	return upstreamModel
 }
 
@@ -151,7 +147,6 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 		return ""
 	}
 	if channel == "" {
-		log.Debugf("resolveUpstreamModelFromAliasTable: empty channel for provider=%s", auth.Provider)
 		return ""
 	}
 
@@ -168,16 +163,10 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 	raw := m.oauthModelAlias.Load()
 	table, _ := raw.(*oauthModelAliasTable)
 	if table == nil || table.reverse == nil {
-		log.Debugf("resolveUpstreamModelFromAliasTable: no alias table for channel=%s", channel)
 		return ""
 	}
 	rev := table.reverse[channel]
 	if rev == nil {
-		var availableChannels []string
-		for k := range table.reverse {
-			availableChannels = append(availableChannels, k)
-		}
-		log.Debugf("resolveUpstreamModelFromAliasTable: no entries for channel=%s (available: %v)", channel, availableChannels)
 		return ""
 	}
 
