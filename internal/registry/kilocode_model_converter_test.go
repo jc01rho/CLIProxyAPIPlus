@@ -10,32 +10,23 @@ func TestResolveKilocodeModelAlias(t *testing.T) {
 		alias    string
 		expected string
 	}{
-		// Explicit aliases
-		{"kimi short", "kimi", "moonshotai/kimi-k2.5:free"},
-		{"kimi2 short", "kimi2", "moonshotai/kimi-k2.5:free"},
-		{"kimi-k2 short", "kimi-k2", "moonshotai/kimi-k2.5:free"},
-		{"kimi-k2.5 full", "kimi-k2.5", "moonshotai/kimi-k2.5:free"},
-		{"glm short", "glm", "z-ai/glm-4.7:free"},
-		{"glm4 short", "glm4", "z-ai/glm-4.7:free"},
-		{"glm-4 short", "glm-4", "z-ai/glm-4.7:free"},
-		{"glm-4.7 full", "glm-4.7", "z-ai/glm-4.7:free"},
-		{"minimax short", "minimax", "minimax/minimax-m2.1:free"},
-		{"trinity short", "trinity", "arcee-ai/trinity-large-preview:free"},
-		{"corethink short", "corethink", "corethink:free"},
-
-		// Case insensitivity
-		{"KIMI uppercase", "KIMI", "moonshotai/kimi-k2.5:free"},
-		{"Kimi2 mixed case", "Kimi2", "moonshotai/kimi-k2.5:free"},
-		{"GLM uppercase", "GLM", "z-ai/glm-4.7:free"},
-
 		// kilocode- prefix stripping
-		{"with kilocode prefix", "kilocode-kimi2", "moonshotai/kimi-k2.5:free"},
+		{"with kilocode prefix full format", "kilocode-moonshotai/kimi-k2.5:free", "moonshotai/kimi-k2.5:free"},
+		{"with kilocode prefix simple", "kilocode-kimi", "kimi"},
 
-		// Already full format
+		// Already full format (passthrough)
 		{"already full format", "moonshotai/kimi-k2.5:free", "moonshotai/kimi-k2.5:free"},
+		{"already full format glm", "z-ai/glm-4.7:free", "z-ai/glm-4.7:free"},
 
-		// Unknown model passthrough
-		{"unknown model", "unknown-model", "unknown-model"},
+		// Short names passthrough (config alias handles these)
+		{"kimi short passthrough", "kimi", "kimi"},
+		{"glm short passthrough", "glm", "glm"},
+		{"unknown model passthrough", "unknown-model", "unknown-model"},
+
+		// Edge cases
+		{"empty string", "", ""},
+		{"whitespace only", "   ", ""},
+		{"whitespace around", "  kimi  ", "kimi"},
 	}
 
 	for _, tt := range tests {
