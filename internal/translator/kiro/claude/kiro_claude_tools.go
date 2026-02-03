@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/google/uuid"
 	kirocommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/common"
 	log "github.com/sirupsen/logrus"
 )
@@ -101,8 +100,7 @@ func ParseEmbeddedToolCalls(text string, processedIDs map[string]bool) (string, 
 			continue
 		}
 
-		// Generate unique tool ID
-		toolUseID := "toolu_" + uuid.New().String()[:12]
+		toolUseID := kirocommon.GenerateToolUseID()
 
 		// Check for duplicates using name+input as key
 		dedupeKey := toolName + ":" + repairedJSON
@@ -388,7 +386,11 @@ func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseSt
 		tu = nested
 	}
 
-	toolUseID := kirocommon.GetString(tu, "toolUseId")
+	toolUseID := kirocommon.SanitizeToolUseID(kirocommon.GetString(tu, "toolUseId"))
+	if toolUseID == "" {
+		log.Warnf("kiro: skipping tool use with empty/invalid toolUseId")
+		return nil, nil
+	}
 	toolName := kirocommon.GetString(tu, "name")
 	isStop := false
 	if stop, ok := tu["stop"].(bool); ok {
@@ -610,4 +612,3 @@ func DeduplicateToolUses(toolUses []KiroToolUse) []KiroToolUse {
 
 	return unique
 }
-

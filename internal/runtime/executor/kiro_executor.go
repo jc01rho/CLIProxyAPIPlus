@@ -1926,12 +1926,14 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 					stopReason = sr
 					log.Debugf("kiro: parseEventStream found stopReason in assistantResponseEvent: %s", stopReason)
 				}
-				// Extract tool uses from response
 				if toolUsesRaw, ok := assistantResp["toolUses"].([]interface{}); ok {
 					for _, tuRaw := range toolUsesRaw {
 						if tu, ok := tuRaw.(map[string]interface{}); ok {
-							toolUseID := kirocommon.GetStringValue(tu, "toolUseId")
-							// Check for duplicate
+							toolUseID := kirocommon.SanitizeToolUseID(kirocommon.GetStringValue(tu, "toolUseId"))
+							if toolUseID == "" {
+								log.Debugf("kiro: skipping tool use with empty/invalid toolUseId in assistantResponse")
+								continue
+							}
 							if processedIDs[toolUseID] {
 								log.Debugf("kiro: skipping duplicate tool use from assistantResponse: %s", toolUseID)
 								continue
@@ -1954,12 +1956,14 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 			if contentText, ok := event["content"].(string); ok {
 				content.WriteString(contentText)
 			}
-			// Direct tool uses
 			if toolUsesRaw, ok := event["toolUses"].([]interface{}); ok {
 				for _, tuRaw := range toolUsesRaw {
 					if tu, ok := tuRaw.(map[string]interface{}); ok {
-						toolUseID := kirocommon.GetStringValue(tu, "toolUseId")
-						// Check for duplicate
+						toolUseID := kirocommon.SanitizeToolUseID(kirocommon.GetStringValue(tu, "toolUseId"))
+						if toolUseID == "" {
+							log.Debugf("kiro: skipping tool use with empty/invalid toolUseId in direct event")
+							continue
+						}
 						if processedIDs[toolUseID] {
 							log.Debugf("kiro: skipping duplicate direct tool use: %s", toolUseID)
 							continue
@@ -2500,8 +2504,8 @@ func (e *KiroExecutor) extractEventTypeFromBytes(headers []byte) string {
 func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out chan<- cliproxyexecutor.StreamChunk, targetFormat sdktranslator.Format, model string, originalReq, claudeBody []byte, reporter *usageReporter, thinkingEnabled bool) {
 	reader := bufio.NewReaderSize(body, 20*1024*1024) // 20MB buffer to match other providers
 	var totalUsage usage.Detail
-	var hasToolUses bool              // Track if any tool uses were emitted
-	var upstreamStopReason string     // Track stop_reason from upstream events
+	var hasToolUses bool          // Track if any tool uses were emitted
+	var upstreamStopReason string // Track stop_reason from upstream events
 
 	// Tool use state tracking for input buffering and deduplication
 	processedIDs := make(map[string]bool)
@@ -3144,12 +3148,14 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				}
 			}
 
-			// Handle tool uses in response (with deduplication)
 			for _, tu := range toolUses {
-				toolUseID := kirocommon.GetString(tu, "toolUseId")
+				toolUseID := kirocommon.SanitizeToolUseID(kirocommon.GetString(tu, "toolUseId"))
+				if toolUseID == "" {
+					log.Debugf("kiro: skipping tool use with empty/invalid toolUseId in stream")
+					continue
+				}
 				toolName := kirocommon.GetString(tu, "name")
 
-				// Check for duplicate
 				if processedIDs[toolUseID] {
 					log.Debugf("kiro: skipping duplicate tool use in stream: %s", toolUseID)
 					continue
@@ -3294,10 +3300,13 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			completedToolUses, newState := kiroclaude.ProcessToolUseEvent(event, currentToolUse, processedIDs)
 			currentToolUse = newState
 
-			// Emit completed tool uses
 			for _, tu := range completedToolUses {
-				// Check for truncated write marker - emit as a Bash tool that echoes the error
-				// This way Claude Code will execute it, see the error, and the agent can retry
+				sanitizedID := kirocommon.SanitizeToolUseID(tu.ToolUseID)
+				if sanitizedID == "" {
+					log.Warnf("kiro: skipping completed tool use with invalid toolUseId: %s", tu.ToolUseID)
+					continue
+				}
+
 				if tu.Name == "__truncated_write__" {
 					filePath := ""
 					if fp, ok := tu.Input["file_path"].(string); ok && fp != "" {
@@ -3331,8 +3340,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 					contentBlockIndex++
 
-					// Emit as Bash tool_use
-					blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", tu.ToolUseID, "Bash")
+					blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", sanitizedID, "Bash")
 					sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStart, &translatorParam)
 					for _, chunk := range sseData {
 						if chunk != "" {
@@ -3384,7 +3392,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 				contentBlockIndex++
 
-				blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", tu.ToolUseID, tu.Name)
+				blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", sanitizedID, tu.Name)
 				sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStart, &translatorParam)
 				for _, chunk := range sseData {
 					if chunk != "" {
