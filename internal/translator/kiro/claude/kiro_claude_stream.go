@@ -5,17 +5,17 @@ package claude
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
-// BuildClaudeMessageStartEvent creates the message_start SSE event
 func BuildClaudeMessageStartEvent(model string, inputTokens int64) []byte {
 	event := map[string]interface{}{
 		"type": "message_start",
 		"message": map[string]interface{}{
-			"id":            "msg_" + uuid.New().String()[:24],
+			"id":            "msg_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
 			"type":          "message",
 			"role":          "assistant",
 			"content":       []interface{}{},

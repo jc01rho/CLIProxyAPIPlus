@@ -88,7 +88,7 @@ func BuildClaudeResponse(content string, toolUses []KiroToolUse, model string, u
 	}
 
 	response := map[string]interface{}{
-		"id":          "msg_" + uuid.New().String()[:24],
+		"id":          "msg_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
 		"type":        "message",
 		"role":        "assistant",
 		"model":       model,

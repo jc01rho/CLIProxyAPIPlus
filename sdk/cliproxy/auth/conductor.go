@@ -148,6 +148,8 @@ type Result struct {
 	RetryAfter *time.Duration
 	// Error describes the failure when Success is false.
 	Error *Error
+	// RequestBody contains the request payload for debugging failed requests.
+	RequestBody []byte
 }
 
 // Selector chooses an auth candidate for execution.
@@ -1786,14 +1788,24 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			errorMessage = result.Error.Message
 		}
 
-		log.WithFields(log.Fields{
+		fields := log.Fields{
 			"auth_id":     result.AuthID,
 			"auth_label":  authLabel,
 			"provider":    provider,
 			"model":       result.Model,
 			"error_code":  errorCode,
 			"status_code": statusCode,
-		}).Warnf("request failed: %s", errorMessage)
+		}
+
+		if len(result.RequestBody) > 0 {
+			bodyStr := string(result.RequestBody)
+			if len(bodyStr) > 2048 {
+				bodyStr = bodyStr[:2048] + "... (truncated)"
+			}
+			log.WithFields(fields).WithField("request_body", bodyStr).Debugf("request failed with body: %s", errorMessage)
+		}
+
+		log.WithFields(fields).Warnf("request failed: %s", errorMessage)
 	}
 
 	if clearModelQuota && result.Model != "" {
