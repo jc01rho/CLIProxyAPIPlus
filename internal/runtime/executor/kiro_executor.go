@@ -954,7 +954,18 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 				b, _ := io.ReadAll(httpResp.Body)
 				appendAPIResponseChunk(ctx, e.cfg, b)
-				log.Debugf("kiro request error, status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+
+				if httpResp.StatusCode == 400 {
+					requestBodyStr := string(kiroPayload)
+					if len(requestBodyStr) > 2048 {
+						requestBodyStr = requestBodyStr[:2048] + "... (truncated)"
+					}
+					log.Warnf("kiro: received 400 error, response body: %s", summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+					log.Debugf("kiro: 400 error request body: %s", requestBodyStr)
+				} else {
+					log.Debugf("kiro request error, status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+				}
+
 				err = statusErr{code: httpResp.StatusCode, msg: string(b)}
 				if errClose := httpResp.Body.Close(); errClose != nil {
 					log.Errorf("response body close error: %v", errClose)
@@ -1255,16 +1266,18 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
 			}
 
-			// Handle 400 errors - Credential/Validation issues
-			// Do NOT switch endpoints - return error immediately
 			if httpResp.StatusCode == 400 {
 				respBody, _ := io.ReadAll(httpResp.Body)
 				_ = httpResp.Body.Close()
 				appendAPIResponseChunk(ctx, e.cfg, respBody)
 
-				log.Warnf("kiro: received 400 error (attempt %d/%d), body: %s", attempt+1, maxRetries+1, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
+				requestBodyStr := string(kiroPayload)
+				if len(requestBodyStr) > 2048 {
+					requestBodyStr = requestBodyStr[:2048] + "... (truncated)"
+				}
+				log.Warnf("kiro: received 400 error (attempt %d/%d), response body: %s", attempt+1, maxRetries+1, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
+				log.Debugf("kiro: 400 error request body: %s", requestBodyStr)
 
-				// 400 errors indicate request validation issues - return immediately without retry
 				return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
 			}
 
