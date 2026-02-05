@@ -954,18 +954,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 				b, _ := io.ReadAll(httpResp.Body)
 				appendAPIResponseChunk(ctx, e.cfg, b)
-
-				if httpResp.StatusCode == 400 {
-					requestBodyStr := string(kiroPayload)
-					if len(requestBodyStr) > 2048 {
-						requestBodyStr = requestBodyStr[:2048] + "... (truncated)"
-					}
-					log.Warnf("kiro: received 400 error, response body: %s", summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-					log.Debugf("kiro: 400 error request body: %s", requestBodyStr)
-				} else {
-					log.Debugf("kiro request error, status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-				}
-
+				log.Debugf("kiro request error, status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 				err = statusErr{code: httpResp.StatusCode, msg: string(b)}
 				if errClose := httpResp.Body.Close(); errClose != nil {
 					log.Errorf("response body close error: %v", errClose)
@@ -1266,18 +1255,16 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
 			}
 
+			// Handle 400 errors - Credential/Validation issues
+			// Do NOT switch endpoints - return error immediately
 			if httpResp.StatusCode == 400 {
 				respBody, _ := io.ReadAll(httpResp.Body)
 				_ = httpResp.Body.Close()
 				appendAPIResponseChunk(ctx, e.cfg, respBody)
 
-				requestBodyStr := string(kiroPayload)
-				if len(requestBodyStr) > 2048 {
-					requestBodyStr = requestBodyStr[:2048] + "... (truncated)"
-				}
-				log.Warnf("kiro: received 400 error (attempt %d/%d), response body: %s", attempt+1, maxRetries+1, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
-				log.Debugf("kiro: 400 error request body: %s", requestBodyStr)
+				log.Warnf("kiro: received 400 error (attempt %d/%d), body: %s", attempt+1, maxRetries+1, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
 
+				// 400 errors indicate request validation issues - return immediately without retry
 				return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
 			}
 
@@ -1687,69 +1674,6 @@ func getEffectiveProfileArnWithWarning(auth *cliproxyauth.Auth, profileArn strin
 	return profileArn
 }
 
-// validateAndEstimateTokens ensures usageInfo has valid token counts.
-// Falls back to estimation if counts are missing or zero.
-// content: response text content (for output token estimation)
-// requestPayload: original request payload (for input token estimation)
-// model: model name (for tokenizer selection)
-func validateAndEstimateTokens(usageInfo *usage.Detail, content string, requestPayload []byte, model string) {
-	// If we already have both input and output tokens, nothing to do
-	if usageInfo.InputTokens > 0 && usageInfo.OutputTokens > 0 {
-		// Recalculate total if it doesn't match
-		expectedTotal := usageInfo.InputTokens + usageInfo.OutputTokens + usageInfo.ReasoningTokens
-		if usageInfo.TotalTokens == 0 || usageInfo.TotalTokens != expectedTotal {
-			usageInfo.TotalTokens = expectedTotal
-			log.Debugf("kiro: recalculated TotalTokens from sum: %d", usageInfo.TotalTokens)
-		}
-		return
-	}
-
-	// Estimate missing input tokens
-	if usageInfo.InputTokens == 0 && len(requestPayload) > 0 {
-		if enc, err := getTokenizer(model); err == nil {
-			// Try Claude format first (Kiro uses Claude API format)
-			if inp, err := countClaudeChatTokens(enc, requestPayload); err == nil && inp > 0 {
-				usageInfo.InputTokens = inp
-				log.Debugf("kiro: estimated InputTokens from Claude format: %d", inp)
-			} else if inp, err := countOpenAIChatTokens(enc, requestPayload); err == nil && inp > 0 {
-				// Fallback to OpenAI format
-				usageInfo.InputTokens = inp
-				log.Debugf("kiro: estimated InputTokens from OpenAI format: %d", inp)
-			} else {
-				// Final fallback: estimate from request size
-				usageInfo.InputTokens = int64(len(requestPayload) / 4)
-				if usageInfo.InputTokens == 0 {
-					usageInfo.InputTokens = 1
-				}
-				log.Debugf("kiro: estimated InputTokens from size: %d", usageInfo.InputTokens)
-			}
-		}
-	}
-
-	// Estimate missing output tokens
-	if usageInfo.OutputTokens == 0 && len(content) > 0 {
-		if enc, err := getTokenizer(model); err == nil {
-			if tokenCount, err := enc.Count(content); err == nil && tokenCount > 0 {
-				usageInfo.OutputTokens = int64(tokenCount)
-				log.Debugf("kiro: estimated OutputTokens from content: %d", usageInfo.OutputTokens)
-			}
-		}
-		// Fallback to character count estimation
-		if usageInfo.OutputTokens == 0 {
-			usageInfo.OutputTokens = int64(len(content) / 4)
-			if usageInfo.OutputTokens == 0 {
-				usageInfo.OutputTokens = 1
-			}
-			log.Debugf("kiro: estimated OutputTokens from size: %d", usageInfo.OutputTokens)
-		}
-	}
-
-	// Recalculate total tokens
-	usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens + usageInfo.ReasoningTokens
-	log.Infof("kiro: final token counts - Input: %d, Output: %d, Reasoning: %d, Total: %d",
-		usageInfo.InputTokens, usageInfo.OutputTokens, usageInfo.ReasoningTokens, usageInfo.TotalTokens)
-}
-
 // mapModelToKiro maps external model names to Kiro model IDs.
 // Supports both Kiro and Amazon Q prefixes since they use the same API.
 // Agentic variants (-agentic suffix) map to the same backend model IDs.
@@ -1757,12 +1681,14 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 	modelMap := map[string]string{
 		// Amazon Q format (amazonq- prefix) - same API as Kiro
 		"amazonq-auto":                       "auto",
+		"amazonq-claude-opus-4-5":            "claude-opus-4.5",
 		"amazonq-claude-sonnet-4-5":          "claude-sonnet-4.5",
 		"amazonq-claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
 		"amazonq-claude-sonnet-4":            "claude-sonnet-4",
 		"amazonq-claude-sonnet-4-20250514":   "claude-sonnet-4",
 		"amazonq-claude-haiku-4-5":           "claude-haiku-4.5",
 		// Kiro format (kiro- prefix) - valid model names that should be preserved
+		"kiro-claude-opus-4-5":            "claude-opus-4.5",
 		"kiro-claude-sonnet-4-5":          "claude-sonnet-4.5",
 		"kiro-claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
 		"kiro-claude-sonnet-4":            "claude-sonnet-4",
@@ -1770,6 +1696,8 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		"kiro-claude-haiku-4-5":           "claude-haiku-4.5",
 		"kiro-auto":                       "auto",
 		// Native format (no prefix) - used by Kiro IDE directly
+		"claude-opus-4-5":            "claude-opus-4.5",
+		"claude-opus-4.5":            "claude-opus-4.5",
 		"claude-haiku-4-5":           "claude-haiku-4.5",
 		"claude-haiku-4.5":           "claude-haiku-4.5",
 		"claude-sonnet-4-5":          "claude-sonnet-4.5",
@@ -1779,10 +1707,14 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		"claude-sonnet-4-20250514":   "claude-sonnet-4",
 		"auto":                       "auto",
 		// Agentic variants (same backend model IDs, but with special system prompt)
-		"claude-sonnet-4.5-agentic":     "claude-sonnet-4.5",
-		"claude-sonnet-4-agentic":       "claude-sonnet-4",
-		"claude-haiku-4.5-agentic":      "claude-haiku-4.5",
-		"kiro-claude-haiku-4-5-agentic": "claude-haiku-4.5",
+		"claude-opus-4.5-agentic":        "claude-opus-4.5",
+		"claude-sonnet-4.5-agentic":      "claude-sonnet-4.5",
+		"claude-sonnet-4-agentic":        "claude-sonnet-4",
+		"claude-haiku-4.5-agentic":       "claude-haiku-4.5",
+		"kiro-claude-opus-4-5-agentic":   "claude-opus-4.5",
+		"kiro-claude-sonnet-4-5-agentic": "claude-sonnet-4.5",
+		"kiro-claude-sonnet-4-agentic":   "claude-sonnet-4",
+		"kiro-claude-haiku-4-5-agentic":  "claude-haiku-4.5",
 	}
 	if kiroID, ok := modelMap[model]; ok {
 		return kiroID
@@ -1811,6 +1743,12 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		// Default to Sonnet 4
 		log.Debugf("kiro: unknown Sonnet model '%s', mapping to claude-sonnet-4", model)
 		return "claude-sonnet-4"
+	}
+
+	// Check for Opus variants
+	if strings.Contains(modelLower, "opus") {
+		log.Debugf("kiro: unknown Opus model '%s', mapping to claude-opus-4.5", model)
+		return "claude-opus-4.5"
 	}
 
 	// Final fallback to Sonnet 4.5 (most commonly used model)
@@ -1939,14 +1877,12 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 					stopReason = sr
 					log.Debugf("kiro: parseEventStream found stopReason in assistantResponseEvent: %s", stopReason)
 				}
+				// Extract tool uses from response
 				if toolUsesRaw, ok := assistantResp["toolUses"].([]interface{}); ok {
 					for _, tuRaw := range toolUsesRaw {
 						if tu, ok := tuRaw.(map[string]interface{}); ok {
-							toolUseID := kirocommon.SanitizeToolUseID(kirocommon.GetStringValue(tu, "toolUseId"))
-							if toolUseID == "" {
-								log.Debugf("kiro: skipping tool use with empty/invalid toolUseId in assistantResponse")
-								continue
-							}
+							toolUseID := kirocommon.GetStringValue(tu, "toolUseId")
+							// Check for duplicate
 							if processedIDs[toolUseID] {
 								log.Debugf("kiro: skipping duplicate tool use from assistantResponse: %s", toolUseID)
 								continue
@@ -1969,14 +1905,12 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 			if contentText, ok := event["content"].(string); ok {
 				content.WriteString(contentText)
 			}
+			// Direct tool uses
 			if toolUsesRaw, ok := event["toolUses"].([]interface{}); ok {
 				for _, tuRaw := range toolUsesRaw {
 					if tu, ok := tuRaw.(map[string]interface{}); ok {
-						toolUseID := kirocommon.SanitizeToolUseID(kirocommon.GetStringValue(tu, "toolUseId"))
-						if toolUseID == "" {
-							log.Debugf("kiro: skipping tool use with empty/invalid toolUseId in direct event")
-							continue
-						}
+						toolUseID := kirocommon.GetStringValue(tu, "toolUseId")
+						// Check for duplicate
 						if processedIDs[toolUseID] {
 							log.Debugf("kiro: skipping duplicate direct tool use: %s", toolUseID)
 							continue
@@ -2305,15 +2239,6 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		}
 	}
 
-	// Validate and estimate missing token counts before returning
-	// This ensures we always have valid token counts, even if Kiro API
-	// doesn't provide tokenUsage data or provides incomplete data
-	// Note: We don't have requestPayload here, only content, so we can only estimate output tokens
-	// Input tokens will be validated in Execute() or streamToChannel()
-	if usageInfo.OutputTokens == 0 && content.Len() > 0 {
-		validateAndEstimateTokens(&usageInfo, cleanedContent, nil, "")
-	}
-
 	return cleanedContent, toolUses, usageInfo, stopReason, nil
 }
 
@@ -2518,6 +2443,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	reader := bufio.NewReaderSize(body, 20*1024*1024) // 20MB buffer to match other providers
 	var totalUsage usage.Detail
 	var hasToolUses bool          // Track if any tool uses were emitted
+	var hasTruncatedTools bool    // Track if any tool uses were truncated
 	var upstreamStopReason string // Track stop_reason from upstream events
 
 	// Tool use state tracking for input buffering and deduplication
@@ -2593,9 +2519,6 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 	// Ensure usage is published even on early return
 	defer func() {
-		// Validate and estimate missing token counts before publishing
-		// This ensures we always have valid token counts for streaming responses
-		validateAndEstimateTokens(&totalUsage, accumulatedContent.String(), claudeBody, model)
 		reporter.publish(ctx, totalUsage)
 	}()
 
@@ -3161,14 +3084,12 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				}
 			}
 
+			// Handle tool uses in response (with deduplication)
 			for _, tu := range toolUses {
-				toolUseID := kirocommon.SanitizeToolUseID(kirocommon.GetString(tu, "toolUseId"))
-				if toolUseID == "" {
-					log.Debugf("kiro: skipping tool use with empty/invalid toolUseId in stream")
-					continue
-				}
+				toolUseID := kirocommon.GetString(tu, "toolUseId")
 				toolName := kirocommon.GetString(tu, "name")
 
+				// Check for duplicate
 				if processedIDs[toolUseID] {
 					log.Debugf("kiro: skipping duplicate tool use in stream: %s", toolUseID)
 					continue
@@ -3301,43 +3222,16 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			_ = signature // Signature can be used for verification if needed
 
 		case "toolUseEvent":
-			// Debug: log raw toolUseEvent payload for large tool inputs
-			if log.IsLevelEnabled(log.DebugLevel) {
-				payloadStr := string(payload)
-				if len(payloadStr) > 500 {
-					payloadStr = payloadStr[:500] + "...[truncated]"
-				}
-				log.Debugf("kiro: raw toolUseEvent payload (%d bytes): %s", len(payload), payloadStr)
-			}
 			// Handle dedicated tool use events with input buffering
 			completedToolUses, newState := kiroclaude.ProcessToolUseEvent(event, currentToolUse, processedIDs)
 			currentToolUse = newState
 
+			// Emit completed tool uses
 			for _, tu := range completedToolUses {
-				sanitizedID := kirocommon.SanitizeToolUseID(tu.ToolUseID)
-				if sanitizedID == "" {
-					log.Warnf("kiro: skipping completed tool use with invalid toolUseId: %s", tu.ToolUseID)
-					continue
-				}
-
-				if tu.Name == "__truncated_write__" {
-					filePath := ""
-					if fp, ok := tu.Input["file_path"].(string); ok && fp != "" {
-						filePath = fp
-					}
-
-					// Create a Bash tool that echoes the error message
-					// This will be executed by Claude Code and the agent will see the result
-					var errorMsg string
-					if filePath != "" {
-						errorMsg = fmt.Sprintf("echo '[WRITE TOOL ERROR] The file content for \"%s\" is too large to be transmitted by the upstream API. You MUST retry by writing the file in smaller chunks: First use Write to create the file with the first 700 lines, then use multiple Edit operations to append the remaining content in chunks of ~700 lines each.'", filePath)
-					} else {
-						errorMsg = "echo '[WRITE TOOL ERROR] The file content is too large to be transmitted by the upstream API. The Write tool input was truncated. You MUST retry by writing the file in smaller chunks: First use Write to create the file with the first 700 lines, then use multiple Edit operations to append the remaining content in chunks of ~700 lines each.'"
-					}
-
-					log.Warnf("kiro: converting truncated write to Bash echo for file: %s", filePath)
-
-					hasToolUses = true
+				// Check if this tool was truncated - emit with SOFT_LIMIT_REACHED marker
+				if tu.IsTruncated {
+					hasTruncatedTools = true
+					log.Infof("kiro: streamToChannel emitting truncated tool with SOFT_LIMIT_REACHED: %s (ID: %s)", tu.Name, tu.ToolUseID)
 
 					// Close text block if open
 					if isTextBlockOpen && contentBlockIndex >= 0 {
@@ -3353,7 +3247,8 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 					contentBlockIndex++
 
-					blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", sanitizedID, "Bash")
+					// Emit tool_use with SOFT_LIMIT_REACHED marker input
+					blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", tu.ToolUseID, tu.Name)
 					sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStart, &translatorParam)
 					for _, chunk := range sseData {
 						if chunk != "" {
@@ -3361,16 +3256,14 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 						}
 					}
 
-					// Emit the Bash command as input
-					bashInput := map[string]interface{}{
-						"command": errorMsg,
+					// Build SOFT_LIMIT_REACHED marker input
+					markerInput := map[string]interface{}{
+						"_status":  "SOFT_LIMIT_REACHED",
+						"_message": "Tool output was truncated. Split content into smaller chunks (max 300 lines). Due to potential model hallucination, you MUST re-fetch the current working directory and generate the correct file_path.",
 					}
-					inputJSON, err := json.Marshal(bashInput)
-					if err != nil {
-						log.Errorf("kiro: failed to marshal bash input for truncated write error: %v", err)
-						continue
-					}
-					inputDelta := kiroclaude.BuildClaudeInputJsonDeltaEvent(string(inputJSON), contentBlockIndex)
+
+					markerJSON, _ := json.Marshal(markerInput)
+					inputDelta := kiroclaude.BuildClaudeInputJsonDeltaEvent(string(markerJSON), contentBlockIndex)
 					sseData = sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, inputDelta, &translatorParam)
 					for _, chunk := range sseData {
 						if chunk != "" {
@@ -3378,6 +3271,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 						}
 					}
 
+					// Close tool_use block
 					blockStop := kiroclaude.BuildClaudeContentBlockStopEvent(contentBlockIndex)
 					sseData = sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStop, &translatorParam)
 					for _, chunk := range sseData {
@@ -3386,7 +3280,8 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 						}
 					}
 
-					continue // Skip the normal tool_use emission
+					hasToolUses = true // Keep this so stop_reason = tool_use
+					continue
 				}
 
 				hasToolUses = true
@@ -3405,7 +3300,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 				contentBlockIndex++
 
-				blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", sanitizedID, tu.Name)
+				blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", tu.ToolUseID, tu.Name)
 				sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStart, &translatorParam)
 				for _, chunk := range sseData {
 					if chunk != "" {
@@ -3687,7 +3582,12 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	}
 
 	// Determine stop reason: prefer upstream, then detect tool_use, default to end_turn
+	// SOFT_LIMIT_REACHED: Keep stop_reason = "tool_use" so Claude continues the loop
 	stopReason := upstreamStopReason
+	if hasTruncatedTools {
+		// Log that we're using SOFT_LIMIT_REACHED approach
+		log.Infof("kiro: streamToChannel using SOFT_LIMIT_REACHED - keeping stop_reason=tool_use for truncated tools")
+	}
 	if stopReason == "" {
 		if hasToolUses {
 			stopReason = "tool_use"
