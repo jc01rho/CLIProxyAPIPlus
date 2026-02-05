@@ -390,8 +390,8 @@ func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 		prefix = "request.generationConfig.thinkingConfig"
 	}
 
-	levelExists := gjson.GetBytes(body, prefix+".thinkingLevel").Exists()
-	budgetExists := gjson.GetBytes(body, prefix+".thinkingBudget").Exists()
+	//levelExists := gjson.GetBytes(body, prefix+".thinkingLevel").Exists()
+	//budgetExists := gjson.GetBytes(body, prefix+".thinkingBudget").Exists()
 
 	// Check thinkingLevel first (Gemini 3 format takes precedence)
 	level := gjson.GetBytes(body, prefix+".thinkingLevel")
