@@ -71,8 +71,8 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	if timeout > 0 {
 		httpClient.Timeout = timeout
 	} else {
-		// Set default 120s timeout for long-running requests (e.g., complex reasoning models)
-		httpClient.Timeout = 120 * time.Second
+		// Set default 300s timeout for long-running requests (e.g., complex reasoning models like GLM-4.7)
+		httpClient.Timeout = 300 * time.Second
 	}
 
 	// If we have a proxy URL configured, set up the transport
