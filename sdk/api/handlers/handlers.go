@@ -378,18 +378,14 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
-	payload := rawJSON
-	if len(payload) == 0 {
-		payload = nil
-	}
 	req := coreexecutor.Request{
 		Model:   normalizedModel,
-		Payload: payload,
+		Payload: cloneBytes(rawJSON),
 	}
 	opts := coreexecutor.Options{
 		Stream:          false,
 		Alt:             alt,
-		OriginalRequest: rawJSON,
+		OriginalRequest: cloneBytes(rawJSON),
 		SourceFormat:    sdktranslator.FromString(handlerType),
 	}
 	opts.Metadata = reqMeta
@@ -409,7 +405,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 		}
 		return nil, &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
 	}
-	return resp.Payload, nil
+	return cloneBytes(resp.Payload), nil
 }
 
 // ExecuteCountWithAuthManager executes a non-streaming request via the core auth manager.
@@ -421,18 +417,14 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
-	payload := rawJSON
-	if len(payload) == 0 {
-		payload = nil
-	}
 	req := coreexecutor.Request{
 		Model:   normalizedModel,
-		Payload: payload,
+		Payload: cloneBytes(rawJSON),
 	}
 	opts := coreexecutor.Options{
 		Stream:          false,
 		Alt:             alt,
-		OriginalRequest: rawJSON,
+		OriginalRequest: cloneBytes(rawJSON),
 		SourceFormat:    sdktranslator.FromString(handlerType),
 	}
 	opts.Metadata = reqMeta
@@ -452,7 +444,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 		}
 		return nil, &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
 	}
-	return resp.Payload, nil
+	return cloneBytes(resp.Payload), nil
 }
 
 // ExecuteStreamWithAuthManager executes a streaming request via the core auth manager.
@@ -467,18 +459,14 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
-	payload := rawJSON
-	if len(payload) == 0 {
-		payload = nil
-	}
 	req := coreexecutor.Request{
 		Model:   normalizedModel,
-		Payload: payload,
+		Payload: cloneBytes(rawJSON),
 	}
 	opts := coreexecutor.Options{
 		Stream:          true,
 		Alt:             alt,
-		OriginalRequest: rawJSON,
+		OriginalRequest: cloneBytes(rawJSON),
 		SourceFormat:    sdktranslator.FromString(handlerType),
 	}
 	opts.Metadata = reqMeta
@@ -697,7 +685,7 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 	var previous []byte
 	if existing, exists := c.Get("API_RESPONSE"); exists {
 		if existingBytes, ok := existing.([]byte); ok && len(existingBytes) > 0 {
-			previous = existingBytes
+			previous = bytes.Clone(existingBytes)
 		}
 	}
 	appendAPIResponse(c, body)
