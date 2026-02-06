@@ -6,7 +6,6 @@
 package claude
 
 import (
-	"bytes"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
@@ -37,8 +36,7 @@ import (
 //   - []byte: The transformed request data in Gemini CLI API format
 func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ bool) []byte {
 	enableThoughtTranslate := true
-	rawJSON := bytes.Clone(inputRawJSON)
-	hasWebSearchTool := false
+	rawJSON := inputRawJSON
 
 	// system instruction
 	systemInstructionJSON := ""
@@ -321,12 +319,9 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		toolsResults := toolsResult.Array()
 		for i := 0; i < len(toolsResults); i++ {
 			toolResult := toolsResults[i]
-			if toolResult.Get("type").String() == "web_search" || toolResult.Get("name").String() == "web_search" {
-				hasWebSearchTool = true
-				continue
-			}
 			inputSchemaResult := toolResult.Get("input_schema")
 			if inputSchemaResult.Exists() && inputSchemaResult.IsObject() {
+				// Sanitize the input schema for Antigravity API compatibility
 				inputSchema := util.CleanJSONSchemaForAntigravity(inputSchemaResult.Raw)
 				tool, _ := sjson.Delete(toolResult.Raw, "input_schema")
 				tool, _ = sjson.SetRaw(tool, "parametersJsonSchema", inputSchema)
@@ -339,13 +334,6 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", tool)
 				toolDeclCount++
 			}
-		}
-	}
-	if hasWebSearchTool {
-		if toolsJSON == "" {
-			toolsJSON = `[{"googleSearch":{}}]`
-		} else {
-			toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.googleSearch", `{}`)
 		}
 	}
 
