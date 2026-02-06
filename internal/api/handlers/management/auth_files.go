@@ -444,7 +444,7 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 
 		// If tier info missing, try to fetch it
 		if tierID == "" {
-			tierID, tierName = h.fetchAndCacheAntigravityTier(auth)
+			tierID, tierName = h.fetchAndCacheAntigravityTier(auth, false)
 		}
 
 		if tierID != "" {
@@ -476,15 +476,18 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 
 // fetchAndCacheAntigravityTier fetches tier info for an antigravity auth and caches it in metadata.
 // Returns tierID, tierName. On error, returns empty strings.
-func (h *Handler) fetchAndCacheAntigravityTier(auth *coreauth.Auth) (string, string) {
+// If forceRefresh is true, it will fetch the tier info even if it's already cached.
+func (h *Handler) fetchAndCacheAntigravityTier(auth *coreauth.Auth, forceRefresh bool) (string, string) {
 	if auth == nil || auth.Provider != "antigravity" || auth.Metadata == nil {
 		return "", ""
 	}
 
-	// Check if already has tier info
-	if tierID, ok := auth.Metadata["tier_id"].(string); ok && tierID != "" {
-		tierName, _ := auth.Metadata["tier_name"].(string)
-		return tierID, tierName
+	// Check if already has tier info (skip if forceRefresh)
+	if !forceRefresh {
+		if tierID, ok := auth.Metadata["tier_id"].(string); ok && tierID != "" {
+			tierName, _ := auth.Metadata["tier_name"].(string)
+			return tierID, tierName
+		}
 	}
 
 	// Get access token
@@ -518,6 +521,53 @@ func (h *Handler) fetchAndCacheAntigravityTier(auth *coreauth.Auth) (string, str
 
 	log.Infof("antigravity: fetched tier %s for existing auth %s", projectInfo.TierID, auth.ID)
 	return projectInfo.TierID, projectInfo.TierName
+}
+
+func (h *Handler) RefreshTier(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	authID := strings.TrimSpace(c.Param("id"))
+	if authID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "auth id is required"})
+		return
+	}
+
+	auth, ok := h.authManager.GetByID(authID)
+	if !ok {
+		auths := h.authManager.List()
+		for _, a := range auths {
+			if a.FileName == authID || a.ID == authID {
+				auth = a
+				ok = true
+				break
+			}
+		}
+	}
+
+	if !ok || auth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
+		return
+	}
+
+	if auth.Provider != "antigravity" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tier refresh only supported for antigravity provider"})
+		return
+	}
+
+	tierID, tierName := h.fetchAndCacheAntigravityTier(auth, true)
+	if tierID == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch tier info"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "ok",
+		"tier":      tierID,
+		"tier_name": tierName,
+	})
 }
 
 func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
