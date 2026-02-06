@@ -21,6 +21,23 @@ var (
 	httpClientCacheMutex sync.RWMutex
 )
 
+// Default timeout constants for HTTP client transport
+const (
+	// defaultDialTimeout is the timeout for establishing TCP connections
+	defaultDialTimeout = 30 * time.Second
+	// defaultKeepAlive is the TCP keep-alive interval
+	defaultKeepAlive = 30 * time.Second
+	// defaultTLSHandshakeTimeout is the timeout for TLS handshake
+	defaultTLSHandshakeTimeout = 10 * time.Second
+	// defaultResponseHeaderTimeout is the timeout for receiving response headers
+	// This timeout only applies AFTER the request is sent - it does NOT affect streaming body reads
+	defaultResponseHeaderTimeout = 60 * time.Second
+	// defaultIdleConnTimeout is how long idle connections stay in the pool
+	defaultIdleConnTimeout = 90 * time.Second
+	// defaultExpectContinueTimeout is the timeout for 100-continue responses
+	defaultExpectContinueTimeout = 1 * time.Second
+)
+
 // newProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
 // 1. Use auth.ProxyURL if configured (highest priority)
 // 2. Use cfg.ProxyURL if auth proxy is not configured
@@ -28,11 +45,16 @@ var (
 //
 // This function caches HTTP clients by proxy URL to enable TCP/TLS connection reuse.
 //
+// IMPORTANT: For streaming responses (SSE, AI model outputs), Client.Timeout is NOT set.
+// Instead, we use Transport-level timeouts (ResponseHeaderTimeout, DialTimeout) which
+// only apply to connection establishment and header reception, NOT to body reading.
+// This prevents "context deadline exceeded" errors during long-running streaming responses.
+//
 // Parameters:
 //   - ctx: The context containing optional RoundTripper
 //   - cfg: The application configuration
 //   - auth: The authentication information
-//   - timeout: The client timeout (0 means no timeout)
+//   - timeout: The client timeout (0 means streaming-safe mode with no body read timeout)
 //
 // Returns:
 //   - *http.Client: An HTTP client with configured proxy or transport
@@ -55,7 +77,6 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	httpClientCacheMutex.RLock()
 	if cachedClient, ok := httpClientCache[cacheKey]; ok {
 		httpClientCacheMutex.RUnlock()
-		// Return a wrapper with the requested timeout but shared transport
 		if timeout > 0 {
 			return &http.Client{
 				Transport: cachedClient.Transport,
@@ -66,16 +87,12 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 	httpClientCacheMutex.RUnlock()
 
-	// Create new client
 	httpClient := &http.Client{}
+
 	if timeout > 0 {
 		httpClient.Timeout = timeout
-	} else {
-		// Set default 300s timeout for long-running requests (e.g., complex reasoning models like GLM-4.7)
-		httpClient.Timeout = 300 * time.Second
 	}
 
-	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {
 		transport := buildProxyTransport(proxyURL)
 		if transport != nil {
@@ -90,9 +107,10 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", proxyURL)
 	}
 
-	// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
 	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
 		httpClient.Transport = rt
+	} else {
+		httpClient.Transport = buildDefaultTransport()
 	}
 
 	// Cache the client for no-proxy case
@@ -126,9 +144,7 @@ func buildProxyTransport(proxyURL string) *http.Transport {
 
 	var transport *http.Transport
 
-	// Handle different proxy schemes
 	if parsedURL.Scheme == "socks5" {
-		// Configure SOCKS5 proxy with optional authentication
 		var proxyAuth *proxy.Auth
 		if parsedURL.User != nil {
 			username := parsedURL.User.Username()
@@ -140,19 +156,55 @@ func buildProxyTransport(proxyURL string) *http.Transport {
 			log.Errorf("create SOCKS5 dialer failed: %v", errSOCKS5)
 			return nil
 		}
-		// Set up a custom transport using the SOCKS5 dialer
 		transport = &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return dialer.Dial(network, addr)
 			},
+			TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
+			ResponseHeaderTimeout: defaultResponseHeaderTimeout,
+			IdleConnTimeout:       defaultIdleConnTimeout,
+			ExpectContinueTimeout: defaultExpectContinueTimeout,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
+			ForceAttemptHTTP2:     true,
 		}
 	} else if parsedURL.Scheme == "http" || parsedURL.Scheme == "https" {
-		// Configure HTTP or HTTPS proxy
-		transport = &http.Transport{Proxy: http.ProxyURL(parsedURL)}
+		transport = &http.Transport{
+			Proxy: http.ProxyURL(parsedURL),
+			DialContext: (&net.Dialer{
+				Timeout:   defaultDialTimeout,
+				KeepAlive: defaultKeepAlive,
+			}).DialContext,
+			TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
+			ResponseHeaderTimeout: defaultResponseHeaderTimeout,
+			IdleConnTimeout:       defaultIdleConnTimeout,
+			ExpectContinueTimeout: defaultExpectContinueTimeout,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
+			ForceAttemptHTTP2:     true,
+		}
 	} else {
 		log.Errorf("unsupported proxy scheme: %s", parsedURL.Scheme)
 		return nil
 	}
 
 	return transport
+}
+
+// buildDefaultTransport creates an HTTP transport with streaming-safe timeout settings.
+// ResponseHeaderTimeout protects against unresponsive servers without affecting body reads.
+func buildDefaultTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   defaultDialTimeout,
+			KeepAlive: defaultKeepAlive,
+		}).DialContext,
+		TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
+		ResponseHeaderTimeout: defaultResponseHeaderTimeout,
+		IdleConnTimeout:       defaultIdleConnTimeout,
+		ExpectContinueTimeout: defaultExpectContinueTimeout,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		ForceAttemptHTTP2:     true,
+	}
 }
