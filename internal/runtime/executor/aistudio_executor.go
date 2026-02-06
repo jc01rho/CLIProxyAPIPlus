@@ -141,7 +141,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 		URL:       endpoint,
 		Method:    http.MethodPost,
 		Headers:   wsReq.Headers.Clone(),
-		Body:      body.payload,
+		Body:      bytes.Clone(body.payload),
 		Provider:  e.Identifier(),
 		AuthID:    authID,
 		AuthLabel: authLabel,
@@ -156,14 +156,14 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	}
 	recordAPIResponseMetadata(ctx, e.cfg, wsResp.Status, wsResp.Headers.Clone())
 	if len(wsResp.Body) > 0 {
-		appendAPIResponseChunk(ctx, e.cfg, wsResp.Body)
+		appendAPIResponseChunk(ctx, e.cfg, bytes.Clone(wsResp.Body))
 	}
 	if wsResp.Status < 200 || wsResp.Status >= 300 {
 		return resp, statusErr{code: wsResp.Status, msg: string(wsResp.Body)}
 	}
 	reporter.publish(ctx, parseGeminiUsage(wsResp.Body))
 	var param any
-	out := sdktranslator.TranslateNonStream(ctx, body.toFormat, opts.SourceFormat, req.Model, opts.OriginalRequest, translatedReq, wsResp.Body, &param)
+	out := sdktranslator.TranslateNonStream(ctx, body.toFormat, opts.SourceFormat, req.Model, opts.OriginalRequest, translatedReq, bytes.Clone(wsResp.Body), &param)
 	resp = cliproxyexecutor.Response{Payload: ensureColonSpacedJSON([]byte(out))}
 	return resp, nil
 }
@@ -199,7 +199,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		URL:       endpoint,
 		Method:    http.MethodPost,
 		Headers:   wsReq.Headers.Clone(),
-		Body:      body.payload,
+		Body:      bytes.Clone(body.payload),
 		Provider:  e.Identifier(),
 		AuthID:    authID,
 		AuthLabel: authLabel,
@@ -225,7 +225,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		}
 		var body bytes.Buffer
 		if len(firstEvent.Payload) > 0 {
-			appendAPIResponseChunk(ctx, e.cfg, firstEvent.Payload)
+			appendAPIResponseChunk(ctx, e.cfg, bytes.Clone(firstEvent.Payload))
 			body.Write(firstEvent.Payload)
 		}
 		if firstEvent.Type == wsrelay.MessageTypeStreamEnd {
@@ -244,7 +244,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				metadataLogged = true
 			}
 			if len(event.Payload) > 0 {
-				appendAPIResponseChunk(ctx, e.cfg, event.Payload)
+				appendAPIResponseChunk(ctx, e.cfg, bytes.Clone(event.Payload))
 				body.Write(event.Payload)
 			}
 			if event.Type == wsrelay.MessageTypeStreamEnd {
@@ -274,12 +274,12 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				}
 			case wsrelay.MessageTypeStreamChunk:
 				if len(event.Payload) > 0 {
-					appendAPIResponseChunk(ctx, e.cfg, event.Payload)
+					appendAPIResponseChunk(ctx, e.cfg, bytes.Clone(event.Payload))
 					filtered := FilterSSEUsageMetadata(event.Payload)
 					if detail, ok := parseGeminiStreamUsage(filtered); ok {
 						reporter.publish(ctx, detail)
 					}
-					lines := sdktranslator.TranslateStream(ctx, body.toFormat, opts.SourceFormat, req.Model, opts.OriginalRequest, translatedReq, filtered, &param)
+					lines := sdktranslator.TranslateStream(ctx, body.toFormat, opts.SourceFormat, req.Model, opts.OriginalRequest, translatedReq, bytes.Clone(filtered), &param)
 					for i := range lines {
 						out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON([]byte(lines[i]))}
 					}
@@ -399,7 +399,7 @@ func (e *AIStudioExecutor) translateRequest(req cliproxyexecutor.Request, opts c
 	}
 	originalPayload := originalPayloadSource
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, stream)
-	payload := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, stream)
+	payload := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), stream)
 	payload, err := thinking.ApplyThinking(payload, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, translatedPayload{}, err
