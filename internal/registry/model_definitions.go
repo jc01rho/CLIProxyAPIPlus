@@ -24,6 +24,7 @@ import (
 //   - amazonq
 //   - kilocode
 //   - kimi
+//   - trae
 //   - antigravity (returns static overrides only)
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
@@ -77,6 +78,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetKilocodeModels()
 	case "kimi":
 		return GetKimiModels()
+	case "trae":
+		return GetTraeModels()
 	default:
 		return nil
 	}
@@ -101,6 +104,9 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetGitHubCopilotModels(),
 		GetKiroModels(),
 		GetAmazonQModels(),
+		GetKilocodeModels(),
+		GetKimiModels(),
+		GetTraeModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {
