@@ -47,6 +47,8 @@ type TraeTokenData struct {
 	RefreshToken string `json:"refresh_token"`
 	Email        string `json:"email"`
 	Expire       string `json:"expired"`
+	Host         string `json:"host,omitempty"`
+	UserID       string `json:"user_id,omitempty"`
 }
 
 // TraeAuthBundle aggregates authentication data after OAuth flow completion
@@ -256,6 +258,8 @@ func (o *TraeAuth) CreateTokenStorage(tokenData *TraeTokenData) *TraeTokenStorag
 		LastRefresh:  time.Now().Format(time.RFC3339),
 		Email:        tokenData.Email,
 		Expire:       tokenData.Expire,
+		Host:         tokenData.Host,
+		UserID:       tokenData.UserID,
 	}
 
 	return storage
@@ -268,4 +272,6 @@ func (o *TraeAuth) UpdateTokenStorage(storage *TraeTokenStorage, tokenData *Trae
 	storage.LastRefresh = time.Now().Format(time.RFC3339)
 	storage.Email = tokenData.Email
 	storage.Expire = tokenData.Expire
+	storage.Host = tokenData.Host
+	storage.UserID = tokenData.UserID
 }

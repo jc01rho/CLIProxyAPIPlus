@@ -392,8 +392,8 @@ func (e *TraeExecutor) Identifier() string {
 // traeCreds extracts access token and host from auth metadata.
 // Supports both "token" and "access_token" field names for compatibility.
 func traeCreds(auth *coreauth.Auth) (accessToken, host, appID string) {
-	// Default to v1 API host discovered from MITM analysis
-	host = "https://api22-normal-alisg.mchost.guru"
+	// Default API host from Trae IDE (matches quotio's TraeQuotaFetcher)
+	host = "https://api-sg-central.trae.ai"
 	appID = "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8"
 	if auth == nil || auth.Metadata == nil {
 		return "", host, appID
