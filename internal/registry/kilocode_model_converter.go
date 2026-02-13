@@ -4,6 +4,7 @@
 package registry
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -58,7 +59,7 @@ const DefaultKilocodeMaxCompletionTokens = 32000
 //   - kilocodeModels: List of models from Kilocode API response
 //
 // Returns:
-//   - []*ModelInfo: Converted model information list (free models only)
+//   - []*ModelInfo: Converted model information list (free models only, filtered by allowed providers)
 func ConvertKilocodeAPIModels(kilocodeModels []*KilocodeAPIModel) []*ModelInfo {
 	if len(kilocodeModels) == 0 {
 		return nil
@@ -68,38 +69,35 @@ func ConvertKilocodeAPIModels(kilocodeModels []*KilocodeAPIModel) []*ModelInfo {
 	result := make([]*ModelInfo, 0, len(kilocodeModels))
 
 	for _, km := range kilocodeModels {
-		// Skip nil models
 		if km == nil {
 			continue
 		}
 
-		// Skip models without valid ID
 		if km.ID == "" {
 			continue
 		}
 
-		// Filter for free models only
 		if !isFreeModel(km) {
 			continue
 		}
 
-		// Normalize the model ID to kilocode-* format
+		if !isAllowedKilocodeProvider(km.ID) {
+			continue
+		}
+
 		normalizedID := normalizeKilocodeModelID(km.ID)
 
-		// Create ModelInfo with converted data
 		info := &ModelInfo{
-			ID:          normalizedID,
-			Object:      "model",
-			Created:     now,
-			OwnedBy:     "kilocode",
-			Type:        "kilocode",
-			DisplayName: generateKilocodeDisplayName(km.Name, normalizedID),
-			Description: generateKilocodeDescription(km.Name, normalizedID),
-			// Use ContextLength from API if available, otherwise use default
+			ID:                  normalizedID,
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "kilocode",
+			Type:                "kilocode",
+			DisplayName:         generateKilocodeDisplayName(km.Name, normalizedID),
+			Description:         generateKilocodeDescription(km.Name, normalizedID),
 			ContextLength:       getKilocodeContextLength(km.ContextLength),
 			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
-			// All Kilocode models support thinking
-			Thinking: cloneThinkingSupport(DefaultKilocodeThinkingSupport),
+			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
 		}
 
 		result = append(result, info)
@@ -108,16 +106,43 @@ func ConvertKilocodeAPIModels(kilocodeModels []*KilocodeAPIModel) []*ModelInfo {
 	return result
 }
 
+// allowedKilocodeProviders defines which model providers are allowed to be listed.
+var allowedKilocodeProviders = []string{
+	"deepseek/",
+	"minimax/",
+	"openai/gpt-oss",
+	"tngtech/",
+	"upstage/",
+	"z-ai/",
+}
+
+// isAllowedKilocodeProvider checks if a model ID belongs to an allowed provider.
+func isAllowedKilocodeProvider(modelID string) bool {
+	idLower := strings.ToLower(modelID)
+	for _, prefix := range allowedKilocodeProviders {
+		if strings.HasPrefix(idLower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // isFreeModel checks if a Kilocode model is free based on pricing information.
-// A model is considered free if both prompt and completion costs are "0".
+// A model is considered free if both prompt and completion costs are zero.
+// Handles various pricing formats: "0", "0.0", "0.0000000", etc.
 func isFreeModel(model *KilocodeAPIModel) bool {
 	if model == nil {
 		return false
 	}
 
-	// Check if both prompt and completion pricing are "0"
-	return strings.TrimSpace(model.Pricing.Prompt) == "0" &&
-		strings.TrimSpace(model.Pricing.Completion) == "0"
+	promptPrice, err1 := strconv.ParseFloat(strings.TrimSpace(model.Pricing.Prompt), 64)
+	completionPrice, err2 := strconv.ParseFloat(strings.TrimSpace(model.Pricing.Completion), 64)
+
+	if err1 != nil || err2 != nil {
+		return false
+	}
+
+	return promptPrice == 0 && completionPrice == 0
 }
 
 // normalizeKilocodeModelID converts Kilocode API model IDs to internal format.
@@ -205,9 +230,24 @@ func ResolveKilocodeModelAlias(alias string) string {
 // GetKilocodeModels returns a static list of free Kilocode models.
 // The Kilocode API does not support the /models endpoint (returns 405 Method Not Allowed),
 // so we maintain a static list of known free models.
+// Only includes: deepseek, minimax, gpt-oss, chimera, upstage, z-ai
 func GetKilocodeModels() []*ModelInfo {
 	now := int64(1738368000) // 2025-02-01
 	return []*ModelInfo{
+		// DeepSeek
+		{
+			ID:                  "kilocode-deepseek/deepseek-r1-0528:free",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "kilocode",
+			Type:                "kilocode",
+			DisplayName:         "Kilocode DeepSeek R1 0528 (Free)",
+			Description:         "DeepSeek R1 0528 (Free tier)",
+			ContextLength:       163840,
+			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
+			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
+		},
+		// MiniMax
 		{
 			ID:                  "kilocode-minimax/minimax-m2.1:free",
 			Object:              "model",
@@ -216,55 +256,119 @@ func GetKilocodeModels() []*ModelInfo {
 			Type:                "kilocode",
 			DisplayName:         "Kilocode MiniMax M2.1 (Free)",
 			Description:         "MiniMax M2.1 (Free tier)",
-			ContextLength:       128000,
+			ContextLength:       204800,
 			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
 			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
 		},
 		{
-			ID:                  "kilocode-z-ai/glm-4.7:free",
+			ID:                  "kilocode-minimax/minimax-m2.5:free",
 			Object:              "model",
 			Created:             now,
 			OwnedBy:             "kilocode",
 			Type:                "kilocode",
-			DisplayName:         "Kilocode GLM 4.7 (Free)",
-			Description:         "GLM 4.7 (Z.AI, Free tier)",
-			ContextLength:       128000,
+			DisplayName:         "Kilocode MiniMax M2.5 (Free)",
+			Description:         "MiniMax M2.5 (Free tier)",
+			ContextLength:       204800,
+			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
+			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
+		},
+		// GPT-OSS
+		{
+			ID:                  "kilocode-openai/gpt-oss-20b:free",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "kilocode",
+			Type:                "kilocode",
+			DisplayName:         "Kilocode GPT-OSS 20B (Free)",
+			Description:         "OpenAI GPT-OSS 20B (Free tier)",
+			ContextLength:       131072,
 			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
 			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
 		},
 		{
-			ID:                  "kilocode-moonshotai/kimi-k2.5:free",
+			ID:                  "kilocode-openai/gpt-oss-120b:free",
 			Object:              "model",
 			Created:             now,
 			OwnedBy:             "kilocode",
 			Type:                "kilocode",
-			DisplayName:         "Kilocode Kimi K2.5 (Free)",
-			Description:         "Kimi K2.5 (MoonshotAI, Free tier)",
-			ContextLength:       200000,
+			DisplayName:         "Kilocode GPT-OSS 120B (Free)",
+			Description:         "OpenAI GPT-OSS 120B (Free tier)",
+			ContextLength:       131072,
+			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
+			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
+		},
+		// Chimera (TNG Tech)
+		{
+			ID:                  "kilocode-tngtech/deepseek-r1t-chimera:free",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "kilocode",
+			Type:                "kilocode",
+			DisplayName:         "Kilocode DeepSeek R1T Chimera (Free)",
+			Description:         "TNG DeepSeek R1T Chimera (Free tier)",
+			ContextLength:       163840,
 			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
 			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
 		},
 		{
-			ID:                  "kilocode-arcee-ai/trinity-large-preview:free",
+			ID:                  "kilocode-tngtech/deepseek-r1t2-chimera:free",
 			Object:              "model",
 			Created:             now,
 			OwnedBy:             "kilocode",
 			Type:                "kilocode",
-			DisplayName:         "Kilocode Trinity Large Preview (Free)",
-			Description:         "Trinity Large Preview (Arcee-AI, Free tier)",
-			ContextLength:       128000,
+			DisplayName:         "Kilocode DeepSeek R1T2 Chimera (Free)",
+			Description:         "TNG DeepSeek R1T2 Chimera (Free tier)",
+			ContextLength:       163840,
 			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
 			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
 		},
 		{
-			ID:                  "kilocode-corethink:free",
+			ID:                  "kilocode-tngtech/tng-r1t-chimera:free",
 			Object:              "model",
 			Created:             now,
 			OwnedBy:             "kilocode",
 			Type:                "kilocode",
-			DisplayName:         "Kilocode Corethink (Free)",
-			Description:         "Corethink (Free tier)",
+			DisplayName:         "Kilocode TNG R1T Chimera (Free)",
+			Description:         "TNG R1T Chimera (Free tier)",
+			ContextLength:       163840,
+			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
+			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
+		},
+		// Upstage
+		{
+			ID:                  "kilocode-upstage/solar-pro-3:free",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "kilocode",
+			Type:                "kilocode",
+			DisplayName:         "Kilocode Solar Pro 3 (Free)",
+			Description:         "Upstage Solar Pro 3 (Free tier)",
 			ContextLength:       128000,
+			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
+			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
+		},
+		// Z-AI (GLM)
+		{
+			ID:                  "kilocode-z-ai/glm-4.5-air:free",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "kilocode",
+			Type:                "kilocode",
+			DisplayName:         "Kilocode GLM 4.5 Air (Free)",
+			Description:         "Z.AI GLM 4.5 Air (Free tier)",
+			ContextLength:       131072,
+			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
+			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
+		},
+		{
+			ID:                  "kilocode-z-ai/glm-5:free",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "kilocode",
+			Type:                "kilocode",
+			DisplayName:         "Kilocode GLM 5 (Free)",
+			Description:         "Z.AI GLM 5 (Free tier)",
+			ContextLength:       202800,
 			MaxCompletionTokens: DefaultKilocodeMaxCompletionTokens,
 			Thinking:            cloneThinkingSupport(DefaultKilocodeThinkingSupport),
 		},
