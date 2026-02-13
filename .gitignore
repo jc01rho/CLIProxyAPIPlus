@@ -1,0 +1,5 @@
+*.json
+.cli-proxy-api/
+*.cli-proxy-api/
+
+trae-auth-flow.md
