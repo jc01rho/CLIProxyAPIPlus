@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	kilocodeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kilocode"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	traeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/trae"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -851,7 +852,7 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = applyExcludedModels(models, excluded)
 	case "kimi":
 		models = registry.GetKimiModels()
-    models = applyExcludedModels(models, excluded)
+		models = applyExcludedModels(models, excluded)
 	case "github-copilot":
 		models = registry.GetGitHubCopilotModels()
 		models = applyExcludedModels(models, excluded)
@@ -1478,20 +1479,44 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 	return models
 }
 
+// fetchKilocodeModels attempts to dynamically fetch Kilocode models from the API.
+// If dynamic fetch fails, it falls back to static registry.GetKilocodeModels().
 func (s *Service) fetchKilocodeModels(a *coreauth.Auth) []*ModelInfo {
 	if a == nil {
-		log.Debug("kilocode: auth is nil, no models available")
-		return nil
+		log.Debug("kilocode: auth is nil, using static models")
+		return registry.GetKilocodeModels()
 	}
 
 	token := s.extractKilocodeToken(a)
 	if token == "" {
-		log.Debug("kilocode: no valid token in auth, no models available")
-		return nil
+		log.Debug("kilocode: no valid token in auth, using static models")
+		return registry.GetKilocodeModels()
 	}
 
-	models := registry.GetKilocodeModels()
-	log.Infof("kilocode: loaded %d static models", len(models))
+	// Create KilocodeAuth instance
+	kAuth := kilocodeauth.NewKilocodeAuth(s.cfg)
+	if kAuth == nil {
+		log.Warn("kilocode: failed to create KilocodeAuth instance, using static models")
+		return registry.GetKilocodeModels()
+	}
+
+	// Use timeout context for API call
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Attempt to fetch dynamic models
+	models, err := kAuth.FetchModels(ctx, token)
+	if err != nil {
+		log.Warnf("kilocode: failed to fetch dynamic models: %v, using static models", err)
+		return registry.GetKilocodeModels()
+	}
+
+	if len(models) == 0 {
+		log.Debug("kilocode: API returned no models, using static models")
+		return registry.GetKilocodeModels()
+	}
+
+	log.Infof("kilocode: successfully fetched %d free models from API", len(models))
 	return models
 }
 
