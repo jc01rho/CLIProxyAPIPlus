@@ -751,7 +751,8 @@ func payloadRawString(value any) ([]byte, bool) {
 
 // SanitizeOAuthModelAlias normalizes and deduplicates global OAuth model name aliases.
 // It trims whitespace, normalizes channel keys to lower-case, drops empty entries,
-// allows multiple aliases per upstream name, and ensures aliases are unique within each channel.
+// allows multiple source models to share the same alias, and ensures each name+alias
+// combination is unique within each channel.
 // It also injects default aliases for channels that have built-in defaults (e.g., kiro)
 // when no user-configured aliases exist for those channels.
 func (cfg *Config) SanitizeOAuthModelAlias() {
@@ -786,7 +787,9 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 		if channel == "" || len(aliases) == 0 {
 			continue
 		}
-		seenAlias := make(map[string]struct{}, len(aliases))
+		// Deduplicate by name+alias combination (not just alias)
+		// This allows multiple source models to share the same alias
+		seenNameAlias := make(map[string]struct{}, len(aliases))
 		clean := make([]OAuthModelAlias, 0, len(aliases))
 		for _, entry := range aliases {
 			name := strings.TrimSpace(entry.Name)
@@ -797,11 +800,12 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			if strings.EqualFold(name, alias) {
 				continue
 			}
-			aliasKey := strings.ToLower(alias)
-			if _, ok := seenAlias[aliasKey]; ok {
+			// Deduplicate by name+alias combination (case-insensitive)
+			nameAliasKey := strings.ToLower(name + "::" + alias)
+			if _, ok := seenNameAlias[nameAliasKey]; ok {
 				continue
 			}
-			seenAlias[aliasKey] = struct{}{}
+			seenNameAlias[nameAliasKey] = struct{}{}
 			clean = append(clean, OAuthModelAlias{Name: name, Alias: alias, Fork: entry.Fork})
 		}
 		if len(clean) > 0 {
