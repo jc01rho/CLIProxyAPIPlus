@@ -221,11 +221,23 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		status = cliproxyauth.StatusDisabled
 	}
 
-	// Calculate NextRefreshAfter from expires_at (20 minutes before expiry)
 	var nextRefreshAfter time.Time
 	if expiresAtStr, ok := metadata["expires_at"].(string); ok && expiresAtStr != "" {
 		if expiresAt, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
 			nextRefreshAfter = expiresAt.Add(-20 * time.Minute)
+		}
+	}
+
+	if nextRefreshAfter.IsZero() {
+		if expiredStr, ok := metadata["expired"].(string); ok && expiredStr != "" {
+			if expiresAt, err := time.Parse(time.RFC3339, expiredStr); err == nil {
+				refreshLead := 24 * time.Hour
+				if provider == "iflow" {
+					nextRefreshAfter = expiresAt.Add(-refreshLead)
+				} else {
+					nextRefreshAfter = expiresAt.Add(-20 * time.Minute)
+				}
+			}
 		}
 	}
 
