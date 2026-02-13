@@ -31,7 +31,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/qwen"
-	traeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/trae"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -2708,7 +2707,6 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 }
 
 const kiroCallbackPort = 9876
-const traeCallbackPort = 9877
 
 func (h *Handler) RequestKiroToken(c *gin.Context) {
 	ctx := context.Background()
@@ -2987,187 +2985,6 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid method, use 'aws', 'google', or 'github'"})
 	}
-}
-
-func (h *Handler) RequestTraeToken(c *gin.Context) {
-	ctx := context.Background()
-	state := fmt.Sprintf("trae-%d", time.Now().UnixNano())
-
-	log.Debugf("Initializing Trae Native OAuth authentication (state=%s)", state)
-
-	isWebUI := isWebUIRequest(c)
-	if isWebUI {
-		log.Debugf("[trae] Web UI mode detected (state=%s)", state)
-	} else {
-		log.Debugf("[trae] CLI mode detected (state=%s)", state)
-	}
-
-	var server *traeauth.OAuthServer
-	var forwarder *callbackForwarder
-	var callbackURL string
-
-	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/trae/authorize")
-		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute trae callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-			return
-		}
-		var errStart error
-		if forwarder, errStart = startCallbackForwarder(traeCallbackPort, "trae", targetURL); errStart != nil {
-			log.WithError(errStart).Error("failed to start trae callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
-			return
-		}
-		callbackURL = fmt.Sprintf("http://127.0.0.1:%d/authorize", traeCallbackPort)
-	} else {
-		server = traeauth.NewOAuthServer(traeCallbackPort)
-		if err := server.Start(); err != nil {
-			log.Errorf("failed to start OAuth server: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start OAuth server"})
-			return
-		}
-		callbackURL = fmt.Sprintf("http://127.0.0.1:%d/authorize", traeCallbackPort)
-	}
-
-	appVersion := "1.0.0"
-	authURL, loginTraceID, err := traeauth.GenerateNativeAuthURL(callbackURL, appVersion)
-	if err != nil {
-		if server != nil {
-			_ = server.Stop(context.Background())
-		}
-		if forwarder != nil {
-			stopCallbackForwarderInstance(traeCallbackPort, forwarder)
-		}
-		log.Errorf("failed to generate native auth URL: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate auth URL"})
-		return
-	}
-
-	RegisterOAuthSession(state, "trae")
-
-	go func() {
-		defer func() {
-			if server != nil {
-				_ = server.Stop(context.Background())
-			}
-			if forwarder != nil {
-				stopCallbackForwarderInstance(traeCallbackPort, forwarder)
-			}
-		}()
-
-		var nativeResult *traeauth.NativeOAuthResult
-
-		if isWebUI {
-			waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-trae-%s.oauth", state))
-			waitForFile := func(path string, timeout time.Duration) (*traeauth.NativeOAuthResult, error) {
-				deadline := time.Now().Add(timeout)
-				for {
-					if !IsOAuthSessionPending(state, "trae") {
-						return nil, errOAuthSessionNotPending
-					}
-					if time.Now().After(deadline) {
-						SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
-						return nil, fmt.Errorf("timeout waiting for OAuth callback")
-					}
-					data, errRead := os.ReadFile(path)
-					if errRead == nil {
-						var result traeauth.NativeOAuthResult
-						if errParse := json.Unmarshal(data, &result); errParse != nil {
-							return nil, fmt.Errorf("failed to parse callback data: %w", errParse)
-						}
-						_ = os.Remove(path)
-						return &result, nil
-					}
-					time.Sleep(500 * time.Millisecond)
-				}
-			}
-
-			var errWait error
-			nativeResult, errWait = waitForFile(waitFile, 5*time.Minute)
-			if errWait != nil {
-				if errors.Is(errWait, errOAuthSessionNotPending) {
-					return
-				}
-				log.Errorf("failed to wait for callback file: %v", errWait)
-				return
-			}
-		} else {
-			var errWait error
-			nativeResult, errWait = server.WaitForNativeCallback(5 * time.Minute)
-			if errWait != nil {
-				log.Errorf("failed to wait for native callback: %v", errWait)
-				SetOAuthSessionError(state, "failed to wait for callback: "+errWait.Error())
-				return
-			}
-		}
-
-		if nativeResult.Error != "" {
-			log.Errorf("Native OAuth error: %s", nativeResult.Error)
-			SetOAuthSessionError(state, "OAuth error: "+nativeResult.Error)
-			return
-		}
-
-		if nativeResult.UserJWT == nil {
-			log.Error("No UserJWT in native callback result")
-			SetOAuthSessionError(state, "No token received")
-			return
-		}
-
-		email := ""
-		if nativeResult.UserInfo != nil {
-			email = nativeResult.UserInfo.ScreenName
-		}
-		idPart := strings.ReplaceAll(email, "@", "_")
-		idPart = strings.ReplaceAll(idPart, ".", "_")
-		if idPart == "" {
-			if nativeResult.UserInfo != nil && nativeResult.UserInfo.UserID != "" {
-				idPart = nativeResult.UserInfo.UserID
-			} else {
-				idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
-			}
-		}
-		fileName := fmt.Sprintf("trae-%s.json", idPart)
-
-		record := &coreauth.Auth{
-			ID:       fileName,
-			Provider: "trae",
-			FileName: fileName,
-			Metadata: map[string]any{
-				"access_token":    nativeResult.UserJWT.Token,
-				"refresh_token":   nativeResult.UserJWT.RefreshToken,
-				"client_id":       nativeResult.UserJWT.ClientID,
-				"token_expire_at": nativeResult.UserJWT.TokenExpireAt,
-				"user_id":         "",
-				"screen_name":     "",
-				"host":            nativeResult.Host,
-				"user_region":     nativeResult.UserRegion,
-				"login_trace_id":  loginTraceID,
-				"last_refresh":    time.Now().Format(time.RFC3339),
-			},
-		}
-
-		if nativeResult.UserInfo != nil {
-			record.Metadata["user_id"] = nativeResult.UserInfo.UserID
-			record.Metadata["screen_name"] = nativeResult.UserInfo.ScreenName
-			record.Metadata["avatar_url"] = nativeResult.UserInfo.AvatarUrl
-			record.Metadata["tenant_id"] = nativeResult.UserInfo.TenantID
-		}
-
-		if _, err := h.saveTokenRecord(ctx, record); err != nil {
-			log.Errorf("failed to save token: %v", err)
-			SetOAuthSessionError(state, "failed to save token")
-			return
-		}
-
-		CompleteOAuthSession(state)
-	}()
-
-	c.JSON(http.StatusOK, gin.H{
-		"url":            authURL,
-		"state":          state,
-		"login_trace_id": loginTraceID,
-	})
 }
 
 // generateKiroPKCE generates PKCE code verifier and challenge for Kiro OAuth.
