@@ -83,8 +83,6 @@ func main() {
 	var kiroAWSLogin bool
 	var kiroAWSAuthCode bool
 	var kiroImport bool
-	var traeLogin bool
-	var traeImport bool
 	var githubCopilotLogin bool
 	var kilocodeLogin bool
 	var projectID string
@@ -112,8 +110,6 @@ func main() {
 	flag.BoolVar(&kiroAWSLogin, "kiro-aws-login", false, "Login to Kiro using AWS Builder ID (device code flow)")
 	flag.BoolVar(&kiroAWSAuthCode, "kiro-aws-authcode", false, "Login to Kiro using AWS Builder ID (authorization code flow, better UX)")
 	flag.BoolVar(&kiroImport, "kiro-import", false, "Import Kiro token from Kiro IDE (~/.aws/sso/cache/kiro-auth-token.json)")
-	flag.BoolVar(&traeLogin, "trae-login", false, "Login to Trae using Native OAuth")
-	flag.BoolVar(&traeImport, "trae-import", false, "Import Trae token from Trae IDE")
 	flag.BoolVar(&githubCopilotLogin, "github-copilot-login", false, "Login to GitHub Copilot using device flow")
 	flag.BoolVar(&kilocodeLogin, "kilocode-login", false, "Login to Kilocode using device flow")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
@@ -538,10 +534,6 @@ func main() {
 		cmd.DoKiroAWSAuthCodeLogin(cfg, options)
 	} else if kiroImport {
 		cmd.DoKiroImport(cfg, options)
-	} else if traeLogin {
-		cmd.DoTraeLogin(cfg, options)
-	} else if traeImport {
-		cmd.DoTraeImport(cfg, options)
 	} else {
 		// In cloud deploy mode without config file, just wait for shutdown signals
 		if isCloudDeploy && !configFileExists {
