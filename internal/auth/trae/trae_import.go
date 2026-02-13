@@ -15,6 +15,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const traeStorageAuthKey = "iCubeAuthInfo://icube.cloudide"
+
 // traeIDEToken represents the token structure used by Trae IDE installations.
 // This structure matches the format found in ~/.marscode/auth.json and similar locations.
 type traeIDEToken struct {
@@ -24,6 +26,119 @@ type traeIDEToken struct {
 	Expire       string `json:"expired,omitempty"`
 	ExpiresAt    string `json:"expires_at,omitempty"` // Alternative field name
 	TokenType    string `json:"token_type,omitempty"`
+	Host         string `json:"host,omitempty"`
+	UserID       string `json:"user_id,omitempty"`
+}
+
+func findTraeStorageJson() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Warnf("trae-import: failed to get home directory: %v", err)
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	var paths []string
+
+	switch runtime.GOOS {
+	case "linux":
+		paths = append(paths,
+			filepath.Join(homeDir, ".config", "Trae", "User", "globalStorage", "storage.json"),
+			filepath.Join(homeDir, ".config", "trae", "User", "globalStorage", "storage.json"),
+		)
+
+	case "darwin":
+		paths = append(paths,
+			filepath.Join(homeDir, "Library", "Application Support", "Trae", "User", "globalStorage", "storage.json"),
+		)
+
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(homeDir, "AppData", "Roaming")
+		}
+		paths = append(paths,
+			filepath.Join(appData, "Trae", "User", "globalStorage", "storage.json"),
+		)
+
+	default:
+		paths = append(paths,
+			filepath.Join(homeDir, "Library", "Application Support", "Trae", "User", "globalStorage", "storage.json"),
+			filepath.Join(homeDir, ".config", "Trae", "User", "globalStorage", "storage.json"),
+		)
+	}
+
+	log.Debugf("trae-import: checking %d potential storage.json locations", len(paths))
+
+	for _, path := range paths {
+		log.Debugf("trae-import: checking storage path: %s", path)
+
+		if _, err := os.Stat(path); err == nil {
+			log.Infof("trae-import: found Trae storage.json at: %s", path)
+			return path, nil
+		}
+	}
+
+	return "", fmt.Errorf("no Trae storage.json found in any standard location")
+}
+
+func readAuthFromStorageJson(path string) (*traeIDEToken, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read storage.json file: %w", err)
+	}
+
+	storageJSON := make(map[string]any)
+	if err := json.Unmarshal(data, &storageJSON); err != nil {
+		return nil, fmt.Errorf("failed to parse storage.json: %w", err)
+	}
+
+	authInfoValue, ok := storageJSON[traeStorageAuthKey]
+	if !ok {
+		return nil, fmt.Errorf("auth key %q not found in storage.json", traeStorageAuthKey)
+	}
+
+	authInfoString, ok := authInfoValue.(string)
+	if !ok || strings.TrimSpace(authInfoString) == "" {
+		return nil, fmt.Errorf("auth key %q is not a non-empty string", traeStorageAuthKey)
+	}
+
+	authInfo := make(map[string]any)
+	if err := json.Unmarshal([]byte(authInfoString), &authInfo); err != nil {
+		return nil, fmt.Errorf("failed to parse auth info JSON string: %w", err)
+	}
+
+	accessToken, _ := authInfo["token"].(string)
+	refreshToken, _ := authInfo["refreshToken"].(string)
+	userID, _ := authInfo["userId"].(string)
+	host, _ := authInfo["host"].(string)
+
+	email := ""
+	if account, ok := authInfo["account"].(map[string]any); ok {
+		if accountEmail, ok := account["email"].(string); ok {
+			email = strings.TrimSpace(accountEmail)
+		}
+		if email == "" {
+			if username, ok := account["username"].(string); ok {
+				email = strings.TrimSpace(username)
+			}
+		}
+	}
+	if email == "" {
+		if rootEmail, ok := authInfo["email"].(string); ok {
+			email = strings.TrimSpace(rootEmail)
+		}
+	}
+	if email == "" {
+		email = strings.TrimSpace(userID)
+	}
+
+	return &traeIDEToken{
+		AccessToken:  strings.TrimSpace(accessToken),
+		RefreshToken: strings.TrimSpace(refreshToken),
+		Email:        email,
+		Host:         strings.TrimSpace(host),
+		UserID:       strings.TrimSpace(userID),
+	}, nil
 }
 
 // getTraeIDEPaths returns platform-specific paths where Trae IDE stores tokens.
@@ -103,8 +218,8 @@ func validateTraeToken(token *traeIDEToken) error {
 		return fmt.Errorf("access token is empty")
 	}
 
-	if token.Email == "" {
-		return fmt.Errorf("email is empty")
+	if token.Email == "" && token.UserID == "" {
+		return fmt.Errorf("email and user_id are both empty")
 	}
 
 	// Check if token looks like a JWT (basic format check)
@@ -165,6 +280,8 @@ func convertToTraeAuthBundle(ideToken *traeIDEToken) *TraeAuthBundle {
 		RefreshToken: ideToken.RefreshToken,
 		Email:        ideToken.Email,
 		Expire:       expire,
+		Host:         ideToken.Host,
+		UserID:       ideToken.UserID,
 	}
 
 	bundle := &TraeAuthBundle{
@@ -181,9 +298,35 @@ func convertToTraeAuthBundle(ideToken *traeIDEToken) *TraeAuthBundle {
 func (o *TraeAuth) ImportExistingTraeToken() (*TraeAuthBundle, error) {
 	log.Info("trae-import: searching for existing Trae IDE token...")
 
+	var storageErr error
+
+	storagePath, err := findTraeStorageJson()
+	if err == nil {
+		storageToken, errRead := readAuthFromStorageJson(storagePath)
+		if errRead != nil {
+			storageErr = fmt.Errorf("failed to load token from %s: %w", storagePath, errRead)
+			log.Warnf("trae-import: %v", storageErr)
+		} else {
+			if errValidate := validateTraeToken(storageToken); errValidate != nil {
+				storageErr = fmt.Errorf("invalid token in %s: %w", storagePath, errValidate)
+				log.Warnf("trae-import: %v", storageErr)
+			} else {
+				bundle := convertToTraeAuthBundle(storageToken)
+				log.Infof("trae-import: successfully imported token for %s", storageToken.Email)
+				log.Debugf("trae-import: token expires at: %s", bundle.TokenData.Expire)
+				return bundle, nil
+			}
+		}
+	} else {
+		log.Debugf("trae-import: %v", err)
+	}
+
 	// Find token file
 	tokenPath, err := findExistingTraeToken()
 	if err != nil {
+		if storageErr != nil {
+			return nil, storageErr
+		}
 		log.Warnf("trae-import: %v", err)
 		log.Info("trae-import: no existing token found - user will need to authenticate via OAuth")
 		return nil, nil // Not an error - just no token to import
@@ -213,6 +356,19 @@ func (o *TraeAuth) ImportExistingTraeToken() (*TraeAuthBundle, error) {
 // GetImportedTokenEmail returns the email from an imported token file without full import.
 // This is useful for checking if a token exists before attempting full import.
 func GetImportedTokenEmail() (string, error) {
+	storagePath, err := findTraeStorageJson()
+	if err == nil {
+		storageToken, errRead := readAuthFromStorageJson(storagePath)
+		if errRead == nil {
+			if errValidate := validateTraeToken(storageToken); errValidate == nil {
+				if storageToken.Email == "" {
+					return "", fmt.Errorf("email is empty")
+				}
+				return storageToken.Email, nil
+			}
+		}
+	}
+
 	tokenPath, err := findExistingTraeToken()
 	if err != nil {
 		return "", err
@@ -221,6 +377,10 @@ func GetImportedTokenEmail() (string, error) {
 	ideToken, err := loadTraeIDEToken(tokenPath)
 	if err != nil {
 		return "", err
+	}
+
+	if ideToken.Email == "" {
+		return "", fmt.Errorf("email is empty")
 	}
 
 	return ideToken.Email, nil

@@ -25,6 +25,8 @@ type TraeTokenStorage struct {
 	Type string `json:"type"`
 	// Expire is the timestamp when the current access token expires.
 	Expire string `json:"expired"`
+	Host   string `json:"host,omitempty"`
+	UserID string `json:"user_id,omitempty"`
 }
 
 // SaveTokenToFile serializes the Trae token storage to a JSON file.
