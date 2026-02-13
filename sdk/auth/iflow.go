@@ -168,6 +168,12 @@ waitForCallback:
 	}
 
 	fileName := fmt.Sprintf("iflow-%s-%d.json", email, time.Now().Unix())
+
+	expiresAt, err := time.Parse(time.RFC3339, tokenStorage.Expire)
+	if err != nil {
+		expiresAt = time.Now().Add(7 * 24 * time.Hour)
+	}
+
 	metadata := map[string]any{
 		"email":         email,
 		"api_key":       tokenStorage.APIKey,
@@ -176,16 +182,63 @@ waitForCallback:
 		"expired":       tokenStorage.Expire,
 	}
 
+	now := time.Now()
+
 	fmt.Println("iFlow authentication successful")
 
 	return &coreauth.Auth{
-		ID:       fileName,
-		Provider: a.Provider(),
-		FileName: fileName,
-		Storage:  tokenStorage,
-		Metadata: metadata,
+		ID:               fileName,
+		Provider:         a.Provider(),
+		FileName:         fileName,
+		Storage:          tokenStorage,
+		Metadata:         metadata,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		NextRefreshAfter: expiresAt.Add(-24 * time.Hour),
 		Attributes: map[string]string{
 			"api_key": tokenStorage.APIKey,
 		},
 	}, nil
+}
+
+func (a *IFlowAuthenticator) Refresh(ctx context.Context, cfg *config.Config, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	if auth == nil || auth.Metadata == nil {
+		return nil, fmt.Errorf("iflow: invalid auth record")
+	}
+
+	refreshToken, ok := auth.Metadata["refresh_token"].(string)
+	if !ok || refreshToken == "" {
+		return nil, fmt.Errorf("iflow: refresh token not found")
+	}
+
+	authSvc := iflow.NewIFlowAuth(cfg)
+
+	tokenData, err := authSvc.RefreshTokens(ctx, refreshToken)
+	if err != nil {
+		return nil, fmt.Errorf("iflow: token refresh failed: %w", err)
+	}
+
+	expiresAt, err := time.Parse(time.RFC3339, tokenData.Expire)
+	if err != nil {
+		expiresAt = time.Now().Add(7 * 24 * time.Hour)
+	}
+
+	updated := auth.Clone()
+	now := time.Now()
+	updated.UpdatedAt = now
+	updated.LastRefreshedAt = now
+	updated.Metadata["access_token"] = tokenData.AccessToken
+	updated.Metadata["refresh_token"] = tokenData.RefreshToken
+	updated.Metadata["expired"] = tokenData.Expire
+	updated.Metadata["api_key"] = tokenData.APIKey
+	updated.Metadata["last_refresh"] = now.Format(time.RFC3339)
+	updated.NextRefreshAfter = expiresAt.Add(-24 * time.Hour)
+
+	if tokenData.APIKey != "" {
+		updated.Attributes["api_key"] = tokenData.APIKey
+	}
+
+	log.Infof("iflow: token refreshed successfully for %s", auth.ID)
+
+	return updated, nil
 }
