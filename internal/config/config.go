@@ -784,7 +784,13 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 	out := make(map[string][]OAuthModelAlias, len(cfg.OAuthModelAlias))
 	for rawChannel, aliases := range cfg.OAuthModelAlias {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
-		if channel == "" || len(aliases) == 0 {
+		if channel == "" {
+			continue
+		}
+		// Preserve channels that were explicitly set to empty/nil – they act
+		// as "disabled" markers so default injection won't re-add them (#222).
+		if len(aliases) == 0 {
+			out[channel] = nil
 			continue
 		}
 		// Deduplicate by name+alias combination (not just alias)
