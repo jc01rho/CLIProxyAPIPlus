@@ -50,6 +50,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetKiroModels()
 	case "amazonq":
 		return GetAmazonQModels()
+	case "kimi":
+		return GetKimiModels()
 	case "antigravity":
 		cfg := GetAntigravityModelConfig()
 		if len(cfg) == 0 {
@@ -75,8 +77,6 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return models
 	case "kilocode":
 		return GetKilocodeModels()
-	case "kimi":
-		return GetKimiModels()
 	default:
 		return nil
 	}
