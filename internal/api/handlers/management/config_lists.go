@@ -808,15 +808,11 @@ func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "channel not found"})
 		return
 	}
-	delete(h.cfg.OAuthModelAlias, channel)
-	if len(h.cfg.OAuthModelAlias) == 0 {
-		h.cfg.OAuthModelAlias = nil
-	}
-	if h.persist(c) {
-		if h.authManager != nil {
-			h.authManager.SetOAuthModelAlias(h.cfg.OAuthModelAlias)
-		}
-	}
+	// Set to nil instead of deleting the key so that the "explicitly disabled"
+	// marker survives config reload and prevents SanitizeOAuthModelAlias from
+	// re-injecting default aliases (fixes #222).
+	h.cfg.OAuthModelAlias[channel] = nil
+	h.persist(c)
 }
 
 // codex-api-key: []CodexKey
