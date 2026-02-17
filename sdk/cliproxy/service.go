@@ -414,6 +414,8 @@ func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
 	case "kiro":
 		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
+	case "kilo":
+		s.coreManager.RegisterExecutor(executor.NewKiloExecutor(s.cfg))
 	case "github-copilot":
 		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(s.cfg))
 	case "kilocode":
@@ -853,8 +855,8 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	case "kiro":
 		models = s.fetchKiroModels(a)
 		models = applyExcludedModels(models, excluded)
-	case "kilocode":
-		models = s.fetchKilocodeModels(a)
+	case "kilo", "kilocode":
+		models = executor.FetchKiloModels(context.Background(), a, s.cfg)
 		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config

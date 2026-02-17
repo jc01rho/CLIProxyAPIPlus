@@ -22,7 +22,7 @@ func newAuthManager() *sdkAuth.Manager {
 		sdkAuth.NewKimiAuthenticator(),
 		sdkAuth.NewKiroAuthenticator(),
 		sdkAuth.NewGitHubCopilotAuthenticator(),
-		sdkAuth.NewKilocodeAuthenticator(),
+		sdkAuth.NewKiloAuthenticator(),
 	)
 	return manager
 }

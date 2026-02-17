@@ -19,11 +19,12 @@ import (
 //   - codex
 //   - qwen
 //   - iflow
+//   - kimi
 //   - kiro
+//   - kilo
 //   - github-copilot
 //   - amazonq
-//   - kilocode
-//   - kimi
+//   - kilocode (alias for kilo)
 //   - antigravity (returns static overrides only)
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
@@ -44,14 +45,16 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetQwenModels()
 	case "iflow":
 		return GetIFlowModels()
+	case "kimi":
+		return GetKimiModels()
 	case "github-copilot":
 		return GetGitHubCopilotModels()
 	case "kiro":
 		return GetKiroModels()
+	case "kilo", "kilocode":
+		return GetKiloModels()
 	case "amazonq":
 		return GetAmazonQModels()
-	case "kimi":
-		return GetKimiModels()
 	case "antigravity":
 		cfg := GetAntigravityModelConfig()
 		if len(cfg) == 0 {
@@ -75,8 +78,6 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 			return strings.ToLower(models[i].ID) < strings.ToLower(models[j].ID)
 		})
 		return models
-	case "kilocode":
-		return GetKilocodeModels()
 	default:
 		return nil
 	}
@@ -98,11 +99,11 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetOpenAIModels(),
 		GetQwenModels(),
 		GetIFlowModels(),
+		GetKimiModels(),
 		GetGitHubCopilotModels(),
 		GetKiroModels(),
+		GetKiloModels(),
 		GetAmazonQModels(),
-		GetKilocodeModels(),
-		GetKimiModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {
