@@ -26,7 +26,8 @@ func (a *IFlowAuthenticator) Provider() string { return "iflow" }
 
 // RefreshLead indicates how soon before expiry a refresh should be attempted.
 func (a *IFlowAuthenticator) RefreshLead() *time.Duration {
-	return new(24 * time.Hour)
+	d := 36 * time.Hour
+	return &d
 }
 
 // Login performs the OAuth code flow using a local callback server.
@@ -193,7 +194,7 @@ waitForCallback:
 		Metadata:         metadata,
 		CreatedAt:        now,
 		UpdatedAt:        now,
-		NextRefreshAfter: expiresAt.Add(-24 * time.Hour),
+		NextRefreshAfter: expiresAt.Add(-36 * time.Hour),
 		Attributes: map[string]string{
 			"api_key": tokenStorage.APIKey,
 		},
@@ -231,7 +232,7 @@ func (a *IFlowAuthenticator) Refresh(ctx context.Context, cfg *config.Config, au
 	updated.Metadata["expired"] = tokenData.Expire
 	updated.Metadata["api_key"] = tokenData.APIKey
 	updated.Metadata["last_refresh"] = now.Format(time.RFC3339)
-	updated.NextRefreshAfter = expiresAt.Add(-24 * time.Hour)
+	updated.NextRefreshAfter = expiresAt.Add(-36 * time.Hour)
 
 	if tokenData.APIKey != "" {
 		updated.Attributes["api_key"] = tokenData.APIKey

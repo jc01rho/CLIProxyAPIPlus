@@ -444,7 +444,7 @@ func (e *IFlowExecutor) refreshOAuthBased(ctx context.Context, auth *cliproxyaut
 	auth.Metadata["last_refresh"] = time.Now().Format(time.RFC3339)
 
 	if expiresAt, err := time.Parse(time.RFC3339, tokenData.Expire); err == nil {
-		auth.NextRefreshAfter = expiresAt.Add(-24 * time.Hour)
+		auth.NextRefreshAfter = expiresAt.Add(-36 * time.Hour)
 		log.Debugf("iflow executor: set NextRefreshAfter to %v", auth.NextRefreshAfter.Format(time.RFC3339))
 	}
 
