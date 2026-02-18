@@ -24,6 +24,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/cline"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/copilot"
 	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
@@ -3127,7 +3128,7 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 			Metadata: map[string]any{
 				"email":           status.UserEmail,
 				"organization_id": orgID,
-				"model":          defaults.Model,
+				"model":           defaults.Model,
 			},
 		}
 
@@ -3149,5 +3150,84 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 		"state":            state,
 		"user_code":        resp.Code,
 		"verification_uri": resp.VerificationURL,
+	})
+}
+
+func (h *Handler) RequestClineToken(c *gin.Context) {
+	ctx := context.Background()
+
+	fmt.Println("Initializing Cline authentication...")
+
+	state := fmt.Sprintf("cln-%d", time.Now().UnixNano())
+	clineAuth := cline.NewClineAuth()
+
+	callbackPort := 48801
+	callbackURL := fmt.Sprintf("http://localhost:%d/callback", callbackPort)
+
+	authURL, oauthState, err := clineAuth.InitiateOAuth(ctx, callbackURL)
+	if err != nil {
+		log.Errorf("Failed to initiate Cline OAuth: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initiate OAuth flow"})
+		return
+	}
+
+	RegisterOAuthSession(state, "cline")
+
+	go func() {
+		fmt.Println("Waiting for Cline authentication...")
+
+		code, _, errCallback := clineAuth.StartCallbackServer(ctx, callbackPort)
+		if errCallback != nil {
+			SetOAuthSessionError(state, "Authentication failed")
+			fmt.Printf("Cline authentication failed: %v\n", errCallback)
+			return
+		}
+
+		tokenResp, errExchange := clineAuth.ExchangeCode(ctx, code, oauthState)
+		if errExchange != nil {
+			SetOAuthSessionError(state, "Failed to exchange authorization code")
+			fmt.Printf("Cline token exchange failed: %v\n", errExchange)
+			return
+		}
+
+		ts := &cline.ClineTokenStorage{
+			AccessToken:  tokenResp.AccessToken,
+			RefreshToken: tokenResp.RefreshToken,
+			ExpiresAt:    tokenResp.ExpiresAt,
+			Email:        tokenResp.UserInfo.Email,
+			UserID:       tokenResp.UserInfo.ID,
+			DisplayName:  tokenResp.UserInfo.DisplayName,
+			Type:         "cline",
+		}
+
+		fileName := cline.CredentialFileName(tokenResp.UserInfo.Email)
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "cline",
+			FileName: fileName,
+			Storage:  ts,
+			Metadata: map[string]any{
+				"email":        tokenResp.UserInfo.Email,
+				"user_id":      tokenResp.UserInfo.ID,
+				"display_name": tokenResp.UserInfo.DisplayName,
+			},
+		}
+
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save Cline authentication tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+
+		fmt.Printf("Cline authentication successful! Token saved to %s\n", savedPath)
+		CompleteOAuthSession(state)
+		CompleteOAuthSessionsByProvider("cline")
+	}()
+
+	c.JSON(200, gin.H{
+		"status": "ok",
+		"url":    authURL,
+		"state":  state,
 	})
 }

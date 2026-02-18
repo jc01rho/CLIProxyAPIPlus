@@ -86,6 +86,7 @@ func main() {
 	var kiroImport bool
 	var githubCopilotLogin bool
 	var kilocodeLogin bool
+	var clineLogin bool
 	var projectID string
 	var vertexImport string
 	var configPath string
@@ -114,6 +115,7 @@ func main() {
 	flag.BoolVar(&kiroImport, "kiro-import", false, "Import Kiro token from Kiro IDE (~/.aws/sso/cache/kiro-auth-token.json)")
 	flag.BoolVar(&githubCopilotLogin, "github-copilot-login", false, "Login to GitHub Copilot using device flow")
 	flag.BoolVar(&kilocodeLogin, "kilocode-login", false, "Login to Kilocode using device flow")
+	flag.BoolVar(&clineLogin, "cline-login", false, "Login to Cline using WorkOS OAuth")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
@@ -495,6 +497,8 @@ func main() {
 	} else if githubCopilotLogin {
 		// Handle GitHub Copilot login
 		cmd.DoGitHubCopilotLogin(cfg, options)
+	} else if clineLogin {
+		cmd.DoClineLogin(cfg, options)
 	} else if kilocodeLogin {
 		// Handle Kilocode login
 		cmd.DoKilocodeLogin(cfg, options)
