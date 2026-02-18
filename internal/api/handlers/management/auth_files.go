@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/copilot"
@@ -1219,8 +1220,8 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 
 	// OAuth2 configuration (mirrors internal/auth/gemini)
 	conf := &oauth2.Config{
-		ClientID:     "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
-		ClientSecret: "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",
+		ClientID:     geminiAuth.ClientID,
+		ClientSecret: geminiAuth.ClientSecret,
 		RedirectURL:  "http://localhost:8085/oauth2callback",
 		Scopes: []string{
 			"https://www.googleapis.com/auth/cloud-platform",
@@ -1349,8 +1350,8 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 		}
 
 		ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
-		ifToken["client_id"] = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
-		ifToken["client_secret"] = "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"
+		ifToken["client_id"] = geminiAuth.ClientID
+		ifToken["client_secret"] = geminiAuth.ClientSecret
 		ifToken["scopes"] = []string{
 			"https://www.googleapis.com/auth/cloud-platform",
 			"https://www.googleapis.com/auth/userinfo.email",
@@ -1667,19 +1668,6 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 }
 
 func (h *Handler) RequestAntigravityToken(c *gin.Context) {
-	const (
-		antigravityCallbackPort = 51121
-		antigravityClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-		antigravityClientSecret = "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"
-	)
-	var antigravityScopes = []string{
-		"https://www.googleapis.com/auth/cloud-platform",
-		"https://www.googleapis.com/auth/userinfo.email",
-		"https://www.googleapis.com/auth/userinfo.profile",
-		"https://www.googleapis.com/auth/cclog",
-		"https://www.googleapis.com/auth/experimentsandconfigs",
-	}
-
 	ctx := context.Background()
 
 	fmt.Println("Initializing Antigravity authentication...")
@@ -1691,15 +1679,15 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		return
 	}
 
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravityCallbackPort)
+	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
 
 	params := url.Values{}
 	params.Set("access_type", "offline")
-	params.Set("client_id", antigravityClientID)
+	params.Set("client_id", antigravity.ClientID)
 	params.Set("prompt", "consent")
 	params.Set("redirect_uri", redirectURI)
 	params.Set("response_type", "code")
-	params.Set("scope", strings.Join(antigravityScopes, " "))
+	params.Set("scope", strings.Join(antigravity.Scopes, " "))
 	params.Set("state", state)
 	authURL := "https://accounts.google.com/o/oauth2/v2/auth?" + params.Encode()
 
@@ -1715,7 +1703,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			return
 		}
 		var errStart error
-		if forwarder, errStart = startCallbackForwarder(antigravityCallbackPort, "antigravity", targetURL); errStart != nil {
+		if forwarder, errStart = startCallbackForwarder(antigravity.CallbackPort, "antigravity", targetURL); errStart != nil {
 			log.WithError(errStart).Error("failed to start antigravity callback forwarder")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
@@ -1724,7 +1712,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(antigravityCallbackPort, forwarder)
+			defer stopCallbackForwarderInstance(antigravity.CallbackPort, forwarder)
 		}
 
 		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-antigravity-%s.oauth", state))
@@ -1767,8 +1755,8 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		httpClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
 		form := url.Values{}
 		form.Set("code", authCode)
-		form.Set("client_id", antigravityClientID)
-		form.Set("client_secret", antigravityClientSecret)
+		form.Set("client_id", antigravity.ClientID)
+		form.Set("client_secret", antigravity.ClientSecret)
 		form.Set("redirect_uri", redirectURI)
 		form.Set("grant_type", "authorization_code")
 
