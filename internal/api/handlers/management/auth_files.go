@@ -3183,11 +3183,17 @@ func (h *Handler) RequestClineToken(c *gin.Context) {
 			return
 		}
 
+		// Try server-side token exchange first, fall back to direct parsing
 		tokenResp, errExchange := clineAuth.ExchangeCode(ctx, code, callbackURL)
 		if errExchange != nil {
-			SetOAuthSessionError(state, "Failed to exchange authorization code")
-			fmt.Printf("Cline token exchange failed: %v\n", errExchange)
-			return
+			log.Warnf("Cline ExchangeCode failed, trying direct token parsing: %v", errExchange)
+			var errParse error
+			tokenResp, errParse = cline.ParseCallbackToken(code)
+			if errParse != nil {
+				SetOAuthSessionError(state, "Failed to parse callback token")
+				fmt.Printf("Cline token parsing failed: %v\n", errParse)
+				return
+			}
 		}
 
 		ts := &cline.ClineTokenStorage{
