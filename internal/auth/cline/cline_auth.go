@@ -37,8 +37,9 @@ type UserInfo struct {
 }
 
 type AuthorizeResponse struct {
-	URL   string `json:"url"`
-	State string `json:"state"`
+	URL         string `json:"url"`
+	RedirectURL string `json:"redirect_url"`
+	State       string `json:"state"`
 }
 
 type APIResponse struct {
@@ -69,38 +70,80 @@ func (c *ClineAuth) InitiateOAuth(ctx context.Context, callbackURL string) (auth
 	}
 
 	q := endpoint.Query()
-	q.Set("callbackUrl", callbackURL)
+	q.Set("client_type", "extension")
+	q.Set("callback_url", callbackURL)
+	q.Set("redirect_uri", callbackURL)
 	endpoint.RawQuery = q.Encode()
+
+	noRedirectClient := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return "", "", fmt.Errorf("cline: failed to create authorize request: %w", err)
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("cline: failed to call authorize endpoint: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	var redirectURL string
+
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		redirectURL = resp.Header.Get("Location")
+		if redirectURL == "" {
+			return "", "", fmt.Errorf("cline: authorize returned redirect but no Location header")
+		}
+	} else if resp.StatusCode == http.StatusOK {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return "", "", fmt.Errorf("cline: failed to read authorize response: %w", readErr)
+		}
+
+		var data AuthorizeResponse
+		if err = json.Unmarshal(body, &data); err != nil {
+			return "", "", fmt.Errorf("cline: failed to decode authorize response: %w", err)
+		}
+
+		redirectURL = data.RedirectURL
+		if redirectURL == "" {
+			redirectURL = data.URL
+		}
+		if data.State != "" {
+			return redirectURL, data.State, nil
+		}
+	} else {
 		body, _ := io.ReadAll(resp.Body)
 		return "", "", fmt.Errorf("cline: failed to initiate oauth: status %d body %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	var data AuthorizeResponse
-	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", "", fmt.Errorf("cline: failed to decode authorize response: %w", err)
-	}
-	if data.URL == "" || data.State == "" {
-		return "", "", fmt.Errorf("cline: failed to initiate oauth: missing url or state")
+	if redirectURL == "" {
+		return "", "", fmt.Errorf("cline: failed to initiate oauth: no redirect URL in response")
 	}
 
-	return data.URL, data.State, nil
+	parsedRedirect, parseErr := url.Parse(redirectURL)
+	if parseErr == nil {
+		if s := parsedRedirect.Query().Get("state"); s != "" {
+			return redirectURL, s, nil
+		}
+	}
+
+	return redirectURL, fmt.Sprintf("cline-%d", time.Now().UnixNano()), nil
 }
 
-func (c *ClineAuth) ExchangeCode(ctx context.Context, code, state string) (*TokenResponse, error) {
-	payload := map[string]string{"code": code, "state": state}
+func (c *ClineAuth) ExchangeCode(ctx context.Context, code, callbackURL string) (*TokenResponse, error) {
+	payload := map[string]string{
+		"grant_type":   "authorization_code",
+		"code":         code,
+		"client_type":  "extension",
+		"redirect_uri": callbackURL,
+	}
 	data, err := c.postAuthJSON(ctx, "/api/v1/auth/token", payload)
 	if err != nil {
 		return nil, fmt.Errorf("cline: failed to exchange code: %w", err)

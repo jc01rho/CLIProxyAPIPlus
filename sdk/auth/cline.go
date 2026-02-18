@@ -91,7 +91,7 @@ func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		return nil, fmt.Errorf("state mismatch: expected %s, got %s", state, callbackState)
 	}
 
-	tokenResp, err := clineAuth.ExchangeCode(ctx, code, state)
+	tokenResp, err := clineAuth.ExchangeCode(ctx, code, callbackURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)
 	}
