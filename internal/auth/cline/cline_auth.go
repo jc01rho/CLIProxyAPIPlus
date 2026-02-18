@@ -3,6 +3,7 @@ package cline
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -151,6 +152,79 @@ func (c *ClineAuth) ExchangeCode(ctx context.Context, code, callbackURL string) 
 	return data, nil
 }
 
+// ParseCallbackToken decodes a base64-encoded callback code that contains
+// the full token data directly (as returned by the Cline API in the callback).
+// The encoded data may have a trailing HMAC signature after the JSON payload.
+func ParseCallbackToken(encodedCode string) (*TokenResponse, error) {
+	// Try URL-safe base64 with padding first, then without, then standard
+	var decoded []byte
+	var err error
+	for _, enc := range []*base64.Encoding{
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+	} {
+		decoded, err = enc.DecodeString(encodedCode)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cline: failed to base64 decode callback code: %w", err)
+	}
+
+	// Use json.Decoder to parse only the JSON object, ignoring trailing
+	// signature bytes that may be appended after the closing '}'.
+	var data struct {
+		AccessToken  string `json:"accessToken"`
+		RefreshToken string `json:"refreshToken"`
+		Email        string `json:"email"`
+		Name         string `json:"name"`
+		FirstName    string `json:"firstName"`
+		LastName     string `json:"lastName"`
+		ExpiresAt    string `json:"expiresAt"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(decoded))
+	if decErr := decoder.Decode(&data); decErr != nil {
+		return nil, fmt.Errorf("cline: failed to parse callback token JSON: %w", decErr)
+	}
+
+	if data.AccessToken == "" || data.RefreshToken == "" {
+		return nil, fmt.Errorf("cline: callback token missing accessToken or refreshToken")
+	}
+
+	// Parse expiresAt (ISO 8601 / RFC3339Nano format like "2026-02-18T08:15:46.272592416Z")
+	var expiresAtUnix int64
+	if data.ExpiresAt != "" {
+		t, timeErr := time.Parse(time.RFC3339Nano, data.ExpiresAt)
+		if timeErr != nil {
+			// Try RFC3339 without nanoseconds
+			t, timeErr = time.Parse(time.RFC3339, data.ExpiresAt)
+			if timeErr != nil {
+				return nil, fmt.Errorf("cline: failed to parse expiresAt %q: %w", data.ExpiresAt, timeErr)
+			}
+		}
+		expiresAtUnix = t.Unix()
+	}
+
+	// Build display name from available fields
+	displayName := data.Name
+	if displayName == "" {
+		displayName = strings.TrimSpace(data.FirstName + " " + data.LastName)
+	}
+
+	return &TokenResponse{
+		AccessToken:  data.AccessToken,
+		RefreshToken: data.RefreshToken,
+		ExpiresAt:    expiresAtUnix,
+		UserInfo: UserInfo{
+			Email:       data.Email,
+			DisplayName: displayName,
+		},
+	}, nil
+}
+
 func (c *ClineAuth) RefreshTokens(ctx context.Context, refreshToken string) (*TokenResponse, error) {
 	payload := map[string]string{"refreshToken": refreshToken}
 	data, err := c.postAuthJSON(ctx, "/api/v1/auth/refresh", payload)
@@ -233,11 +307,11 @@ func (c *ClineAuth) StartCallbackServer(ctx context.Context, port int) (code str
 		}
 
 		callbackCode := r.URL.Query().Get("code")
-		callbackState := r.URL.Query().Get("state")
-		if callbackCode == "" || callbackState == "" {
-			http.Error(w, "missing code or state", http.StatusBadRequest)
+		callbackState := r.URL.Query().Get("state") // optional
+		if callbackCode == "" {
+			http.Error(w, "missing code", http.StatusBadRequest)
 			select {
-			case errCh <- fmt.Errorf("cline: failed to parse callback parameters"):
+			case errCh <- fmt.Errorf("cline: callback missing code parameter"):
 			default:
 			}
 			return

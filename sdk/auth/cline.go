@@ -87,13 +87,19 @@ func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		return nil, fmt.Errorf("failed to receive callback: %w", err)
 	}
 
-	if callbackState != state {
+	// State verification: only check if both sides provided state
+	if state != "" && callbackState != "" && callbackState != state {
 		return nil, fmt.Errorf("state mismatch: expected %s, got %s", state, callbackState)
 	}
 
+	// Try server-side token exchange first, fall back to direct parsing
 	tokenResp, err := clineAuth.ExchangeCode(ctx, code, callbackURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to exchange code: %w", err)
+		log.Warnf("Cline ExchangeCode failed, trying direct token parsing: %v", err)
+		tokenResp, err = cline.ParseCallbackToken(code)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse callback token: %w", err)
+		}
 	}
 
 	fmt.Printf("Authentication successful for %s\n", tokenResp.UserInfo.Email)
