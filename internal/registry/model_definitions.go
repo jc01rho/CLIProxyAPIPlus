@@ -53,6 +53,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetKiroModels()
 	case "kilo", "kilocode":
 		return GetKiloModels()
+	case "cline":
+		return GetClineModels()
 	case "amazonq":
 		return GetAmazonQModels()
 	case "antigravity":
@@ -103,6 +105,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetGitHubCopilotModels(),
 		GetKiroModels(),
 		GetKiloModels(),
+		GetClineModels(),
 		GetAmazonQModels(),
 	}
 	for _, models := range allModels {
