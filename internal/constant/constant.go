@@ -30,7 +30,4 @@ const (
 
 	// Kilo represents the Kilo AI provider identifier.
 	Kilo = "kilo"
-
-	// Cline represents the Cline AI provider identifier.
-	Cline = "cline"
 )

@@ -665,7 +665,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/iflow-auth-url", s.mgmt.RequestIFlowToken)
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowCookieToken)
 		mgmt.GET("/kiro-auth-url", s.mgmt.RequestKiroToken)
-		mgmt.GET("/cline-auth-url", s.mgmt.RequestClineToken)
 		mgmt.GET("/github-auth-url", s.mgmt.RequestGitHubToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
