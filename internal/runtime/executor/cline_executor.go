@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	clineVersion    = "1.0.0"
+	clineVersion    = "3.64.0"
 	clineAPIBaseURL = "https://api.cline.bot"
 	clineEndpoint   = "/api/v1/chat/completions"
 	clineModelsURL  = "https://api.cline.bot/api/v1/models"
@@ -346,6 +346,13 @@ func applyClineHeaders(r *http.Request, accessToken string, stream bool) {
 	r.Header.Set("HTTP-Referer", "https://cline.bot")
 	r.Header.Set("X-Title", "Cline")
 	r.Header.Set("User-Agent", "Cline/"+clineVersion)
+	// Cline extension identification headers (required by API)
+	r.Header.Set("X-PLATFORM", "cli-proxy")
+	r.Header.Set("X-PLATFORM-VERSION", "1.0.0")
+	r.Header.Set("X-CLIENT-VERSION", clineVersion)
+	r.Header.Set("X-CLIENT-TYPE", "extension")
+	r.Header.Set("X-CORE-VERSION", clineVersion)
+	r.Header.Set("X-IS-MULTIROOT", "false")
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
 		r.Header.Set("Cache-Control", "no-cache")
@@ -393,7 +400,7 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		log.Warnf("cline: fetch models failed: status %d, body: %s", resp.StatusCode, string(body))
+		log.Debugf("cline: fetch models endpoint returned status %d (expected: endpoint may not exist), using static models", resp.StatusCode)
 		return registry.GetClineModels()
 	}
 
