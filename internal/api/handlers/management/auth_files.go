@@ -3164,7 +3164,7 @@ func (h *Handler) RequestClineToken(c *gin.Context) {
 	callbackPort := 48801
 	callbackURL := fmt.Sprintf("http://localhost:%d/callback", callbackPort)
 
-	authURL, oauthState, err := clineAuth.InitiateOAuth(ctx, callbackURL)
+	authURL, _, err := clineAuth.InitiateOAuth(ctx, callbackURL)
 	if err != nil {
 		log.Errorf("Failed to initiate Cline OAuth: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initiate OAuth flow"})
@@ -3183,7 +3183,7 @@ func (h *Handler) RequestClineToken(c *gin.Context) {
 			return
 		}
 
-		tokenResp, errExchange := clineAuth.ExchangeCode(ctx, code, oauthState)
+		tokenResp, errExchange := clineAuth.ExchangeCode(ctx, code, callbackURL)
 		if errExchange != nil {
 			SetOAuthSessionError(state, "Failed to exchange authorization code")
 			fmt.Printf("Cline token exchange failed: %v\n", errExchange)
