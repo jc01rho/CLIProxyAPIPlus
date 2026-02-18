@@ -52,5 +52,17 @@ func GetClineModels() []*ModelInfo {
 			ContextLength:       128000,
 			MaxCompletionTokens: 32768,
 		},
+		{
+			ID:                  "minimax/minimax-m2.5",
+			Object:              "model",
+			Created:             1770825600,
+			OwnedBy:             "cline",
+			Type:                "cline",
+			DisplayName:         "MiniMax M2.5 (via Cline)",
+			Description:         "MiniMax M2.5 via Cline (Free)",
+			ContextLength:       204800,
+			MaxCompletionTokens: 128000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
 	}
 }

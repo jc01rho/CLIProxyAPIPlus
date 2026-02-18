@@ -421,15 +421,42 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		}
 
 		log.Debugf("cline: found model: %s", id)
+		displayName := value.Get("name").String()
+		if displayName == "" {
+			displayName = id
+		}
+
+		contextLength := int(value.Get("context_length").Int())
+		maxCompletionTokens := int(value.Get("max_completion_tokens").Int())
+		if maxCompletionTokens == 0 {
+			maxCompletionTokens = int(value.Get("top_provider.max_completion_tokens").Int())
+		}
+		if maxCompletionTokens == 0 {
+			maxCompletionTokens = 32768
+		}
+
+		description := value.Get("description").String()
+		promptPrice := value.Get("pricing.prompt").String()
+		completionPrice := value.Get("pricing.completion").String()
+		isFree := (promptPrice == "0" || promptPrice == "0.0") && (completionPrice == "0" || completionPrice == "0.0")
+		if isFree && !strings.Contains(description, "Free") {
+			if description != "" {
+				description += " (Free)"
+			} else {
+				description = displayName + " via Cline (Free)"
+			}
+		}
 
 		dynamicModels = append(dynamicModels, &registry.ModelInfo{
-			ID:            id,
-			DisplayName:   value.Get("name").String(),
-			ContextLength: int(value.Get("context_length").Int()),
-			OwnedBy:       "cline",
-			Type:          "cline",
-			Object:        "model",
-			Created:       now,
+			ID:                  id,
+			DisplayName:         displayName,
+			Description:         description,
+			ContextLength:       contextLength,
+			MaxCompletionTokens: maxCompletionTokens,
+			OwnedBy:             "cline",
+			Type:                "cline",
+			Object:              "model",
+			Created:             now,
 		})
 		count++
 		return true
