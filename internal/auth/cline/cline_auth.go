@@ -226,7 +226,7 @@ func ParseCallbackToken(encodedCode string) (*TokenResponse, error) {
 }
 
 func (c *ClineAuth) RefreshTokens(ctx context.Context, refreshToken string) (*TokenResponse, error) {
-	payload := map[string]string{"refreshToken": refreshToken}
+	payload := map[string]string{"refreshToken": refreshToken, "grantType": "refresh_token"}
 	data, err := c.postAuthJSON(ctx, "/api/v1/auth/refresh", payload)
 	if err != nil {
 		return nil, fmt.Errorf("cline: failed to refresh tokens: %w", err)
