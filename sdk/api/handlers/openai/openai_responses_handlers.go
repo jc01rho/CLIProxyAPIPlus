@@ -16,15 +16,15 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-func stripEventLine(chunk []byte) []byte {
-	if !bytes.HasPrefix(chunk, []byte("event:")) {
-		return chunk
+func stripAllEventLines(data []byte) []byte {
+	lines := bytes.Split(data, []byte("\n"))
+	var result [][]byte
+	for _, line := range lines {
+		if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("event:")) {
+			result = append(result, line)
+		}
 	}
-	idx := bytes.Index(chunk, []byte("\n"))
-	if idx == -1 {
-		return chunk
-	}
-	return bytes.TrimSpace(chunk[idx+1:])
+	return bytes.Join(result, []byte("\n"))
 }
 
 // OpenAIResponsesAPIHandler contains the handlers for OpenAIResponses API endpoints.
@@ -276,7 +276,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 
 			// Write first chunk logic (matching forwardResponsesStream)
-			chunk = stripEventLine(chunk)
+			chunk = stripAllEventLines(chunk)
 			_, _ = c.Writer.Write(chunk)
 			_, _ = c.Writer.Write([]byte("\n"))
 			flusher.Flush()
@@ -356,6 +356,7 @@ func writeChatAsResponsesChunk(c *gin.Context, ctx context.Context, modelName st
 		if out == "" {
 			continue
 		}
+		out = string(stripAllEventLines([]byte(out)))
 		_, _ = c.Writer.Write([]byte(out))
 		_, _ = c.Writer.Write([]byte("\n"))
 	}
@@ -369,6 +370,7 @@ func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context,
 				if out == "" {
 					continue
 				}
+				out = string(stripAllEventLines([]byte(out)))
 				_, _ = c.Writer.Write([]byte(out))
 				_, _ = c.Writer.Write([]byte("\n"))
 			}
@@ -397,7 +399,7 @@ func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context,
 func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
-			chunk = stripEventLine(chunk)
+			chunk = stripAllEventLines(chunk)
 			_, _ = c.Writer.Write(chunk)
 			_, _ = c.Writer.Write([]byte("\n"))
 		},
