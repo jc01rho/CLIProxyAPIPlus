@@ -478,6 +478,21 @@ func GetGeminiCLIModels() []*ModelInfo {
 			SupportedGenerationMethods: []string{"generateContent", "countTokens", "createCachedContent", "batchGenerateContent"},
 			Thinking:                   &ThinkingSupport{Min: 128, Max: 32768, ZeroAllowed: false, DynamicAllowed: true, Levels: []string{"minimal", "low", "medium", "high"}},
 		},
+		{
+			ID:                         "gemini-3.1-pro-preview",
+			Object:                     "model",
+			Created:                    1765929600,
+			OwnedBy:                    "google",
+			Type:                       "gemini",
+			Name:                       "models/gemini-3.1-pro-preview",
+			Version:                    "3.1",
+			DisplayName:                "Gemini 3.1 Pro Preview",
+			Description:                "Preview release of Gemini 3.1 Pro with enhanced reasoning and multimodal capabilities",
+			InputTokenLimit:            1048576,
+			OutputTokenLimit:           65536,
+			SupportedGenerationMethods: []string{"generateContent", "countTokens", "createCachedContent", "batchGenerateContent"},
+			Thinking:                   &ThinkingSupport{Min: 128, Max: 32768, ZeroAllowed: false, DynamicAllowed: true, Levels: []string{"low", "high"}},
+		},
 	}
 }
 
