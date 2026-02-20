@@ -51,7 +51,7 @@ type oaiToResponsesState struct {
 var responseIDCounter uint64
 
 func emitRespEvent(event string, payload string) string {
-	return fmt.Sprintf("event: %s\ndata: %s", event, payload)
+	return fmt.Sprintf("data: %s", payload)
 }
 
 // ConvertOpenAIChatCompletionsResponseToOpenAIResponses converts OpenAI Chat Completions streaming chunks
