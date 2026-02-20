@@ -1053,7 +1053,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 
 // ExecuteStream handles streaming requests to Kiro API.
 // Supports automatic token refresh on 401/403 errors and quota fallback on 429.
-func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	accessToken, profileArn := kiroCredentials(auth)
 	if accessToken == "" {
 		return nil, fmt.Errorf("kiro: access token not found in auth")
@@ -1110,7 +1110,11 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	// Route to MCP endpoint instead of normal Kiro API
 	if kiroclaude.HasWebSearchTool(req.Payload) {
 		log.Infof("kiro: detected pure web_search request, routing to MCP endpoint")
-		return e.handleWebSearchStream(ctx, auth, req, opts, accessToken, profileArn)
+		streamWebSearch, errWebSearch := e.handleWebSearchStream(ctx, auth, req, opts, accessToken, profileArn)
+		if errWebSearch != nil {
+			return nil, errWebSearch
+		}
+		return &cliproxyexecutor.StreamResult{Chunks: streamWebSearch}, nil
 	}
 
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
@@ -1128,7 +1132,11 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 	// Execute stream with retry on 401/403 and 429 (quota exhausted)
 	// Note: currentOrigin and kiroPayload are built inside executeStreamWithRetry for each endpoint
-	return e.executeStreamWithRetry(ctx, auth, req, opts, accessToken, effectiveProfileArn, nil, body, from, reporter, "", kiroModelID, isAgentic, isChatOnly, tokenKey)
+	streamKiro, errStreamKiro := e.executeStreamWithRetry(ctx, auth, req, opts, accessToken, effectiveProfileArn, nil, body, from, reporter, "", kiroModelID, isAgentic, isChatOnly, tokenKey)
+	if errStreamKiro != nil {
+		return nil, errStreamKiro
+	}
+	return &cliproxyexecutor.StreamResult{Chunks: streamKiro}, nil
 }
 
 // executeStreamWithRetry performs the streaming HTTP request with automatic retry on auth errors.
@@ -1709,6 +1717,7 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		// Amazon Q format (amazonq- prefix) - same API as Kiro
 		"amazonq-auto":                       "auto",
 		"amazonq-claude-opus-4-6":            "claude-opus-4.6",
+		"amazonq-claude-sonnet-4-6":          "claude-sonnet-4.6",
 		"amazonq-claude-opus-4-5":            "claude-opus-4.5",
 		"amazonq-claude-sonnet-4-5":          "claude-sonnet-4.5",
 		"amazonq-claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
@@ -1717,6 +1726,7 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		"amazonq-claude-haiku-4-5":           "claude-haiku-4.5",
 		// Kiro format (kiro- prefix) - valid model names that should be preserved
 		"kiro-claude-opus-4-6":            "claude-opus-4.6",
+		"kiro-claude-sonnet-4-6":          "claude-sonnet-4.6",
 		"kiro-claude-opus-4-5":            "claude-opus-4.5",
 		"kiro-claude-sonnet-4-5":          "claude-sonnet-4.5",
 		"kiro-claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
@@ -1727,6 +1737,8 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		// Native format (no prefix) - used by Kiro IDE directly
 		"claude-opus-4-6":            "claude-opus-4.6",
 		"claude-opus-4.6":            "claude-opus-4.6",
+		"claude-sonnet-4-6":          "claude-sonnet-4.6",
+		"claude-sonnet-4.6":          "claude-sonnet-4.6",
 		"claude-opus-4-5":            "claude-opus-4.5",
 		"claude-opus-4.5":            "claude-opus-4.5",
 		"claude-haiku-4-5":           "claude-haiku-4.5",
@@ -1739,11 +1751,13 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		"auto":                       "auto",
 		// Agentic variants (same backend model IDs, but with special system prompt)
 		"claude-opus-4.6-agentic":        "claude-opus-4.6",
+		"claude-sonnet-4.6-agentic":      "claude-sonnet-4.6",
 		"claude-opus-4.5-agentic":        "claude-opus-4.5",
 		"claude-sonnet-4.5-agentic":      "claude-sonnet-4.5",
 		"claude-sonnet-4-agentic":        "claude-sonnet-4",
 		"claude-haiku-4.5-agentic":       "claude-haiku-4.5",
 		"kiro-claude-opus-4-6-agentic":   "claude-opus-4.6",
+		"kiro-claude-sonnet-4-6-agentic": "claude-sonnet-4.6",
 		"kiro-claude-opus-4-5-agentic":   "claude-opus-4.5",
 		"kiro-claude-sonnet-4-5-agentic": "claude-sonnet-4.5",
 		"kiro-claude-sonnet-4-agentic":   "claude-sonnet-4",
@@ -1769,6 +1783,10 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 			log.Debugf("kiro: unknown Sonnet 3.7 model '%s', mapping to claude-3-7-sonnet-20250219", model)
 			return "claude-3-7-sonnet-20250219"
 		}
+		if strings.Contains(modelLower, "4-6") || strings.Contains(modelLower, "4.6") {
+			log.Debugf("kiro: unknown Sonnet 4.6 model '%s', mapping to claude-sonnet-4.6", model)
+			return "claude-sonnet-4.6"
+		}
 		if strings.Contains(modelLower, "4-5") || strings.Contains(modelLower, "4.5") {
 			log.Debugf("kiro: unknown Sonnet 4.5 model '%s', mapping to claude-sonnet-4.5", model)
 			return "claude-sonnet-4.5"
@@ -1780,6 +1798,10 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 
 	// Check for Opus variants
 	if strings.Contains(modelLower, "opus") {
+		if strings.Contains(modelLower, "4-6") || strings.Contains(modelLower, "4.6") {
+			log.Debugf("kiro: unknown Opus 4.6 model '%s', mapping to claude-opus-4.6", model)
+			return "claude-opus-4.6"
+		}
 		log.Debugf("kiro: unknown Opus model '%s', mapping to claude-opus-4.5", model)
 		return "claude-opus-4.5"
 	}
