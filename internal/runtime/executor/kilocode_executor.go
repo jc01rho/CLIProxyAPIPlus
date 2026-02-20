@@ -194,7 +194,7 @@ func (e *KilocodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 }
 
 // ExecuteStream handles streaming requests to Kilocode.
-func (e *KilocodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *KilocodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	token := metaStringValue(auth.Metadata, "token")
 	if token == "" {
 		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing kilocode token"}
@@ -270,7 +270,6 @@ func (e *KilocodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
-	stream = out
 
 	go func() {
 		defer close(out)
@@ -323,7 +322,10 @@ func (e *KilocodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		}
 	}()
 
-	return stream, nil
+	return &cliproxyexecutor.StreamResult{
+		Headers: httpResp.Header.Clone(),
+		Chunks:  out,
+	}, nil
 }
 
 // CountTokens is not supported for Kilocode.
