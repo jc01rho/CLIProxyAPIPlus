@@ -376,6 +376,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			line := scanner.Bytes()
 			appendAPIResponseChunk(ctx, e.cfg, line)
 
+			if bytes.HasPrefix(line, []byte("event:")) {
+				idx := bytes.Index(line, []byte("\n"))
+				if idx != -1 {
+					line = bytes.TrimSpace(line[idx+1:])
+				}
+			}
+
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
 				if gjson.GetBytes(data, "type").String() == "response.completed" {
