@@ -82,7 +82,7 @@ func unwrapGeminiResponseRoot(root gjson.Result) gjson.Result {
 }
 
 func emitEvent(event string, payload string) string {
-	return fmt.Sprintf("event: %s\ndata: %s", event, payload)
+	return fmt.Sprintf("data: %s", payload)
 }
 
 // ConvertGeminiResponseToOpenAIResponses converts Gemini SSE chunks into OpenAI Responses SSE events.
