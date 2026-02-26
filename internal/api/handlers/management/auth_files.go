@@ -2213,13 +2213,30 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 			identifier = fmt.Sprintf("%d", time.Now().UnixMilli())
 			tokenStorage.Email = identifier
 		}
+		now := time.Now().UTC()
+		nextRefreshAfter := time.Time{}
+		if expiresAt, errParse := time.Parse(time.RFC3339, tokenStorage.Expire); errParse == nil {
+			nextRefreshAfter = expiresAt.Add(-36 * time.Hour)
+		}
 		record := &coreauth.Auth{
-			ID:         fmt.Sprintf("iflow-%s.json", identifier),
-			Provider:   "iflow",
-			FileName:   fmt.Sprintf("iflow-%s.json", identifier),
-			Storage:    tokenStorage,
-			Metadata:   map[string]any{"email": identifier, "api_key": tokenStorage.APIKey},
-			Attributes: map[string]string{"api_key": tokenStorage.APIKey},
+			ID:       fmt.Sprintf("iflow-%s.json", identifier),
+			Provider: "iflow",
+			FileName: fmt.Sprintf("iflow-%s.json", identifier),
+			Storage:  tokenStorage,
+			Metadata: map[string]any{
+				"email":         identifier,
+				"api_key":       tokenStorage.APIKey,
+				"access_token":  tokenStorage.AccessToken,
+				"refresh_token": tokenStorage.RefreshToken,
+				"expired":       tokenStorage.Expire,
+				"type":          "iflow",
+				"last_refresh":  now.Format(time.RFC3339),
+			},
+			Attributes:       map[string]string{"api_key": tokenStorage.APIKey},
+			CreatedAt:        now,
+			UpdatedAt:        now,
+			LastRefreshedAt:  now,
+			NextRefreshAfter: nextRefreshAfter,
 		}
 
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
@@ -2871,6 +2888,7 @@ func PopulateAuthContext(ctx context.Context, c *gin.Context) context.Context {
 	}
 	return coreauth.WithRequestInfo(ctx, info)
 }
+
 const kiroCallbackPort = 9876
 
 func (h *Handler) RequestKiroToken(c *gin.Context) {
