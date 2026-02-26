@@ -145,17 +145,23 @@ func (ia *IFlowAuth) doTokenRequest(ctx context.Context, req *http.Request) (*IF
 		return nil, fmt.Errorf("iflow token: decode response failed: %w", err)
 	}
 
+	// Check for API-level errors (iflow returns HTTP 200 with success:false on errors)
+	if !tokenResp.Success && tokenResp.Message != "" {
+		log.Debugf("iflow token request failed: success=false code=%s message=%s", tokenResp.Code, tokenResp.Message)
+		return nil, fmt.Errorf("iflow token: API error (code %s): %s", tokenResp.Code, tokenResp.Message)
+	}
+
+	if tokenResp.AccessToken == "" {
+		log.Debugf("iflow token: missing access token in response, body: %s", string(body))
+		return nil, fmt.Errorf("iflow token: missing access token in response (body: %s)", strings.TrimSpace(string(body)))
+	}
+
 	data := &IFlowTokenData{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		TokenType:    tokenResp.TokenType,
 		Scope:        tokenResp.Scope,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
-	}
-
-	if tokenResp.AccessToken == "" {
-		log.Debugf("iflow token: missing access token in response, body: %s", string(body))
-		return nil, fmt.Errorf("iflow token: missing access token in response (body: %s)", strings.TrimSpace(string(body)))
 	}
 
 	info, errAPI := ia.FetchUserInfo(ctx, tokenResp.AccessToken)
@@ -261,6 +267,9 @@ func (ia *IFlowAuth) UpdateTokenStorage(storage *IFlowTokenStorage, data *IFlowT
 
 // IFlowTokenResponse models the OAuth token endpoint response.
 type IFlowTokenResponse struct {
+	Success      bool   `json:"success"`
+	Code         string `json:"code"`
+	Message      string `json:"message"`
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int    `json:"expires_in"`
