@@ -65,15 +65,16 @@ func NewIFlowAuth(cfg *config.Config) *IFlowAuth {
 }
 
 // AuthorizationURL builds the authorization URL and matching redirect URI.
+// Parameter order matches official iFlow CLI: loginMethod, type, redirect, state, client_id
 func (ia *IFlowAuth) AuthorizationURL(state string, port int) (authURL, redirectURI string) {
 	redirectURI = fmt.Sprintf("http://localhost:%d/oauth2callback", port)
-	values := url.Values{}
-	values.Set("loginMethod", "phone")
-	values.Set("type", "phone")
-	values.Set("redirect", redirectURI)
-	values.Set("state", state)
-	values.Set("client_id", iFlowOAuthClientID)
-	authURL = fmt.Sprintf("%s?%s", iFlowOAuthAuthorizeEndpoint, values.Encode())
+
+	// Build URL with explicit parameter order to match iFlow CLI
+	params := fmt.Sprintf("loginMethod=phone&type=phone&redirect=%s&state=%s&client_id=%s",
+		url.QueryEscape(redirectURI),
+		url.QueryEscape(state),
+		iFlowOAuthClientID)
+	authURL = fmt.Sprintf("%s?%s", iFlowOAuthAuthorizeEndpoint, params)
 	return authURL, redirectURI
 }
 
