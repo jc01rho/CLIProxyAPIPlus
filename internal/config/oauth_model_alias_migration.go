@@ -25,6 +25,8 @@ var antigravityModelConversionTable = map[string]string{
 // names so that clients like Claude Code can use standard names directly.
 func defaultKiroAliases() []OAuthModelAlias {
 	return []OAuthModelAlias{
+		// Sonnet 4.6
+		{Name: "kiro-claude-sonnet-4-6", Alias: "claude-sonnet-4-6", Fork: true},
 		// Sonnet 4.5
 		{Name: "kiro-claude-sonnet-4-5", Alias: "claude-sonnet-4-5-20250929", Fork: true},
 		{Name: "kiro-claude-sonnet-4-5", Alias: "claude-sonnet-4-5", Fork: true},
