@@ -61,7 +61,8 @@ type RefreshEvaluator interface {
 }
 
 const (
-	refreshCheckInterval  = 30 * time.Second
+	refreshCheckInterval  = 5 * time.Second
+	refreshMaxConcurrency = 16
 	refreshPendingBackoff = time.Minute
 	refreshFailureBackoff = 1 * time.Minute
 	quotaBackoffBase      = time.Second
@@ -230,7 +231,8 @@ type Manager struct {
 	fallbackMaxDepth atomic.Int32
 
 	// Auto refresh state
-	refreshCancel context.CancelFunc
+	refreshCancel    context.CancelFunc
+	refreshSemaphore chan struct{}
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -248,6 +250,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook:            hook,
 		auths:           make(map[string]*Auth),
 		providerOffsets: make(map[string]int),
+		refreshSemaphore: make(chan struct{}, refreshMaxConcurrency),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -2378,9 +2381,23 @@ func (m *Manager) checkRefreshes(ctx context.Context) {
 			if !m.markRefreshPending(a.ID, now) {
 				continue
 			}
-			go m.refreshAuth(ctx, a.ID)
+			go m.refreshAuthWithLimit(ctx, a.ID)
 		}
 	}
+}
+
+func (m *Manager) refreshAuthWithLimit(ctx context.Context, id string) {
+	if m.refreshSemaphore == nil {
+		m.refreshAuth(ctx, id)
+		return
+	}
+	select {
+	case m.refreshSemaphore <- struct{}{}:
+		defer func() { <-m.refreshSemaphore }()
+	case <-ctx.Done():
+		return
+	}
+	m.refreshAuth(ctx, id)
 }
 
 func (m *Manager) snapshotAuths() []*Auth {
