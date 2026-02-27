@@ -432,6 +432,8 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
 	case "kiro":
 		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
+	case "cline":
+		s.coreManager.RegisterExecutor(executor.NewClineExecutor(s.cfg))
 	case "kilo":
 		s.coreManager.RegisterExecutor(executor.NewKiloExecutor(s.cfg))
 	case "github-copilot":
@@ -879,6 +881,11 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = applyExcludedModels(models, excluded)
 	case "kiro":
 		models = s.fetchKiroModels(a)
+		models = applyExcludedModels(models, excluded)
+	case "cline":
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		models = executor.FetchClineModels(ctx, a, s.cfg)
+		cancel()
 		models = applyExcludedModels(models, excluded)
 	case "kilo", "kilocode":
 		models = executor.FetchKiloModels(context.Background(), a, s.cfg)
