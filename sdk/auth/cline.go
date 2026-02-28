@@ -19,6 +19,61 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+func extractFirstJSONObject(input []byte) []byte {
+	start := -1
+	depth := 0
+	inString := false
+	escapeNext := false
+
+	for i, b := range input {
+		if start == -1 {
+			if b == '{' {
+				start = i
+				depth = 1
+			}
+			continue
+		}
+
+		if inString {
+			if escapeNext {
+				escapeNext = false
+				continue
+			}
+			if b == '\\' {
+				escapeNext = true
+				continue
+			}
+			if b == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if b == '"' {
+			inString = true
+			continue
+		}
+
+		if b == '{' {
+			depth++
+			continue
+		}
+
+		if b == '}' {
+			depth--
+			if depth == 0 {
+				return input[start : i+1]
+			}
+		}
+	}
+
+	if start != -1 {
+		return input[start:]
+	}
+
+	return nil
+}
+
 const defaultClineCallbackPort = 1455
 
 type ClineAuthenticator struct {
@@ -113,6 +168,11 @@ func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		if decoded, decodeErr := decode(codeStr); decodeErr == nil {
 			var directToken cline.TokenResponse
 			parseErr := json.Unmarshal(decoded, &directToken)
+			if parseErr != nil {
+				if jsonOnly := extractFirstJSONObject(decoded); len(jsonOnly) > 0 {
+					parseErr = json.Unmarshal(jsonOnly, &directToken)
+				}
+			}
 			if parseErr == nil && directToken.AccessToken != "" {
 				tokenResp = &directToken
 				break

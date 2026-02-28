@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -362,6 +363,26 @@ type ClineModel struct {
 	Description string `json:"description"`
 	MaxTokens   int    `json:"max_tokens"`
 	ContextLen  int    `json:"context_length"`
+	Pricing     struct {
+		Prompt         string `json:"prompt"`
+		Completion     string `json:"completion"`
+		InputCacheRead string `json:"input_cache_read"`
+		WebSearch      string `json:"web_search"`
+	} `json:"pricing"`
+}
+
+func clineIsFreeModel(m ClineModel) bool {
+	promptRaw := strings.TrimSpace(m.Pricing.Prompt)
+	completionRaw := strings.TrimSpace(m.Pricing.Completion)
+	if promptRaw == "" || completionRaw == "" {
+		return false
+	}
+	promptPrice, errPrompt := strconv.ParseFloat(promptRaw, 64)
+	completionPrice, errCompletion := strconv.ParseFloat(completionRaw, 64)
+	if errPrompt != nil || errCompletion != nil {
+		return false
+	}
+	return promptPrice == 0 && completionPrice == 0
 }
 
 // FetchClineModels fetches models from Cline API.
@@ -373,7 +394,7 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clineBaseURL+clineModelsEndpoint, nil)
 	if err != nil {
 		log.Warnf("cline: failed to create model fetch request: %v", err)
-		return registry.GetClineModels()
+		return nil
 	}
 
 	req.Header.Set("User-Agent", "cli-proxy-cline")
@@ -385,21 +406,21 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			log.Warnf("cline: fetch models canceled: %v", err)
 		} else {
-			log.Warnf("cline: using static models (API fetch failed: %v)", err)
+			log.Warnf("cline: fetch models failed: %v", err)
 		}
-		return registry.GetClineModels()
+		return nil
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Warnf("cline: failed to read models response: %v", err)
-		return registry.GetClineModels()
+		return nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		log.Warnf("cline: fetch models failed: status %d, body: %s", resp.StatusCode, string(body))
-		return registry.GetClineModels()
+		return nil
 	}
 
 	// Parse models response
@@ -408,7 +429,7 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	}
 	if err := json.Unmarshal(body, &modelsResponse); err != nil {
 		log.Warnf("cline: failed to parse models response: %v", err)
-		return registry.GetClineModels()
+		return nil
 	}
 
 	// Also try gjson parsing as fallback
@@ -420,7 +441,7 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 			if !result.IsArray() {
 				log.Debugf("cline: response body: %s", string(body))
 				log.Warn("cline: invalid API response format (expected array or data field with array)")
-				return registry.GetClineModels()
+				return nil
 			}
 		}
 		result.ForEach(func(key, value gjson.Result) bool {
@@ -433,6 +454,17 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 				Name:       value.Get("name").String(),
 				ContextLen: int(value.Get("context_length").Int()),
 				MaxTokens:  int(value.Get("max_tokens").Int()),
+				Pricing: struct {
+					Prompt         string `json:"prompt"`
+					Completion     string `json:"completion"`
+					InputCacheRead string `json:"input_cache_read"`
+					WebSearch      string `json:"web_search"`
+				}{
+					Prompt:         value.Get("pricing.prompt").String(),
+					Completion:     value.Get("pricing.completion").String(),
+					InputCacheRead: value.Get("pricing.input_cache_read").String(),
+					WebSearch:      value.Get("pricing.web_search").String(),
+				},
 			})
 			return true
 		})
@@ -444,6 +476,9 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 
 	for _, m := range modelsResponse.Data {
 		if m.ID == "" {
+			continue
+		}
+		if !clineIsFreeModel(m) {
 			continue
 		}
 		contextLen := m.ContextLen
@@ -473,11 +508,6 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		count++
 	}
 
-	log.Infof("cline: fetched %d models from API", count)
-
-	staticModels := registry.GetClineModels()
-	// Always include cline/auto (first static model)
-	allModels := append(staticModels[:1], dynamicModels...)
-
-	return allModels
+	log.Infof("cline: fetched %d free models from API", count)
+	return dynamicModels
 }
