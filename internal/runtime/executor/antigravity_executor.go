@@ -45,7 +45,7 @@ const (
 	antigravityModelsPath          = "/v1internal:fetchAvailableModels"
 	antigravityClientID            = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 	antigravityClientSecret        = "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"
-	defaultAntigravityAgent        = "antigravity/1.104.0 darwin/arm64"
+	defaultAntigravityAgent        = "antigravity/1.11.9 windows/amd64"
 	antigravityAuthType            = "antigravity"
 	refreshSkew                    = 3000 * time.Second
 	systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
