@@ -91,7 +91,6 @@ func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		}
 		return nil, fmt.Errorf("cline oauth error: %s", result.Error)
 	}
-
 	// Cline may not return state in callback, only validate if both are present
 	if result.State != "" && state != "" && result.State != state {
 		return nil, fmt.Errorf("cline authentication failed: state mismatch")
@@ -100,20 +99,25 @@ func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 	// Cline returns the token directly in the code parameter as base64-encoded JSON
 	// Try to parse it directly first, fall back to exchange if needed
 	var tokenResp *cline.TokenResponse
-	if decoded, decodeErr := base64.URLEncoding.DecodeString(result.Code); decodeErr == nil {
-		var directToken cline.TokenResponse
-		if parseErr := json.Unmarshal(decoded, &directToken); parseErr == nil && directToken.AccessToken != "" {
-			tokenResp = &directToken
-		}
+	codeStr := result.Code
+
+	// Try multiple base64 decoding strategies
+	decodeStrategies := []func(string) ([]byte, error){
+		base64.URLEncoding.DecodeString,
+		base64.RawURLEncoding.DecodeString,
+		base64.StdEncoding.DecodeString,
+		base64.RawStdEncoding.DecodeString,
 	}
 
-	// If direct parsing failed, try standard base64
-	if tokenResp == nil {
-		if decoded, decodeErr := base64.StdEncoding.DecodeString(result.Code); decodeErr == nil {
+	for _, decode := range decodeStrategies {
+		if decoded, decodeErr := decode(codeStr); decodeErr == nil {
 			var directToken cline.TokenResponse
-			if parseErr := json.Unmarshal(decoded, &directToken); parseErr == nil && directToken.AccessToken != "" {
+			parseErr := json.Unmarshal(decoded, &directToken)
+			if parseErr == nil && directToken.AccessToken != "" {
 				tokenResp = &directToken
+				break
 			}
+			log.Debugf("cline: base64 decode succeeded but JSON parse failed: %v", parseErr)
 		}
 	}
 
@@ -126,15 +130,31 @@ func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		}
 	}
 
+	if tokenResp == nil {
+		return nil, fmt.Errorf("cline authentication failed: no token response")
+	}
+
 	email := strings.TrimSpace(tokenResp.Email)
 	if email == "" {
 		return nil, fmt.Errorf("cline authentication failed: missing account email")
 	}
 
+	// Parse expiresAt from string to int64
+	var expiresAtInt int64
+	if tokenResp.ExpiresAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, tokenResp.ExpiresAt); err == nil {
+			expiresAtInt = t.Unix()
+		} else if t, err := time.Parse(time.RFC3339, tokenResp.ExpiresAt); err == nil {
+			expiresAtInt = t.Unix()
+		} else {
+			log.Debugf("cline: failed to parse expiresAt: %v", err)
+		}
+	}
+
 	ts := &cline.ClineTokenStorage{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
-		ExpiresAt:    tokenResp.ExpiresAt,
+		ExpiresAt:    expiresAtInt,
 		Email:        email,
 		Type:         "cline",
 	}
@@ -143,7 +163,7 @@ func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 	metadata := map[string]any{
 		"email":      email,
 		"fileName":   fileName,
-		"expires_at": tokenResp.ExpiresAt,
+		"expires_at": expiresAtInt,
 	}
 
 	fmt.Printf("Cline authentication successful for %s\n", email)

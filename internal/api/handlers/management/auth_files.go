@@ -1847,10 +1847,20 @@ func (h *Handler) RequestClineToken(c *gin.Context) {
 			return
 		}
 
+		// Parse expiresAt from string to int64
+		var expiresAtInt int64
+		if tokenResp.ExpiresAt != "" {
+			if t, err := time.Parse(time.RFC3339Nano, tokenResp.ExpiresAt); err == nil {
+				expiresAtInt = t.Unix()
+			} else if t, err := time.Parse(time.RFC3339, tokenResp.ExpiresAt); err == nil {
+				expiresAtInt = t.Unix()
+			}
+		}
+
 		tokenStorage := &cline.ClineTokenStorage{
 			AccessToken:  tokenResp.AccessToken,
 			RefreshToken: tokenResp.RefreshToken,
-			ExpiresAt:    tokenResp.ExpiresAt,
+			ExpiresAt:    expiresAtInt,
 			Email:        tokenResp.Email,
 			Type:         "cline",
 		}

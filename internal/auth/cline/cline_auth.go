@@ -28,7 +28,7 @@ const (
 type TokenResponse struct {
 	AccessToken  string `json:"accessToken"`
 	RefreshToken string `json:"refreshToken"`
-	ExpiresAt    int64  `json:"expiresAt"`
+	ExpiresAt    string `json:"expiresAt"` // Cline returns ISO 8601 timestamp string
 	Email        string `json:"email"`
 }
 
