@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -89,13 +91,39 @@ func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		}
 		return nil, fmt.Errorf("cline oauth error: %s", result.Error)
 	}
-	if result.State != state {
+
+	// Cline may not return state in callback, only validate if both are present
+	if result.State != "" && state != "" && result.State != state {
 		return nil, fmt.Errorf("cline authentication failed: state mismatch")
 	}
 
-	tokenResp, err := authSvc.ExchangeCode(ctx, result.Code, callbackURL)
-	if err != nil {
-		return nil, fmt.Errorf("cline token exchange failed: %w", err)
+	// Cline returns the token directly in the code parameter as base64-encoded JSON
+	// Try to parse it directly first, fall back to exchange if needed
+	var tokenResp *cline.TokenResponse
+	if decoded, decodeErr := base64.URLEncoding.DecodeString(result.Code); decodeErr == nil {
+		var directToken cline.TokenResponse
+		if parseErr := json.Unmarshal(decoded, &directToken); parseErr == nil && directToken.AccessToken != "" {
+			tokenResp = &directToken
+		}
+	}
+
+	// If direct parsing failed, try standard base64
+	if tokenResp == nil {
+		if decoded, decodeErr := base64.StdEncoding.DecodeString(result.Code); decodeErr == nil {
+			var directToken cline.TokenResponse
+			if parseErr := json.Unmarshal(decoded, &directToken); parseErr == nil && directToken.AccessToken != "" {
+				tokenResp = &directToken
+			}
+		}
+	}
+
+	// Fall back to token exchange if direct parsing didn't work
+	if tokenResp == nil {
+		var err error
+		tokenResp, err = authSvc.ExchangeCode(ctx, result.Code, callbackURL)
+		if err != nil {
+			return nil, fmt.Errorf("cline token exchange failed: %w", err)
+		}
 	}
 
 	email := strings.TrimSpace(tokenResp.Email)
