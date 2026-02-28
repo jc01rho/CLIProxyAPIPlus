@@ -347,7 +347,7 @@ func (s *Service) applyRetryConfig(cfg *config.Config) {
 		return
 	}
 	maxInterval := time.Duration(cfg.MaxRetryInterval) * time.Second
-	s.coreManager.SetRetryConfig(cfg.RequestRetry, maxInterval)
+	s.coreManager.SetRetryConfig(cfg.RequestRetry, maxInterval, cfg.MaxRetryCredentials)
 }
 
 func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName string, ok bool) {
