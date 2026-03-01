@@ -1,3 +1,9 @@
+// Package openai provides HTTP handlers for OpenAIResponses API endpoints.
+// This package implements the OpenAIResponses-compatible API interface, including model listing
+// and chat completion functionality. It supports both streaming and non-streaming responses,
+// and manages a pool of clients to interact with backend services.
+// The handlers translate OpenAIResponses API requests to the appropriate backend format and
+// convert responses back to OpenAIResponses-compatible format.
 package openai
 
 import (
@@ -15,17 +21,6 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
-
-func stripAllEventLines(data []byte) []byte {
-	lines := bytes.Split(data, []byte("\n"))
-	var result [][]byte
-	for _, line := range lines {
-		if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("event:")) {
-			result = append(result, line)
-		}
-	}
-	return bytes.Join(result, []byte("\n"))
-}
 
 // OpenAIResponsesAPIHandler contains the handlers for OpenAIResponses API endpoints.
 // It holds a pool of clients to interact with the backend service.
@@ -276,7 +271,9 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 
 			// Write first chunk logic (matching forwardResponsesStream)
-			chunk = stripAllEventLines(chunk)
+			if bytes.HasPrefix(chunk, []byte("event:")) {
+				_, _ = c.Writer.Write([]byte("\n"))
+			}
 			_, _ = c.Writer.Write(chunk)
 			_, _ = c.Writer.Write([]byte("\n"))
 			flusher.Flush()
@@ -356,7 +353,9 @@ func writeChatAsResponsesChunk(c *gin.Context, ctx context.Context, modelName st
 		if out == "" {
 			continue
 		}
-		out = string(stripAllEventLines([]byte(out)))
+		if bytes.HasPrefix([]byte(out), []byte("event:")) {
+			_, _ = c.Writer.Write([]byte("\n"))
+		}
 		_, _ = c.Writer.Write([]byte(out))
 		_, _ = c.Writer.Write([]byte("\n"))
 	}
@@ -370,7 +369,9 @@ func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context,
 				if out == "" {
 					continue
 				}
-				out = string(stripAllEventLines([]byte(out)))
+				if bytes.HasPrefix([]byte(out), []byte("event:")) {
+					_, _ = c.Writer.Write([]byte("\n"))
+				}
 				_, _ = c.Writer.Write([]byte(out))
 				_, _ = c.Writer.Write([]byte("\n"))
 			}
@@ -388,7 +389,7 @@ func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context,
 				errText = errMsg.Error.Error()
 			}
 			body := handlers.BuildErrorResponseBody(status, errText)
-			_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(body))
+			_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(body))
 		},
 		WriteDone: func() {
 			_, _ = c.Writer.Write([]byte("\n"))
@@ -399,7 +400,9 @@ func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context,
 func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
-			chunk = stripAllEventLines(chunk)
+			if bytes.HasPrefix(chunk, []byte("event:")) {
+				_, _ = c.Writer.Write([]byte("\n"))
+			}
 			_, _ = c.Writer.Write(chunk)
 			_, _ = c.Writer.Write([]byte("\n"))
 		},
@@ -415,8 +418,8 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			if errMsg.Error != nil && errMsg.Error.Error() != "" {
 				errText = errMsg.Error.Error()
 			}
-			body := handlers.BuildErrorResponseBody(status, errText)
-			_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(body))
+			chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
+			_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(chunk))
 		},
 		WriteDone: func() {
 			_, _ = c.Writer.Write([]byte("\n"))
