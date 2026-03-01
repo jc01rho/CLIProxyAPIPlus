@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	clineauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/cline"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
@@ -23,6 +24,7 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -31,6 +33,17 @@ const (
 	clineModelsEndpoint = "/ai/cline/models"
 	clineChatEndpoint   = "/chat/completions"
 )
+
+func clineTokenAuthValue(token string) string {
+	t := strings.TrimSpace(token)
+	if t == "" {
+		return ""
+	}
+	if strings.HasPrefix(t, "workos:") {
+		return "Bearer " + t
+	}
+	return "Bearer workos:" + t
+}
 
 // ClineExecutor handles requests to Cline API.
 type ClineExecutor struct {
@@ -50,13 +63,15 @@ func (e *ClineExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
 	if req == nil {
 		return nil
 	}
-	accessToken := clineAccessToken(auth)
+	accessToken, err := e.ensureFreshAccessToken(req.Context(), auth)
+	if err != nil {
+		return err
+	}
 	if strings.TrimSpace(accessToken) == "" {
 		return fmt.Errorf("cline: missing access token")
 	}
 
-	// Cline uses workos: prefix for tokens
-	req.Header.Set("Authorization", "Bearer workos:"+accessToken)
+	req.Header.Set("Authorization", clineTokenAuthValue(accessToken))
 
 	var attrs map[string]string
 	if auth != nil {
@@ -89,7 +104,10 @@ func (e *ClineExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
 
-	accessToken := clineAccessToken(auth)
+	accessToken, err := e.ensureFreshAccessToken(ctx, auth)
+	if err != nil {
+		return resp, err
+	}
 	if accessToken == "" {
 		return resp, fmt.Errorf("cline: missing access token")
 	}
@@ -107,6 +125,7 @@ func (e *ClineExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
+	translated = applyClineOpenRouterParity(translated, false)
 
 	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -182,7 +201,10 @@ func (e *ClineExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
 
-	accessToken := clineAccessToken(auth)
+	accessToken, err := e.ensureFreshAccessToken(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
 	if accessToken == "" {
 		return nil, fmt.Errorf("cline: missing access token")
 	}
@@ -200,6 +222,7 @@ func (e *ClineExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
+	translated = applyClineOpenRouterParity(translated, true)
 
 	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -339,14 +362,89 @@ func clineAccessToken(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
+func clineRefreshToken(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Metadata != nil {
+		if token, ok := auth.Metadata["refreshToken"].(string); ok && strings.TrimSpace(token) != "" {
+			return strings.TrimSpace(token)
+		}
+		if token, ok := auth.Metadata["refresh_token"].(string); ok && strings.TrimSpace(token) != "" {
+			return strings.TrimSpace(token)
+		}
+	}
+	if auth.Attributes != nil {
+		if token := strings.TrimSpace(auth.Attributes["refreshToken"]); token != "" {
+			return token
+		}
+		if token := strings.TrimSpace(auth.Attributes["refresh_token"]); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+func (e *ClineExecutor) ensureFreshAccessToken(ctx context.Context, auth *cliproxyauth.Auth) (string, error) {
+	accessToken := clineAccessToken(auth)
+	if strings.TrimSpace(accessToken) == "" {
+		return "", fmt.Errorf("cline: missing access token")
+	}
+
+	refreshToken := clineRefreshToken(auth)
+	if refreshToken == "" {
+		return accessToken, nil
+	}
+
+	authSvc := clineauth.NewClineAuth(e.cfg)
+	refreshed, err := authSvc.RefreshToken(ctx, refreshToken)
+	if err != nil {
+		log.Warnf("cline: token refresh failed, fallback to current token: %v", err)
+		return accessToken, nil
+	}
+	if refreshed == nil || strings.TrimSpace(refreshed.AccessToken) == "" {
+		return accessToken, nil
+	}
+
+	newAccessToken := strings.TrimSpace(refreshed.AccessToken)
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	auth.Metadata["accessToken"] = newAccessToken
+	auth.Metadata["access_token"] = newAccessToken
+
+	if strings.TrimSpace(refreshed.RefreshToken) != "" {
+		newRefresh := strings.TrimSpace(refreshed.RefreshToken)
+		auth.Metadata["refreshToken"] = newRefresh
+		auth.Metadata["refresh_token"] = newRefresh
+	}
+
+	if strings.TrimSpace(refreshed.ExpiresAt) != "" {
+		if t, parseErr := time.Parse(time.RFC3339Nano, refreshed.ExpiresAt); parseErr == nil {
+			auth.Metadata["expiresAt"] = t.Unix()
+			auth.Metadata["expires_at"] = t.Format(time.RFC3339)
+		} else if t, parseErr2 := time.Parse(time.RFC3339, refreshed.ExpiresAt); parseErr2 == nil {
+			auth.Metadata["expiresAt"] = t.Unix()
+			auth.Metadata["expires_at"] = t.Format(time.RFC3339)
+		}
+	}
+
+	return newAccessToken, nil
+}
+
 // applyClineHeaders sets the standard Cline headers.
 func applyClineHeaders(r *http.Request, token string, stream bool) {
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer workos:"+token)
+	r.Header.Set("Authorization", clineTokenAuthValue(token))
 	r.Header.Set("HTTP-Referer", "https://cline.bot")
 	r.Header.Set("X-Title", "Cline")
+	r.Header.Set("X-Task-ID", "")
+	r.Header.Set("X-CLIENT-TYPE", "cli")
+	r.Header.Set("X-CORE-VERSION", clineVersion)
+	r.Header.Set("X-IS-MULTIROOT", "false")
 	r.Header.Set("X-CLIENT-VERSION", clineVersion)
 	r.Header.Set("X-PLATFORM", runtime.GOOS)
+	r.Header.Set("X-PLATFORM-VERSION", runtime.Version())
 	r.Header.Set("User-Agent", "Cline/"+clineVersion)
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
@@ -354,6 +452,46 @@ func applyClineHeaders(r *http.Request, token string, stream bool) {
 	} else {
 		r.Header.Set("Accept", "application/json")
 	}
+}
+
+func applyClineOpenRouterParity(payload []byte, stream bool) []byte {
+	if len(payload) == 0 {
+		return payload
+	}
+
+	out := payload
+	if stream {
+		if updated, err := sjson.SetRawBytes(out, "stream_options", []byte(`{"include_usage":true}`)); err == nil {
+			out = updated
+		}
+		if updated, err := sjson.SetBytes(out, "include_reasoning", true); err == nil {
+			out = updated
+		}
+	} else {
+		if updated, err := sjson.DeleteBytes(out, "stream_options"); err == nil {
+			out = updated
+		}
+		if updated, err := sjson.SetBytes(out, "include_reasoning", true); err == nil {
+			out = updated
+		}
+	}
+
+	modelID := strings.TrimSpace(gjson.GetBytes(out, "model").String())
+	if modelID == "" {
+		return out
+	}
+
+	if strings.Contains(modelID, "kwaipilot/kat-coder-pro") {
+		trimmedModel := strings.TrimSuffix(modelID, ":free")
+		if updated, err := sjson.SetBytes(out, "model", trimmedModel); err == nil {
+			out = updated
+		}
+		if updated, err := sjson.SetRawBytes(out, "provider", []byte(`{"sort":"throughput"}`)); err == nil {
+			out = updated
+		}
+	}
+
+	return out
 }
 
 // ClineModel represents a model from Cline API.
@@ -397,9 +535,15 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		return nil
 	}
 
-	req.Header.Set("User-Agent", "cli-proxy-cline")
+	req.Header.Set("User-Agent", "Cline/"+clineVersion)
 	req.Header.Set("HTTP-Referer", "https://cline.bot")
 	req.Header.Set("X-Title", "Cline")
+	req.Header.Set("X-CLIENT-TYPE", "cli")
+	req.Header.Set("X-CORE-VERSION", clineVersion)
+	req.Header.Set("X-IS-MULTIROOT", "false")
+	req.Header.Set("X-CLIENT-VERSION", clineVersion)
+	req.Header.Set("X-PLATFORM", runtime.GOOS)
+	req.Header.Set("X-PLATFORM-VERSION", runtime.Version())
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
