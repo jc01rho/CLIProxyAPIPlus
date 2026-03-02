@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,16 +42,12 @@ import (
 var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
 
 const (
-	anthropicCallbackPort   = 54545
-	geminiCallbackPort      = 8085
-	codexCallbackPort       = 1455
-	geminiCLIEndpoint       = "https://cloudcode-pa.googleapis.com"
-	geminiCLIVersion        = "v1internal"
+	anthropicCallbackPort = 54545
+	geminiCallbackPort    = 8085
+	codexCallbackPort     = 1455
+	geminiCLIEndpoint     = "https://cloudcode-pa.googleapis.com"
+	geminiCLIVersion      = "v1internal"
 )
-
-func getGeminiCLIUserAgent() string {
-	return fmt.Sprintf("GeminiCLI/1.0.0/unknown (%s; %s)", runtime.GOOS, runtime.GOARCH)
-}
 
 type callbackForwarder struct {
 	provider string
@@ -2287,7 +2282,7 @@ func callGeminiCLI(ctx context.Context, httpClient *http.Client, endpoint string
 		return fmt.Errorf("create request: %w", errRequest)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", getGeminiCLIUserAgent())
+	req.Header.Set("User-Agent", misc.GeminiCLIUserAgent(""))
 
 	resp, errDo := httpClient.Do(req)
 	if errDo != nil {
@@ -2357,7 +2352,7 @@ func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projec
 			return false, fmt.Errorf("failed to create request: %w", errRequest)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", getGeminiCLIUserAgent())
+		req.Header.Set("User-Agent", misc.GeminiCLIUserAgent(""))
 		resp, errDo := httpClient.Do(req)
 		if errDo != nil {
 			return false, fmt.Errorf("failed to execute request: %w", errDo)
@@ -2378,7 +2373,7 @@ func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projec
 			return false, fmt.Errorf("failed to create request: %w", errRequest)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", getGeminiCLIUserAgent())
+		req.Header.Set("User-Agent", misc.GeminiCLIUserAgent(""))
 		resp, errDo = httpClient.Do(req)
 		if errDo != nil {
 			return false, fmt.Errorf("failed to execute request: %w", errDo)

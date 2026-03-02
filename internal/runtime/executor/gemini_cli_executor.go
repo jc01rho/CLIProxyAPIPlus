@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
@@ -738,13 +737,11 @@ func stringValue(m map[string]any, key string) string {
 }
 
 // applyGeminiCLIHeaders sets required headers for the Gemini CLI upstream.
+// User-Agent is always forced to the GeminiCLI format regardless of the client's value,
+// so that upstream identifies the request as a native GeminiCLI client.
 func applyGeminiCLIHeaders(r *http.Request, model string) {
-	var ginHeaders http.Header
-	if ginCtx, ok := r.Context().Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-		ginHeaders = ginCtx.Request.Header
-	}
-
-	misc.EnsureHeader(r.Header, ginHeaders, "User-Agent", misc.GeminiCLIUserAgent(model))
+	r.Header.Set("User-Agent", misc.GeminiCLIUserAgent(model))
+	r.Header.Set("X-Goog-Api-Client", misc.GeminiCLIApiClientHeader)
 }
 
 // cliPreviewFallbackOrder returns preview model candidates for a base model.
