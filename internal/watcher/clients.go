@@ -101,14 +101,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 							IDGenerator: synthesizer.NewStableIDGenerator(),
 						}
 						if generated := synthesizer.SynthesizeAuthFile(ctx, path, data); len(generated) > 0 {
-							pathAuths := make(map[string]*coreauth.Auth, len(generated))
-							for _, a := range generated {
-								if a == nil || strings.TrimSpace(a.ID) == "" {
-									continue
-								}
-								pathAuths[a.ID] = a
-							}
-							if len(pathAuths) > 0 {
+							if pathAuths := authSliceToMap(generated); len(pathAuths) > 0 {
 								w.fileAuthsByPath[normalizedPath] = pathAuths
 							}
 						}
@@ -198,11 +191,9 @@ func (w *Watcher) addOrUpdateClient(path string) {
 	}
 	w.lastAuthContents[normalized] = &newAuth
 
-	oldByID := make(map[string]*coreauth.Auth)
-	if existing := w.fileAuthsByPath[normalized]; len(existing) > 0 {
-		for id, a := range existing {
-			oldByID[id] = a
-		}
+	oldByID := make(map[string]*coreauth.Auth, len(w.fileAuthsByPath[normalized]))
+	for id, a := range w.fileAuthsByPath[normalized] {
+		oldByID[id] = a
 	}
 
 	// Build synthesized auth entries for this single file only.
@@ -213,13 +204,7 @@ func (w *Watcher) addOrUpdateClient(path string) {
 		IDGenerator: synthesizer.NewStableIDGenerator(),
 	}
 	generated := synthesizer.SynthesizeAuthFile(sctx, path, data)
-	newByID := make(map[string]*coreauth.Auth)
-	for _, a := range generated {
-		if a == nil || strings.TrimSpace(a.ID) == "" {
-			continue
-		}
-		newByID[a.ID] = a
-	}
+	newByID := authSliceToMap(generated)
 	if len(newByID) > 0 {
 		w.fileAuthsByPath[normalized] = newByID
 	} else {
@@ -235,11 +220,9 @@ func (w *Watcher) addOrUpdateClient(path string) {
 func (w *Watcher) removeClient(path string) {
 	normalized := w.normalizeAuthPath(path)
 	w.clientsMutex.Lock()
-	oldByID := make(map[string]*coreauth.Auth)
-	if existing := w.fileAuthsByPath[normalized]; len(existing) > 0 {
-		for id, a := range existing {
-			oldByID[id] = a
-		}
+	oldByID := make(map[string]*coreauth.Auth, len(w.fileAuthsByPath[normalized]))
+	for id, a := range w.fileAuthsByPath[normalized] {
+		oldByID[id] = a
 	}
 	delete(w.lastAuthHashes, normalized)
 	delete(w.lastAuthContents, normalized)
@@ -277,6 +260,23 @@ func (w *Watcher) computePerPathUpdatesLocked(oldByID, newByID map[string]*corea
 		updates = append(updates, AuthUpdate{Action: AuthUpdateActionDelete, ID: id})
 	}
 	return updates
+}
+
+func authSliceToMap(auths []*coreauth.Auth) map[string]*coreauth.Auth {
+	if len(auths) == 0 {
+		return nil
+	}
+	byID := make(map[string]*coreauth.Auth, len(auths))
+	for _, a := range auths {
+		if a == nil || strings.TrimSpace(a.ID) == "" {
+			continue
+		}
+		byID[a.ID] = a
+	}
+	if len(byID) == 0 {
+		return nil
+	}
+	return byID
 }
 
 func (w *Watcher) loadFileClients(cfg *config.Config) int {

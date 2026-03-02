@@ -472,6 +472,74 @@ func TestAuthFileEventsDoNotInvokeSnapshotCoreAuths(t *testing.T) {
 	}
 }
 
+func TestAuthSliceToMap(t *testing.T) {
+	t.Parallel()
+
+	valid1 := &coreauth.Auth{ID: "a"}
+	valid2 := &coreauth.Auth{ID: "b"}
+	dupOld := &coreauth.Auth{ID: "dup", Label: "old"}
+	dupNew := &coreauth.Auth{ID: "dup", Label: "new"}
+	empty := &coreauth.Auth{ID: "  "}
+
+	tests := []struct {
+		name string
+		in   []*coreauth.Auth
+		want map[string]*coreauth.Auth
+	}{
+		{
+			name: "nil input",
+			in:   nil,
+			want: nil,
+		},
+		{
+			name: "empty input",
+			in:   []*coreauth.Auth{},
+			want: nil,
+		},
+		{
+			name: "filters invalid auths",
+			in:   []*coreauth.Auth{nil, empty},
+			want: nil,
+		},
+		{
+			name: "keeps valid auths",
+			in:   []*coreauth.Auth{valid1, nil, valid2},
+			want: map[string]*coreauth.Auth{"a": valid1, "b": valid2},
+		},
+		{
+			name: "last duplicate wins",
+			in:   []*coreauth.Auth{dupOld, dupNew},
+			want: map[string]*coreauth.Auth{"dup": dupNew},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := authSliceToMap(tc.in)
+			if len(tc.want) == 0 {
+				if got != nil {
+					t.Fatalf("expected nil map, got %#v", got)
+				}
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("unexpected map length: got %d, want %d", len(got), len(tc.want))
+			}
+			for id, wantAuth := range tc.want {
+				gotAuth, ok := got[id]
+				if !ok {
+					t.Fatalf("missing id %q in result map", id)
+				}
+				if !authEqual(gotAuth, wantAuth) {
+					t.Fatalf("unexpected auth for id %q: got %#v, want %#v", id, gotAuth, wantAuth)
+				}
+			}
+		})
+	}
+}
+
 func TestShouldDebounceRemove(t *testing.T) {
 	w := &Watcher{}
 	path := filepath.Clean("test.json")
