@@ -52,6 +52,7 @@ const (
 	anthropicCallbackPort = 54545
 	geminiCallbackPort    = 8085
 	codexCallbackPort     = 1455
+	clineCallbackPort     = 1456
 	geminiCLIEndpoint     = "https://cloudcode-pa.googleapis.com"
 	geminiCLIVersion      = "v1internal"
 )
