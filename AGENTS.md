@@ -1,11 +1,13 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-02-09
+**Generated:** 2026-03-03
+**Commit:** 18e06f0f
+**Branch:** master
 **Type:** Monorepo (Backend + Frontend + Dashboard)
 
 ## OVERVIEW
 
-CLI Proxy API: AI 모델 프록시 시스템. Go 백엔드가 다중 AI 프로바이더(Claude, Gemini, OpenAI, Codex, Kiro 등)를 OpenAI 호환 API로 통합. React 프론트엔드가 관리 대시보드 제공.
+CLI Proxy API: AI 모델 프록시 시스템. Go 백엔드가 15+ AI 프로바이더(Claude, Gemini, OpenAI, Codex, Kiro, Antigravity, iFlow, Cline, Qwen, Kimi 등)를 OpenAI 호환 API로 통합. React 프론트엔드가 관리 대시보드 제공, Python/React 대시보드가 사용량 모니터링.
 
 ## REMOVED PROVIDERS
 
@@ -89,11 +91,10 @@ Frontend (React)                    Backend (Go)
 
 | Layer | Technology |
 |-------|------------|
-| **Backend** | Go 1.24, Gin Framework, logrus |
-| **Frontend** | React 19, TypeScript, Vite, Zustand, axios |
-| **i18n** | react-i18next (en, zh-CN) |
-| **Charts** | chart.js + react-chartjs-2 |
-| **Styling** | SCSS modules |
+| **Backend** | Go 1.26, Gin Framework, logrus |
+| **Frontend** | React 19, TypeScript, Vite 7, Zustand, axios |
+| **i18n** | react-i18next (en, zh-CN, ru) |
+| **Charts** | Recharts (dashboard), chart.js (frontend) |
 
 ## COMMANDS
 
