@@ -759,6 +759,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
 		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
+		// Store actual model name in context for logging
+		if execReq.Model != routeModel {
+			execCtx = SetFallbackInfoInContext(execCtx, routeModel, execReq.Model)
+		}
 		resp, errExec := executor.Execute(execCtx, auth, execReq, opts)
 		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
@@ -820,9 +824,17 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
 		execReq := req
-		execReq.Model = rewriteModelForAuth(routeModel, auth)
+		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
+		// Store actual model name in context for logging
+		if execReq.Model != routeModel {
+			execCtx = SetFallbackInfoInContext(execCtx, routeModel, execReq.Model)
+		}
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
 		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
+		// Store actual model name in context for logging
+		if execReq.Model != routeModel {
+			execCtx = SetFallbackInfoInContext(execCtx, routeModel, execReq.Model)
+		}
 		resp, errExec := executor.CountTokens(execCtx, auth, execReq, opts)
 		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
@@ -887,6 +899,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
 		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
+		// Store actual model name in context for logging
+		if execReq.Model != routeModel {
+			execCtx = SetFallbackInfoInContext(execCtx, routeModel, execReq.Model)
+		}
 		streamResult, errStream := executor.ExecuteStream(execCtx, auth, execReq, opts)
 		if errStream != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
