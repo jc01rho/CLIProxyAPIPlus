@@ -207,7 +207,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 
 		entry := log.WithField("request_id", requestID)
 
-		switch {
+		log.WithField("request_id", requestID).Info(logLine)
 		case statusCode >= http.StatusInternalServerError:
 			entry.Error(logLine)
 		case statusCode >= http.StatusBadRequest:
