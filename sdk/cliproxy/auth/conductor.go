@@ -747,6 +747,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
 
+		// Set provider auth info in context for gin logger
+		SetProviderAuthInContext(ctx, provider, auth.ID, auth.Label)
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
@@ -810,6 +812,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
 
 		tried[auth.ID] = struct{}{}
+		// Set provider auth info in context for gin logger
+		SetProviderAuthInContext(ctx, provider, auth.ID, auth.Label)
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
@@ -872,6 +876,8 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
 
 		tried[auth.ID] = struct{}{}
+		// Set provider auth info in context for gin logger
+		SetProviderAuthInContext(ctx, provider, auth.ID, auth.Label)
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
