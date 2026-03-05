@@ -318,6 +318,9 @@ func (w *Watcher) triggerServerUpdate(cfg *config.Config) {
 	if w == nil || w.reloadCallback == nil || cfg == nil {
 		return
 	}
+	if w.stopped.Load() {
+		return
+	}
 
 	now := time.Now()
 
@@ -343,10 +346,13 @@ func (w *Watcher) triggerServerUpdate(cfg *config.Config) {
 		w.serverUpdateTimer.Stop()
 	}
 	w.serverUpdateTimer = time.AfterFunc(delay, func() {
+		if w.stopped.Load() {
+			return
+		}
 		w.clientsMutex.RLock()
 		latestCfg := w.config
 		w.clientsMutex.RUnlock()
-		if latestCfg == nil || w.reloadCallback == nil {
+		if latestCfg == nil || w.reloadCallback == nil || w.stopped.Load() {
 			w.serverUpdateMu.Lock()
 			w.serverUpdatePend = false
 			w.serverUpdateMu.Unlock()
