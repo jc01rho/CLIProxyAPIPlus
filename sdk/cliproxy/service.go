@@ -832,9 +832,12 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	case "vertex":
 		// Vertex AI Gemini supports the same model identifiers as Gemini.
 		models = registry.GetGeminiVertexModels()
-		if authKind == "apikey" {
-			if entry := s.resolveConfigVertexCompatKey(a); entry != nil && len(entry.Models) > 0 {
+		if entry := s.resolveConfigVertexCompatKey(a); entry != nil {
+			if len(entry.Models) > 0 {
 				models = buildVertexCompatConfigModels(entry)
+			}
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
 			}
 		}
 		models = applyExcludedModels(models, excluded)
@@ -881,7 +884,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
 	case "github-copilot":
-		models = registry.GetGitHubCopilotModels()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		models = executor.FetchGitHubCopilotModels(ctx, a, s.cfg)
 		models = applyExcludedModels(models, excluded)
 	case "kiro":
 		models = s.fetchKiroModels(a)
