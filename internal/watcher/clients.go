@@ -327,6 +327,11 @@ func (w *Watcher) triggerServerUpdate(cfg *config.Config) {
 	w.serverUpdateMu.Lock()
 	if w.serverUpdateLast.IsZero() || now.Sub(w.serverUpdateLast) >= serverUpdateDebounce {
 		w.serverUpdateLast = now
+		if w.serverUpdateTimer != nil {
+			w.serverUpdateTimer.Stop()
+			w.serverUpdateTimer = nil
+		}
+		w.serverUpdatePend = false
 		w.serverUpdateMu.Unlock()
 		w.reloadCallback(cfg)
 		return
@@ -344,26 +349,33 @@ func (w *Watcher) triggerServerUpdate(cfg *config.Config) {
 	w.serverUpdatePend = true
 	if w.serverUpdateTimer != nil {
 		w.serverUpdateTimer.Stop()
+		w.serverUpdateTimer = nil
 	}
-	w.serverUpdateTimer = time.AfterFunc(delay, func() {
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
 		if w.stopped.Load() {
 			return
 		}
 		w.clientsMutex.RLock()
 		latestCfg := w.config
 		w.clientsMutex.RUnlock()
+
+		w.serverUpdateMu.Lock()
+		if w.serverUpdateTimer != timer || !w.serverUpdatePend {
+			w.serverUpdateMu.Unlock()
+			return
+		}
+		w.serverUpdateTimer = nil
+		w.serverUpdatePend = false
 		if latestCfg == nil || w.reloadCallback == nil || w.stopped.Load() {
-			w.serverUpdateMu.Lock()
-			w.serverUpdatePend = false
 			w.serverUpdateMu.Unlock()
 			return
 		}
 
-		w.serverUpdateMu.Lock()
 		w.serverUpdateLast = time.Now()
-		w.serverUpdatePend = false
 		w.serverUpdateMu.Unlock()
 		w.reloadCallback(latestCfg)
 	})
+	w.serverUpdateTimer = timer
 	w.serverUpdateMu.Unlock()
 }
