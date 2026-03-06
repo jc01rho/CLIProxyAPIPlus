@@ -61,3 +61,29 @@ middleware에서도 동일한 패턴을 적용함.
 2. `./cliproxy -config config.yaml` - 서버 실행
 3. `curl` 요청 전송
 4. `logs/main.log` 확인
+
+## credential_stats_sync.py: config:<provider>[...] 패턴 파싱 추가 (2026-03-05)
+
+### 문제
+CLIProxyAPIPlus에서 openai-compatibility 계정의 `source` 필드가 `config:z.ai[abcd]`, `config:alibaba[...]` 형식으로 전달되는데, 기존 fallback 로직이 이를 처리하지 못해 provider가 `Unknown` 또는 `API Key`로 표시됨.
+
+### 해결
+`resolve_credential()` 함수의 fallback 분기에 `config:<provider>[...]` 패턴 파싱 로직 추가:
+- 정규식 `^config:([^\[\]\s]+)\[`로 provider 추출
+- `=` 검사 전에 우선 처리하여 기존 로직과 충돌 방지
+- provider를 소문자로 정규화 (frontend `getProviderDisplay()`와 호환)
+
+### 구현 위치
+- 파일: `CLIProxyAPI-Dashboard/collector/credential_stats_sync.py`
+- 함수: `resolve_credential()` (341~385라인)
+- 변경: 359~381라인 fallback 로직에 config 패턴 분기 추가
+
+### 검증
+- `python3 -m py_compile` 통과
+- LSP diagnostics 새 에러 없음
+- 기존 fallback 순서 유지 (aizasy, .json, @, =, 길이>40)
+
+### 영향 범위
+- `CredentialStatsSync.aggregate_stats()` → `resolve_credential()` 경로
+- 최종적으로 `credential_stats[].provider` 필드에 반영
+- Frontend `CredentialStatsCard.jsx`의 provider 표시 정확도 향상
