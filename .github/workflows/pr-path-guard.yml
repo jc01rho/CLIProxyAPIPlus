@@ -20,6 +20,10 @@ jobs:
         with:
           files: |
             internal/translator/**
+            !internal/translator/kiro/**
+            !internal/translator/antigravity/**
+            !internal/translator/codex/**
+            !internal/translator/gemini-cli/**
       - name: Fail when restricted paths change
         if: steps.changed-files.outputs.any_changed == 'true'
         run: |
