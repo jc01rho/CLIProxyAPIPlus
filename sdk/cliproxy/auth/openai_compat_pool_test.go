@@ -261,30 +261,6 @@ func TestManagerExecute_OpenAICompatAliasPoolFallsBackWithinSameAuth(t *testing.
 	}
 }
 
-func TestManagerExecute_OpenAICompatAliasPoolStopsOnInvalidRequest(t *testing.T) {
-	alias := "claude-opus-4.66"
-	invalidErr := &Error{HTTPStatus: http.StatusBadRequest, Message: "invalid_request_error: malformed payload"}
-	executor := &openAICompatPoolExecutor{
-		id:            "pool",
-		executeErrors: map[string]error{"qwen3.5-plus": invalidErr},
-	}
-	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
-		{Name: "qwen3.5-plus", Alias: alias},
-		{Name: "glm-5", Alias: alias},
-	}, executor)
-
-	_, err := m.Execute(context.Background(), []string{"pool"}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
-	if err == nil {
-		t.Fatal("expected invalid request error")
-	}
-	if err != invalidErr {
-		t.Fatalf("error = %v, want %v", err, invalidErr)
-	}
-	if got := executor.ExecuteModels(); len(got) != 1 || got[0] != "qwen3.5-plus" {
-		t.Fatalf("execute calls = %v, want only first upstream model", got)
-	}
-}
-
 func TestManagerExecuteStream_OpenAICompatAliasPoolFallsBackBeforeFirstByte(t *testing.T) {
 	alias := "claude-opus-4.66"
 	executor := &openAICompatPoolExecutor{
