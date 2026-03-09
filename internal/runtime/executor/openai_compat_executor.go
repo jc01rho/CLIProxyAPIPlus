@@ -17,8 +17,11 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+const nvidiaCompatTokenReserve int64 = 2
 
 // OpenAICompatExecutor implements a stateless executor for OpenAI-compatible providers.
 // It performs request/response translation and executes against the provider base URL
@@ -107,6 +110,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return resp, err
 	}
+	translated = e.applyCompatSafetyMargin(auth, translated)
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -204,6 +208,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if err != nil {
 		return nil, err
 	}
+	translated = e.applyCompatSafetyMargin(auth, translated)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -372,6 +377,29 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 		}
 	}
 	return nil
+}
+
+func (e *OpenAICompatExecutor) applyCompatSafetyMargin(auth *cliproxyauth.Auth, payload []byte) []byte {
+	compat := e.resolveCompatConfig(auth)
+	if compat == nil || !strings.EqualFold(strings.TrimSpace(compat.Name), "nvidia-nvapi") {
+		return payload
+	}
+
+	maxTokens := gjson.GetBytes(payload, "max_tokens")
+	if !maxTokens.Exists() {
+		return payload
+	}
+
+	current := maxTokens.Int()
+	if current <= nvidiaCompatTokenReserve {
+		return payload
+	}
+
+	updated, err := sjson.SetBytes(payload, "max_tokens", current-nvidiaCompatTokenReserve)
+	if err != nil {
+		return payload
+	}
+	return updated
 }
 
 func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
