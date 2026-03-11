@@ -23,6 +23,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/proxyutil"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -705,21 +706,30 @@ func newProxyAwareWebsocketDialer(cfg *config.Config, auth *cliproxyauth.Auth) *
 		return dialer
 	}
 
-	parsedURL, errParse := url.Parse(proxyURL)
+	setting, errParse := proxyutil.Parse(proxyURL)
 	if errParse != nil {
-		log.Errorf("codex websockets executor: parse proxy URL failed: %v", errParse)
+		log.Errorf("codex websockets executor: %v", errParse)
 		return dialer
 	}
 
-	switch parsedURL.Scheme {
+	switch setting.Mode {
+	case proxyutil.ModeDirect:
+		dialer.Proxy = nil
+		return dialer
+	case proxyutil.ModeProxy:
+	default:
+		return dialer
+	}
+
+	switch setting.URL.Scheme {
 	case "socks5":
 		var proxyAuth *proxy.Auth
-		if parsedURL.User != nil {
-			username := parsedURL.User.Username()
-			password, _ := parsedURL.User.Password()
+		if setting.URL.User != nil {
+			username := setting.URL.User.Username()
+			password, _ := setting.URL.User.Password()
 			proxyAuth = &proxy.Auth{User: username, Password: password}
 		}
-		socksDialer, errSOCKS5 := proxy.SOCKS5("tcp", parsedURL.Host, proxyAuth, proxy.Direct)
+		socksDialer, errSOCKS5 := proxy.SOCKS5("tcp", setting.URL.Host, proxyAuth, proxy.Direct)
 		if errSOCKS5 != nil {
 			log.Errorf("codex websockets executor: create SOCKS5 dialer failed: %v", errSOCKS5)
 			return dialer
@@ -729,9 +739,9 @@ func newProxyAwareWebsocketDialer(cfg *config.Config, auth *cliproxyauth.Auth) *
 			return socksDialer.Dial(network, addr)
 		}
 	case "http", "https":
-		dialer.Proxy = http.ProxyURL(parsedURL)
+		dialer.Proxy = http.ProxyURL(setting.URL)
 	default:
-		log.Errorf("codex websockets executor: unsupported proxy scheme: %s", parsedURL.Scheme)
+		log.Errorf("codex websockets executor: unsupported proxy scheme: %s", setting.URL.Scheme)
 	}
 
 	return dialer

@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	"github.com/tidwall/gjson"
 )
 
@@ -32,5 +35,18 @@ func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) 
 
 	if got := headers.Get("OpenAI-Beta"); got != codexResponsesWebsocketBetaHeaderValue {
 		t.Fatalf("OpenAI-Beta = %s, want %s", got, codexResponsesWebsocketBetaHeaderValue)
+	}
+}
+
+func TestNewProxyAwareWebsocketDialerDirectDisablesProxy(t *testing.T) {
+	t.Parallel()
+
+	dialer := newProxyAwareWebsocketDialer(
+		&config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example.com:8080"}},
+		&cliproxyauth.Auth{ProxyURL: "direct"},
+	)
+
+	if dialer.Proxy != nil {
+		t.Fatal("expected websocket proxy function to be nil for direct mode")
 	}
 }
