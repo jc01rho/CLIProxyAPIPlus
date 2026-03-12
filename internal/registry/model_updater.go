@@ -145,15 +145,13 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		{name: "qwen", models: data.Qwen},
 		{name: "iflow", models: data.IFlow},
 		{name: "kimi", models: data.Kimi},
+		{name: "antigravity", models: data.Antigravity},
 	}
 
 	for _, section := range requiredSections {
 		if err := validateModelSection(section.name, section.models); err != nil {
 			return err
 		}
-	}
-	if err := validateAntigravitySection(data.Antigravity); err != nil {
-		return err
 	}
 	return nil
 }
@@ -176,23 +174,6 @@ func validateModelSection(section string, models []*ModelInfo) error {
 			return fmt.Errorf("%s contains duplicate model id %q", section, modelID)
 		}
 		seen[modelID] = struct{}{}
-	}
-	return nil
-}
-
-func validateAntigravitySection(configs map[string]*AntigravityModelConfig) error {
-	if len(configs) == 0 {
-		return fmt.Errorf("antigravity section is empty")
-	}
-
-	for modelID, cfg := range configs {
-		trimmedID := strings.TrimSpace(modelID)
-		if trimmedID == "" {
-			return fmt.Errorf("antigravity contains empty model id")
-		}
-		if cfg == nil {
-			return fmt.Errorf("antigravity[%q] is null", trimmedID)
-		}
 	}
 	return nil
 }
