@@ -634,21 +634,18 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// NOTE: Startup legacy key migration is intentionally disabled.
-	// Reason: avoid mutating config.yaml during server startup.
-	// Re-enable the block below if automatic startup migration is needed again.
-	// var legacy legacyConfigData
-	// if errLegacy := yaml.Unmarshal(data, &legacy); errLegacy == nil {
-	// 	if cfg.migrateLegacyGeminiKeys(legacy.LegacyGeminiKeys) {
-	// 		cfg.legacyMigrationPending = true
-	// 	}
-	// 	if cfg.migrateLegacyOpenAICompatibilityKeys(legacy.OpenAICompat) {
-	// 		cfg.legacyMigrationPending = true
-	// 	}
-	// 	if cfg.migrateLegacyAmpConfig(&legacy) {
-	// 		cfg.legacyMigrationPending = true
-	// 	}
-	// }
+	var legacy legacyConfigData
+	if errLegacy := yaml.Unmarshal(data, &legacy); errLegacy == nil {
+		if cfg.migrateLegacyGeminiKeys(legacy.LegacyGeminiKeys) {
+			cfg.legacyMigrationPending = true
+		}
+		if cfg.migrateLegacyOpenAICompatibilityKeys(legacy.OpenAICompat) {
+			cfg.legacyMigrationPending = true
+		}
+		if cfg.migrateLegacyAmpConfig(&legacy) {
+			cfg.legacyMigrationPending = true
+		}
+	}
 
 	// Hash remote management key if plaintext is detected (nested)
 	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
@@ -713,20 +710,17 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
-	// NOTE: Legacy migration persistence is intentionally disabled together with
-	// startup legacy migration to keep startup read-only for config.yaml.
-	// Re-enable the block below if automatic startup migration is needed again.
-	// if cfg.legacyMigrationPending {
-	// 	fmt.Println("Detected legacy configuration keys, attempting to persist the normalized config...")
-	// 	if !optional && configFile != "" {
-	// 		if err := SaveConfigPreserveComments(configFile, &cfg); err != nil {
-	// 			return nil, fmt.Errorf("failed to persist migrated legacy config: %w", err)
-	// 		}
-	// 		fmt.Println("Legacy configuration normalized and persisted.")
-	// 	} else {
-	// 		fmt.Println("Legacy configuration normalized in memory; persistence skipped.")
-	// 	}
-	// }
+	if cfg.legacyMigrationPending {
+		fmt.Println("Detected legacy configuration keys, attempting to persist the normalized config...")
+		if !optional && configFile != "" {
+			if err := SaveConfigPreserveComments(configFile, &cfg); err != nil {
+				return nil, fmt.Errorf("failed to persist migrated legacy config: %w", err)
+			}
+			fmt.Println("Legacy configuration normalized and persisted.")
+		} else {
+			fmt.Println("Legacy configuration normalized in memory; persistence skipped.")
+		}
+	}
 
 	// Return the populated configuration struct.
 	return &cfg, nil
