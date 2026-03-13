@@ -26,6 +26,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
+	clineauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/cline"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/copilot"
 	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
@@ -40,6 +41,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -53,6 +55,7 @@ const (
 	anthropicCallbackPort = 54545
 	geminiCallbackPort    = 8085
 	codexCallbackPort     = 1455
+	clineCallbackPort     = 1456
 	geminiCLIEndpoint     = "https://cloudcode-pa.googleapis.com"
 	geminiCLIVersion      = "v1internal"
 	gitLabLoginModeOAuth  = "oauth"
@@ -927,6 +930,79 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (h *Handler) RefreshTier(c *gin.Context) {
+	if h == nil || h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	authID := strings.TrimSpace(c.Param("id"))
+	if authID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id is required"})
+		return
+	}
+
+	auth, ok := h.authManager.GetByID(authID)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+	if auth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+	if auth.Provider != "antigravity" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tier refresh is only supported for antigravity auth files"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	accessToken, err := h.refreshAntigravityOAuthAccessToken(ctx, auth)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to refresh antigravity token: %v", err)})
+		return
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "antigravity access token is unavailable"})
+		return
+	}
+
+	httpClient := &http.Client{
+		Timeout:   defaultAPICallTimeout,
+		Transport: h.apiCallTransport(auth),
+	}
+	projectInfo, err := sdkauth.FetchAntigravityProjectInfo(ctx, accessToken, httpClient)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch antigravity tier info: %v", err)})
+		return
+	}
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	if projectInfo.ProjectID != "" {
+		auth.Metadata["project_id"] = projectInfo.ProjectID
+	}
+	auth.Metadata["tier_id"] = projectInfo.TierID
+	auth.Metadata["tier_name"] = projectInfo.TierName
+	auth.Metadata["tier_is_paid"] = projectInfo.IsPaid
+	auth.LastRefreshedAt = time.Now()
+	auth.UpdatedAt = auth.LastRefreshedAt
+
+	if _, err := h.authManager.Update(ctx, auth); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":       "ok",
+		"project_id":   projectInfo.ProjectID,
+		"tier_id":      projectInfo.TierID,
+		"tier_name":    projectInfo.TierName,
+		"tier_is_paid": projectInfo.IsPaid,
+	})
 }
 
 func (h *Handler) disableAuth(ctx context.Context, id string) {
@@ -2471,6 +2547,141 @@ func (h *Handler) RequestGitHubToken(c *gin.Context) {
 		"user_code":        userCode,
 		"verification_uri": authURL,
 	})
+}
+
+func (h *Handler) RequestClineToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		log.Errorf("Failed to generate state parameter: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return
+	}
+
+	callbackURL := fmt.Sprintf("http://localhost:%d/callback", clineCallbackPort)
+	authSvc := clineauth.NewClineAuth(h.cfg)
+	authURL := authSvc.GenerateAuthURL(state, callbackURL)
+
+	RegisterOAuthSession(state, "cline")
+
+	isWebUI := isWebUIRequest(c)
+	var forwarder *callbackForwarder
+	if isWebUI {
+		targetURL, errTarget := h.managementCallbackURL("/cline/callback")
+		if errTarget != nil {
+			log.WithError(errTarget).Error("failed to compute cline callback target")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
+			return
+		}
+		var errStart error
+		if forwarder, errStart = startCallbackForwarder(clineCallbackPort, "cline", targetURL); errStart != nil {
+			log.WithError(errStart).Error("failed to start cline callback forwarder")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
+			return
+		}
+	}
+
+	go func() {
+		if isWebUI {
+			defer stopCallbackForwarderInstance(clineCallbackPort, forwarder)
+		}
+
+		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-cline-%s.oauth", state))
+		deadline := time.Now().Add(5 * time.Minute)
+		var authCode string
+		for {
+			if !IsOAuthSessionPending(state, "cline") {
+				return
+			}
+			if time.Now().After(deadline) {
+				log.Error("cline oauth flow timed out")
+				SetOAuthSessionError(state, "OAuth flow timed out")
+				return
+			}
+			if data, errReadFile := os.ReadFile(waitFile); errReadFile == nil {
+				var payload map[string]string
+				_ = json.Unmarshal(data, &payload)
+				_ = os.Remove(waitFile)
+				if errStr := strings.TrimSpace(payload["error"]); errStr != "" {
+					log.Errorf("Cline authentication failed: %s", errStr)
+					SetOAuthSessionError(state, "Authentication failed")
+					return
+				}
+				if payloadState := strings.TrimSpace(payload["state"]); payloadState != "" && payloadState != state {
+					log.Error("Cline authentication failed: state mismatch")
+					SetOAuthSessionError(state, "Authentication failed: state mismatch")
+					return
+				}
+				authCode = strings.TrimSpace(payload["code"])
+				if authCode == "" {
+					log.Error("Cline authentication failed: code not found")
+					SetOAuthSessionError(state, "Authentication failed: code not found")
+					return
+				}
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		tokenResp, errToken := authSvc.ExchangeCode(ctx, authCode, callbackURL)
+		if errToken != nil {
+			log.Errorf("Failed to exchange Cline token: %v", errToken)
+			SetOAuthSessionError(state, "Failed to exchange token")
+			return
+		}
+
+		email := strings.TrimSpace(tokenResp.Email)
+		if email == "" {
+			log.Error("cline: token exchange returned empty email")
+			SetOAuthSessionError(state, "Failed to exchange token")
+			return
+		}
+
+		var expiresAtInt int64
+		if tokenResp.ExpiresAt != "" {
+			if ts, errParse := time.Parse(time.RFC3339Nano, tokenResp.ExpiresAt); errParse == nil {
+				expiresAtInt = ts.Unix()
+			} else if ts, errParse := time.Parse(time.RFC3339, tokenResp.ExpiresAt); errParse == nil {
+				expiresAtInt = ts.Unix()
+			}
+		}
+
+		tokenStorage := &clineauth.ClineTokenStorage{
+			AccessToken:  tokenResp.AccessToken,
+			RefreshToken: tokenResp.RefreshToken,
+			ExpiresAt:    expiresAtInt,
+			Email:        email,
+			Type:         "cline",
+		}
+
+		fileName := clineauth.CredentialFileName(email)
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "cline",
+			Label:    email,
+			FileName: fileName,
+			Storage:  tokenStorage,
+			Metadata: map[string]any{
+				"email":      email,
+				"expires_at": expiresAtInt,
+			},
+		}
+
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save Cline authentication tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+
+		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+		CompleteOAuthSession(state)
+		CompleteOAuthSessionsByProvider("cline")
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
 }
 
 func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
