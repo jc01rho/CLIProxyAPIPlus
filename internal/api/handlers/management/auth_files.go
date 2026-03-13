@@ -26,10 +26,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/cline"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/copilot"
 	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
+	gitlabauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gitlab"
 	iflowauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kilo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
@@ -53,9 +53,10 @@ const (
 	anthropicCallbackPort = 54545
 	geminiCallbackPort    = 8085
 	codexCallbackPort     = 1455
-	clineCallbackPort     = 1456
 	geminiCLIEndpoint     = "https://cloudcode-pa.googleapis.com"
 	geminiCLIVersion      = "v1internal"
+	gitLabLoginModeOAuth  = "oauth"
+	gitLabLoginModePAT    = "pat"
 )
 
 type callbackForwarder struct {
@@ -226,14 +227,6 @@ func stopForwarderInstance(port int, forwarder *callbackForwarder) {
 	}
 
 	log.Infof("callback forwarder on port %d stopped", port)
-}
-
-func sanitizeAntigravityFileName(email string) string {
-	if strings.TrimSpace(email) == "" {
-		return "antigravity.json"
-	}
-	replacer := strings.NewReplacer("@", "_", ".", "_")
-	return fmt.Sprintf("antigravity-%s.json", replacer.Replace(email))
 }
 
 func (h *Handler) managementCallbackURL(path string) (string, error) {
@@ -431,137 +424,7 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
 		entry["id_token"] = claims
 	}
-	// Add Antigravity tier info (fetch if missing)
-	if auth.Provider == "antigravity" && auth.Metadata != nil {
-		tierID, _ := auth.Metadata["tier_id"].(string)
-		tierName, _ := auth.Metadata["tier_name"].(string)
-
-		// If tier info missing, try to fetch it
-		if tierID == "" {
-			tierID, tierName = h.fetchAndCacheAntigravityTier(auth, false)
-		}
-
-		if tierID != "" {
-			entry["tier"] = tierID
-		}
-		if tierName != "" {
-			entry["tier_name"] = tierName
-		}
-	}
-	entry["quota"] = gin.H{
-		"exceeded":        auth.Quota.Exceeded,
-		"reason":          auth.Quota.Reason,
-		"next_recover_at": auth.Quota.NextRecoverAt,
-		"backoff_level":   auth.Quota.BackoffLevel,
-	}
-	if auth.LastError != nil {
-		entry["last_error"] = gin.H{
-			"code":        auth.LastError.Code,
-			"message":     auth.LastError.Message,
-			"retryable":   auth.LastError.Retryable,
-			"http_status": auth.LastError.HTTPStatus,
-		}
-	}
-	if !auth.NextRetryAfter.IsZero() {
-		entry["next_retry_after"] = auth.NextRetryAfter
-	}
 	return entry
-}
-
-// fetchAndCacheAntigravityTier fetches tier info for an antigravity auth and caches it in metadata.
-// Returns tierID, tierName. On error, returns empty strings.
-// If forceRefresh is true, it will fetch the tier info even if it's already cached.
-func (h *Handler) fetchAndCacheAntigravityTier(auth *coreauth.Auth, forceRefresh bool) (string, string) {
-	if auth == nil || auth.Provider != "antigravity" || auth.Metadata == nil {
-		return "", ""
-	}
-
-	// Check if already has tier info (skip if forceRefresh)
-	if !forceRefresh {
-		if tierID, ok := auth.Metadata["tier_id"].(string); ok && tierID != "" {
-			tierName, _ := auth.Metadata["tier_name"].(string)
-			return tierID, tierName
-		}
-	}
-
-	// Get access token
-	accessToken, ok := auth.Metadata["access_token"].(string)
-	if !ok || strings.TrimSpace(accessToken) == "" {
-		return "", ""
-	}
-
-	// Fetch tier info
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	httpClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
-	projectInfo, err := sdkAuth.FetchAntigravityProjectInfo(ctx, accessToken, httpClient)
-	if err != nil {
-		log.Debugf("antigravity: failed to fetch tier for %s: %v", auth.ID, err)
-		return "", ""
-	}
-
-	// Cache in metadata
-	auth.Metadata["tier_id"] = projectInfo.TierID
-	auth.Metadata["tier_name"] = projectInfo.TierName
-	auth.Metadata["tier_is_paid"] = projectInfo.IsPaid
-
-	// Try to persist to disk if authManager is available
-	if h.authManager != nil {
-		if _, err := h.authManager.Update(ctx, auth); err != nil {
-			log.Debugf("antigravity: failed to persist tier for %s: %v", auth.ID, err)
-		}
-	}
-
-	log.Infof("antigravity: fetched tier %s for existing auth %s", projectInfo.TierID, auth.ID)
-	return projectInfo.TierID, projectInfo.TierName
-}
-
-func (h *Handler) RefreshTier(c *gin.Context) {
-	if h.authManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
-		return
-	}
-
-	authID := strings.TrimSpace(c.Param("id"))
-	if authID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "auth id is required"})
-		return
-	}
-
-	auth, ok := h.authManager.GetByID(authID)
-	if !ok {
-		auths := h.authManager.List()
-		for _, a := range auths {
-			if a.FileName == authID || a.ID == authID {
-				auth = a
-				ok = true
-				break
-			}
-		}
-	}
-
-	if !ok || auth == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
-		return
-	}
-
-	if auth.Provider != "antigravity" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "tier refresh only supported for antigravity provider"})
-		return
-	}
-
-	tierID, tierName := h.fetchAndCacheAntigravityTier(auth, true)
-	if tierID == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch tier info"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"status":    "ok",
-		"tier":      tierID,
-		"tier_name": tierName,
-	})
 }
 
 func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
@@ -1139,6 +1002,165 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	return store.Save(ctx, record)
 }
 
+func gitLabBaseURLFromRequest(c *gin.Context) string {
+	if c != nil {
+		if raw := strings.TrimSpace(c.Query("base_url")); raw != "" {
+			return gitlabauth.NormalizeBaseURL(raw)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("GITLAB_BASE_URL")); raw != "" {
+		return gitlabauth.NormalizeBaseURL(raw)
+	}
+	return gitlabauth.DefaultBaseURL
+}
+
+func buildGitLabAuthMetadata(baseURL, mode string, tokenResp *gitlabauth.TokenResponse, direct *gitlabauth.DirectAccessResponse) map[string]any {
+	metadata := map[string]any{
+		"type":                     "gitlab",
+		"auth_method":              strings.TrimSpace(mode),
+		"base_url":                 gitlabauth.NormalizeBaseURL(baseURL),
+		"last_refresh":             time.Now().UTC().Format(time.RFC3339),
+		"refresh_interval_seconds": 240,
+	}
+	if tokenResp != nil {
+		metadata["access_token"] = strings.TrimSpace(tokenResp.AccessToken)
+		if refreshToken := strings.TrimSpace(tokenResp.RefreshToken); refreshToken != "" {
+			metadata["refresh_token"] = refreshToken
+		}
+		if tokenType := strings.TrimSpace(tokenResp.TokenType); tokenType != "" {
+			metadata["token_type"] = tokenType
+		}
+		if scope := strings.TrimSpace(tokenResp.Scope); scope != "" {
+			metadata["scope"] = scope
+		}
+		if expiry := gitlabauth.TokenExpiry(time.Now(), tokenResp); !expiry.IsZero() {
+			metadata["oauth_expires_at"] = expiry.Format(time.RFC3339)
+		}
+	}
+	mergeGitLabDirectAccessMetadata(metadata, direct)
+	return metadata
+}
+
+func mergeGitLabDirectAccessMetadata(metadata map[string]any, direct *gitlabauth.DirectAccessResponse) {
+	if metadata == nil || direct == nil {
+		return
+	}
+	if base := strings.TrimSpace(direct.BaseURL); base != "" {
+		metadata["duo_gateway_base_url"] = base
+	}
+	if token := strings.TrimSpace(direct.Token); token != "" {
+		metadata["duo_gateway_token"] = token
+	}
+	if direct.ExpiresAt > 0 {
+		expiry := time.Unix(direct.ExpiresAt, 0).UTC()
+		metadata["duo_gateway_expires_at"] = expiry.Format(time.RFC3339)
+		now := time.Now().UTC()
+		if ttl := expiry.Sub(now); ttl > 0 {
+			interval := int(ttl.Seconds()) / 2
+			switch {
+			case interval < 60:
+				interval = 60
+			case interval > 240:
+				interval = 240
+			}
+			metadata["refresh_interval_seconds"] = interval
+		}
+	}
+	if len(direct.Headers) > 0 {
+		headers := make(map[string]string, len(direct.Headers))
+		for key, value := range direct.Headers {
+			key = strings.TrimSpace(key)
+			value = strings.TrimSpace(value)
+			if key == "" || value == "" {
+				continue
+			}
+			headers[key] = value
+		}
+		if len(headers) > 0 {
+			metadata["duo_gateway_headers"] = headers
+		}
+	}
+	if direct.ModelDetails != nil {
+		modelDetails := map[string]any{}
+		if provider := strings.TrimSpace(direct.ModelDetails.ModelProvider); provider != "" {
+			modelDetails["model_provider"] = provider
+			metadata["model_provider"] = provider
+		}
+		if model := strings.TrimSpace(direct.ModelDetails.ModelName); model != "" {
+			modelDetails["model_name"] = model
+			metadata["model_name"] = model
+		}
+		if len(modelDetails) > 0 {
+			metadata["model_details"] = modelDetails
+		}
+	}
+}
+
+func primaryGitLabEmail(user *gitlabauth.User) string {
+	if user == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(user.Email); value != "" {
+		return value
+	}
+	return strings.TrimSpace(user.PublicEmail)
+}
+
+func gitLabAccountIdentifier(user *gitlabauth.User) string {
+	if user == nil {
+		return "user"
+	}
+	for _, value := range []string{user.Username, primaryGitLabEmail(user), user.Name} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return "user"
+}
+
+func sanitizeGitLabFileName(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "user"
+	}
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+			lastDash = false
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastDash = false
+		case r == '-' || r == '_' || r == '.':
+			builder.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				builder.WriteRune('-')
+				lastDash = true
+			}
+		}
+	}
+	result := strings.Trim(builder.String(), "-")
+	if result == "" {
+		return "user"
+	}
+	return result
+}
+
+func maskGitLabToken(token string) string {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
+		return ""
+	}
+	if len(trimmed) <= 8 {
+		return trimmed
+	}
+	return trimmed[:4] + "..." + trimmed[len(trimmed)-4:]
+}
+
 func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
@@ -1247,66 +1269,13 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		rawCode := resultMap["code"]
 		code := strings.Split(rawCode, "#")[0]
 
-		// Exchange code for tokens (replicate logic using updated redirect_uri)
-		// Extract client_id from the modified auth URL
-		clientID := ""
-		if u2, errP := url.Parse(authURL); errP == nil {
-			clientID = u2.Query().Get("client_id")
-		}
-		// Build request
-		bodyMap := map[string]any{
-			"code":          code,
-			"state":         state,
-			"grant_type":    "authorization_code",
-			"client_id":     clientID,
-			"redirect_uri":  "http://localhost:54545/callback",
-			"code_verifier": pkceCodes.CodeVerifier,
-		}
-		bodyJSON, _ := json.Marshal(bodyMap)
-
-		httpClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
-		req, _ := http.NewRequestWithContext(ctx, "POST", "https://console.anthropic.com/v1/oauth/token", strings.NewReader(string(bodyJSON)))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json")
-		resp, errDo := httpClient.Do(req)
-		if errDo != nil {
-			authErr := claude.NewAuthenticationError(claude.ErrCodeExchangeFailed, errDo)
+		// Exchange code for tokens using internal auth service
+		bundle, errExchange := anthropicAuth.ExchangeCodeForTokens(ctx, code, state, pkceCodes)
+		if errExchange != nil {
+			authErr := claude.NewAuthenticationError(claude.ErrCodeExchangeFailed, errExchange)
 			log.Errorf("Failed to exchange authorization code for tokens: %v", authErr)
 			SetOAuthSessionError(state, "Failed to exchange authorization code for tokens")
 			return
-		}
-		defer func() {
-			if errClose := resp.Body.Close(); errClose != nil {
-				log.Errorf("failed to close response body: %v", errClose)
-			}
-		}()
-		respBody, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			log.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(respBody))
-			SetOAuthSessionError(state, fmt.Sprintf("token exchange failed with status %d", resp.StatusCode))
-			return
-		}
-		var tResp struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-			ExpiresIn    int    `json:"expires_in"`
-			Account      struct {
-				EmailAddress string `json:"email_address"`
-			} `json:"account"`
-		}
-		if errU := json.Unmarshal(respBody, &tResp); errU != nil {
-			log.Errorf("failed to parse token response: %v", errU)
-			SetOAuthSessionError(state, "Failed to parse token response")
-			return
-		}
-		bundle := &claude.ClaudeAuthBundle{
-			TokenData: claude.ClaudeTokenData{
-				AccessToken:  tResp.AccessToken,
-				RefreshToken: tResp.RefreshToken,
-				Email:        tResp.Account.EmailAddress,
-				Expire:       time.Now().Add(time.Duration(tResp.ExpiresIn) * time.Second).Format(time.RFC3339),
-			},
-			LastRefresh: time.Now().Format(time.RFC3339),
 		}
 
 		// Create token storage
@@ -1348,17 +1317,13 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 
 	fmt.Println("Initializing Google authentication...")
 
-	// OAuth2 configuration (mirrors internal/auth/gemini)
+	// OAuth2 configuration using exported constants from internal/auth/gemini
 	conf := &oauth2.Config{
 		ClientID:     geminiAuth.ClientID,
 		ClientSecret: geminiAuth.ClientSecret,
-		RedirectURL:  "http://localhost:8085/oauth2callback",
-		Scopes: []string{
-			"https://www.googleapis.com/auth/cloud-platform",
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
-		},
-		Endpoint: google.Endpoint,
+		RedirectURL:  fmt.Sprintf("http://localhost:%d/oauth2callback", geminiAuth.DefaultCallbackPort),
+		Scopes:       geminiAuth.Scopes,
+		Endpoint:     google.Endpoint,
 	}
 
 	// Build authorization URL and return it immediately
@@ -1482,11 +1447,7 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 		ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
 		ifToken["client_id"] = geminiAuth.ClientID
 		ifToken["client_secret"] = geminiAuth.ClientSecret
-		ifToken["scopes"] = []string{
-			"https://www.googleapis.com/auth/cloud-platform",
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
-		}
+		ifToken["scopes"] = geminiAuth.Scopes
 		ifToken["universe_domain"] = "googleapis.com"
 
 		ts := geminiAuth.GeminiTokenStorage{
@@ -1698,73 +1659,25 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 
 		log.Debug("Authorization code received, exchanging for tokens...")
-		// Extract client_id from authURL
-		clientID := ""
-		if u2, errP := url.Parse(authURL); errP == nil {
-			clientID = u2.Query().Get("client_id")
-		}
-		// Exchange code for tokens with redirect equal to mgmtRedirect
-		form := url.Values{
-			"grant_type":    {"authorization_code"},
-			"client_id":     {clientID},
-			"code":          {code},
-			"redirect_uri":  {"http://localhost:1455/auth/callback"},
-			"code_verifier": {pkceCodes.CodeVerifier},
-		}
-		httpClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
-		req, _ := http.NewRequestWithContext(ctx, "POST", "https://auth.openai.com/oauth/token", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("Accept", "application/json")
-		resp, errDo := httpClient.Do(req)
-		if errDo != nil {
-			authErr := codex.NewAuthenticationError(codex.ErrCodeExchangeFailed, errDo)
+		// Exchange code for tokens using internal auth service
+		bundle, errExchange := openaiAuth.ExchangeCodeForTokens(ctx, code, pkceCodes)
+		if errExchange != nil {
+			authErr := codex.NewAuthenticationError(codex.ErrCodeExchangeFailed, errExchange)
 			SetOAuthSessionError(state, "Failed to exchange authorization code for tokens")
 			log.Errorf("Failed to exchange authorization code for tokens: %v", authErr)
 			return
 		}
-		defer func() { _ = resp.Body.Close() }()
-		respBody, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			SetOAuthSessionError(state, fmt.Sprintf("Token exchange failed with status %d", resp.StatusCode))
-			log.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(respBody))
-			return
-		}
-		var tokenResp struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-			IDToken      string `json:"id_token"`
-			ExpiresIn    int    `json:"expires_in"`
-		}
-		if errU := json.Unmarshal(respBody, &tokenResp); errU != nil {
-			SetOAuthSessionError(state, "Failed to parse token response")
-			log.Errorf("failed to parse token response: %v", errU)
-			return
-		}
-		claims, _ := codex.ParseJWTToken(tokenResp.IDToken)
-		email := ""
-		accountID := ""
+
+		// Extract additional info for filename generation
+		claims, _ := codex.ParseJWTToken(bundle.TokenData.IDToken)
 		planType := ""
-		if claims != nil {
-			email = claims.GetUserEmail()
-			accountID = claims.GetAccountID()
-			planType = strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType)
-		}
 		hashAccountID := ""
-		if accountID != "" {
-			digest := sha256.Sum256([]byte(accountID))
-			hashAccountID = hex.EncodeToString(digest[:])[:8]
-		}
-		// Build bundle compatible with existing storage
-		bundle := &codex.CodexAuthBundle{
-			TokenData: codex.CodexTokenData{
-				IDToken:      tokenResp.IDToken,
-				AccessToken:  tokenResp.AccessToken,
-				RefreshToken: tokenResp.RefreshToken,
-				AccountID:    accountID,
-				Email:        email,
-				Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
-			},
-			LastRefresh: time.Now().Format(time.RFC3339),
+		if claims != nil {
+			planType = strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType)
+			if accountID := claims.GetAccountID(); accountID != "" {
+				digest := sha256.Sum256([]byte(accountID))
+				hashAccountID = hex.EncodeToString(digest[:])[:8]
+			}
 		}
 
 		// Create token storage and persist
@@ -1798,37 +1711,63 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
 }
 
-func (h *Handler) RequestClineToken(c *gin.Context) {
+func (h *Handler) RequestGitLabToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 
-	fmt.Println("Initializing Cline authentication...")
+	fmt.Println("Initializing GitLab Duo authentication...")
 
-	state, errState := misc.GenerateRandomState()
-	if errState != nil {
-		log.Errorf("Failed to generate state parameter: %v", errState)
+	baseURL := gitLabBaseURLFromRequest(c)
+	clientID := strings.TrimSpace(c.Query("client_id"))
+	clientSecret := strings.TrimSpace(c.Query("client_secret"))
+	if clientID == "" {
+		clientID = strings.TrimSpace(os.Getenv("GITLAB_OAUTH_CLIENT_ID"))
+	}
+	if clientSecret == "" {
+		clientSecret = strings.TrimSpace(os.Getenv("GITLAB_OAUTH_CLIENT_SECRET"))
+	}
+	if clientID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "gitlab client_id is required"})
+		return
+	}
+
+	pkceCodes, err := gitlabauth.GeneratePKCECodes()
+	if err != nil {
+		log.Errorf("Failed to generate GitLab PKCE codes: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
+		return
+	}
+
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		log.Errorf("Failed to generate GitLab state parameter: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
 		return
 	}
 
-	redirectURL := fmt.Sprintf("http://localhost:%d/callback", clineCallbackPort)
-	clineAuth := cline.NewClineAuth(h.cfg)
-	authURL := clineAuth.GenerateAuthURL(state, redirectURL)
+	redirectURI := gitlabauth.RedirectURL(gitlabauth.DefaultCallbackPort)
+	authClient := gitlabauth.NewAuthClient(h.cfg)
+	authURL, err := authClient.GenerateAuthURL(baseURL, clientID, redirectURI, state, pkceCodes)
+	if err != nil {
+		log.Errorf("Failed to generate GitLab authorization URL: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		return
+	}
 
-	RegisterOAuthSession(state, "cline")
+	RegisterOAuthSession(state, "gitlab")
 
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
 	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/cline/callback")
+		targetURL, errTarget := h.managementCallbackURL("/gitlab/callback")
 		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute cline callback target")
+			log.WithError(errTarget).Error("failed to compute gitlab callback target")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
 			return
 		}
 		var errStart error
-		if forwarder, errStart = startCallbackForwarder(clineCallbackPort, "cline", targetURL); errStart != nil {
-			log.WithError(errStart).Error("failed to start cline callback forwarder")
+		if forwarder, errStart = startCallbackForwarder(gitlabauth.DefaultCallbackPort, "gitlab", targetURL); errStart != nil {
+			log.WithError(errStart).Error("failed to start gitlab callback forwarder")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
 		}
@@ -1836,40 +1775,36 @@ func (h *Handler) RequestClineToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(clineCallbackPort, forwarder)
+			defer stopCallbackForwarderInstance(gitlabauth.DefaultCallbackPort, forwarder)
 		}
 
-		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-cline-%s.oauth", state))
-		deadline := time.Now().Add(cline.AuthTimeout)
-		var authCode string
+		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-gitlab-%s.oauth", state))
+		deadline := time.Now().Add(5 * time.Minute)
+		var code string
 		for {
-			if !IsOAuthSessionPending(state, "cline") {
+			if !IsOAuthSessionPending(state, "gitlab") {
 				return
 			}
 			if time.Now().After(deadline) {
-				log.Error("oauth flow timed out")
-				SetOAuthSessionError(state, "OAuth flow timed out")
+				log.Error("gitlab oauth flow timed out")
+				SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
 				return
 			}
 			if data, errRead := os.ReadFile(waitFile); errRead == nil {
 				var payload map[string]string
 				_ = json.Unmarshal(data, &payload)
 				_ = os.Remove(waitFile)
-
 				if errStr := strings.TrimSpace(payload["error"]); errStr != "" {
-					log.Errorf("Authentication failed: %s", errStr)
-					SetOAuthSessionError(state, "Authentication failed")
+					SetOAuthSessionError(state, errStr)
 					return
 				}
-				if payloadState := strings.TrimSpace(payload["state"]); payloadState != "" && payloadState != state {
-					log.Errorf("Authentication failed: state mismatch")
-					SetOAuthSessionError(state, "Authentication failed: state mismatch")
+				if payloadState := strings.TrimSpace(payload["state"]); payloadState != state {
+					SetOAuthSessionError(state, "State code error")
 					return
 				}
-				authCode = strings.TrimSpace(payload["code"])
-				if authCode == "" {
-					log.Error("Authentication failed: code not found")
-					SetOAuthSessionError(state, "Authentication failed: code not found")
+				code = strings.TrimSpace(payload["code"])
+				if code == "" {
+					SetOAuthSessionError(state, "Authorization code missing")
 					return
 				}
 				break
@@ -1877,56 +1812,160 @@ func (h *Handler) RequestClineToken(c *gin.Context) {
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		tokenResp, errExchange := clineAuth.ExchangeCode(ctx, authCode, redirectURL)
+		tokenResp, errExchange := authClient.ExchangeCodeForTokens(ctx, baseURL, clientID, clientSecret, redirectURI, code, pkceCodes.CodeVerifier)
 		if errExchange != nil {
-			log.Errorf("Failed to exchange token: %v", errExchange)
-			SetOAuthSessionError(state, "Failed to exchange token")
+			log.Errorf("Failed to exchange GitLab authorization code: %v", errExchange)
+			SetOAuthSessionError(state, "Failed to exchange authorization code for tokens")
 			return
 		}
 
-		// Parse expiresAt from string to int64
-		var expiresAtInt int64
-		if tokenResp.ExpiresAt != "" {
-			if t, err := time.Parse(time.RFC3339Nano, tokenResp.ExpiresAt); err == nil {
-				expiresAtInt = t.Unix()
-			} else if t, err := time.Parse(time.RFC3339, tokenResp.ExpiresAt); err == nil {
-				expiresAtInt = t.Unix()
-			}
+		user, errUser := authClient.GetCurrentUser(ctx, baseURL, tokenResp.AccessToken)
+		if errUser != nil {
+			log.Errorf("Failed to fetch GitLab user profile: %v", errUser)
+			SetOAuthSessionError(state, "Failed to fetch account profile")
+			return
 		}
 
-		tokenStorage := &cline.ClineTokenStorage{
-			AccessToken:  tokenResp.AccessToken,
-			RefreshToken: tokenResp.RefreshToken,
-			ExpiresAt:    expiresAtInt,
-			Email:        tokenResp.Email,
-			Type:         "cline",
+		direct, errDirect := authClient.FetchDirectAccess(ctx, baseURL, tokenResp.AccessToken)
+		if errDirect != nil {
+			log.Errorf("Failed to fetch GitLab direct access metadata: %v", errDirect)
+			SetOAuthSessionError(state, "Failed to fetch GitLab Duo access")
+			return
 		}
 
-		fileName := cline.CredentialFileName(tokenStorage.Email)
+		identifier := gitLabAccountIdentifier(user)
+		fileName := fmt.Sprintf("gitlab-%s.json", sanitizeGitLabFileName(identifier))
+		metadata := buildGitLabAuthMetadata(baseURL, gitLabLoginModeOAuth, tokenResp, direct)
+		metadata["auth_kind"] = "oauth"
+		metadata["oauth_client_id"] = clientID
+		if clientSecret != "" {
+			metadata["oauth_client_secret"] = clientSecret
+		}
+		metadata["username"] = strings.TrimSpace(user.Username)
+		if email := primaryGitLabEmail(user); email != "" {
+			metadata["email"] = email
+		}
+		metadata["name"] = strings.TrimSpace(user.Name)
+
 		record := &coreauth.Auth{
 			ID:       fileName,
-			Provider: "cline",
+			Provider: "gitlab",
 			FileName: fileName,
-			Storage:  tokenStorage,
-			Metadata: map[string]any{
-				"email": tokenStorage.Email,
-			},
+			Label:    identifier,
+			Metadata: metadata,
 		}
-
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
-			log.Errorf("Failed to save authentication tokens: %v", errSave)
+			log.Errorf("Failed to save GitLab auth record: %v", errSave)
 			SetOAuthSessionError(state, "Failed to save authentication tokens")
 			return
 		}
 
-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-		fmt.Println("You can now use Cline services through this CLI")
+		fmt.Printf("GitLab Duo authentication successful. Token saved to %s\n", savedPath)
 		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("cline")
+		CompleteOAuthSessionsByProvider("gitlab")
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+func (h *Handler) RequestGitLabPATToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	var payload struct {
+		BaseURL             string `json:"base_url"`
+		PersonalAccessToken string `json:"personal_access_token"`
+		Token               string `json:"token"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid body"})
+		return
+	}
+
+	baseURL := gitlabauth.NormalizeBaseURL(strings.TrimSpace(payload.BaseURL))
+	if baseURL == "" {
+		baseURL = gitLabBaseURLFromRequest(nil)
+	}
+	pat := strings.TrimSpace(payload.PersonalAccessToken)
+	if pat == "" {
+		pat = strings.TrimSpace(payload.Token)
+	}
+	if pat == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "personal_access_token is required"})
+		return
+	}
+
+	authClient := gitlabauth.NewAuthClient(h.cfg)
+
+	user, err := authClient.GetCurrentUser(ctx, baseURL, pat)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+		return
+	}
+	patSelf, err := authClient.GetPersonalAccessTokenSelf(ctx, baseURL, pat)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+		return
+	}
+	direct, err := authClient.FetchDirectAccess(ctx, baseURL, pat)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+		return
+	}
+
+	identifier := gitLabAccountIdentifier(user)
+	fileName := fmt.Sprintf("gitlab-%s-pat.json", sanitizeGitLabFileName(identifier))
+	metadata := buildGitLabAuthMetadata(baseURL, gitLabLoginModePAT, nil, direct)
+	metadata["auth_kind"] = "personal_access_token"
+	metadata["personal_access_token"] = pat
+	metadata["token_preview"] = maskGitLabToken(pat)
+	metadata["username"] = strings.TrimSpace(user.Username)
+	if email := primaryGitLabEmail(user); email != "" {
+		metadata["email"] = email
+	}
+	metadata["name"] = strings.TrimSpace(user.Name)
+	if patSelf != nil {
+		if name := strings.TrimSpace(patSelf.Name); name != "" {
+			metadata["pat_name"] = name
+		}
+		if len(patSelf.Scopes) > 0 {
+			metadata["pat_scopes"] = append([]string(nil), patSelf.Scopes...)
+		}
+	}
+
+	record := &coreauth.Auth{
+		ID:       fileName,
+		Provider: "gitlab",
+		FileName: fileName,
+		Label:    identifier + " (PAT)",
+		Metadata: metadata,
+	}
+
+	savedPath, err := h.saveTokenRecord(ctx, record)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to save authentication tokens"})
+		return
+	}
+
+	response := gin.H{
+		"status":      "ok",
+		"saved_path":  savedPath,
+		"username":    strings.TrimSpace(user.Username),
+		"email":       primaryGitLabEmail(user),
+		"token_label": identifier,
+	}
+	if direct != nil && direct.ModelDetails != nil {
+		if provider := strings.TrimSpace(direct.ModelDetails.ModelProvider); provider != "" {
+			response["model_provider"] = provider
+		}
+		if model := strings.TrimSpace(direct.ModelDetails.ModelName); model != "" {
+			response["model_name"] = model
+		}
+	}
+
+	fmt.Printf("GitLab Duo PAT authentication successful. Token saved to %s\n", savedPath)
+	c.JSON(http.StatusOK, response)
 }
 
 func (h *Handler) RequestAntigravityToken(c *gin.Context) {
@@ -1934,6 +1973,8 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 	ctx = PopulateAuthContext(ctx, c)
 
 	fmt.Println("Initializing Antigravity authentication...")
+
+	authSvc := antigravity.NewAntigravityAuth(h.cfg, nil)
 
 	state, errState := misc.GenerateRandomState()
 	if errState != nil {
@@ -1943,16 +1984,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 	}
 
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
-
-	params := url.Values{}
-	params.Set("access_type", "offline")
-	params.Set("client_id", antigravity.ClientID)
-	params.Set("prompt", "consent")
-	params.Set("redirect_uri", redirectURI)
-	params.Set("response_type", "code")
-	params.Set("scope", strings.Join(antigravity.Scopes, " "))
-	params.Set("state", state)
-	authURL := "https://accounts.google.com/o/oauth2/v2/auth?" + params.Encode()
+	authURL := authSvc.BuildAuthURL(state, redirectURI)
 
 	RegisterOAuthSession(state, "antigravity")
 
@@ -2015,104 +2047,41 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		httpClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
-		form := url.Values{}
-		form.Set("code", authCode)
-		form.Set("client_id", antigravity.ClientID)
-		form.Set("client_secret", antigravity.ClientSecret)
-		form.Set("redirect_uri", redirectURI)
-		form.Set("grant_type", "authorization_code")
-
-		req, errNewRequest := http.NewRequestWithContext(ctx, http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(form.Encode()))
-		if errNewRequest != nil {
-			log.Errorf("Failed to build token request: %v", errNewRequest)
-			SetOAuthSessionError(state, "Failed to build token request")
-			return
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-		resp, errDo := httpClient.Do(req)
-		if errDo != nil {
-			log.Errorf("Failed to execute token request: %v", errDo)
+		tokenResp, errToken := authSvc.ExchangeCodeForTokens(ctx, authCode, redirectURI)
+		if errToken != nil {
+			log.Errorf("Failed to exchange token: %v", errToken)
 			SetOAuthSessionError(state, "Failed to exchange token")
 			return
 		}
-		defer func() {
-			if errClose := resp.Body.Close(); errClose != nil {
-				log.Errorf("antigravity token exchange close error: %v", errClose)
-			}
-		}()
 
-		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			bodyBytes, _ := io.ReadAll(resp.Body)
-			log.Errorf("Antigravity token exchange failed with status %d: %s", resp.StatusCode, string(bodyBytes))
-			SetOAuthSessionError(state, fmt.Sprintf("Token exchange failed: %d", resp.StatusCode))
+		accessToken := strings.TrimSpace(tokenResp.AccessToken)
+		if accessToken == "" {
+			log.Error("antigravity: token exchange returned empty access token")
+			SetOAuthSessionError(state, "Failed to exchange token")
 			return
 		}
 
-		var tokenResp struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-			ExpiresIn    int64  `json:"expires_in"`
-			TokenType    string `json:"token_type"`
-		}
-		if errDecode := json.NewDecoder(resp.Body).Decode(&tokenResp); errDecode != nil {
-			log.Errorf("Failed to parse token response: %v", errDecode)
-			SetOAuthSessionError(state, "Failed to parse token response")
+		email, errInfo := authSvc.FetchUserInfo(ctx, accessToken)
+		if errInfo != nil {
+			log.Errorf("Failed to fetch user info: %v", errInfo)
+			SetOAuthSessionError(state, "Failed to fetch user info")
 			return
 		}
-
-		email := ""
-		if strings.TrimSpace(tokenResp.AccessToken) != "" {
-			infoReq, errInfoReq := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v1/userinfo?alt=json", nil)
-			if errInfoReq != nil {
-				log.Errorf("Failed to build user info request: %v", errInfoReq)
-				SetOAuthSessionError(state, "Failed to build user info request")
-				return
-			}
-			infoReq.Header.Set("Authorization", "Bearer "+tokenResp.AccessToken)
-
-			infoResp, errInfo := httpClient.Do(infoReq)
-			if errInfo != nil {
-				log.Errorf("Failed to execute user info request: %v", errInfo)
-				SetOAuthSessionError(state, "Failed to execute user info request")
-				return
-			}
-			defer func() {
-				if errClose := infoResp.Body.Close(); errClose != nil {
-					log.Errorf("antigravity user info close error: %v", errClose)
-				}
-			}()
-
-			if infoResp.StatusCode >= http.StatusOK && infoResp.StatusCode < http.StatusMultipleChoices {
-				var infoPayload struct {
-					Email string `json:"email"`
-				}
-				if errDecodeInfo := json.NewDecoder(infoResp.Body).Decode(&infoPayload); errDecodeInfo == nil {
-					email = strings.TrimSpace(infoPayload.Email)
-				}
-			} else {
-				bodyBytes, _ := io.ReadAll(infoResp.Body)
-				log.Errorf("User info request failed with status %d: %s", infoResp.StatusCode, string(bodyBytes))
-				SetOAuthSessionError(state, fmt.Sprintf("User info request failed: %d", infoResp.StatusCode))
-				return
-			}
+		email = strings.TrimSpace(email)
+		if email == "" {
+			log.Error("antigravity: user info returned empty email")
+			SetOAuthSessionError(state, "Failed to fetch user info")
+			return
 		}
 
 		projectID := ""
-		tierID := "unknown"
-		tierName := "Unknown"
-		tierIsPaid := false
-		if strings.TrimSpace(tokenResp.AccessToken) != "" {
-			projectInfo, errProject := sdkAuth.FetchAntigravityProjectInfo(ctx, tokenResp.AccessToken, httpClient)
+		if accessToken != "" {
+			fetchedProjectID, errProject := authSvc.FetchProjectID(ctx, accessToken)
 			if errProject != nil {
-				log.Warnf("antigravity: failed to fetch project info: %v", errProject)
+				log.Warnf("antigravity: failed to fetch project ID: %v", errProject)
 			} else {
-				projectID = projectInfo.ProjectID
-				tierID = projectInfo.TierID
-				tierName = projectInfo.TierName
-				tierIsPaid = projectInfo.IsPaid
-				log.Infof("antigravity: obtained project ID %s, tier %s", projectID, tierID)
+				projectID = fetchedProjectID
+				log.Infof("antigravity: obtained project ID %s", projectID)
 			}
 		}
 
@@ -2124,9 +2093,6 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			"expires_in":    tokenResp.ExpiresIn,
 			"timestamp":     now.UnixMilli(),
 			"expired":       now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
-			"tier_id":       tierID,
-			"tier_name":     tierName,
-			"tier_is_paid":  tierIsPaid,
 		}
 		if email != "" {
 			metadata["email"] = email
@@ -2135,7 +2101,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			metadata["project_id"] = projectID
 		}
 
-		fileName := sanitizeAntigravityFileName(email)
+		fileName := antigravity.CredentialFileName(email)
 		label := strings.TrimSpace(email)
 		if label == "" {
 			label = "antigravity"
@@ -2386,30 +2352,13 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 			identifier = fmt.Sprintf("%d", time.Now().UnixMilli())
 			tokenStorage.Email = identifier
 		}
-		now := time.Now().UTC()
-		nextRefreshAfter := time.Time{}
-		if expiresAt, errParse := time.Parse(time.RFC3339, tokenStorage.Expire); errParse == nil {
-			nextRefreshAfter = expiresAt.Add(-36 * time.Hour)
-		}
 		record := &coreauth.Auth{
-			ID:       fmt.Sprintf("iflow-%s.json", identifier),
-			Provider: "iflow",
-			FileName: fmt.Sprintf("iflow-%s.json", identifier),
-			Storage:  tokenStorage,
-			Metadata: map[string]any{
-				"email":         identifier,
-				"api_key":       tokenStorage.APIKey,
-				"access_token":  tokenStorage.AccessToken,
-				"refresh_token": tokenStorage.RefreshToken,
-				"expired":       tokenStorage.Expire,
-				"type":          "iflow",
-				"last_refresh":  now.Format(time.RFC3339),
-			},
-			Attributes:       map[string]string{"api_key": tokenStorage.APIKey},
-			CreatedAt:        now,
-			UpdatedAt:        now,
-			LastRefreshedAt:  now,
-			NextRefreshAfter: nextRefreshAfter,
+			ID:         fmt.Sprintf("iflow-%s.json", identifier),
+			Provider:   "iflow",
+			FileName:   fmt.Sprintf("iflow-%s.json", identifier),
+			Storage:    tokenStorage,
+			Metadata:   map[string]any{"email": identifier, "api_key": tokenStorage.APIKey},
+			Attributes: map[string]string{"api_key": tokenStorage.APIKey},
 		}
 
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
