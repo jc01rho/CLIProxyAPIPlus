@@ -62,6 +62,9 @@ type ModelInfo struct {
 	// array (e.g., openai-compatibility.*.models[], *-api-key.models[]).
 	// UserDefined models have thinking configuration passed through without validation.
 	UserDefined bool `json:"-"`
+
+	// ExecutionTarget marks alias-exposed models with their upstream execution ID.
+	ExecutionTarget string `json:"-"`
 }
 
 type availableModelsCacheEntry struct {
