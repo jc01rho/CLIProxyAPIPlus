@@ -69,6 +69,14 @@ type credentialRetryLimitExecutor struct {
 	calls int
 }
 
+type priorityFallbackExecutor struct {
+	id string
+
+	mu         sync.Mutex
+	callOrder  []string
+	failAuthID map[string]struct{}
+}
+
 func (e *credentialRetryLimitExecutor) Identifier() string {
 	return e.id
 }
@@ -106,6 +114,53 @@ func (e *credentialRetryLimitExecutor) Calls() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.calls
+}
+
+func (e *priorityFallbackExecutor) Identifier() string {
+	return e.id
+}
+
+func (e *priorityFallbackExecutor) Execute(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	authID := ""
+	if auth != nil {
+		authID = auth.ID
+	}
+	e.mu.Lock()
+	e.callOrder = append(e.callOrder, authID)
+	_, shouldFail := e.failAuthID[authID]
+	e.mu.Unlock()
+	if shouldFail {
+		return cliproxyexecutor.Response{}, &Error{HTTPStatus: 500, Message: "boom"}
+	}
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e *priorityFallbackExecutor) ExecuteStream(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	_, err := e.Execute(context.Background(), auth, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+	if err != nil {
+		return nil, err
+	}
+	return &cliproxyexecutor.StreamResult{}, nil
+}
+
+func (e *priorityFallbackExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
+	return auth, nil
+}
+
+func (e *priorityFallbackExecutor) CountTokens(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return e.Execute(context.Background(), auth, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+}
+
+func (e *priorityFallbackExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
+func (e *priorityFallbackExecutor) CallOrder() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.callOrder))
+	copy(out, e.callOrder)
+	return out
 }
 
 func newCredentialRetryLimitTestManager(t *testing.T, maxRetryCredentials int) (*Manager, *credentialRetryLimitExecutor) {
@@ -188,6 +243,64 @@ func TestManager_MaxRetryCredentials_LimitsCrossCredentialRetries(t *testing.T) 
 				t.Fatalf("expected 2 calls with max-retry-credentials=0, got %d", calls)
 			}
 		})
+	}
+}
+
+func TestManagerExecute_FallsBackToLowerPriorityBucketAfterHigherPriorityExhausted(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetRetryConfig(0, 0, 0)
+
+	executor := &priorityFallbackExecutor{
+		id: "claude",
+		failAuthID: map[string]struct{}{
+			"high-a": {},
+			"high-b": {},
+		},
+	}
+	manager.RegisterExecutor(executor)
+
+	model := "test-model"
+	reg := registry.GetGlobalRegistry()
+	for _, authID := range []string{"high-a", "high-b", "low-a", "low-b"} {
+		reg.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: model}})
+	}
+	t.Cleanup(func() {
+		for _, authID := range []string{"high-a", "high-b", "low-a", "low-b"} {
+			reg.UnregisterClient(authID)
+		}
+	})
+
+	for _, auth := range []*Auth{
+		{ID: "high-a", Provider: "claude", Attributes: map[string]string{"priority": "10"}},
+		{ID: "high-b", Provider: "claude", Attributes: map[string]string{"priority": "10"}},
+		{ID: "low-a", Provider: "claude", Attributes: map[string]string{"priority": "5"}},
+		{ID: "low-b", Provider: "claude", Attributes: map[string]string{"priority": "5"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register %s: %v", auth.ID, errRegister)
+		}
+	}
+
+	_, errExecute := manager.Execute(
+		context.Background(),
+		[]string{"claude"},
+		cliproxyexecutor.Request{Model: model},
+		cliproxyexecutor.Options{},
+	)
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+
+	if got, want := executor.CallOrder(), []string{"high-a", "high-b", "low-a"}; len(got) != len(want) {
+		t.Fatalf("Execute() call order length = %d, want %d (got %v)", len(got), len(want), got)
+	} else {
+		for index := range want {
+			if got[index] != want[index] {
+				t.Fatalf("Execute() call order[%d] = %q, want %q (full=%v)", index, got[index], want[index], got)
+			}
+		}
 	}
 }
 
