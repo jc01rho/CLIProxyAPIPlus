@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	log "github.com/sirupsen/logrus"
 )
@@ -231,6 +232,10 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 	}
 	log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: channel=%s has %d aliases, looking for candidates=%v", channel, len(rev), candidates)
 
+	if resolved := resolveRequestedModelForAuth(auth, candidates, requestResult); strings.TrimSpace(resolved) != "" {
+		return resolved
+	}
+
 	// ✅ PHASE 1 (NEW): Check if any candidate IS an upstream model (original-first)
 	for _, candidate := range candidates {
 		key := strings.ToLower(strings.TrimSpace(candidate))
@@ -276,6 +281,43 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 		return original
 	}
 
+	return ""
+}
+
+func resolveRequestedModelForAuth(auth *Auth, candidates []string, requestResult thinking.SuffixResult) string {
+	if auth == nil || len(candidates) == 0 {
+		return ""
+	}
+	authID := strings.TrimSpace(auth.ID)
+	if authID == "" {
+		return ""
+	}
+	reg := registry.GetGlobalRegistry()
+	if reg == nil {
+		return ""
+	}
+	models := reg.GetModelsForClient(authID)
+	if len(models) == 0 {
+		return ""
+	}
+	for _, candidate := range candidates {
+		modelKey := canonicalModelKey(candidate)
+		if modelKey == "" {
+			continue
+		}
+		for _, model := range models {
+			if model == nil || !strings.EqualFold(strings.TrimSpace(model.ID), modelKey) {
+				continue
+			}
+			target := strings.TrimSpace(model.ExecutionTarget)
+			if target == "" {
+				log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: candidate %s is a real registered model for auth %s, returning as-is", candidate, auth.ID)
+				return preserveResolvedModelSuffix(candidate, requestResult)
+			}
+			log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: candidate %s is alias-exposed by auth %s, executing upstream %s", candidate, auth.ID, target)
+			return preserveResolvedModelSuffix(target, requestResult)
+		}
+	}
 	return ""
 }
 
