@@ -241,3 +241,254 @@ func TestApplyOAuthModelAlias_SuffixPreservation(t *testing.T) {
 		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "gemini-2.5-pro-exp-03-25(8192)")
 	}
 }
+
+func TestResolveModelAliasPoolFromConfigModels_NamePrecedence(t *testing.T) {
+	t.Parallel()
+
+	// Test case: When requested model matches a direct name, it should be returned
+	// WITHOUT attempting alias resolution. This tests the precedence fix where
+	// name-matching happens before alias-matching.
+	tests := []struct {
+		name          string
+		candidate     string
+		models        []modelAliasEntry
+		expectedFirst string
+		expectEmpty   bool
+	}{
+		{
+			name:      "direct name match skips alias",
+			candidate: "gemini-2.5-pro",
+			models: []modelAliasEntry{
+				&mockModelAlias{name: "gemini-2.5-pro-exp-03-25", alias: "gemini-2.5-pro"},
+				&mockModelAlias{name: "gemini-2.5-pro", alias: "g25p"},
+			},
+			// With name-first precedence, should return "gemini-2.5-pro" (direct match)
+			expectedFirst: "gemini-2.5-pro",
+		},
+		{
+			name:      "alias resolution when no name matches",
+			candidate: "g25p",
+			models: []modelAliasEntry{
+				&mockModelAlias{name: "gemini-2.5-pro-exp-03-25", alias: "g25p"},
+			},
+			// When name doesn't match, alias should resolve
+			expectedFirst: "gemini-2.5-pro-exp-03-25",
+		},
+		{
+			name:      "no match returns empty",
+			candidate: "unknown-model",
+			models: []modelAliasEntry{
+				&mockModelAlias{name: "gemini-2.5-pro-exp-03-25", alias: "g25p"},
+			},
+			expectEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := resolveModelAliasPoolFromConfigModels(tt.candidate, tt.models)
+			if tt.expectEmpty {
+				if len(pool) != 0 {
+					t.Errorf("expected empty pool, got %v", pool)
+				}
+				return
+			}
+			if len(pool) == 0 {
+				t.Errorf("expected non-empty pool, got empty")
+				return
+			}
+			if pool[0] != tt.expectedFirst {
+				t.Errorf("expected first element %q, got %q", tt.expectedFirst, pool[0])
+			}
+		})
+	}
+}
+
+type mockModelAlias struct {
+	name  string
+	alias string
+}
+
+func (m *mockModelAlias) GetName() string {
+	return m.name
+}
+
+func (m *mockModelAlias) GetAlias() string {
+	return m.alias
+}
+
+// TestResolveOAuthUpstreamModel_OriginalTakesPlacePriority tests that when a requested model matches
+// an original/upstream model name, it is returned immediately without alias resolution.
+func TestResolveOAuthUpstreamModel_OriginalTakesPlacePriority(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		aliases map[string][]internalconfig.OAuthModelAlias
+		channel string
+		input   string
+		want    string
+	}{
+		{
+			name: "original model name matches - returns as-is",
+			aliases: map[string][]internalconfig.OAuthModelAlias{
+				"gemini-cli": {
+					{Name: "gemini-2.5-pro-exp-03-25", Alias: "gemini-2.5-pro"},
+				},
+			},
+			channel: "gemini-cli",
+			input:   "gemini-2.5-pro-exp-03-25", // Request original name
+			want:    "gemini-2.5-pro-exp-03-25", // Should return it immediately
+		},
+		{
+			name: "original model name matches with suffix - preserves suffix",
+			aliases: map[string][]internalconfig.OAuthModelAlias{
+				"claude": {
+					{Name: "claude-sonnet-4-5-20250514", Alias: "claude-sonnet-4-5"},
+				},
+			},
+			channel: "claude",
+			input:   "claude-sonnet-4-5-20250514(high)", // Original with suffix
+			want:    "claude-sonnet-4-5-20250514(high)", // Should return original+suffix
+		},
+		{
+			name: "original model name matches exactly - ignores alias",
+			aliases: map[string][]internalconfig.OAuthModelAlias{
+				"codex": {
+					{Name: "codex-upstream-001", Alias: "codex-alias"},
+					{Name: "codex-alternative-002", Alias: "codex-upstream-001"},
+				},
+			},
+			channel: "codex",
+			input:   "codex-upstream-001", // Request original name (which is also an alias!)
+			want:    "codex-upstream-001", // Should return original, NOT resolve alias
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			m.SetOAuthModelAlias(tc.aliases)
+
+			auth := createAuthForChannel(tc.channel)
+
+			result := m.resolveOAuthUpstreamModel(auth, tc.input)
+
+			if result != tc.want {
+				t.Errorf("resolveOAuthUpstreamModel() = %q, want %q", result, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveOAuthUpstreamModel_FallbackToAlias tests that when a requested model
+// doesn't match an original, it falls back to alias resolution.
+func TestResolveOAuthUpstreamModel_FallbackToAlias(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		aliases map[string][]internalconfig.OAuthModelAlias
+		channel string
+		input   string
+		want    string
+	}{
+		{
+			name: "alias resolves when original not requested",
+			aliases: map[string][]internalconfig.OAuthModelAlias{
+				"gemini-cli": {
+					{Name: "gemini-2.5-pro-exp-03-25", Alias: "gemini-2.5-pro"},
+				},
+			},
+			channel: "gemini-cli",
+			input:   "gemini-2.5-pro",           // Request alias
+			want:    "gemini-2.5-pro-exp-03-25", // Should resolve to original
+		},
+		{
+			name: "alias with suffix resolves and preserves suffix",
+			aliases: map[string][]internalconfig.OAuthModelAlias{
+				"claude": {
+					{Name: "claude-opus-4-5-20251101", Alias: "claude-opus-4-5"},
+				},
+			},
+			channel: "claude",
+			input:   "claude-opus-4-5(high)",          // Alias with suffix
+			want:    "claude-opus-4-5-20251101(high)", // Should resolve + preserve suffix
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			m.SetOAuthModelAlias(tc.aliases)
+
+			auth := createAuthForChannel(tc.channel)
+
+			result := m.resolveOAuthUpstreamModel(auth, tc.input)
+
+			if result != tc.want {
+				t.Errorf("resolveOAuthUpstreamModel() = %q, want %q", result, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveModelAliasPoolFromConfigModels_OriginalFirst tests that when resolving
+// model alias pools, original model names take priority over aliases.
+func TestResolveModelAliasPoolFromConfigModels_OriginalFirst(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		candidate     string
+		models        []modelAliasEntry
+		expectedFirst string
+		expectEmpty   bool
+	}{
+		{
+			name:      "original model name requested - returns original",
+			candidate: "gemini-2.5-pro",
+			models: []modelAliasEntry{
+				&mockModelAlias{name: "gemini-2.5-pro", alias: "g25p"},
+				&mockModelAlias{name: "gemini-2.5-pro-exp-03-25", alias: "gemini-2.5-pro-exp"},
+			},
+			expectedFirst: "gemini-2.5-pro", // Original name match takes priority
+		},
+		{
+			name:      "alias resolves when original not requested",
+			candidate: "g25p",
+			models: []modelAliasEntry{
+				&mockModelAlias{name: "gemini-2.5-pro", alias: "g25p"},
+			},
+			expectedFirst: "gemini-2.5-pro", // Alias resolves to original
+		},
+		{
+			name:      "multiple aliases - first match returns",
+			candidate: "alias-1",
+			models: []modelAliasEntry{
+				&mockModelAlias{name: "model-a", alias: "alias-1"},
+				&mockModelAlias{name: "model-b", alias: "alias-1"},
+			},
+			expectedFirst: "model-a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := resolveModelAliasPoolFromConfigModels(tt.candidate, tt.models)
+			if tt.expectEmpty {
+				if len(pool) != 0 {
+					t.Errorf("expected empty pool, got %v", pool)
+				}
+				return
+			}
+			if len(pool) == 0 {
+				t.Errorf("expected non-empty pool, got empty")
+				return
+			}
+			if pool[0] != tt.expectedFirst {
+				t.Errorf("expected first element %q, got %q", tt.expectedFirst, pool[0])
+			}
+		})
+	}
+}
