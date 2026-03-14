@@ -250,7 +250,8 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 		}
 		rawModelIDs = append(rawModelIDs, model.ID)
 		newCounts[model.ID]++
-		if _, exists := newModels[model.ID]; exists {
+		if existing, exists := newModels[model.ID]; exists {
+			newModels[model.ID] = preferClientModelInfo(existing, model)
 			continue
 		}
 		newModels[model.ID] = model
@@ -552,20 +553,36 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 	return &copyModel
 }
 
+func preferClientModelInfo(current, candidate *ModelInfo) *ModelInfo {
+	if current == nil {
+		return candidate
+	}
+	if candidate == nil {
+		return current
+	}
+	currentTarget := strings.TrimSpace(current.ExecutionTarget)
+	candidateTarget := strings.TrimSpace(candidate.ExecutionTarget)
+	if currentTarget != "" && candidateTarget == "" {
+		return candidate
+	}
+	return current
+}
+
 func cloneModelInfosUnique(models []*ModelInfo) []*ModelInfo {
 	if len(models) == 0 {
 		return nil
 	}
 	cloned := make([]*ModelInfo, 0, len(models))
-	seen := make(map[string]struct{}, len(models))
+	seen := make(map[string]int, len(models))
 	for _, model := range models {
 		if model == nil || model.ID == "" {
 			continue
 		}
-		if _, exists := seen[model.ID]; exists {
+		if idx, exists := seen[model.ID]; exists {
+			cloned[idx] = cloneModelInfo(preferClientModelInfo(cloned[idx], model))
 			continue
 		}
-		seen[model.ID] = struct{}{}
+		seen[model.ID] = len(cloned)
 		cloned = append(cloned, cloneModelInfo(model))
 	}
 	return cloned
