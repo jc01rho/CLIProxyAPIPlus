@@ -55,6 +55,9 @@ func TestApplyOAuthModelAlias_ForkAddsAlias(t *testing.T) {
 	if out[1].Name != "models/g5" {
 		t.Fatalf("expected forked model name %q, got %q", "models/g5", out[1].Name)
 	}
+	if out[1].ExecutionTarget != "gpt-5" {
+		t.Fatalf("expected forked execution target %q, got %q", "gpt-5", out[1].ExecutionTarget)
+	}
 }
 
 func TestApplyOAuthModelAlias_ForkAddsMultipleAliases(t *testing.T) {
@@ -89,6 +92,12 @@ func TestApplyOAuthModelAlias_ForkAddsMultipleAliases(t *testing.T) {
 	if out[2].Name != "models/g5-2" {
 		t.Fatalf("expected forked model name %q, got %q", "models/g5-2", out[2].Name)
 	}
+	if out[1].ExecutionTarget != "gpt-5" {
+		t.Fatalf("expected second execution target %q, got %q", "gpt-5", out[1].ExecutionTarget)
+	}
+	if out[2].ExecutionTarget != "gpt-5" {
+		t.Fatalf("expected third execution target %q, got %q", "gpt-5", out[2].ExecutionTarget)
+	}
 }
 
 func TestApplyOAuthModelAlias_DefaultGitHubCopilotAliasViaSanitize(t *testing.T) {
@@ -111,5 +120,39 @@ func TestApplyOAuthModelAlias_DefaultGitHubCopilotAliasViaSanitize(t *testing.T)
 	}
 	if out[1].Name != "models/claude-opus-4-6" {
 		t.Fatalf("expected aliased model name %q, got %q", "models/claude-opus-4-6", out[1].Name)
+	}
+	if out[1].ExecutionTarget != "claude-opus-4.6" {
+		t.Fatalf("expected aliased execution target %q, got %q", "claude-opus-4.6", out[1].ExecutionTarget)
+	}
+}
+
+func TestApplyOAuthModelAlias_RealModelWinsOnAliasCollision(t *testing.T) {
+	cfg := &config.Config{
+		OAuthModelAlias: map[string][]config.OAuthModelAlias{
+			"github-copilot": {
+				{Name: "gpt-5.2-codex", Alias: "gpt-5.4", Fork: true},
+			},
+		},
+	}
+	models := []*ModelInfo{
+		{ID: "gpt-5.2-codex", Name: "models/gpt-5.2-codex"},
+		{ID: "gpt-5.4", Name: "models/gpt-5.4"},
+	}
+
+	out := applyOAuthModelAlias(cfg, "github-copilot", "oauth", models)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(out))
+	}
+	if out[0].ID != "gpt-5.2-codex" {
+		t.Fatalf("expected first model id %q, got %q", "gpt-5.2-codex", out[0].ID)
+	}
+	if out[1].ID != "gpt-5.4" {
+		t.Fatalf("expected second model id %q, got %q", "gpt-5.4", out[1].ID)
+	}
+	if out[1].Name != "models/gpt-5.4" {
+		t.Fatalf("expected real model name %q, got %q", "models/gpt-5.4", out[1].Name)
+	}
+	if out[1].ExecutionTarget != "" {
+		t.Fatalf("expected real model execution target to stay empty, got %q", out[1].ExecutionTarget)
 	}
 }

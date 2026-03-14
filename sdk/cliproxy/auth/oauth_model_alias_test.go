@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"context"
 	"testing"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 )
 
 func TestResolveOAuthUpstreamModel_SuffixPreservation(t *testing.T) {
@@ -490,5 +492,144 @@ func TestResolveModelAliasPoolFromConfigModels_OriginalFirst(t *testing.T) {
 				t.Errorf("expected first element %q, got %q", tt.expectedFirst, pool[0])
 			}
 		})
+	}
+}
+
+func TestResolveOAuthUpstreamModel_RegisteredRealModelTakesPriority(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil, nil, nil)
+	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"github-copilot": {
+			{Name: "gpt-5.2-codex", Alias: "gpt-5.4"},
+		},
+	})
+
+	auth := &Auth{
+		ID:       "oauth-real-model-priority",
+		Provider: "github-copilot",
+		Metadata: map[string]any{"username": "tester"},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "github-copilot", []*registry.ModelInfo{
+		{ID: "gpt-5.4"},
+		{ID: "gpt-5.2-codex"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+
+	resolved := m.resolveOAuthUpstreamModel(auth, "gpt-5.4")
+	if resolved != "gpt-5.4" {
+		t.Fatalf("resolveOAuthUpstreamModel(real model) = %q, want %q", resolved, "gpt-5.4")
+	}
+
+	aliased := m.resolveOAuthUpstreamModel(auth, "gpt-5.4(high)")
+	if aliased != "gpt-5.4(high)" {
+		t.Fatalf("resolveOAuthUpstreamModel(real model with suffix) = %q, want %q", aliased, "gpt-5.4(high)")
+	}
+}
+
+func TestResolveOAuthUpstreamModel_AliasExposedModelUsesExecutionTarget(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil, nil, nil)
+	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"codex": {
+			{Name: "gpt-5.2", Alias: "gpt-5.4", Fork: true},
+		},
+	})
+
+	auth := &Auth{
+		ID:       "oauth-alias-exposed-model",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{"username": "tester"},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{
+		{ID: "gpt-5.2"},
+		{ID: "gpt-5.4", ExecutionTarget: "gpt-5.2"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+
+	resolved := m.resolveOAuthUpstreamModel(auth, "gpt-5.4")
+	if resolved != "gpt-5.2" {
+		t.Fatalf("resolveOAuthUpstreamModel(alias-exposed model) = %q, want %q", resolved, "gpt-5.2")
+	}
+
+	resolvedWithSuffix := m.resolveOAuthUpstreamModel(auth, "gpt-5.4(high)")
+	if resolvedWithSuffix != "gpt-5.2(high)" {
+		t.Fatalf("resolveOAuthUpstreamModel(alias-exposed model with suffix) = %q, want %q", resolvedWithSuffix, "gpt-5.2(high)")
+	}
+}
+
+func TestPrepareExecutionModels_AuthSpecificRealFirstAliasSecond(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil, nil, nil)
+	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"codex": {
+			{Name: "gpt-5.2", Alias: "gpt-5.4", Fork: true},
+		},
+	})
+
+	authA := &Auth{
+		ID:       "codex-auth-a",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{"username": "a"},
+	}
+	authB := &Auth{
+		ID:       "codex-auth-b",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{"username": "b"},
+	}
+	if _, err := m.Register(context.Background(), authA); err != nil {
+		t.Fatalf("register authA: %v", err)
+	}
+	if _, err := m.Register(context.Background(), authB); err != nil {
+		t.Fatalf("register authB: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(authA.ID, "codex", []*registry.ModelInfo{
+		{ID: "gpt-5.4"},
+		{ID: "gpt-5.2"},
+	})
+	reg.RegisterClient(authB.ID, "codex", []*registry.ModelInfo{
+		{ID: "gpt-5.2"},
+		{ID: "gpt-5.4", ExecutionTarget: "gpt-5.2"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient(authA.ID)
+		reg.UnregisterClient(authB.ID)
+	})
+
+	modelsA := m.prepareExecutionModels(authA, "gpt-5.4")
+	if len(modelsA) != 1 || modelsA[0] != "gpt-5.4" {
+		t.Fatalf("prepareExecutionModels(authA) = %v, want [%q]", modelsA, "gpt-5.4")
+	}
+
+	modelsB := m.prepareExecutionModels(authB, "gpt-5.4")
+	if len(modelsB) != 1 || modelsB[0] != "gpt-5.2" {
+		t.Fatalf("prepareExecutionModels(authB) = %v, want [%q]", modelsB, "gpt-5.2")
 	}
 }
