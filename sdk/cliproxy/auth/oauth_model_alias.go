@@ -132,6 +132,19 @@ func resolveModelAliasPoolFromConfigModels(requestedModel string, models []model
 
 	out := make([]string, 0)
 	seen := make(map[string]struct{})
+
+	// PRECEDENCE: Check direct name matches FIRST (lines 163-171 moved before alias)
+	for i := range models {
+		name := strings.TrimSpace(models[i].GetName())
+		for _, candidate := range candidates {
+			if candidate == "" || name == "" || !strings.EqualFold(name, candidate) {
+				continue
+			}
+			return []string{preserveResolvedModelSuffix(name, requestResult)}
+		}
+	}
+
+	// FALLBACK: Check alias matches SECOND (lines 135-157 moved after)
 	for i := range models {
 		name := strings.TrimSpace(models[i].GetName())
 		alias := strings.TrimSpace(models[i].GetAlias())
@@ -160,15 +173,6 @@ func resolveModelAliasPoolFromConfigModels(requestedModel string, models []model
 		return out
 	}
 
-	for i := range models {
-		name := strings.TrimSpace(models[i].GetName())
-		for _, candidate := range candidates {
-			if candidate == "" || name == "" || !strings.EqualFold(name, candidate) {
-				continue
-			}
-			return []string{preserveResolvedModelSuffix(name, requestResult)}
-		}
-	}
 	return nil
 }
 
@@ -227,6 +231,27 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 	}
 	log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: channel=%s has %d aliases, looking for candidates=%v", channel, len(rev), candidates)
 
+	// ✅ PHASE 1 (NEW): Check if any candidate IS an upstream model (original-first)
+	for _, candidate := range candidates {
+		key := strings.ToLower(strings.TrimSpace(candidate))
+		if key == "" {
+			continue
+		}
+		// Check if this key matches any upstream model name (value) in the reverse table
+		for _, upstream := range rev {
+			upstreamKey := strings.ToLower(strings.TrimSpace(upstream))
+			if upstreamKey == "" {
+				continue
+			}
+			if strings.EqualFold(upstreamKey, key) {
+				// Found: requested model matches an upstream model name
+				log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: candidate %s matches upstream model, returning as-is", candidate)
+				return preserveResolvedModelSuffix(candidate, requestResult)
+			}
+		}
+	}
+
+	// PHASE 2: Check if any candidate is an ALIAS
 	for _, candidate := range candidates {
 		key := strings.ToLower(strings.TrimSpace(candidate))
 		if key == "" {
