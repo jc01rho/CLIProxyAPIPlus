@@ -271,9 +271,9 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		}
 	}
 
-	// Default to parallel tool calls unless the client explicitly disables them.
+	// Default to parallel tool calls unless tool_choice explicitly disables them.
 	parallelToolCalls := true
-	if disableParallelToolUse := rootResult.Get("disable_parallel_tool_use"); disableParallelToolUse.Exists() {
+	if disableParallelToolUse := rootResult.Get("tool_choice.disable_parallel_tool_use"); disableParallelToolUse.Exists() {
 		parallelToolCalls = !disableParallelToolUse.Bool()
 	}
 

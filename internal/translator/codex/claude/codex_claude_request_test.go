@@ -95,7 +95,7 @@ func TestConvertClaudeRequestToCodex_ParallelToolCalls(t *testing.T) {
 		wantParallelToolCalls bool
 	}{
 		{
-			name: "Default to true when disable_parallel_tool_use is absent",
+			name: "Default to true when tool_choice.disable_parallel_tool_use is absent",
 			inputJSON: `{
 				"model": "claude-3-opus",
 				"messages": [{"role": "user", "content": "hello"}]
@@ -106,7 +106,7 @@ func TestConvertClaudeRequestToCodex_ParallelToolCalls(t *testing.T) {
 			name: "Disable parallel tool calls when client opts out",
 			inputJSON: `{
 				"model": "claude-3-opus",
-				"disable_parallel_tool_use": true,
+				"tool_choice": {"disable_parallel_tool_use": true},
 				"messages": [{"role": "user", "content": "hello"}]
 			}`,
 			wantParallelToolCalls: false,
@@ -115,7 +115,7 @@ func TestConvertClaudeRequestToCodex_ParallelToolCalls(t *testing.T) {
 			name: "Keep parallel tool calls enabled when client explicitly allows them",
 			inputJSON: `{
 				"model": "claude-3-opus",
-				"disable_parallel_tool_use": false,
+				"tool_choice": {"disable_parallel_tool_use": false},
 				"messages": [{"role": "user", "content": "hello"}]
 			}`,
 			wantParallelToolCalls: true,
