@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -55,7 +56,9 @@ func (r *Registry) TranslateRequest(from, to Format, model string, rawJSON []byt
 		}
 	}
 	if model != "" && gjson.GetBytes(rawJSON, "model").String() != model {
-		if updated, err := sjson.SetBytes(rawJSON, "model", model); err == nil {
+		if updated, err := sjson.SetBytes(rawJSON, "model", model); err != nil {
+			log.Warnf("translator: failed to normalize model in request fallback: %v", err)
+		} else {
 			return updated
 		}
 	}
