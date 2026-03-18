@@ -39,6 +39,7 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 
 	// Convert role "system" to "developer" in input array to comply with Codex API requirements.
 	rawJSON = convertSystemRoleToDeveloper(rawJSON)
+	rawJSON = normalizeCodexBuiltinTools(rawJSON)
 
 	return rawJSON
 }
@@ -78,6 +79,29 @@ func convertSystemRoleToDeveloper(rawJSON []byte) []byte {
 		if gjson.GetBytes(result, rolePath).String() == "system" {
 			result, _ = sjson.SetBytes(result, rolePath, "developer")
 		}
+	}
+
+	return result
+}
+
+// normalizeCodexBuiltinTools rewrites legacy/preview built-in tool variants to the
+// stable names expected by the current Codex upstream.
+func normalizeCodexBuiltinTools(rawJSON []byte) []byte {
+	result := rawJSON
+
+	tools := gjson.GetBytes(result, "tools")
+	if tools.IsArray() {
+		toolArray := tools.Array()
+		for i := 0; i < len(toolArray); i++ {
+			typePath := fmt.Sprintf("tools.%d.type", i)
+			if gjson.GetBytes(result, typePath).String() == "web_search_preview" {
+				result, _ = sjson.SetBytes(result, typePath, "web_search")
+			}
+		}
+	}
+
+	if gjson.GetBytes(result, "tool_choice.type").String() == "web_search_preview" {
+		result, _ = sjson.SetBytes(result, "tool_choice.type", "web_search")
 	}
 
 	return result
