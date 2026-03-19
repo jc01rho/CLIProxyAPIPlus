@@ -125,3 +125,86 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_MultipleToolCalls
 		t.Fatalf("unexpected response.output name for call_glob: %q", outputItems["call_glob"].Get("name").String())
 	}
 }
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_MultiChoiceToolCallsUseDistinctOutputIndexes(t *testing.T) {
+	in := []string{
+		`data: {"id":"resp_multi_choice","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call_choice0","type":"function","function":{"name":"glob","arguments":""}}]},"finish_reason":null},{"index":1,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call_choice1","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"resp_multi_choice","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"C:\\\\repo\",\"pattern\":\"*.go\"}"}}]},"finish_reason":null},{"index":1,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":[{"index":0,"function":{"arguments":"{\"filePath\":\"C:\\\\repo\\\\README.md\",\"limit\":20,\"offset\":1}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"resp_multi_choice","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":"tool_calls"},{"index":1,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":"tool_calls"}],"usage":{"completion_tokens":10,"total_tokens":20,"prompt_tokens":10}}`,
+	}
+
+	request := []byte(`{"model":"gpt-5.4","tool_choice":"auto","parallel_tool_calls":true}`)
+
+	var param any
+	var out [][]byte
+	for _, line := range in {
+		out = append(out, ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "model", request, request, []byte(line), &param)...)
+	}
+
+	type fcEvent struct {
+		outputIndex int64
+		name        string
+		arguments   string
+	}
+
+	added := map[string]fcEvent{}
+	done := map[string]fcEvent{}
+
+	for _, chunk := range out {
+		ev, data := parseOpenAIResponsesSSEEvent(t, chunk)
+		switch ev {
+		case "response.output_item.added":
+			if data.Get("item.type").String() != "function_call" {
+				continue
+			}
+			callID := data.Get("item.call_id").String()
+			added[callID] = fcEvent{
+				outputIndex: data.Get("output_index").Int(),
+				name:        data.Get("item.name").String(),
+			}
+		case "response.output_item.done":
+			if data.Get("item.type").String() != "function_call" {
+				continue
+			}
+			callID := data.Get("item.call_id").String()
+			done[callID] = fcEvent{
+				outputIndex: data.Get("output_index").Int(),
+				name:        data.Get("item.name").String(),
+				arguments:   data.Get("item.arguments").String(),
+			}
+		}
+	}
+
+	if len(added) != 2 {
+		t.Fatalf("expected 2 function_call added events, got %d", len(added))
+	}
+	if len(done) != 2 {
+		t.Fatalf("expected 2 function_call done events, got %d", len(done))
+	}
+
+	if added["call_choice0"].name != "glob" {
+		t.Fatalf("unexpected added name for call_choice0: %q", added["call_choice0"].name)
+	}
+	if added["call_choice1"].name != "read" {
+		t.Fatalf("unexpected added name for call_choice1: %q", added["call_choice1"].name)
+	}
+	if added["call_choice0"].outputIndex == added["call_choice1"].outputIndex {
+		t.Fatalf("expected distinct output indexes for different choices, both got %d", added["call_choice0"].outputIndex)
+	}
+
+	if !gjson.Valid(done["call_choice0"].arguments) {
+		t.Fatalf("invalid JSON args for call_choice0: %q", done["call_choice0"].arguments)
+	}
+	if !gjson.Valid(done["call_choice1"].arguments) {
+		t.Fatalf("invalid JSON args for call_choice1: %q", done["call_choice1"].arguments)
+	}
+	if done["call_choice0"].outputIndex == done["call_choice1"].outputIndex {
+		t.Fatalf("expected distinct done output indexes for different choices, both got %d", done["call_choice0"].outputIndex)
+	}
+	if done["call_choice0"].name != "glob" {
+		t.Fatalf("unexpected done name for call_choice0: %q", done["call_choice0"].name)
+	}
+	if done["call_choice1"].name != "read" {
+		t.Fatalf("unexpected done name for call_choice1: %q", done["call_choice1"].name)
+	}
+}
