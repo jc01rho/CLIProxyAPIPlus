@@ -208,3 +208,98 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_MultiChoiceToolCa
 		t.Fatalf("unexpected done name for call_choice1: %q", done["call_choice1"].name)
 	}
 }
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_MixedMessageAndToolUseDistinctOutputIndexes(t *testing.T) {
+	in := []string{
+		`data: {"id":"resp_mixed","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello","reasoning_content":null,"tool_calls":null},"finish_reason":null},{"index":1,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call_choice1","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"resp_mixed","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":"stop"},{"index":1,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":[{"index":0,"function":{"arguments":"{\"filePath\":\"C:\\\\repo\\\\README.md\",\"limit\":20,\"offset\":1}"}}]},"finish_reason":"tool_calls"}],"usage":{"completion_tokens":10,"total_tokens":20,"prompt_tokens":10}}`,
+	}
+
+	request := []byte(`{"model":"gpt-5.4","tool_choice":"auto","parallel_tool_calls":true}`)
+
+	var param any
+	var out [][]byte
+	for _, line := range in {
+		out = append(out, ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "model", request, request, []byte(line), &param)...)
+	}
+
+	var messageOutputIndex int64 = -1
+	var toolOutputIndex int64 = -1
+
+	for _, chunk := range out {
+		ev, data := parseOpenAIResponsesSSEEvent(t, chunk)
+		if ev != "response.output_item.added" {
+			continue
+		}
+		switch data.Get("item.type").String() {
+		case "message":
+			if data.Get("item.id").String() == "msg_resp_mixed_0" {
+				messageOutputIndex = data.Get("output_index").Int()
+			}
+		case "function_call":
+			if data.Get("item.call_id").String() == "call_choice1" {
+				toolOutputIndex = data.Get("output_index").Int()
+			}
+		}
+	}
+
+	if messageOutputIndex < 0 {
+		t.Fatal("did not find message output index")
+	}
+	if toolOutputIndex < 0 {
+		t.Fatal("did not find tool output index")
+	}
+	if messageOutputIndex == toolOutputIndex {
+		t.Fatalf("expected distinct output indexes for message and tool call, both got %d", messageOutputIndex)
+	}
+}
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_FunctionCallDoneAndCompletedOutputStayAscending(t *testing.T) {
+	in := []string{
+		`data: {"id":"resp_order","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call_glob","type":"function","function":{"name":"glob","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"resp_order","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"C:\\\\repo\",\"pattern\":\"*.go\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"resp_order","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":1,"id":"call_read","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"resp_order","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":[{"index":1,"function":{"arguments":"{\"filePath\":\"C:\\\\repo\\\\README.md\",\"limit\":20,\"offset\":1}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"resp_order","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":"tool_calls"}],"usage":{"completion_tokens":10,"total_tokens":20,"prompt_tokens":10}}`,
+	}
+
+	request := []byte(`{"model":"gpt-5.4","tool_choice":"auto","parallel_tool_calls":true}`)
+
+	var param any
+	var out [][]byte
+	for _, line := range in {
+		out = append(out, ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "model", request, request, []byte(line), &param)...)
+	}
+
+	var doneIndexes []int64
+	var completedOrder []string
+
+	for _, chunk := range out {
+		ev, data := parseOpenAIResponsesSSEEvent(t, chunk)
+		switch ev {
+		case "response.output_item.done":
+			if data.Get("item.type").String() == "function_call" {
+				doneIndexes = append(doneIndexes, data.Get("output_index").Int())
+			}
+		case "response.completed":
+			for _, item := range data.Get("response.output").Array() {
+				if item.Get("type").String() == "function_call" {
+					completedOrder = append(completedOrder, item.Get("call_id").String())
+				}
+			}
+		}
+	}
+
+	if len(doneIndexes) != 2 {
+		t.Fatalf("expected 2 function_call done indexes, got %d", len(doneIndexes))
+	}
+	if doneIndexes[0] >= doneIndexes[1] {
+		t.Fatalf("expected ascending done output indexes, got %v", doneIndexes)
+	}
+	if len(completedOrder) != 2 {
+		t.Fatalf("expected 2 function_call items in completed output, got %d", len(completedOrder))
+	}
+	if completedOrder[0] != "call_glob" || completedOrder[1] != "call_read" {
+		t.Fatalf("unexpected completed function_call order: %v", completedOrder)
+	}
+}
