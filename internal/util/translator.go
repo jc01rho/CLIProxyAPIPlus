@@ -245,6 +245,9 @@ func ToolNameMapFromClaudeRequest(rawJSON []byte) map[string]string {
 	tools.ForEach(func(_, tool gjson.Result) bool {
 		name := strings.TrimSpace(tool.Get("name").String())
 		if name == "" {
+			name = strings.TrimSpace(tool.Get("function.name").String())
+		}
+		if name == "" {
 			return true
 		}
 		key := CanonicalToolName(name)
