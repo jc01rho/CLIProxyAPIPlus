@@ -3,3 +3,6 @@
 *.cli-proxy-api/
 
 trae-auth-flow.md
+.opencode/
+gh-cli-cache/
+node-compile-cache/
