@@ -448,6 +448,8 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(s.cfg))
 	case "kilocode":
 		s.coreManager.RegisterExecutor(executor.NewKilocodeExecutor(s.cfg))
+	case "codebuddy":
+		s.coreManager.RegisterExecutor(executor.NewCodeBuddyExecutor(s.cfg))	
 	case "gitlab":
 		s.coreManager.RegisterExecutor(executor.NewGitLabExecutor(s.cfg))
 	default:
@@ -970,6 +972,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	case "gitlab":
 		models = executor.GitLabModelsFromAuth(a)
 		models = applyExcludedModels(models, excluded)
+	case "codebuddy":
+		models = registry.GetCodeBuddyModels()
+		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {
@@ -1022,6 +1027,10 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 						if modelID == "" {
 							modelID = m.Name
 						}
+						thinking := m.Thinking
+						if thinking == nil {
+							thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+						}
 						ms = append(ms, &ModelInfo{
 							ID:          modelID,
 							Object:      "model",
@@ -1029,7 +1038,8 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 							OwnedBy:     compat.Name,
 							Type:        "openai-compatibility",
 							DisplayName: modelID,
-							UserDefined: true,
+							UserDefined: false,
+							Thinking:    thinking,
 						})
 					}
 					// Register and return
