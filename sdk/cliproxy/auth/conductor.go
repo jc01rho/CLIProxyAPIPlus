@@ -128,15 +128,13 @@ func (NoopHook) OnResult(context.Context, Result) {}
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
-	store      Store
-	executors  map[string]ProviderExecutor
-	selector   Selector
-	hook       Hook
-	mu         sync.RWMutex
-	auths      map[string]*Auth
-	scheduler  *authScheduler
-	affinityMu sync.RWMutex
-	affinity   map[string]string
+	store     Store
+	executors map[string]ProviderExecutor
+	selector  Selector
+	hook      Hook
+	mu        sync.RWMutex
+	auths     map[string]*Auth
+	scheduler *authScheduler
 	// providerOffsets tracks per-model provider rotation state for multi-provider routing.
 	providerOffsets map[string]int
 
@@ -181,7 +179,6 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		selector:         selector,
 		hook:             hook,
 		auths:            make(map[string]*Auth),
-		affinity:         make(map[string]string),
 		providerOffsets:  make(map[string]int),
 		modelPoolOffsets: make(map[string]int),
 		refreshSemaphore: make(chan struct{}, refreshMaxConcurrency),
@@ -1132,7 +1129,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				continue
 			}
 			m.MarkResult(execCtx, result)
-			m.persistAuthAffinity(entry, opts, auth.ID, provider, req.Model)
 			return resp, nil
 		}
 		if authErr != nil {
@@ -1211,7 +1207,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				continue
 			}
 			m.MarkResult(execCtx, result)
-			m.persistAuthAffinity(entry, opts, auth.ID, provider, req.Model)
 			return resp, nil
 		}
 		if authErr != nil {
@@ -1282,7 +1277,6 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			lastErr = errStream
 			continue
 		}
-		m.persistAuthAffinity(entry, opts, auth.ID, provider, req.Model)
 		return streamResult, nil
 	}
 }
@@ -2228,93 +2222,6 @@ func (m *Manager) CloseExecutionSession(sessionID string) {
 	}
 }
 
-func authAffinityKeyFromMetadata(meta map[string]any) string {
-	if len(meta) == 0 {
-		return ""
-	}
-	raw, ok := meta["auth_affinity_key"]
-	if !ok || raw == nil {
-		return ""
-	}
-	switch val := raw.(type) {
-	case string:
-		return strings.TrimSpace(val)
-	case []byte:
-		return strings.TrimSpace(string(val))
-	default:
-		return ""
-	}
-}
-
-func scopedAuthAffinityKey(provider, key string) string {
-	provider = strings.TrimSpace(strings.ToLower(provider))
-	key = strings.TrimSpace(key)
-	if provider == "" || key == "" {
-		return ""
-	}
-	return provider + "|" + key
-}
-
-func (m *Manager) AuthAffinity(provider, key string) string {
-	key = scopedAuthAffinityKey(provider, key)
-	if m == nil || key == "" {
-		return ""
-	}
-	m.affinityMu.RLock()
-	defer m.affinityMu.RUnlock()
-	return strings.TrimSpace(m.affinity[key])
-}
-
-func (m *Manager) applyAuthAffinity(provider string, opts *cliproxyexecutor.Options) {
-	if m == nil || opts == nil || pinnedAuthIDFromMetadata(opts.Metadata) != "" {
-		return
-	}
-	if affinityKey := authAffinityKeyFromMetadata(opts.Metadata); affinityKey != "" {
-		if affinityAuthID := m.AuthAffinity(provider, affinityKey); affinityAuthID != "" {
-			if opts.Metadata == nil {
-				opts.Metadata = make(map[string]any)
-			}
-			opts.Metadata[cliproxyexecutor.PinnedAuthMetadataKey] = affinityAuthID
-		}
-	}
-}
-
-func (m *Manager) persistAuthAffinity(entry *log.Entry, opts cliproxyexecutor.Options, authID, provider, model string) {
-	if m == nil {
-		return
-	}
-	if affinityKey := authAffinityKeyFromMetadata(opts.Metadata); affinityKey != "" {
-		m.SetAuthAffinity(provider, affinityKey, authID)
-		if entry != nil && log.IsLevelEnabled(log.DebugLevel) {
-			entry.Debugf("auth affinity pinned auth_id=%s provider=%s model=%s", authID, provider, model)
-		}
-	}
-}
-
-func (m *Manager) SetAuthAffinity(provider, key, authID string) {
-	key = scopedAuthAffinityKey(provider, key)
-	authID = strings.TrimSpace(authID)
-	if m == nil || key == "" || authID == "" {
-		return
-	}
-	m.affinityMu.Lock()
-	if m.affinity == nil {
-		m.affinity = make(map[string]string)
-	}
-	m.affinity[key] = authID
-	m.affinityMu.Unlock()
-}
-
-func (m *Manager) ClearAuthAffinity(provider, key string) {
-	key = scopedAuthAffinityKey(provider, key)
-	if m == nil || key == "" {
-		return
-	}
-	m.affinityMu.Lock()
-	delete(m.affinity, key)
-	m.affinityMu.Unlock()
-}
-
 func (m *Manager) useSchedulerFastPath() bool {
 	if m == nil || m.scheduler == nil {
 		return false
@@ -2398,7 +2305,6 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 }
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
-	m.applyAuthAffinity(provider, &opts)
 	if !m.useSchedulerFastPath() {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
@@ -2513,18 +2419,6 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 }
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
-	if pinnedAuthIDFromMetadata(opts.Metadata) == "" {
-		for _, provider := range providers {
-			providerKey := strings.TrimSpace(strings.ToLower(provider))
-			if providerKey == "" {
-				continue
-			}
-			m.applyAuthAffinity(providerKey, &opts)
-			if pinnedAuthIDFromMetadata(opts.Metadata) != "" {
-				break
-			}
-		}
-	}
 	if !m.useSchedulerFastPath() {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
