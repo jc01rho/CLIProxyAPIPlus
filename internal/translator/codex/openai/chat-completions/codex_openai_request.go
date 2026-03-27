@@ -65,9 +65,6 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 
 	// Model
 	out, _ = sjson.SetBytes(out, "model", modelName)
-	if v := gjson.GetBytes(rawJSON, "prompt_cache_retention"); v.Exists() {
-		out, _ = sjson.SetBytes(out, "prompt_cache_retention", v.Value())
-	}
 
 	// Build tool name shortening map from original tools (if any)
 	originalToolNameMap := map[string]string{}

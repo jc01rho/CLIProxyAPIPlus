@@ -633,19 +633,3 @@ func TestToolsDefinitionTranslated(t *testing.T) {
 		t.Errorf("tool 'search' not found in output tools: %s", gjson.Get(result, "tools").Raw)
 	}
 }
-
-func TestPromptCacheRetentionPreserved(t *testing.T) {
-	input := []byte(`{
-		"model": "gpt-4o",
-		"prompt_cache_retention": "persistent",
-		"messages": [
-			{"role": "user", "content": "Hello"}
-		]
-	}`)
-
-	out := ConvertOpenAIRequestToCodex("gpt-4o", input, true)
-
-	if got := gjson.GetBytes(out, "prompt_cache_retention").String(); got != "persistent" {
-		t.Fatalf("prompt_cache_retention = %q, want %q", got, "persistent")
-	}
-}
