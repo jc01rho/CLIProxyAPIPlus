@@ -2277,7 +2277,7 @@ func (m *Manager) persistAuthAffinity(entry *log.Entry, opts cliproxyexecutor.Op
 	if affinityKey := authAffinityKeyFromMetadata(opts.Metadata); affinityKey != "" {
 		m.SetAuthAffinity(affinityKey, authID)
 		if entry != nil && log.IsLevelEnabled(log.DebugLevel) {
-			entry.Debugf("auth affinity pinned key=%s auth_id=%s provider=%s model=%s", affinityKey, authID, provider, model)
+			entry.Debugf("auth affinity pinned auth_id=%s provider=%s model=%s", authID, provider, model)
 		}
 	}
 }
