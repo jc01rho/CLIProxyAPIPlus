@@ -783,6 +783,7 @@ func applyCodexPromptCacheHeaders(ctx context.Context, auth *cliproxyauth.Auth, 
 				}
 				setCodexCache(key, cache)
 			}
+			continuity = codexContinuity{Key: cache.ID, Source: "claude_user_cache"}
 		}
 	} else if from == "openai-response" {
 		if promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {

@@ -1093,12 +1093,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
-		if affinityKey := authAffinityKeyFromMetadata(opts.Metadata); affinityKey != "" {
-			m.SetAuthAffinity(affinityKey, auth.ID)
-			if log.IsLevelEnabled(log.DebugLevel) {
-				entry.Debugf("auth affinity pinned key=%s auth_id=%s provider=%s model=%s", affinityKey, auth.ID, provider, req.Model)
-			}
-		}
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -1138,6 +1132,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				continue
 			}
 			m.MarkResult(execCtx, result)
+			m.persistAuthAffinity(entry, opts, auth.ID, provider, req.Model)
 			return resp, nil
 		}
 		if authErr != nil {
@@ -1177,12 +1172,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
-		if affinityKey := authAffinityKeyFromMetadata(opts.Metadata); affinityKey != "" {
-			m.SetAuthAffinity(affinityKey, auth.ID)
-			if log.IsLevelEnabled(log.DebugLevel) {
-				entry.Debugf("auth affinity pinned key=%s auth_id=%s provider=%s model=%s", affinityKey, auth.ID, provider, req.Model)
-			}
-		}
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -1222,6 +1211,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				continue
 			}
 			m.MarkResult(execCtx, result)
+			m.persistAuthAffinity(entry, opts, auth.ID, provider, req.Model)
 			return resp, nil
 		}
 		if authErr != nil {
@@ -1269,12 +1259,6 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
-		if affinityKey := authAffinityKeyFromMetadata(opts.Metadata); affinityKey != "" {
-			m.SetAuthAffinity(affinityKey, auth.ID)
-			if log.IsLevelEnabled(log.DebugLevel) {
-				entry.Debugf("auth affinity pinned key=%s auth_id=%s provider=%s model=%s", affinityKey, auth.ID, provider, req.Model)
-			}
-		}
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -1298,6 +1282,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			lastErr = errStream
 			continue
 		}
+		m.persistAuthAffinity(entry, opts, auth.ID, provider, req.Model)
 		return streamResult, nil
 	}
 }
@@ -2281,6 +2266,18 @@ func (m *Manager) applyAuthAffinity(opts *cliproxyexecutor.Options) {
 				opts.Metadata = make(map[string]any)
 			}
 			opts.Metadata[cliproxyexecutor.PinnedAuthMetadataKey] = affinityAuthID
+		}
+	}
+}
+
+func (m *Manager) persistAuthAffinity(entry *log.Entry, opts cliproxyexecutor.Options, authID, provider, model string) {
+	if m == nil {
+		return
+	}
+	if affinityKey := authAffinityKeyFromMetadata(opts.Metadata); affinityKey != "" {
+		m.SetAuthAffinity(affinityKey, authID)
+		if entry != nil && log.IsLevelEnabled(log.DebugLevel) {
+			entry.Debugf("auth affinity pinned key=%s auth_id=%s provider=%s model=%s", affinityKey, authID, provider, model)
 		}
 	}
 }

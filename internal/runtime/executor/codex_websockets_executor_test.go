@@ -57,6 +57,26 @@ func TestApplyCodexPromptCacheHeaders_PreservesPromptCacheRetention(t *testing.T
 	}
 }
 
+func TestApplyCodexPromptCacheHeaders_ClaudePreservesContinuity(t *testing.T) {
+	req := cliproxyexecutor.Request{
+		Model:   "claude-3-7-sonnet",
+		Payload: []byte(`{"metadata":{"user_id":"user-1"}}`),
+	}
+	body := []byte(`{"model":"gpt-5.4","stream":true}`)
+
+	updatedBody, headers, continuity := applyCodexPromptCacheHeaders(context.Background(), nil, sdktranslator.FromString("claude"), req, cliproxyexecutor.Options{}, body)
+
+	if continuity.Key == "" {
+		t.Fatal("continuity.Key = empty, want non-empty")
+	}
+	if got := gjson.GetBytes(updatedBody, "prompt_cache_key").String(); got != continuity.Key {
+		t.Fatalf("prompt_cache_key = %q, want %q", got, continuity.Key)
+	}
+	if got := headers.Get("session_id"); got != continuity.Key {
+		t.Fatalf("session_id = %q, want %q", got, continuity.Key)
+	}
+}
+
 func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) {
 	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, nil, "", nil)
 

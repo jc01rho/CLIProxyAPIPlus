@@ -151,3 +151,45 @@ func TestCodexExecutorCacheHelper_OpenAIChatCompletions_FallsBackToStableAuthID(
 		t.Fatalf("session_id = %q, want %q", got, expected)
 	}
 }
+
+func TestCodexExecutorCacheHelper_ClaudePreservesCacheContinuity(t *testing.T) {
+	executor := &CodexExecutor{}
+	req := cliproxyexecutor.Request{
+		Model:   "claude-3-7-sonnet",
+		Payload: []byte(`{"metadata":{"user_id":"user-1"}}`),
+	}
+	rawJSON := []byte(`{"model":"gpt-5.4","stream":true}`)
+
+	httpReq, continuity, err := executor.cacheHelper(context.Background(), nil, sdktranslator.FromString("claude"), "https://example.com/responses", req, cliproxyexecutor.Options{}, rawJSON)
+	if err != nil {
+		t.Fatalf("cacheHelper error: %v", err)
+	}
+	if continuity.Key == "" {
+		t.Fatal("continuity.Key = empty, want non-empty")
+	}
+	body, err := io.ReadAll(httpReq.Body)
+	if err != nil {
+		t.Fatalf("read request body: %v", err)
+	}
+	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != continuity.Key {
+		t.Fatalf("prompt_cache_key = %q, want %q", got, continuity.Key)
+	}
+	if got := httpReq.Header.Get("session_id"); got != continuity.Key {
+		t.Fatalf("session_id = %q, want %q", got, continuity.Key)
+	}
+}
+
+func TestResolveCodexContinuity_DoesNotForwardAuthAffinityKey(t *testing.T) {
+	req := cliproxyexecutor.Request{Payload: []byte(`{"model":"gpt-5.4"}`)}
+	opts := cliproxyexecutor.Options{Metadata: map[string]any{"auth_affinity_key": "principal:raw-client-secret"}}
+	auth := &cliproxyauth.Auth{ID: "codex-auth-1", Provider: "codex"}
+
+	continuity := resolveCodexContinuity(context.Background(), auth, req, opts)
+
+	if continuity.Source != "auth_id" {
+		t.Fatalf("continuity.Source = %q, want %q", continuity.Source, "auth_id")
+	}
+	if continuity.Key == "principal:raw-client-secret" {
+		t.Fatal("continuity.Key leaked raw auth affinity key")
+	}
+}

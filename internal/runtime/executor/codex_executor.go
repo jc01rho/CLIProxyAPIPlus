@@ -612,6 +612,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth
 				}
 				setCodexCache(key, cache)
 			}
+			continuity = codexContinuity{Key: cache.ID, Source: "claude_user_cache"}
 		}
 	} else if from == "openai-response" {
 		promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key")

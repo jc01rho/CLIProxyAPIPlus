@@ -57,9 +57,6 @@ func resolveCodexContinuity(ctx context.Context, auth *cliproxyauth.Auth, req cl
 	if executionSession := metadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); executionSession != "" {
 		return codexContinuity{Key: executionSession, Source: "execution_session"}
 	}
-	if affinityKey := metadataString(opts.Metadata, codexAuthAffinityMetadataKey); affinityKey != "" {
-		return codexContinuity{Key: affinityKey, Source: "auth_affinity"}
-	}
 	if ginCtx := ginContextFrom(ctx); ginCtx != nil {
 		if ginCtx.Request != nil {
 			if v := strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key")); v != "" {
