@@ -34,6 +34,10 @@ GLM CODING PLAN 是专为AI编码打造的订阅套餐，每月最低仅需20元
 <td width="180"><a href="https://shop.bmoplus.com/?utm_source=github"><img src="./assets/bmoplus.png" alt="BmoPlus" width="150"></a></td>
 <td>感谢 BmoPlus 赞助了本项目！BmoPlus 是一家专为AI订阅重度用户打造的可靠 AI 账号代充服务商，提供稳定的 ChatGPT Plus / ChatGPT Pro(全程质保) / Claude Pro / Super Grok / Gemini Pro 的官方代充&成品账号。 通过<a href="https://shop.bmoplus.com/?utm_source=github">BmoPlus AI成品号专卖/代充</a>注册下单的用户，可享GPT <b>官网订阅一折</b> 的震撼价格！</td>
 </tr>
+<tr>
+<td width="180"><a href="https://www.lingtrue.com/"><img src="./assets/lingtrue.png" alt="LingtrueAPI" width="150"></a></td>
+<td>感谢 LingtrueAPI 对本项目的赞助！LingtrueAPI 是一家全球大模型API中转服务平台，提供Claude Code、Codex、Gemini 等多种顶级模型API调用服务，致力于让用户以低成本、高稳定性链接全球AI能力。LingtrueAPI为本软件用户提供了特别优惠：使用<a href="https://www.lingtrue.com/register">此链接</a>注册，并在首次充值时输入 "LingtrueAPI" 优惠码即可享受9折优惠。</td>
+</tr>
 </tbody>
 </table>
 
