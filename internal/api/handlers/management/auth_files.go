@@ -30,6 +30,7 @@ import (
 	clineauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/cline"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/copilot"
+	cursorauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/cursor"
 	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
 	gitlabauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gitlab"
 	iflowauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
@@ -553,10 +554,23 @@ func isRuntimeOnlyAuth(auth *coreauth.Auth) bool {
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["runtime_only"]), "true")
 }
 
+func isUnsafeAuthFileName(name string) bool {
+	if strings.TrimSpace(name) == "" {
+		return true
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return true
+	}
+	if filepath.VolumeName(name) != "" {
+		return true
+	}
+	return false
+}
+
 // Download single auth file by name
 func (h *Handler) DownloadAuthFile(c *gin.Context) {
-	name := c.Query("name")
-	if name == "" || strings.Contains(name, string(os.PathSeparator)) {
+	name := strings.TrimSpace(c.Query("name"))
+	if isUnsafeAuthFileName(name) {
 		c.JSON(400, gin.H{"error": "invalid name"})
 		return
 	}
@@ -638,8 +652,8 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no files uploaded"})
 		return
 	}
-	name := c.Query("name")
-	if name == "" || strings.Contains(name, string(os.PathSeparator)) {
+	name := strings.TrimSpace(c.Query("name"))
+	if isUnsafeAuthFileName(name) {
 		c.JSON(400, gin.H{"error": "invalid name"})
 		return
 	}
@@ -872,7 +886,7 @@ func uniqueAuthFileNames(names []string) []string {
 
 func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string, int, error) {
 	name = strings.TrimSpace(name)
-	if name == "" || strings.Contains(name, string(os.PathSeparator)) {
+	if isUnsafeAuthFileName(name) {
 		return "", http.StatusBadRequest, fmt.Errorf("invalid name")
 	}
 
@@ -2200,9 +2214,6 @@ func (h *Handler) RequestGitLabToken(c *gin.Context) {
 		metadata := buildGitLabAuthMetadata(baseURL, gitLabLoginModeOAuth, tokenResp, direct)
 		metadata["auth_kind"] = "oauth"
 		metadata["oauth_client_id"] = clientID
-		if clientSecret != "" {
-			metadata["oauth_client_secret"] = clientSecret
-		}
 		metadata["username"] = strings.TrimSpace(user.Username)
 		if email := primaryGitLabEmail(user); email != "" {
 			metadata["email"] = email
@@ -3903,5 +3914,86 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 		"state":            state,
 		"user_code":        resp.Code,
 		"verification_uri": resp.VerificationURL,
+	})
+}
+
+// RequestCursorToken initiates the Cursor PKCE authentication flow.
+// Supports multiple accounts via ?label=xxx query parameter.
+// The user opens the returned URL in a browser, logs in, and the server polls
+// until the authentication completes.
+func (h *Handler) RequestCursorToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	label := strings.TrimSpace(c.Query("label"))
+	log.Infof("Initializing Cursor authentication (label=%q)...", label)
+
+	authParams, err := cursorauth.GenerateAuthParams()
+	if err != nil {
+		log.Errorf("Failed to generate Cursor auth params: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate auth params"})
+		return
+	}
+
+	state := fmt.Sprintf("cur-%d", time.Now().UnixNano())
+	RegisterOAuthSession(state, "cursor")
+
+	go func() {
+		log.Info("Waiting for Cursor authentication...")
+		log.Infof("Open this URL in your browser: %s", authParams.LoginURL)
+
+		tokens, errPoll := cursorauth.PollForAuth(ctx, authParams.UUID, authParams.Verifier)
+		if errPoll != nil {
+			SetOAuthSessionError(state, "Authentication failed: "+errPoll.Error())
+			log.Errorf("Cursor authentication failed: %v", errPoll)
+			return
+		}
+
+		// Build metadata
+		metadata := map[string]any{
+			"type":          "cursor",
+			"access_token":  tokens.AccessToken,
+			"refresh_token": tokens.RefreshToken,
+			"timestamp":     time.Now().UnixMilli(),
+		}
+
+		// Extract expiry and account identity from JWT
+		expiry := cursorauth.GetTokenExpiry(tokens.AccessToken)
+		if !expiry.IsZero() {
+			metadata["expires_at"] = expiry.Format(time.RFC3339)
+		}
+
+		// Auto-identify account from JWT sub claim for multi-account support
+		sub := cursorauth.ParseJWTSub(tokens.AccessToken)
+		subHash := cursorauth.SubToShortHash(sub)
+		if sub != "" {
+			metadata["sub"] = sub
+		}
+
+		fileName := cursorauth.CredentialFileName(label, subHash)
+		displayLabel := cursorauth.DisplayLabel(label, subHash)
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "cursor",
+			FileName: fileName,
+			Label:    displayLabel,
+			Metadata: metadata,
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save Cursor tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save tokens")
+			return
+		}
+
+		log.Infof("Cursor authentication successful! Token saved to %s", savedPath)
+		CompleteOAuthSession(state)
+		CompleteOAuthSessionsByProvider("cursor")
+	}()
+
+	c.JSON(200, gin.H{
+		"status": "ok",
+		"url":    authParams.LoginURL,
+		"state":  state,
 	})
 }

@@ -1,6 +1,7 @@
 # Binaries
 cli-proxy-api
-/cliproxy
+cliproxy
+/server
 *.exe
 
 
