@@ -32,14 +32,12 @@ func writeResponsesSSEChunk(w io.Writer, chunk []byte) {
 	if bytes.HasSuffix(chunk, []byte("\n\n")) {
 		return
 	}
+	suffix := []byte("\n\n")
 	if bytes.HasSuffix(chunk, []byte("\n")) {
-		if _, err := w.Write([]byte("\n")); err != nil {
-			return
-		}
-	} else {
-		if _, err := w.Write([]byte("\n\n")); err != nil {
-			return
-		}
+		suffix = []byte("\n")
+	}
+	if _, err := w.Write(suffix); err != nil {
+		return
 	}
 }
 
