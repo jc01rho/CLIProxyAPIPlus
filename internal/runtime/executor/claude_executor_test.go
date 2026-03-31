@@ -16,6 +16,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
@@ -24,9 +25,7 @@ import (
 )
 
 func resetClaudeDeviceProfileCache() {
-	claudeDeviceProfileCacheMu.Lock()
-	claudeDeviceProfileCache = make(map[string]claudeDeviceProfileCacheEntry)
-	claudeDeviceProfileCacheMu.Unlock()
+	helps.ResetClaudeDeviceProfileCache()
 }
 
 func newClaudeHeaderTestRequest(t *testing.T, incoming http.Header) *http.Request {
@@ -339,7 +338,7 @@ func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testi
 	var pauseOnce sync.Once
 	var releaseOnce sync.Once
 
-	claudeDeviceProfileBeforeCandidateStore = func(candidate claudeDeviceProfile) {
+	helps.ClaudeDeviceProfileBeforeCandidateStore = func(candidate helps.ClaudeDeviceProfile) {
 		if candidate.UserAgent != "claude-cli/2.1.62 (external, cli)" {
 			return
 		}
@@ -347,13 +346,13 @@ func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testi
 		<-releaseLow
 	}
 	t.Cleanup(func() {
-		claudeDeviceProfileBeforeCandidateStore = nil
+		helps.ClaudeDeviceProfileBeforeCandidateStore = nil
 		releaseOnce.Do(func() { close(releaseLow) })
 	})
 
-	lowResultCh := make(chan claudeDeviceProfile, 1)
+	lowResultCh := make(chan helps.ClaudeDeviceProfile, 1)
 	go func() {
-		lowResultCh <- resolveClaudeDeviceProfile(auth, "key-racy-upgrade", http.Header{
+		lowResultCh <- helps.ResolveClaudeDeviceProfile(auth, "key-racy-upgrade", http.Header{
 			"User-Agent":                  []string{"claude-cli/2.1.62 (external, cli)"},
 			"X-Stainless-Package-Version": []string{"0.74.0"},
 			"X-Stainless-Runtime-Version": []string{"v24.3.0"},
@@ -368,7 +367,7 @@ func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testi
 		t.Fatal("timed out waiting for lower candidate to pause before storing")
 	}
 
-	highResult := resolveClaudeDeviceProfile(auth, "key-racy-upgrade", http.Header{
+	highResult := helps.ResolveClaudeDeviceProfile(auth, "key-racy-upgrade", http.Header{
 		"User-Agent":                  []string{"claude-cli/2.1.63 (external, cli)"},
 		"X-Stainless-Package-Version": []string{"0.75.0"},
 		"X-Stainless-Runtime-Version": []string{"v24.4.0"},
@@ -399,7 +398,7 @@ func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testi
 		t.Fatalf("highResult platform = %s/%s, want %s/%s", highResult.OS, highResult.Arch, "MacOS", "arm64")
 	}
 
-	cached := resolveClaudeDeviceProfile(auth, "key-racy-upgrade", http.Header{
+	cached := helps.ResolveClaudeDeviceProfile(auth, "key-racy-upgrade", http.Header{
 		"User-Agent": []string{"curl/8.7.1"},
 	}, cfg)
 	if cached.UserAgent != "claude-cli/2.1.63 (external, cli)" {
