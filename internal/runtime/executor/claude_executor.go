@@ -22,6 +22,7 @@ import (
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -43,6 +44,8 @@ type ClaudeExecutor struct {
 // claudeToolPrefix is empty to match real Claude Code behavior (no tool name prefix).
 // Previously "proxy_" was used but this is a detectable fingerprint difference.
 const claudeToolPrefix = ""
+
+const defaultClaudeMaxTokens = 32000
 
 func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor { return &ClaudeExecutor{cfg: cfg} }
 
@@ -130,6 +133,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
+	body = ensureClaudeMaxTokens(body, baseModel)
 
 	// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
 	if countCacheControls(body) == 0 {
@@ -304,6 +308,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
+	body = ensureClaudeMaxTokens(body, baseModel)
 
 	// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
 	if countCacheControls(body) == 0 {
@@ -642,6 +647,20 @@ func disableThinkingIfToolChoiceForced(body []byte) []byte {
 			body, _ = sjson.DeleteBytes(body, "output_config")
 		}
 	}
+	return body
+}
+
+func ensureClaudeMaxTokens(body []byte, model string) []byte {
+	if maxTokens := gjson.GetBytes(body, "max_tokens"); maxTokens.Exists() && maxTokens.Int() > 0 {
+		return body
+	}
+
+	maxTokens := defaultClaudeMaxTokens
+	if modelInfo := registry.LookupModelInfo(model, "claude"); modelInfo != nil && modelInfo.MaxCompletionTokens > 0 {
+		maxTokens = modelInfo.MaxCompletionTokens
+	}
+
+	body, _ = sjson.SetBytes(body, "max_tokens", maxTokens)
 	return body
 }
 

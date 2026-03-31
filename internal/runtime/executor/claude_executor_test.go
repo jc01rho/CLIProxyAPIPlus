@@ -1069,6 +1069,60 @@ func TestClaudeExecutor_CountTokens_AppliesCacheControlGuards(t *testing.T) {
 	}
 }
 
+func TestEnsureClaudeMaxTokens_UsesModelDefaultWhenKnown(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	out := ensureClaudeMaxTokens(body, "claude-sonnet-4")
+
+	if got := gjson.GetBytes(out, "max_tokens").Int(); got != 64000 {
+		t.Fatalf("max_tokens = %d, want %d", got, 64000)
+	}
+}
+
+func TestEnsureClaudeMaxTokens_FallsBackWhenModelUnknown(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	out := ensureClaudeMaxTokens(body, "claude-unknown-model")
+
+	if got := gjson.GetBytes(out, "max_tokens").Int(); got != defaultClaudeMaxTokens {
+		t.Fatalf("max_tokens = %d, want %d", got, defaultClaudeMaxTokens)
+	}
+}
+
+func TestClaudeExecutor_Execute_InjectsMaxTokensWhenMissing(t *testing.T) {
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-3-5-sonnet-20241022","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if len(seenBody) == 0 {
+		t.Fatal("expected execute request body to be captured")
+	}
+	if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != defaultClaudeMaxTokens {
+		t.Fatalf("request max_tokens = %d, want %d", got, defaultClaudeMaxTokens)
+	}
+}
+
 func hasTTLOrderingViolation(payload []byte) bool {
 	seen5m := false
 	violates := false
