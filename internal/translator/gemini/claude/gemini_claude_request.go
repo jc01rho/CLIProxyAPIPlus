@@ -6,6 +6,7 @@
 package claude
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -141,6 +142,30 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 			}
 			return true
 		})
+	}
+
+	// strip trailing model turn with unanswered function calls —
+	// Gemini returns empty responses when the last turn is a model
+	// functionCall with no corresponding user functionResponse.
+	contents := gjson.GetBytes(out, "contents")
+	if contents.Exists() && contents.IsArray() {
+		arr := contents.Array()
+		if len(arr) > 0 {
+			last := arr[len(arr)-1]
+			if last.Get("role").String() == "model" {
+				hasFC := false
+				last.Get("parts").ForEach(func(_, part gjson.Result) bool {
+					if part.Get("functionCall").Exists() {
+						hasFC = true
+						return false
+					}
+					return true
+				})
+				if hasFC {
+					out, _ = sjson.DeleteBytes(out, fmt.Sprintf("contents.%d", len(arr)-1))
+				}
+			}
+		}
 	}
 
 	// tools
