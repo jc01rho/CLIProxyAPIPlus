@@ -1814,3 +1814,27 @@ func TestClaudeExecutor_ExperimentalCCHSigningOptInSignsFinalBody(t *testing.T) 
 		t.Fatalf("cch = %q, want %q\nbody: %s", actualCCH, wantCCH, string(seenBody))
 	}
 }
+
+func TestApplyCloaking_PreservesConfiguredStrictModeAndSensitiveWordsWhenModeOmitted(t *testing.T) {
+	cfg := &config.Config{
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey: "key-123",
+			Cloak: &config.CloakConfig{
+				StrictMode:     true,
+				SensitiveWords: []string{"proxy"},
+			},
+		}},
+	}
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-123"}}
+	payload := []byte(`{"system":"proxy rules","messages":[{"role":"user","content":[{"type":"text","text":"proxy access"}]}]}`)
+
+	out := applyCloaking(context.Background(), cfg, auth, payload, "claude-3-5-sonnet-20241022", "key-123")
+
+	blocks := gjson.GetBytes(out, "system").Array()
+	if len(blocks) != 2 {
+		t.Fatalf("expected strict mode to keep only injected system blocks, got %d", len(blocks))
+	}
+	if got := gjson.GetBytes(out, "messages.0.content.0.text").String(); !strings.Contains(got, zeroWidthSpace) {
+		t.Fatalf("expected configured sensitive word obfuscation to apply, got %q", got)
+	}
+}

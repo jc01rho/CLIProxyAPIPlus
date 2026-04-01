@@ -1241,36 +1241,28 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 	useExperimentalCCHSigning := experimentalCCHSigningEnabled(cfg, auth)
 
 	// Get cloak config from ClaudeKey configuration
-
 	cloakCfg := resolveClaudeKeyCloakConfig(cfg, auth)
 	attrMode, attrStrict, attrWords, attrCache := getCloakConfigFromAuth(auth)
 
 	// Determine cloak settings
-	var cloakMode string
-	var strictMode bool
-	var sensitiveWords []string
-	var cacheUserID bool
+	cloakMode := attrMode
+	strictMode := attrStrict
+	sensitiveWords := attrWords
+	cacheUserID := attrCache
 
 	if cloakCfg != nil {
-		cloakMode = strings.TrimSpace(cloakCfg.Mode)
-		if cloakMode == "" {
-			cloakMode = attrMode
-			strictMode = attrStrict
-			sensitiveWords = attrWords
-		} else {
-			strictMode = cloakCfg.StrictMode
+		if mode := strings.TrimSpace(cloakCfg.Mode); mode != "" {
+			cloakMode = mode
+		}
+		if cloakCfg.StrictMode {
+			strictMode = true
+		}
+		if len(cloakCfg.SensitiveWords) > 0 {
 			sensitiveWords = cloakCfg.SensitiveWords
 		}
 		if cloakCfg.CacheUserID != nil {
 			cacheUserID = *cloakCfg.CacheUserID
-		} else {
-			cacheUserID = attrCache
 		}
-	} else {
-		cloakMode = attrMode
-		strictMode = attrStrict
-		sensitiveWords = attrWords
-		cacheUserID = attrCache
 	}
 
 	// Determine if cloaking should be applied
