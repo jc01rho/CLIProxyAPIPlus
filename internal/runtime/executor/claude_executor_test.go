@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
+	xxHash64 "github.com/pierrec/xxHash/xxHash64"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -1418,6 +1421,35 @@ func TestDecodeResponseBody_MagicByteGzipNoHeader(t *testing.T) {
 	}
 }
 
+// TestDecodeResponseBody_MagicByteZstdNoHeader verifies that decodeResponseBody
+// detects zstd-compressed content via magic bytes even when Content-Encoding is absent.
+func TestDecodeResponseBody_MagicByteZstdNoHeader(t *testing.T) {
+	const plaintext = "data: {\"type\":\"message_stop\"}\n"
+
+	var buf bytes.Buffer
+	enc, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("zstd.NewWriter: %v", err)
+	}
+	_, _ = enc.Write([]byte(plaintext))
+	_ = enc.Close()
+
+	rc := io.NopCloser(&buf)
+	decoded, err := decodeResponseBody(rc, "")
+	if err != nil {
+		t.Fatalf("decodeResponseBody error: %v", err)
+	}
+	defer decoded.Close()
+
+	got, err := io.ReadAll(decoded)
+	if err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	if string(got) != plaintext {
+		t.Errorf("decoded = %q, want %q", got, plaintext)
+	}
+}
+
 // TestDecodeResponseBody_PlainTextNoHeader verifies that decodeResponseBody returns
 // plain text untouched when Content-Encoding is absent and no magic bytes match.
 func TestDecodeResponseBody_PlainTextNoHeader(t *testing.T) {
@@ -1486,77 +1518,6 @@ func TestClaudeExecutor_ExecuteStream_GzipNoContentEncodingHeader(t *testing.T) 
 	}
 	if !strings.Contains(combined.String(), "message_stop") {
 		t.Errorf("unexpected chunk content: %q", combined.String())
-	}
-}
-
-// TestClaudeExecutor_ExecuteStream_AcceptEncodingOverrideCannotBypassIdentity verifies
-// that injecting Accept-Encoding via auth.Attributes cannot override the stream
-// path's enforced identity encoding.
-func TestClaudeExecutor_ExecuteStream_AcceptEncodingOverrideCannotBypassIdentity(t *testing.T) {
-	var gotEncoding string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotEncoding = r.Header.Get("Accept-Encoding")
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
-	}))
-	defer server.Close()
-
-	executor := NewClaudeExecutor(&config.Config{})
-	// Inject Accept-Encoding via the custom header attribute mechanism.
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"api_key":                "key-123",
-		"base_url":               server.URL,
-		"header:Accept-Encoding": "gzip, deflate, br, zstd",
-	}}
-	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
-
-	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "claude-3-5-sonnet-20241022",
-		Payload: payload,
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FromString("claude"),
-	})
-	if err != nil {
-		t.Fatalf("ExecuteStream error: %v", err)
-	}
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("unexpected chunk error: %v", chunk.Err)
-		}
-	}
-
-	if gotEncoding != "identity" {
-		t.Errorf("Accept-Encoding = %q; stream path must enforce identity regardless of auth.Attributes override", gotEncoding)
-	}
-}
-
-// TestDecodeResponseBody_MagicByteZstdNoHeader verifies that decodeResponseBody
-// detects zstd-compressed content via magic bytes (28 b5 2f fd) even when
-// Content-Encoding is absent.
-func TestDecodeResponseBody_MagicByteZstdNoHeader(t *testing.T) {
-	const plaintext = "data: {\"type\":\"message_stop\"}\n"
-
-	var buf bytes.Buffer
-	enc, err := zstd.NewWriter(&buf)
-	if err != nil {
-		t.Fatalf("zstd.NewWriter: %v", err)
-	}
-	_, _ = enc.Write([]byte(plaintext))
-	_ = enc.Close()
-
-	rc := io.NopCloser(&buf)
-	decoded, err := decodeResponseBody(rc, "")
-	if err != nil {
-		t.Fatalf("decodeResponseBody error: %v", err)
-	}
-	defer decoded.Close()
-
-	got, err := io.ReadAll(decoded)
-	if err != nil {
-		t.Fatalf("ReadAll error: %v", err)
-	}
-	if string(got) != plaintext {
-		t.Errorf("decoded = %q, want %q", got, plaintext)
 	}
 }
 
@@ -1643,6 +1604,45 @@ func TestClaudeExecutor_ExecuteStream_GzipErrorBodyNoContentEncodingHeader(t *te
 	}
 }
 
+// TestClaudeExecutor_ExecuteStream_AcceptEncodingOverrideCannotBypassIdentity verifies that the
+// streaming executor enforces Accept-Encoding: identity regardless of auth.Attributes override.
+func TestClaudeExecutor_ExecuteStream_AcceptEncodingOverrideCannotBypassIdentity(t *testing.T) {
+	var gotEncoding string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEncoding = r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":                "key-123",
+		"base_url":               server.URL,
+		"header:Accept-Encoding": "gzip, deflate, br, zstd",
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+	}
+
+	if gotEncoding != "identity" {
+		t.Errorf("Accept-Encoding = %q; stream path must enforce identity regardless of auth.Attributes override", gotEncoding)
+	}
+}
+
 // Test case 1: String system prompt is preserved and converted to a content block
 func TestCheckSystemInstructionsWithMode_StringSystemPreserved(t *testing.T) {
 	payload := []byte(`{"system":"You are a helpful assistant.","messages":[{"role":"user","content":"hi"}]}`)
@@ -1724,5 +1724,93 @@ func TestCheckSystemInstructionsWithMode_StringWithSpecialChars(t *testing.T) {
 	}
 	if blocks[2].Get("text").String() != `Use <xml> tags & "quotes" in output.` {
 		t.Fatalf("blocks[2] text mangled, got %q", blocks[2].Get("text").String())
+	}
+}
+
+func TestClaudeExecutor_ExperimentalCCHSigningDisabledByDefaultKeepsLegacyHeader(t *testing.T) {
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-3-5-sonnet","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(seenBody) == 0 {
+		t.Fatal("expected request body to be captured")
+	}
+
+	billingHeader := gjson.GetBytes(seenBody, "system.0.text").String()
+	if !strings.HasPrefix(billingHeader, "x-anthropic-billing-header:") {
+		t.Fatalf("system.0.text = %q, want billing header", billingHeader)
+	}
+	if strings.Contains(billingHeader, "cch=00000;") {
+		t.Fatalf("legacy mode should not forward cch placeholder, got %q", billingHeader)
+	}
+}
+
+func TestClaudeExecutor_ExperimentalCCHSigningOptInSignsFinalBody(t *testing.T) {
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-3-5-sonnet","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey:                 "key-123",
+			BaseURL:                server.URL,
+			ExperimentalCCHSigning: true,
+		}},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	const messageText = "please keep literal cch=00000 in this message"
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"please keep literal cch=00000 in this message"}]}]}`)
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(seenBody) == 0 {
+		t.Fatal("expected request body to be captured")
+	}
+	if got := gjson.GetBytes(seenBody, "messages.0.content.0.text").String(); got != messageText {
+		t.Fatalf("message text = %q, want %q", got, messageText)
+	}
+
+	billingPattern := regexp.MustCompile(`(x-anthropic-billing-header:[^"]*?\bcch=)([0-9a-f]{5})(;)`)
+	match := billingPattern.FindSubmatch(seenBody)
+	if match == nil {
+		t.Fatalf("expected signed billing header in body: %s", string(seenBody))
+	}
+	actualCCH := string(match[2])
+	unsignedBody := billingPattern.ReplaceAll(seenBody, []byte(`${1}00000${3}`))
+	wantCCH := fmt.Sprintf("%05x", xxHash64.Checksum(unsignedBody, 0x6E52736AC806831E)&0xFFFFF)
+	if actualCCH != wantCCH {
+		t.Fatalf("cch = %q, want %q\nbody: %s", actualCCH, wantCCH, string(seenBody))
 	}
 }

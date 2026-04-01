@@ -240,8 +240,8 @@ type AmpCode struct {
 	UpstreamAPIKey string `yaml:"upstream-api-key" json:"upstream-api-key"`
 
 	// UpstreamAPIKeys maps client API keys (from top-level api-keys) to upstream API keys.
-	// When a client authenticates with a key that matches an entry, that upstream key is used.
-	// If no match is found, falls back to UpstreamAPIKey (default behavior).
+	// When a request is authenticated with one of the APIKeys, the corresponding UpstreamAPIKey
+	// is used for the upstream Amp request.
 	UpstreamAPIKeys []AmpUpstreamAPIKeyEntry `yaml:"upstream-api-keys,omitempty" json:"upstream-api-keys,omitempty"`
 
 	// RestrictManagementToLocalhost restricts Amp management routes (/api/user, /api/threads, etc.)
@@ -363,6 +363,11 @@ type ClaudeKey struct {
 
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
+
+	// ExperimentalCCHSigning enables opt-in final-body cch signing for cloaked
+	// Claude /v1/messages requests. It is disabled by default so upstream seed
+	// changes do not alter the proxy's legacy behavior.
+	ExperimentalCCHSigning bool `yaml:"experimental-cch-signing,omitempty" json:"experimental-cch-signing,omitempty"`
 }
 
 func (k ClaudeKey) GetAPIKey() string  { return k.APIKey }
