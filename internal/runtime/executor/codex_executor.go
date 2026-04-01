@@ -29,8 +29,8 @@ import (
 )
 
 const (
-	codexUserAgent  = "codex_cli_rs/0.116.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
-	codexOriginator = "codex_cli_rs"
+	codexUserAgent  = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
+	codexOriginator = "codex-tui"
 )
 
 var dataTag = []byte("data:")
@@ -629,7 +629,6 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		return nil, err
 	}
 	if cache.ID != "" {
-		httpReq.Header.Set("Conversation_id", cache.ID)
 		httpReq.Header.Set("Session_id", cache.ID)
 	}
 	return httpReq, nil
@@ -644,12 +643,18 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		ginHeaders = ginCtx.Request.Header
 	}
 
+	if ginHeaders.Get("X-Codex-Beta-Features") != "" {
+		r.Header.Set("X-Codex-Beta-Features", ginHeaders.Get("X-Codex-Beta-Features"))
+	}
 	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
-	misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
 	cfgUserAgent, _ := codexHeaderDefaults(cfg, auth)
 	ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+
+	if strings.Contains(r.Header.Get("User-Agent"), "Mac OS") {
+		misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
+	}
 
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")

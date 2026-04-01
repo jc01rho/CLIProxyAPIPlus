@@ -793,7 +793,6 @@ func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecuto
 	if cache.ID != "" {
 		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_key", cache.ID)
 		headers.Set("Conversation_id", cache.ID)
-		headers.Set("Session_id", cache.ID)
 	}
 
 	return rawJSON, headers
@@ -828,8 +827,11 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		betaHeader = codexResponsesWebsocketBetaHeaderValue
 	}
 	headers.Set("OpenAI-Beta", betaHeader)
-	misc.EnsureHeader(headers, ginHeaders, "Session_id", uuid.NewString())
 	ensureHeaderWithConfigPrecedence(headers, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+
+	if strings.Contains(headers.Get("User-Agent"), "Mac OS") {
+		misc.EnsureHeader(headers, ginHeaders, "Session_id", uuid.NewString())
+	}
 
 	isAPIKey := false
 	if auth != nil && auth.Attributes != nil {
