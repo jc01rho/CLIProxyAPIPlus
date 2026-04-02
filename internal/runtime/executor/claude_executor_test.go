@@ -567,7 +567,7 @@ func TestApplyClaudeHeaders_LegacyModeFallsBackToRuntimeOSArchWhenMissing(t *tes
 	})
 	applyClaudeHeaders(req, auth, "key-legacy-runtime-os-arch", false, nil, cfg)
 
-	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", mapStainlessOS(), mapStainlessArch())
+	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", helps.MapStainlessOS(), helps.MapStainlessArch())
 }
 
 func TestApplyClaudeHeaders_UnsetStabilizationAlsoUsesLegacyRuntimeOSArchFallback(t *testing.T) {
@@ -594,14 +594,14 @@ func TestApplyClaudeHeaders_UnsetStabilizationAlsoUsesLegacyRuntimeOSArchFallbac
 	})
 	applyClaudeHeaders(req, auth, "key-unset-runtime-os-arch", false, nil, cfg)
 
-	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", mapStainlessOS(), mapStainlessArch())
+	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", helps.MapStainlessOS(), helps.MapStainlessArch())
 }
 
 func TestClaudeDeviceProfileStabilizationEnabled_DefaultFalse(t *testing.T) {
-	if claudeDeviceProfileStabilizationEnabled(nil) {
+	if helps.ClaudeDeviceProfileStabilizationEnabled(nil) {
 		t.Fatal("expected nil config to default to disabled stabilization")
 	}
-	if claudeDeviceProfileStabilizationEnabled(&config.Config{}) {
+	if helps.ClaudeDeviceProfileStabilizationEnabled(&config.Config{}) {
 		t.Fatal("expected unset stabilize-device-profile to default to disabled stabilization")
 	}
 }
@@ -799,8 +799,6 @@ func TestApplyClaudeToolPrefix_NestedToolReference(t *testing.T) {
 }
 
 func TestClaudeExecutor_ReusesUserIDAcrossModelsWhenCacheEnabled(t *testing.T) {
-	resetUserIDCache()
-
 	var userIDs []string
 	var requestModels []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -860,15 +858,13 @@ func TestClaudeExecutor_ReusesUserIDAcrossModelsWhenCacheEnabled(t *testing.T) {
 	if userIDs[0] != userIDs[1] {
 		t.Fatalf("expected user_id to be reused across models, got %q and %q", userIDs[0], userIDs[1])
 	}
-	if !isValidUserID(userIDs[0]) {
+	if !helps.IsValidUserID(userIDs[0]) {
 		t.Fatalf("user_id %q is not valid", userIDs[0])
 	}
 	t.Logf("✓ End-to-end test passed: Same user_id (%s) was used for both models", userIDs[0])
 }
 
 func TestClaudeExecutor_GeneratesNewUserIDByDefault(t *testing.T) {
-	resetUserIDCache()
-
 	var userIDs []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -906,7 +902,7 @@ func TestClaudeExecutor_GeneratesNewUserIDByDefault(t *testing.T) {
 	if userIDs[0] == userIDs[1] {
 		t.Fatalf("expected user_id to change when caching is not enabled, got identical values %q", userIDs[0])
 	}
-	if !isValidUserID(userIDs[0]) || !isValidUserID(userIDs[1]) {
+	if !helps.IsValidUserID(userIDs[0]) || !helps.IsValidUserID(userIDs[1]) {
 		t.Fatalf("user_ids should be valid, got %q and %q", userIDs[0], userIDs[1])
 	}
 }
@@ -1833,7 +1829,7 @@ func TestApplyCloaking_PreservesConfiguredStrictModeAndSensitiveWordsWhenModeOmi
 	if len(blocks) != 2 {
 		t.Fatalf("expected strict mode to keep only injected system blocks, got %d", len(blocks))
 	}
-	if got := gjson.GetBytes(out, "messages.0.content.0.text").String(); !strings.Contains(got, zeroWidthSpace) {
+	if got := gjson.GetBytes(out, "messages.0.content.0.text").String(); !strings.Contains(got, "\u200B") {
 		t.Fatalf("expected configured sensitive word obfuscation to apply, got %q", got)
 	}
 }
