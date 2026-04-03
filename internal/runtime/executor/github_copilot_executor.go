@@ -577,8 +577,18 @@ func useGitHubCopilotResponsesEndpoint(sourceFormat sdktranslator.Format, model 
 		return true
 	}
 	baseModel := strings.ToLower(thinking.ParseSuffix(model).ModelName)
-	if info := registry.GetGlobalRegistry().GetModelInfo(baseModel, githubCopilotAuthType); info != nil {
-		return len(info.SupportedEndpoints) > 0 && !containsEndpoint(info.SupportedEndpoints, githubCopilotChatPath) && containsEndpoint(info.SupportedEndpoints, githubCopilotResponsesPath)
+	providers := registry.GetGlobalRegistry().GetModelProviders(baseModel)
+	hasCopilotProvider := false
+	for _, provider := range providers {
+		if strings.EqualFold(provider, githubCopilotAuthType) {
+			hasCopilotProvider = true
+			break
+		}
+	}
+	if hasCopilotProvider {
+		if info := registry.GetGlobalRegistry().GetModelInfo(baseModel, githubCopilotAuthType); info != nil {
+			return len(info.SupportedEndpoints) > 0 && !containsEndpoint(info.SupportedEndpoints, githubCopilotChatPath) && containsEndpoint(info.SupportedEndpoints, githubCopilotResponsesPath)
+		}
 	}
 	if info := lookupGitHubCopilotStaticModelInfo(baseModel); info != nil {
 		return len(info.SupportedEndpoints) > 0 && !containsEndpoint(info.SupportedEndpoints, githubCopilotChatPath) && containsEndpoint(info.SupportedEndpoints, githubCopilotResponsesPath)
