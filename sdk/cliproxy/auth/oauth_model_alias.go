@@ -17,6 +17,8 @@ type modelAliasEntry interface {
 type oauthModelAliasTable struct {
 	// reverse maps channel -> alias (lower) -> original upstream model name.
 	reverse map[string]map[string]string
+	// fork marks whether an alias is configured as fork=true.
+	fork map[string]map[string]bool
 }
 
 func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelAlias) *oauthModelAliasTable {
@@ -25,6 +27,7 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 	}
 	out := &oauthModelAliasTable{
 		reverse: make(map[string]map[string]string, len(aliases)),
+		fork:    make(map[string]map[string]bool, len(aliases)),
 	}
 	for rawChannel, entries := range aliases {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
@@ -32,6 +35,7 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 			continue
 		}
 		rev := make(map[string]string, len(entries))
+		forks := make(map[string]bool, len(entries))
 		for _, entry := range entries {
 			name := strings.TrimSpace(entry.Name)
 			alias := strings.TrimSpace(entry.Alias)
@@ -46,13 +50,16 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 				continue
 			}
 			rev[aliasKey] = name
+			forks[aliasKey] = entry.Fork
 		}
 		if len(rev) > 0 {
 			out.reverse[channel] = rev
+			out.fork[channel] = forks
 		}
 	}
 	if len(out.reverse) == 0 {
 		out.reverse = nil
+		out.fork = nil
 	}
 	return out
 }
@@ -232,7 +239,7 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 	}
 	log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: channel=%s has %d aliases, looking for candidates=%v", channel, len(rev), candidates)
 
-	if resolved := resolveRequestedModelForAuth(auth, candidates, requestResult); strings.TrimSpace(resolved) != "" {
+	if resolved := resolveRequestedModelForAuth(m, auth, channel, candidates, requestResult); strings.TrimSpace(resolved) != "" {
 		return resolved
 	}
 
@@ -284,7 +291,7 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 	return ""
 }
 
-func resolveRequestedModelForAuth(auth *Auth, candidates []string, requestResult thinking.SuffixResult) string {
+func resolveRequestedModelForAuth(m *Manager, auth *Auth, channel string, candidates []string, requestResult thinking.SuffixResult) string {
 	if auth == nil || len(candidates) == 0 {
 		return ""
 	}
@@ -323,6 +330,39 @@ func resolveRequestedModelForAuth(auth *Auth, candidates []string, requestResult
 			log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: candidate %s is alias-exposed by auth %s, executing upstream %s", candidate, auth.ID, aliasResolved)
 			return aliasResolved
 		}
+	}
+	return ""
+}
+
+func (m *Manager) resolveBlockedForkAliasTarget(auth *Auth, requestedModel string) string {
+	if m == nil || auth == nil {
+		return ""
+	}
+	channel := modelAliasChannel(auth)
+	if channel == "" {
+		return ""
+	}
+	raw := m.oauthModelAlias.Load()
+	table, _ := raw.(*oauthModelAliasTable)
+	if table == nil || table.reverse == nil || table.fork == nil {
+		return ""
+	}
+	reverse := table.reverse[channel]
+	forks := table.fork[channel]
+	if len(reverse) == 0 || len(forks) == 0 {
+		return ""
+	}
+	requestResult, candidates := modelAliasLookupCandidates(requestedModel)
+	for _, candidate := range candidates {
+		key := strings.ToLower(strings.TrimSpace(candidate))
+		if key == "" || !forks[key] {
+			continue
+		}
+		original := strings.TrimSpace(reverse[key])
+		if original == "" {
+			continue
+		}
+		return preserveResolvedModelSuffix(original, requestResult)
 	}
 	return ""
 }
