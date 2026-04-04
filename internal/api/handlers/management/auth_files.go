@@ -363,6 +363,15 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						fileData["note"] = trimmed
 					}
 				}
+				if bv := gjson.GetBytes(data, "billing_class"); bv.Exists() && bv.Type == gjson.String {
+					if normalized := normalizeBillingClassValue(bv.String()); normalized != "" {
+						fileData["billing_class"] = normalized
+					}
+				} else if bv := gjson.GetBytes(data, "billing-class"); bv.Exists() && bv.Type == gjson.String {
+					if normalized := normalizeBillingClassValue(bv.String()); normalized != "" {
+						fileData["billing_class"] = normalized
+					}
+				}
 			}
 
 			files = append(files, fileData)
@@ -474,6 +483,19 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		if rawNote, ok := auth.Metadata["note"].(string); ok {
 			if trimmed := strings.TrimSpace(rawNote); trimmed != "" {
 				entry["note"] = trimmed
+			}
+		}
+	}
+	if billingClass := strings.TrimSpace(authAttribute(auth, "billing_class")); billingClass != "" {
+		entry["billing_class"] = billingClass
+	} else if auth.Metadata != nil {
+		if rawBillingClass, ok := auth.Metadata["billing_class"].(string); ok {
+			if normalized := normalizeBillingClassValue(rawBillingClass); normalized != "" {
+				entry["billing_class"] = normalized
+			}
+		} else if rawBillingClass, ok := auth.Metadata["billing-class"].(string); ok {
+			if normalized := normalizeBillingClassValue(rawBillingClass); normalized != "" {
+				entry["billing_class"] = normalized
 			}
 		}
 	}
@@ -1040,6 +1062,39 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 	if hasLastRefresh {
 		auth.LastRefreshedAt = lastRefresh
 	}
+	if rawPriority, ok := metadata["priority"]; ok {
+		switch v := rawPriority.(type) {
+		case float64:
+			auth.Attributes["priority"] = strconv.Itoa(int(v))
+		case int:
+			auth.Attributes["priority"] = strconv.Itoa(v)
+		case string:
+			priority := strings.TrimSpace(v)
+			if _, errAtoi := strconv.Atoi(priority); errAtoi == nil {
+				auth.Attributes["priority"] = priority
+			}
+		}
+	}
+	if rawNote, ok := metadata["note"]; ok {
+		if note, isStr := rawNote.(string); isStr {
+			if trimmed := strings.TrimSpace(note); trimmed != "" {
+				auth.Attributes["note"] = trimmed
+			}
+		}
+	}
+	if rawBillingClass, ok := metadata["billing_class"]; ok {
+		if billingClass, isStr := rawBillingClass.(string); isStr {
+			if normalized := normalizeBillingClassValue(billingClass); normalized != "" {
+				auth.Attributes["billing_class"] = normalized
+			}
+		}
+	} else if rawBillingClass, ok := metadata["billing-class"]; ok {
+		if billingClass, isStr := rawBillingClass.(string); isStr {
+			if normalized := normalizeBillingClassValue(billingClass); normalized != "" {
+				auth.Attributes["billing_class"] = normalized
+			}
+		}
+	}
 	if h != nil && h.authManager != nil {
 		if existing, ok := h.authManager.GetByID(authID); ok {
 			auth.CreatedAt = existing.CreatedAt
@@ -1133,7 +1188,7 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
 }
 
-// PatchAuthFileFields updates editable fields (prefix, proxy_url, headers, priority, note) of an auth file.
+// PatchAuthFileFields updates editable fields (prefix, proxy_url, headers, priority, note, billing_class) of an auth file.
 func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
@@ -1147,6 +1202,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		Headers  map[string]string `json:"headers"`
 		Priority *int              `json:"priority"`
 		Note     *string           `json:"note"`
+		BillingClass *string       `json:"billing_class"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -1283,7 +1339,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			changed = true
 		}
 	}
-	if req.Priority != nil || req.Note != nil {
+	if req.Priority != nil || req.Note != nil || req.BillingClass != nil {
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
 		}
@@ -1308,6 +1364,18 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			} else {
 				targetAuth.Metadata["note"] = trimmedNote
 				targetAuth.Attributes["note"] = trimmedNote
+			}
+		}
+		if req.BillingClass != nil {
+			normalizedBillingClass := normalizeBillingClassValue(*req.BillingClass)
+			if normalizedBillingClass == "" {
+				delete(targetAuth.Metadata, "billing_class")
+				delete(targetAuth.Metadata, "billing-class")
+				delete(targetAuth.Attributes, "billing_class")
+			} else {
+				targetAuth.Metadata["billing_class"] = normalizedBillingClass
+				delete(targetAuth.Metadata, "billing-class")
+				targetAuth.Attributes["billing_class"] = normalizedBillingClass
 			}
 		}
 		changed = true

@@ -87,6 +87,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}
+	if !reflect.DeepEqual(oldCfg.Routing.TokenThresholdRules, newCfg.Routing.TokenThresholdRules) {
+		changes = append(changes, fmt.Sprintf("routing.token-threshold-rules: %d -> %d entries", len(oldCfg.Routing.TokenThresholdRules), len(newCfg.Routing.TokenThresholdRules)))
+	}
 
 	// API keys (redacted) and counts
 	if len(oldCfg.APIKeys) != len(newCfg.APIKeys) {
@@ -108,6 +111,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
 				changes = append(changes, fmt.Sprintf("gemini[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
+			}
+			if strings.TrimSpace(string(o.BillingClass)) != strings.TrimSpace(string(n.BillingClass)) {
+				changes = append(changes, fmt.Sprintf("gemini[%d].billing-class: %s -> %s", i, strings.TrimSpace(string(o.BillingClass)), strings.TrimSpace(string(n.BillingClass))))
 			}
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("gemini[%d].api-key: updated", i))
@@ -143,6 +149,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
 				changes = append(changes, fmt.Sprintf("claude[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
+			}
+			if strings.TrimSpace(string(o.BillingClass)) != strings.TrimSpace(string(n.BillingClass)) {
+				changes = append(changes, fmt.Sprintf("claude[%d].billing-class: %s -> %s", i, strings.TrimSpace(string(o.BillingClass)), strings.TrimSpace(string(n.BillingClass))))
 			}
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("claude[%d].api-key: updated", i))

@@ -22,6 +22,8 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"github.com/tidwall/gjson"
+	"github.com/tiktoken-go/tokenizer"
 	"golang.org/x/net/context"
 )
 
@@ -476,6 +478,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
+	maybeAttachEstimatedInputTokens(reqMeta, sdktranslator.FromString(handlerType), normalizedModel, rawJSON)
 	req := coreexecutor.Request{
 		Model:   normalizedModel,
 		Payload: cloneBytes(rawJSON),
@@ -518,6 +521,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
+	maybeAttachEstimatedInputTokens(reqMeta, sdktranslator.FromString(handlerType), normalizedModel, rawJSON)
 	req := coreexecutor.Request{
 		Model:   normalizedModel,
 		Payload: cloneBytes(rawJSON),
@@ -564,6 +568,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
+	maybeAttachEstimatedInputTokens(reqMeta, sdktranslator.FromString(handlerType), normalizedModel, rawJSON)
 	req := coreexecutor.Request{
 		Model:   normalizedModel,
 		Payload: cloneBytes(rawJSON),
@@ -807,6 +812,226 @@ func cloneBytes(src []byte) []byte {
 	dst := make([]byte, len(src))
 	copy(dst, src)
 	return dst
+}
+
+func maybeAttachEstimatedInputTokens(meta map[string]any, format sdktranslator.Format, model string, rawJSON []byte) {
+	if meta == nil || len(rawJSON) == 0 {
+		return
+	}
+	codec, err := tokenizerForModel(model)
+	if err != nil || codec == nil {
+		return
+	}
+	var count int
+	switch format {
+	case sdktranslator.FormatClaude:
+		count, err = estimateClaudeInputTokens(codec, rawJSON)
+	default:
+		count, err = estimateOpenAIInputTokens(codec, rawJSON)
+	}
+	if err != nil || count <= 0 {
+		return
+	}
+	meta[coreexecutor.EstimatedInputTokensMetadataKey] = count
+}
+
+func tokenizerForModel(model string) (tokenizer.Codec, error) {
+	sanitized := strings.ToLower(strings.TrimSpace(model))
+	if sanitized == "" {
+		return tokenizer.Get(tokenizer.Cl100kBase)
+	}
+	if strings.Contains(sanitized, "claude") || strings.HasPrefix(sanitized, "kiro-") || strings.HasPrefix(sanitized, "amazonq-") {
+		return tokenizer.Get(tokenizer.Cl100kBase)
+	}
+	switch {
+	case strings.HasPrefix(sanitized, "gpt-5"):
+		return tokenizer.ForModel(tokenizer.GPT5)
+	case strings.HasPrefix(sanitized, "gpt-4.1"):
+		return tokenizer.ForModel(tokenizer.GPT41)
+	case strings.HasPrefix(sanitized, "gpt-4o"):
+		return tokenizer.ForModel(tokenizer.GPT4o)
+	case strings.HasPrefix(sanitized, "gpt-4"):
+		return tokenizer.ForModel(tokenizer.GPT4)
+	case strings.HasPrefix(sanitized, "gpt-3.5"), strings.HasPrefix(sanitized, "gpt-3"):
+		return tokenizer.ForModel(tokenizer.GPT35Turbo)
+	case strings.HasPrefix(sanitized, "o1"):
+		return tokenizer.ForModel(tokenizer.O1)
+	case strings.HasPrefix(sanitized, "o3"):
+		return tokenizer.ForModel(tokenizer.O3)
+	case strings.HasPrefix(sanitized, "o4"):
+		return tokenizer.ForModel(tokenizer.O4Mini)
+	default:
+		return tokenizer.Get(tokenizer.O200kBase)
+	}
+}
+
+func estimateOpenAIInputTokens(enc tokenizer.Codec, payload []byte) (int, error) {
+	if enc == nil || len(payload) == 0 {
+		return 0, nil
+	}
+	root := gjson.ParseBytes(payload)
+	segments := make([]string, 0, 32)
+	collectOpenAISegments(root.Get("messages"), &segments)
+	collectOpenAIContentSegments(root.Get("input"), &segments)
+	collectOpenAIContentSegments(root.Get("prompt"), &segments)
+	collectOpenAIToolsSegments(root.Get("tools"), &segments)
+	joined := strings.TrimSpace(strings.Join(segments, "\n"))
+	if joined == "" {
+		return 0, nil
+	}
+	return enc.Count(joined)
+}
+
+func estimateClaudeInputTokens(enc tokenizer.Codec, payload []byte) (int, error) {
+	if enc == nil || len(payload) == 0 {
+		return 0, nil
+	}
+	root := gjson.ParseBytes(payload)
+	segments := make([]string, 0, 32)
+	collectClaudeContentSegments(root.Get("system"), &segments)
+	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
+		messages.ForEach(func(_, msg gjson.Result) bool {
+			addSegment(&segments, msg.Get("role").String())
+			collectClaudeContentSegments(msg.Get("content"), &segments)
+			return true
+		})
+	}
+	if tools := root.Get("tools"); tools.Exists() && tools.IsArray() {
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			addSegment(&segments, tool.Get("name").String())
+			addSegment(&segments, tool.Get("description").String())
+			if schema := tool.Get("input_schema"); schema.Exists() {
+				addSegment(&segments, schema.Raw)
+			}
+			return true
+		})
+	}
+	joined := strings.TrimSpace(strings.Join(segments, "\n"))
+	if joined == "" {
+		return 0, nil
+	}
+	return enc.Count(joined)
+}
+
+func collectOpenAISegments(messages gjson.Result, segments *[]string) {
+	if !messages.Exists() || !messages.IsArray() {
+		return
+	}
+	messages.ForEach(func(_, message gjson.Result) bool {
+		addSegment(segments, message.Get("role").String())
+		addSegment(segments, message.Get("name").String())
+		collectOpenAIContentSegments(message.Get("content"), segments)
+		if calls := message.Get("tool_calls"); calls.Exists() && calls.IsArray() {
+			calls.ForEach(func(_, call gjson.Result) bool {
+				addSegment(segments, call.Get("id").String())
+				addSegment(segments, call.Get("type").String())
+				addSegment(segments, call.Get("function.name").String())
+				addSegment(segments, call.Get("function.arguments").String())
+				return true
+			})
+		}
+		return true
+	})
+}
+
+func collectOpenAIContentSegments(content gjson.Result, segments *[]string) {
+	if !content.Exists() {
+		return
+	}
+	if content.Type == gjson.String {
+		addSegment(segments, content.String())
+		return
+	}
+	if content.IsArray() {
+		content.ForEach(func(_, part gjson.Result) bool {
+			partType := part.Get("type").String()
+			switch partType {
+			case "text", "input_text", "output_text":
+				addSegment(segments, part.Get("text").String())
+			case "tool_result":
+				collectOpenAIContentSegments(part.Get("content"), segments)
+			default:
+				if part.Type == gjson.JSON {
+					addSegment(segments, part.Raw)
+				} else {
+					addSegment(segments, part.String())
+				}
+			}
+			return true
+		})
+		return
+	}
+	if content.Type == gjson.JSON {
+		addSegment(segments, content.Raw)
+	}
+}
+
+func collectOpenAIToolsSegments(tools gjson.Result, segments *[]string) {
+	if !tools.Exists() {
+		return
+	}
+	if tools.IsArray() {
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			addSegment(segments, tool.Get("type").String())
+			addSegment(segments, tool.Get("name").String())
+			addSegment(segments, tool.Get("description").String())
+			if fn := tool.Get("function"); fn.Exists() {
+				addSegment(segments, fn.Get("name").String())
+				addSegment(segments, fn.Get("description").String())
+				if params := fn.Get("parameters"); params.Exists() {
+					addSegment(segments, params.Raw)
+				}
+			}
+			return true
+		})
+	}
+}
+
+func collectClaudeContentSegments(content gjson.Result, segments *[]string) {
+	if !content.Exists() {
+		return
+	}
+	if content.Type == gjson.String {
+		addSegment(segments, content.String())
+		return
+	}
+	if content.IsArray() {
+		content.ForEach(func(_, part gjson.Result) bool {
+			switch part.Get("type").String() {
+			case "text":
+				addSegment(segments, part.Get("text").String())
+			case "tool_use":
+				addSegment(segments, part.Get("id").String())
+				addSegment(segments, part.Get("name").String())
+				if input := part.Get("input"); input.Exists() {
+					addSegment(segments, input.Raw)
+				}
+			case "tool_result":
+				addSegment(segments, part.Get("tool_use_id").String())
+				collectClaudeContentSegments(part.Get("content"), segments)
+			default:
+				if part.Type == gjson.JSON {
+					addSegment(segments, part.Raw)
+				} else {
+					addSegment(segments, part.String())
+				}
+			}
+			return true
+		})
+		return
+	}
+	if content.Type == gjson.JSON {
+		addSegment(segments, content.Raw)
+	}
+}
+
+func addSegment(segments *[]string, value string) {
+	if segments == nil {
+		return
+	}
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		*segments = append(*segments, trimmed)
+	}
 }
 
 func cloneHeader(src http.Header) http.Header {

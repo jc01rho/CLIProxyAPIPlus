@@ -1286,6 +1286,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
+		normalized = m.filterProvidersForThreshold(req.Model, normalized, opts)
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
 		if errStream == nil {
 			return result, nil
@@ -1311,6 +1312,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	}
 	routeModel := req.Model
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	providers = m.filterProvidersForThreshold(routeModel, providers, opts)
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
 	var lastErr error
@@ -1395,6 +1397,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	}
 	routeModel := req.Model
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	providers = m.filterProvidersForThreshold(routeModel, providers, opts)
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
 	var lastErr error
@@ -1471,6 +1474,96 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 
 	}
+}
+
+func (m *Manager) filterProvidersForThreshold(routeModel string, providers []string, opts cliproxyexecutor.Options) []string {
+	if m == nil || len(providers) == 0 {
+		return providers
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil || len(cfg.Routing.TokenThresholdRules) == 0 {
+		return providers
+	}
+	count, ok := estimatedInputTokensFromMetadata(opts.Metadata)
+	if !ok || count <= 0 {
+		return providers
+	}
+	rule, ok := matchTokenThresholdRule(cfg.Routing.TokenThresholdRules, routeModel, count)
+	if !ok {
+		return providers
+	}
+	target := strings.TrimSpace(string(rule.BillingClass))
+	if target == "" {
+		return providers
+	}
+	matchedProviders := make([]string, 0, len(providers))
+	seen := make(map[string]struct{}, len(providers))
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, provider := range providers {
+		providerKey := strings.ToLower(strings.TrimSpace(provider))
+		if providerKey == "" {
+			continue
+		}
+		if _, done := seen[providerKey]; done {
+			continue
+		}
+		for _, auth := range m.auths {
+			if auth == nil || auth.Disabled || strings.ToLower(strings.TrimSpace(auth.Provider)) != providerKey {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(auth.Attributes["billing_class"]), target) {
+				matchedProviders = append(matchedProviders, providerKey)
+				seen[providerKey] = struct{}{}
+				break
+			}
+		}
+	}
+	if len(matchedProviders) == 0 {
+		return providers
+	}
+	return matchedProviders
+}
+
+func estimatedInputTokensFromMetadata(meta map[string]any) (int, bool) {
+	if len(meta) == 0 {
+		return 0, false
+	}
+	v, ok := meta[cliproxyexecutor.EstimatedInputTokensMetadataKey]
+	if !ok || v == nil {
+		return 0, false
+	}
+	switch typed := v.(type) {
+	case int:
+		return typed, typed > 0
+	case int64:
+		return int(typed), typed > 0
+	case float64:
+		return int(typed), typed > 0
+	case json.Number:
+		parsed, err := typed.Int64()
+		return int(parsed), err == nil && parsed > 0
+	default:
+		return 0, false
+	}
+}
+
+func matchTokenThresholdRule(rules []internalconfig.TokenThresholdRule, routeModel string, count int) (internalconfig.TokenThresholdRule, bool) {
+	model := strings.TrimSpace(routeModel)
+	for _, rule := range rules {
+		if !rule.Enabled || rule.MaxTokens <= 0 || count > rule.MaxTokens {
+			continue
+		}
+		pattern := strings.TrimSpace(rule.ModelPattern)
+		if pattern == "" {
+			return rule, true
+		}
+		matched, err := filepath.Match(pattern, model)
+		if err == nil && matched {
+			return rule, true
+		}
+	}
+	return internalconfig.TokenThresholdRule{}, false
 }
 
 func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (*cliproxyexecutor.StreamResult, error) {
@@ -2558,6 +2651,37 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 	return m.selectionModelKeyForAuth(auth, routeModel) != canonicalModelKey(routeModel)
 }
 
+func (m *Manager) thresholdRoutingRequired(routeModel string, opts cliproxyexecutor.Options) bool {
+	_, ok := m.thresholdRuleForRequest(routeModel, opts)
+	return ok
+}
+
+func (m *Manager) thresholdRuleForRequest(routeModel string, opts cliproxyexecutor.Options) (internalconfig.TokenThresholdRule, bool) {
+	if m == nil {
+		return internalconfig.TokenThresholdRule{}, false
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil || len(cfg.Routing.TokenThresholdRules) == 0 {
+		return internalconfig.TokenThresholdRule{}, false
+	}
+	count, ok := estimatedInputTokensFromMetadata(opts.Metadata)
+	if !ok || count <= 0 {
+		return internalconfig.TokenThresholdRule{}, false
+	}
+	return matchTokenThresholdRule(cfg.Routing.TokenThresholdRules, routeModel, count)
+}
+
+func (m *Manager) authMatchesThresholdRule(auth *Auth, routeModel string, opts cliproxyexecutor.Options) bool {
+	rule, ok := m.thresholdRuleForRequest(routeModel, opts)
+	if !ok {
+		return true
+	}
+	if auth == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(auth.Attributes["billing_class"]), strings.TrimSpace(string(rule.BillingClass)))
+}
+
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 
@@ -2579,6 +2703,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
 		if candidate.Provider != provider || candidate.Disabled {
+			continue
+		}
+		if !m.authMatchesThresholdRule(candidate, model, opts) {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -2625,6 +2752,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	if !m.useSchedulerFastPath() {
+		return m.pickNextLegacy(ctx, provider, model, opts, tried)
+	}
+	if m.thresholdRoutingRequired(model, opts) {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	if strings.TrimSpace(model) != "" {
@@ -2700,6 +2830,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if candidate == nil || candidate.Disabled {
 			continue
 		}
+		if !m.authMatchesThresholdRule(candidate, model, opts) {
+			continue
+		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
@@ -2760,6 +2893,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
 	if !m.useSchedulerFastPath() {
+		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
+	}
+	if m.thresholdRoutingRequired(model, opts) {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 

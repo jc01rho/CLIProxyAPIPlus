@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
@@ -373,6 +374,114 @@ func TestManagerExecute_FallsBackToLowerPriorityBucketAfterHigherPriorityExhaust
 				t.Fatalf("Execute() call order[%d] = %q, want %q (full=%v)", index, got[index], want[index], got)
 			}
 		}
+	}
+}
+
+func TestManagerExecute_ThresholdRoutingFiltersByBillingClass(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetRetryConfig(0, 0, 0)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			TokenThresholdRules: []internalconfig.TokenThresholdRule{{
+				ModelPattern: "test-*",
+				MaxTokens:    100,
+				BillingClass: internalconfig.BillingClassMetered,
+				Enabled:      true,
+			}},
+		},
+	})
+
+	executor := &priorityFallbackExecutor{id: "claude", failAuthID: map[string]struct{}{}}
+	manager.RegisterExecutor(executor)
+
+	model := "test-model"
+	reg := registry.GetGlobalRegistry()
+	for _, authID := range []string{"metered-auth", "per-request-auth"} {
+		reg.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: model}})
+	}
+	t.Cleanup(func() {
+		for _, authID := range []string{"metered-auth", "per-request-auth"} {
+			reg.UnregisterClient(authID)
+		}
+	})
+
+	for _, auth := range []*Auth{
+		{ID: "metered-auth", Provider: "claude", Attributes: map[string]string{"billing_class": "metered", "priority": "1"}},
+		{ID: "per-request-auth", Provider: "claude", Attributes: map[string]string{"billing_class": "per-request", "priority": "10"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register %s: %v", auth.ID, errRegister)
+		}
+	}
+
+	_, errExecute := manager.Execute(
+		context.Background(),
+		[]string{"claude"},
+		cliproxyexecutor.Request{Model: model},
+		cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.EstimatedInputTokensMetadataKey: 50}},
+	)
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+	order := executor.CallOrder()
+	if len(order) != 1 || order[0] != "metered-auth" {
+		t.Fatalf("expected only metered auth to be used, got %v", order)
+	}
+}
+
+func TestManagerExecute_ThresholdRoutingFiltersAcrossConfigAndFileBackedAuth(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetRetryConfig(0, 0, 0)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			TokenThresholdRules: []internalconfig.TokenThresholdRule{{
+				ModelPattern: "test-*",
+				MaxTokens:    100,
+				BillingClass: internalconfig.BillingClassPerRequest,
+				Enabled:      true,
+			}},
+		},
+	})
+
+	executor := &priorityFallbackExecutor{id: "claude", failAuthID: map[string]struct{}{}}
+	manager.RegisterExecutor(executor)
+
+	model := "test-model"
+	reg := registry.GetGlobalRegistry()
+	for _, authID := range []string{"config-auth", "oauth-auth"} {
+		reg.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: model}})
+	}
+	t.Cleanup(func() {
+		for _, authID := range []string{"config-auth", "oauth-auth"} {
+			reg.UnregisterClient(authID)
+		}
+	})
+
+	for _, auth := range []*Auth{
+		{ID: "config-auth", Provider: "claude", Attributes: map[string]string{"billing_class": "metered", "priority": "100", "auth_kind": "apikey"}},
+		{ID: "oauth-auth", Provider: "claude", Attributes: map[string]string{"billing_class": "per-request", "priority": "1", "auth_kind": "oauth"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register %s: %v", auth.ID, errRegister)
+		}
+	}
+
+	_, errExecute := manager.Execute(
+		context.Background(),
+		[]string{"claude"},
+		cliproxyexecutor.Request{Model: model},
+		cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.EstimatedInputTokensMetadataKey: 50}},
+	)
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+	order := executor.CallOrder()
+	if len(order) != 1 || order[0] != "oauth-auth" {
+		t.Fatalf("expected only oauth per-request auth to be used, got %v", order)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -238,6 +239,27 @@ type RoutingConfig struct {
 
 	// FallbackMaxDepth limits the number of fallback attempts (default: 3).
 	FallbackMaxDepth int `yaml:"fallback-max-depth,omitempty" json:"fallback-max-depth,omitempty"`
+
+	// TokenThresholdRules defines routing rules that filter eligible credentials
+	// by billing class when the estimated input token count is at or below a threshold.
+	TokenThresholdRules []TokenThresholdRule `yaml:"token-threshold-rules,omitempty" json:"token-threshold-rules,omitempty"`
+}
+
+// BillingClass identifies how a credential/provider is billed for routing policy.
+type BillingClass string
+
+const (
+	BillingClassMetered    BillingClass = "metered"
+	BillingClassPerRequest BillingClass = "per-request"
+)
+
+// TokenThresholdRule routes matching requests to credentials of a target billing class
+// when the estimated input token count is at or below MaxTokens.
+type TokenThresholdRule struct {
+	ModelPattern string       `yaml:"model-pattern,omitempty" json:"model-pattern,omitempty"`
+	MaxTokens    int          `yaml:"max-tokens" json:"max-tokens"`
+	BillingClass BillingClass `yaml:"billing-class" json:"billing-class"`
+	Enabled      bool         `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -388,6 +410,9 @@ type ClaudeKey struct {
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// BillingClass classifies this credential for threshold-based routing policies.
+	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+
 	// Models defines upstream model names and aliases for request routing.
 	Models []ClaudeModel `yaml:"models" json:"models"`
 
@@ -443,6 +468,9 @@ type CodexKey struct {
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// BillingClass classifies this credential for threshold-based routing policies.
+	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+
 	// Models defines upstream model names and aliases for request routing.
 	Models []CodexModel `yaml:"models" json:"models"`
 
@@ -485,6 +513,9 @@ type GeminiKey struct {
 
 	// ProxyURL optionally overrides the global proxy for this API key.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// BillingClass classifies this credential for threshold-based routing policies.
+	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
 
 	// Models defines upstream model names and aliases for request routing.
 	Models []GeminiModel `yaml:"models,omitempty" json:"models,omitempty"`
@@ -565,6 +596,9 @@ type OpenAICompatibility struct {
 
 	// Priority controls selection preference when multiple providers or credentials match.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// BillingClass classifies this provider for threshold-based routing policies.
+	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
 
 	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/kimi-k2").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -737,6 +771,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
+
+	// Sanitize token-threshold routing rules.
+	cfg.SanitizeTokenThresholdRules()
 
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
@@ -929,6 +966,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Name = strings.TrimSpace(e.Name)
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.BillingClass = normalizeBillingClass(e.BillingClass)
 		e.Headers = NormalizeHeaders(e.Headers)
 		if e.BaseURL == "" {
 			// Skip providers with no base-url; treated as removed
@@ -950,6 +988,7 @@ func (cfg *Config) SanitizeCodexKeys() {
 		e := cfg.CodexKey[i]
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.BillingClass = normalizeBillingClass(e.BillingClass)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
 		if e.BaseURL == "" {
@@ -968,6 +1007,7 @@ func (cfg *Config) SanitizeClaudeKeys() {
 	for i := range cfg.ClaudeKey {
 		entry := &cfg.ClaudeKey[i]
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BillingClass = normalizeBillingClass(entry.BillingClass)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
 	}
@@ -1007,6 +1047,7 @@ func (cfg *Config) SanitizeGeminiKeys() {
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.BillingClass = normalizeBillingClass(entry.BillingClass)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
 		if _, exists := seen[entry.APIKey]; exists {
@@ -1016,6 +1057,43 @@ func (cfg *Config) SanitizeGeminiKeys() {
 		out = append(out, entry)
 	}
 	cfg.GeminiKey = out
+}
+
+// SanitizeTokenThresholdRules normalizes routing token-threshold rules and removes invalid entries.
+func (cfg *Config) SanitizeTokenThresholdRules() {
+	if cfg == nil || len(cfg.Routing.TokenThresholdRules) == 0 {
+		return
+	}
+	out := make([]TokenThresholdRule, 0, len(cfg.Routing.TokenThresholdRules))
+	for i := range cfg.Routing.TokenThresholdRules {
+		rule := cfg.Routing.TokenThresholdRules[i]
+		rule.ModelPattern = strings.TrimSpace(rule.ModelPattern)
+		rule.BillingClass = normalizeBillingClass(rule.BillingClass)
+		if rule.MaxTokens <= 0 || rule.BillingClass == "" {
+			continue
+		}
+		rule.Enabled = true
+		out = append(out, rule)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].MaxTokens == out[j].MaxTokens {
+			return out[i].ModelPattern < out[j].ModelPattern
+		}
+		return out[i].MaxTokens < out[j].MaxTokens
+	})
+	cfg.Routing.TokenThresholdRules = out
+}
+
+func normalizeBillingClass(value BillingClass) BillingClass {
+	normalized := strings.ToLower(strings.TrimSpace(string(value)))
+	switch normalized {
+	case string(BillingClassMetered):
+		return BillingClassMetered
+	case "per_request", string(BillingClassPerRequest):
+		return BillingClassPerRequest
+	default:
+		return ""
+	}
 }
 
 func normalizeModelPrefix(prefix string) string {

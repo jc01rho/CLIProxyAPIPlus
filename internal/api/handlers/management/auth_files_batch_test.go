@@ -195,3 +195,45 @@ func TestDeleteAuthFile_BatchQuery(t *testing.T) {
 		}
 	}
 }
+
+func TestUploadAuthFile_PopulatesBillingClassAttributeImmediately(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	authDir := t.TempDir()
+	manager := coreauth.NewManager(nil, nil, nil)
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "oauth.json")
+	if err != nil {
+		t.Fatalf("failed to create multipart file: %v", err)
+	}
+	content := `{"type":"claude","email":"oauth@example.com","billing_class":"per_request"}`
+	if _, err = part.Write([]byte(content)); err != nil {
+		t.Fatalf("failed to write multipart content: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/auth-files", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	ctx.Request = req
+
+	h.UploadAuthFile(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected upload status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	auths := manager.List()
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth entry, got %d", len(auths))
+	}
+	if got := auths[0].Attributes["billing_class"]; got != "per-request" {
+		t.Fatalf("expected billing_class per-request immediately after upload, got %q", got)
+	}
+}
