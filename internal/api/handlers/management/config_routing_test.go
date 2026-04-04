@@ -250,3 +250,62 @@ func TestPutFallbackChain(t *testing.T) {
 		t.Errorf("expected first item model-a, got %s", cfg.Routing.FallbackChain[0])
 	}
 }
+
+func TestGetTokenThresholdRules(t *testing.T) {
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			TokenThresholdRules: []config.TokenThresholdRule{{
+				ModelPattern: "gpt-*",
+				MaxTokens:    100,
+				BillingClass: config.BillingClassMetered,
+				Enabled:      true,
+			}},
+		},
+	}
+	h := &Handler{cfg: cfg}
+	r := setupTestRouter(h)
+	r.GET("/routing/token-threshold-rules", h.GetTokenThresholdRules)
+
+	req := httptest.NewRequest(http.MethodGet, "/routing/token-threshold-rules", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+	var resp map[string][]config.TokenThresholdRule
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if len(resp["token-threshold-rules"]) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(resp["token-threshold-rules"]))
+	}
+}
+
+func TestPutTokenThresholdRules(t *testing.T) {
+	configPath := createTempConfigFile(t)
+	cfg := &config.Config{}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	r := setupTestRouter(h)
+	r.PUT("/routing/token-threshold-rules", h.PutTokenThresholdRules)
+
+	body, _ := json.Marshal(map[string]any{"value": []map[string]any{{
+		"model-pattern": "gpt-*",
+		"max-tokens": 100,
+		"billing-class": "metered",
+	}}})
+	req := httptest.NewRequest(http.MethodPut, "/routing/token-threshold-rules", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+	if len(cfg.Routing.TokenThresholdRules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(cfg.Routing.TokenThresholdRules))
+	}
+	if cfg.Routing.TokenThresholdRules[0].BillingClass != config.BillingClassMetered {
+		t.Fatalf("expected billing class metered, got %q", cfg.Routing.TokenThresholdRules[0].BillingClass)
+	}
+}

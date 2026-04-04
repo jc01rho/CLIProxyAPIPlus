@@ -2,9 +2,11 @@ package management
 
 import (
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
 // normalizeRoutingMode normalizes the routing mode value.
@@ -97,4 +99,86 @@ func (h *Handler) PutFallbackChain(c *gin.Context) {
 	}
 	h.cfg.Routing.FallbackChain = body.Value
 	h.persist(c)
+}
+
+// GetTokenThresholdRules returns the token-threshold routing configuration.
+func (h *Handler) GetTokenThresholdRules(c *gin.Context) {
+	rules := h.cfg.Routing.TokenThresholdRules
+	if rules == nil {
+		rules = []config.TokenThresholdRule{}
+	}
+	c.JSON(200, gin.H{"token-threshold-rules": rules})
+}
+
+// PutTokenThresholdRules updates the token-threshold routing configuration.
+func (h *Handler) PutTokenThresholdRules(c *gin.Context) {
+	var body struct {
+		Value []config.TokenThresholdRule `json:"value"`
+	}
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if body.Value == nil {
+		body.Value = []config.TokenThresholdRule{}
+	}
+	tmpCfg := *h.cfg
+	tmpCfg.Routing.TokenThresholdRules = append([]config.TokenThresholdRule(nil), body.Value...)
+	tmpCfg.SanitizeTokenThresholdRules()
+	h.cfg.Routing.TokenThresholdRules = tmpCfg.Routing.TokenThresholdRules
+	h.persist(c)
+}
+
+func normalizeBillingClassValue(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "", "metered":
+		return normalized
+	case "per_request", "per-request":
+		return "per-request"
+	default:
+		return ""
+	}
+}
+
+func applyBillingClassToConfigAPIKeys(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	for i := range cfg.GeminiKey {
+		cfg.GeminiKey[i].BillingClass = config.BillingClass(normalizeBillingClassValue(string(cfg.GeminiKey[i].BillingClass)))
+	}
+	for i := range cfg.ClaudeKey {
+		cfg.ClaudeKey[i].BillingClass = config.BillingClass(normalizeBillingClassValue(string(cfg.ClaudeKey[i].BillingClass)))
+	}
+	for i := range cfg.CodexKey {
+		cfg.CodexKey[i].BillingClass = config.BillingClass(normalizeBillingClassValue(string(cfg.CodexKey[i].BillingClass)))
+	}
+	for i := range cfg.VertexCompatAPIKey {
+		cfg.VertexCompatAPIKey[i].BillingClass = config.BillingClass(normalizeBillingClassValue(string(cfg.VertexCompatAPIKey[i].BillingClass)))
+	}
+	for i := range cfg.OpenAICompatibility {
+		cfg.OpenAICompatibility[i].BillingClass = config.BillingClass(normalizeBillingClassValue(string(cfg.OpenAICompatibility[i].BillingClass)))
+	}
+}
+
+func normalizeTokenThresholdRuleBillingClass(rule *config.TokenThresholdRule) {
+	if rule == nil {
+		return
+	}
+	rule.BillingClass = config.BillingClass(normalizeBillingClassValue(string(rule.BillingClass)))
+	if rule.ModelPattern != "" {
+		rule.ModelPattern = strings.TrimSpace(rule.ModelPattern)
+	}
+	if rule.Enabled == false && rule.MaxTokens > 0 && rule.BillingClass != "" {
+		// zero-value bool from YAML/JSON means enabled unless explicitly false is desired via UI,
+		// keep current zero-value semantics simple by auto-enabling meaningful rules.
+		rule.Enabled = true
+	}
+	if rule.ModelPattern != "" {
+		rule.ModelPattern = strings.Trim(strings.ReplaceAll(rule.ModelPattern, "\\", "/"), " ")
+		if base := filepath.Base(rule.ModelPattern); base != "." && base != "/" {
+			rule.ModelPattern = rule.ModelPattern
+		}
+	}
 }

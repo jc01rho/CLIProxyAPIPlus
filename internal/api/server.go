@@ -658,6 +658,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/fallback/chain", s.mgmt.GetFallbackChain)
 		mgmt.PUT("/fallback/chain", s.mgmt.PutFallbackChain)
 
+		mgmt.GET("/routing/token-threshold-rules", s.mgmt.GetTokenThresholdRules)
+		mgmt.PUT("/routing/token-threshold-rules", s.mgmt.PutTokenThresholdRules)
+		mgmt.PATCH("/routing/token-threshold-rules", s.mgmt.PutTokenThresholdRules)
+
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)
