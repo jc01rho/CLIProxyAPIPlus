@@ -158,6 +158,20 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 		}
 	}
+	// Read billing class from auth file.
+	if rawBillingClass, ok := metadata["billing_class"]; ok {
+		if billingClass, isStr := rawBillingClass.(string); isStr {
+			if normalized := normalizeFileBillingClass(billingClass); normalized != "" {
+				a.Attributes["billing_class"] = normalized
+			}
+		}
+	} else if rawBillingClass, ok := metadata["billing-class"]; ok {
+		if billingClass, isStr := rawBillingClass.(string); isStr {
+			if normalized := normalizeFileBillingClass(billingClass); normalized != "" {
+				a.Attributes["billing_class"] = normalized
+			}
+		}
+	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
 	// For codex auth files, extract plan_type from the JWT id_token.
@@ -235,6 +249,10 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 		if noteVal, hasNote := primary.Attributes["note"]; hasNote && noteVal != "" {
 			attrs["note"] = noteVal
 		}
+		// Propagate billing_class from primary auth to virtual auths
+		if billingClassVal, hasBillingClass := primary.Attributes["billing_class"]; hasBillingClass && billingClassVal != "" {
+			attrs["billing_class"] = billingClassVal
+		}
 		for k, v := range primary.Attributes {
 			if strings.HasPrefix(k, "header:") && strings.TrimSpace(v) != "" {
 				attrs[k] = v
@@ -311,6 +329,18 @@ func buildGeminiVirtualID(baseID, projectID string) string {
 	}
 	replacer := strings.NewReplacer("/", "_", "\\", "_", " ", "_")
 	return fmt.Sprintf("%s::%s", baseID, replacer.Replace(project))
+}
+
+func normalizeFileBillingClass(raw string) string {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	switch normalized {
+	case "metered":
+		return "metered"
+	case "per_request", "per-request":
+		return "per-request"
+	default:
+		return ""
+	}
 }
 
 // extractExcludedModelsFromMetadata reads per-account excluded models from the OAuth JSON metadata.

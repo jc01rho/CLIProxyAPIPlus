@@ -379,6 +379,50 @@ func TestFileSynthesizer_Synthesize_PriorityParsing(t *testing.T) {
 	}
 }
 
+func TestFileSynthesizer_Synthesize_BillingClassParsing(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    any
+		want     string
+		hasValue bool
+	}{
+		{name: "metered", value: "metered", want: "metered", hasValue: true},
+		{name: "per_request alias", value: "per_request", want: "per-request", hasValue: true},
+		{name: "invalid", value: "foo", hasValue: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			authData := map[string]any{"type": "claude", "billing_class": tt.value}
+			data, _ := json.Marshal(authData)
+			if err := os.WriteFile(filepath.Join(tempDir, "auth.json"), data, 0644); err != nil {
+				t.Fatalf("failed to write auth file: %v", err)
+			}
+			synth := NewFileSynthesizer()
+			ctx := &SynthesisContext{Config: &config.Config{}, AuthDir: tempDir, Now: time.Now(), IDGenerator: NewStableIDGenerator()}
+			auths, err := synth.Synthesize(ctx)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(auths) != 1 {
+				t.Fatalf("expected 1 auth, got %d", len(auths))
+			}
+			value, ok := auths[0].Attributes["billing_class"]
+			if tt.hasValue {
+				if !ok {
+					t.Fatal("expected billing_class attribute to be set")
+				}
+				if value != tt.want {
+					t.Fatalf("expected billing_class %q, got %q", tt.want, value)
+				}
+			} else if ok {
+				t.Fatalf("expected billing_class attribute to be absent, got %q", value)
+			}
+		})
+	}
+}
+
 func TestFileSynthesizer_Synthesize_OAuthExcludedModelsMerged(t *testing.T) {
 	tempDir := t.TempDir()
 	authData := map[string]any{
@@ -790,6 +834,30 @@ func TestSynthesizeGeminiVirtualAuths_NotePropagated(t *testing.T) {
 		}
 		if got := v.Attributes["priority"]; got != "5" {
 			t.Errorf("virtual %d: expected priority %q, got %q", i, "5", got)
+		}
+	}
+}
+
+func TestSynthesizeGeminiVirtualAuths_BillingClassPropagated(t *testing.T) {
+	now := time.Now()
+	primary := &coreauth.Auth{
+		ID:       "primary-id",
+		Provider: "gemini-cli",
+		Label:    "test@example.com",
+		Attributes: map[string]string{
+			"source":        "test-source",
+			"path":          "/path/to/auth",
+			"billing_class": "metered",
+		},
+	}
+	metadata := map[string]any{"project_id": "proj-a, proj-b", "email": "test@example.com", "type": "gemini"}
+	virtuals := SynthesizeGeminiVirtualAuths(primary, metadata, now)
+	if len(virtuals) != 2 {
+		t.Fatalf("expected 2 virtuals, got %d", len(virtuals))
+	}
+	for i, v := range virtuals {
+		if got := v.Attributes["billing_class"]; got != "metered" {
+			t.Errorf("virtual %d: expected billing_class %q, got %q", i, "metered", got)
 		}
 	}
 }
