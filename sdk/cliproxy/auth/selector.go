@@ -109,18 +109,22 @@ func (e *modelCooldownError) Headers() http.Header {
 }
 
 func authPriority(auth *Auth) int {
-	if auth == nil || auth.Attributes == nil {
+	if auth == nil {
 		return 0
 	}
-	raw := strings.TrimSpace(auth.Attributes["priority"])
-	if raw == "" {
-		return 0
+	basePriority := 0
+	if auth.Attributes != nil {
+		raw := strings.TrimSpace(auth.Attributes["priority"])
+		if raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil {
+				basePriority = parsed
+			}
+		}
 	}
-	parsed, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0
+	if auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
+		return basePriority + 1000000
 	}
-	return parsed
+	return basePriority
 }
 
 func canonicalModelKey(model string) string {

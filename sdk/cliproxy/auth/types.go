@@ -89,6 +89,13 @@ type Auth struct {
 	// ModelStates tracks per-model runtime availability data.
 	ModelStates map[string]*ModelState `json:"model_states,omitempty"`
 
+	// PrimaryInfo tracks primary credential handoff state for providers that use
+	// a single-active-credential model (e.g. Antigravity). When non-nil, this
+	// credential participates in primary handoff: only the credential with
+	// IsPrimary=true is enabled for selection; the rest are disabled.
+	// Handoff is triggered on specific error status codes (401/403/429/502/503/504).
+	PrimaryInfo *PrimaryInfo `json:"primary_info,omitempty"`
+
 	// Runtime carries non-serialisable data used during execution (in-memory only).
 	Runtime any `json:"-"`
 
@@ -125,6 +132,20 @@ type ModelState struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// PrimaryInfo tracks primary credential handoff state for providers that use
+// a single-active-credential model. When non-nil, this credential participates
+// in primary handoff: only the credential with IsPrimary=true is enabled for
+// selection; the rest are disabled. Handoff is triggered on specific error
+// status codes (401/403/429/502/503/504).
+type PrimaryInfo struct {
+	// IsPrimary indicates whether this credential is the current primary.
+	IsPrimary bool `json:"is_primary"`
+	// Order defines the handoff order among credentials for the same provider.
+	// Lower values are preferred. When primary fails, the next lowest order
+	// credential becomes primary (wrap-around to first if all exhausted).
+	Order int `json:"order"`
+}
+
 // Clone shallow copies the Auth structure, duplicating maps to avoid accidental mutation.
 func (a *Auth) Clone() *Auth {
 	if a == nil {
@@ -147,6 +168,12 @@ func (a *Auth) Clone() *Auth {
 		copyAuth.ModelStates = make(map[string]*ModelState, len(a.ModelStates))
 		for key, state := range a.ModelStates {
 			copyAuth.ModelStates[key] = state.Clone()
+		}
+	}
+	if a.PrimaryInfo != nil {
+		copyAuth.PrimaryInfo = &PrimaryInfo{
+			IsPrimary: a.PrimaryInfo.IsPrimary,
+			Order:     a.PrimaryInfo.Order,
 		}
 	}
 	copyAuth.Runtime = a.Runtime

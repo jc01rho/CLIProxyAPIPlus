@@ -80,6 +80,12 @@ type Config struct {
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
 
+	// AntigravityPrimaryHandoff enables automatic primary credential handoff for Antigravity provider.
+	// When true, only one Antigravity credential is active (primary) at a time. If the primary
+	// fails with 401/403/429/502/503/504, the next credential in order becomes primary.
+	// Quota checks are performed only on the primary credential.
+	AntigravityPrimaryHandoff bool `yaml:"antigravity-primary-handoff" json:"antigravity-primary-handoff"`
+
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
@@ -254,10 +260,13 @@ const (
 )
 
 // TokenThresholdRule routes matching requests to credentials of a target billing class
-// when the estimated input token count is at or below MaxTokens.
+// when the estimated input token count matches the specified range.
+// Three forms are supported: upper-only (MaxTokens), lower-only (MinTokens), bounded (both).
+// At least one of MinTokens or MaxTokens must be specified.
 type TokenThresholdRule struct {
 	ModelPattern string       `yaml:"model-pattern,omitempty" json:"model-pattern,omitempty"`
-	MaxTokens    int          `yaml:"max-tokens" json:"max-tokens"`
+	MinTokens    int          `yaml:"min-tokens,omitempty" json:"min-tokens,omitempty"`
+	MaxTokens    int          `yaml:"max-tokens,omitempty" json:"max-tokens,omitempty"`
 	BillingClass BillingClass `yaml:"billing-class" json:"billing-class"`
 	Enabled      bool         `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 }
@@ -1069,13 +1078,30 @@ func (cfg *Config) SanitizeTokenThresholdRules() {
 		rule := cfg.Routing.TokenThresholdRules[i]
 		rule.ModelPattern = strings.TrimSpace(rule.ModelPattern)
 		rule.BillingClass = normalizeBillingClass(rule.BillingClass)
-		if rule.MaxTokens <= 0 || rule.BillingClass == "" {
+		if rule.BillingClass == "" {
+			continue
+		}
+		if rule.MinTokens < 0 {
+			rule.MinTokens = 0
+		}
+		if rule.MaxTokens < 0 {
+			rule.MaxTokens = 0
+		}
+		hasMin := rule.MinTokens > 0
+		hasMax := rule.MaxTokens > 0
+		if !hasMin && !hasMax {
+			continue
+		}
+		if hasMin && hasMax && rule.MinTokens > rule.MaxTokens {
 			continue
 		}
 		rule.Enabled = true
 		out = append(out, rule)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].MinTokens != out[j].MinTokens {
+			return out[i].MinTokens < out[j].MinTokens
+		}
 		if out[i].MaxTokens == out[j].MaxTokens {
 			return out[i].ModelPattern < out[j].ModelPattern
 		}

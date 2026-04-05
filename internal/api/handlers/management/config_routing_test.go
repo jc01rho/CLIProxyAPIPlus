@@ -309,3 +309,163 @@ func TestPutTokenThresholdRules(t *testing.T) {
 		t.Fatalf("expected billing class metered, got %q", cfg.Routing.TokenThresholdRules[0].BillingClass)
 	}
 }
+
+func TestPutTokenThresholdRulesWithMinTokensRoundTrip(t *testing.T) {
+	configPath := createTempConfigFile(t)
+	cfg := &config.Config{}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	r := setupTestRouter(h)
+	r.PUT("/routing/token-threshold-rules", h.PutTokenThresholdRules)
+	r.GET("/routing/token-threshold-rules", h.GetTokenThresholdRules)
+
+	body, _ := json.Marshal(map[string]any{"value": []map[string]any{
+		{
+			"model-pattern": "opus-*",
+			"min-tokens": 0,
+			"max-tokens": 1500,
+			"billing-class": "metered",
+		},
+		{
+			"model-pattern": "opus-*",
+			"min-tokens": 1501,
+			"max-tokens": 2000,
+			"billing-class": "per-request",
+		},
+	}})
+	req := httptest.NewRequest(http.MethodPut, "/routing/token-threshold-rules", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT: expected status 200, got %d", w.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/routing/token-threshold-rules", nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("GET: expected status 200, got %d", w2.Code)
+	}
+
+	var resp struct {
+		Rules []map[string]any `json:"token-threshold-rules"`
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse GET response: %v", err)
+	}
+	if len(resp.Rules) != 2 {
+		t.Fatalf("expected 2 rules in GET, got %d", len(resp.Rules))
+	}
+
+	for i, rule := range resp.Rules {
+		minTok, ok := rule["min-tokens"]
+		if !ok {
+			if i == 0 {
+				continue
+			}
+			t.Fatalf("rule %d missing min-tokens field", i)
+		}
+		if minTok != float64(i*1501) {
+			t.Fatalf("rule %d: expected min-tokens %d, got %v", i, i*1501, minTok)
+		}
+	}
+}
+
+func TestPutTokenThresholdRulesLowerOnlyRoundTrip(t *testing.T) {
+	configPath := createTempConfigFile(t)
+	cfg := &config.Config{}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	r := setupTestRouter(h)
+	r.PUT("/routing/token-threshold-rules", h.PutTokenThresholdRules)
+	r.GET("/routing/token-threshold-rules", h.GetTokenThresholdRules)
+
+	body, _ := json.Marshal(map[string]any{"value": []map[string]any{
+		{
+			"model-pattern": "opus-*",
+			"max-tokens": 1500,
+			"billing-class": "metered",
+		},
+		{
+			"model-pattern": "opus-*",
+			"min-tokens": 2001,
+			"billing-class": "per-request",
+		},
+	}})
+	req := httptest.NewRequest(http.MethodPut, "/routing/token-threshold-rules", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT: expected status 200, got %d", w.Code)
+	}
+	if len(cfg.Routing.TokenThresholdRules) != 2 {
+		t.Fatalf("expected 2 rules after PUT, got %d", len(cfg.Routing.TokenThresholdRules))
+	}
+
+	lowerOnly := cfg.Routing.TokenThresholdRules[1]
+	if lowerOnly.MinTokens != 2001 {
+		t.Fatalf("expected lower-only min-tokens 2001, got %d", lowerOnly.MinTokens)
+	}
+	if lowerOnly.MaxTokens != 0 {
+		t.Fatalf("expected lower-only max-tokens 0, got %d", lowerOnly.MaxTokens)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/routing/token-threshold-rules", nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+
+	var resp struct {
+		Rules []map[string]any `json:"token-threshold-rules"`
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse GET: %v", err)
+	}
+	if len(resp.Rules) != 2 {
+		t.Fatalf("expected 2 rules in GET, got %d", len(resp.Rules))
+	}
+
+	lowerResp := resp.Rules[1]
+	minTok, ok := lowerResp["min-tokens"]
+	if !ok {
+		t.Fatal("lower-only rule missing min-tokens in GET response")
+	}
+	if minTok != float64(2001) {
+		t.Fatalf("expected min-tokens 2001, got %v", minTok)
+	}
+	if _, hasMax := lowerResp["max-tokens"]; hasMax {
+		t.Fatal("lower-only rule should not have max-tokens in GET response (omitempty)")
+	}
+}
+
+func TestPutTokenThresholdRulesDropsEmptyRule(t *testing.T) {
+	configPath := createTempConfigFile(t)
+	cfg := &config.Config{}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	r := setupTestRouter(h)
+	r.PUT("/routing/token-threshold-rules", h.PutTokenThresholdRules)
+
+	body, _ := json.Marshal(map[string]any{"value": []map[string]any{
+		{"model-pattern": "valid", "max-tokens": 100, "billing-class": "metered"},
+		{"model-pattern": "empty", "billing-class": "metered"},
+		{"model-pattern": "lower", "min-tokens": 50, "billing-class": "per-request"},
+	}})
+	req := httptest.NewRequest(http.MethodPut, "/routing/token-threshold-rules", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+	if len(cfg.Routing.TokenThresholdRules) != 2 {
+		t.Fatalf("expected 2 rules (empty dropped), got %d", len(cfg.Routing.TokenThresholdRules))
+	}
+	for _, r := range cfg.Routing.TokenThresholdRules {
+		if r.ModelPattern == "empty" {
+			t.Fatal("expected empty rule to be dropped")
+		}
+	}
+}
