@@ -73,6 +73,7 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 		return
 	}
 	r.once.Do(func() {
+		storeUsageDetailInContext(ctx, detail)
 		usage.PublishRecord(ctx, r.buildRecord(detail, failed))
 	})
 }
@@ -117,6 +118,17 @@ func (r *UsageReporter) latency() time.Duration {
 		return 0
 	}
 	return latency
+}
+
+func storeUsageDetailInContext(ctx context.Context, detail usage.Detail) {
+	if ctx == nil {
+		return
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return
+	}
+	ginCtx.Set("usageDetail", detail)
 }
 
 func APIKeyFromContext(ctx context.Context) string {

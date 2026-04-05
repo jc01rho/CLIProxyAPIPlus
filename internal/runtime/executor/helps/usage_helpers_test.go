@@ -1,9 +1,11 @@
 package helps
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
@@ -60,5 +62,46 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	}
 	if record.Latency > 3*time.Second {
 		t.Fatalf("latency = %v, want <= 3s", record.Latency)
+	}
+}
+
+func TestStoreUsageDetailInContext(t *testing.T) {
+	c := &gin.Context{}
+	ctx := context.WithValue(context.Background(), "gin", c)
+
+	detail := usage.Detail{
+		InputTokens:     100,
+		OutputTokens:    200,
+		TotalTokens:     300,
+		CachedTokens:    50,
+		ReasoningTokens: 10,
+	}
+
+	storeUsageDetailInContext(ctx, detail)
+
+	stored, exists := c.Get("usageDetail")
+	if !exists {
+		t.Fatal("usageDetail not stored in gin context")
+	}
+
+	storedDetail, ok := stored.(usage.Detail)
+	if !ok {
+		t.Fatalf("stored value is not usage.Detail, got %T", stored)
+	}
+
+	if storedDetail.InputTokens != 100 {
+		t.Fatalf("InputTokens = %d, want 100", storedDetail.InputTokens)
+	}
+	if storedDetail.OutputTokens != 200 {
+		t.Fatalf("OutputTokens = %d, want 200", storedDetail.OutputTokens)
+	}
+	if storedDetail.TotalTokens != 300 {
+		t.Fatalf("TotalTokens = %d, want 300", storedDetail.TotalTokens)
+	}
+	if storedDetail.CachedTokens != 50 {
+		t.Fatalf("CachedTokens = %d, want 50", storedDetail.CachedTokens)
+	}
+	if storedDetail.ReasoningTokens != 10 {
+		t.Fatalf("ReasoningTokens = %d, want 10", storedDetail.ReasoningTokens)
 	}
 }
