@@ -397,19 +397,22 @@ func TestManagerExecute_ThresholdRoutingFiltersByBillingClass(t *testing.T) {
 	manager.RegisterExecutor(executor)
 
 	model := "test-model"
+	baseID := uuid.NewString()
+	meteredID := baseID + "-metered-auth"
+	perRequestID := baseID + "-per-request-auth"
 	reg := registry.GetGlobalRegistry()
-	for _, authID := range []string{"metered-auth", "per-request-auth"} {
+	for _, authID := range []string{meteredID, perRequestID} {
 		reg.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: model}})
 	}
 	t.Cleanup(func() {
-		for _, authID := range []string{"metered-auth", "per-request-auth"} {
+		for _, authID := range []string{meteredID, perRequestID} {
 			reg.UnregisterClient(authID)
 		}
 	})
 
 	for _, auth := range []*Auth{
-		{ID: "metered-auth", Provider: "claude", Attributes: map[string]string{"billing_class": "metered", "priority": "1"}},
-		{ID: "per-request-auth", Provider: "claude", Attributes: map[string]string{"billing_class": "per-request", "priority": "10"}},
+		{ID: meteredID, Provider: "claude", Attributes: map[string]string{"billing_class": "metered", "priority": "1"}},
+		{ID: perRequestID, Provider: "claude", Attributes: map[string]string{"billing_class": "per-request", "priority": "10"}},
 	} {
 		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
 			t.Fatalf("register %s: %v", auth.ID, errRegister)
@@ -426,7 +429,7 @@ func TestManagerExecute_ThresholdRoutingFiltersByBillingClass(t *testing.T) {
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 	order := executor.CallOrder()
-	if len(order) != 1 || order[0] != "metered-auth" {
+	if len(order) != 1 || order[0] != meteredID {
 		t.Fatalf("expected only metered auth to be used, got %v", order)
 	}
 }
@@ -451,19 +454,22 @@ func TestManagerExecute_ThresholdRoutingFiltersAcrossConfigAndFileBackedAuth(t *
 	manager.RegisterExecutor(executor)
 
 	model := "test-model"
+	baseID := uuid.NewString()
+	configID := baseID + "-config-auth"
+	oauthID := baseID + "-oauth-auth"
 	reg := registry.GetGlobalRegistry()
-	for _, authID := range []string{"config-auth", "oauth-auth"} {
+	for _, authID := range []string{configID, oauthID} {
 		reg.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: model}})
 	}
 	t.Cleanup(func() {
-		for _, authID := range []string{"config-auth", "oauth-auth"} {
+		for _, authID := range []string{configID, oauthID} {
 			reg.UnregisterClient(authID)
 		}
 	})
 
 	for _, auth := range []*Auth{
-		{ID: "config-auth", Provider: "claude", Attributes: map[string]string{"billing_class": "metered", "priority": "100", "auth_kind": "apikey"}},
-		{ID: "oauth-auth", Provider: "claude", Attributes: map[string]string{"billing_class": "per-request", "priority": "1", "auth_kind": "oauth"}},
+		{ID: configID, Provider: "claude", Attributes: map[string]string{"billing_class": "metered", "priority": "100", "auth_kind": "apikey"}},
+		{ID: oauthID, Provider: "claude", Attributes: map[string]string{"billing_class": "per-request", "priority": "1", "auth_kind": "oauth"}},
 	} {
 		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
 			t.Fatalf("register %s: %v", auth.ID, errRegister)
@@ -480,8 +486,209 @@ func TestManagerExecute_ThresholdRoutingFiltersAcrossConfigAndFileBackedAuth(t *
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 	order := executor.CallOrder()
-	if len(order) != 1 || order[0] != "oauth-auth" {
+	if len(order) != 1 || order[0] != oauthID {
 		t.Fatalf("expected only oauth per-request auth to be used, got %v", order)
+	}
+}
+
+func TestManagerExecute_ThresholdRouting_OpusBoundarySelectsBillingClass(t *testing.T) {
+	t.Parallel()
+
+	model := "claude-3-opus"
+	for _, tc := range []struct {
+		name            string
+		tokens          int
+		wantAuth        string
+		meteredPriority string
+		perReqPriority  string
+	}{
+		{
+			name:            "1500 goes to metered",
+			tokens:          1500,
+			wantAuth:        "metered-auth",
+			meteredPriority: "1",
+			perReqPriority:  "100",
+		},
+		{
+			name:            "1501 goes to per-request",
+			tokens:          1501,
+			wantAuth:        "per-request-auth",
+			meteredPriority: "100",
+			perReqPriority:  "1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := NewManager(nil, &RoundRobinSelector{}, nil)
+			manager.SetRetryConfig(0, 0, 0)
+			manager.SetConfig(&internalconfig.Config{
+				Routing: internalconfig.RoutingConfig{
+					TokenThresholdRules: []internalconfig.TokenThresholdRule{
+						{ModelPattern: "*opus*", MaxTokens: 1500, BillingClass: internalconfig.BillingClassMetered, Enabled: true},
+						{ModelPattern: "*opus*", MinTokens: 1501, BillingClass: internalconfig.BillingClassPerRequest, Enabled: true},
+					},
+				},
+			})
+			executor := &priorityFallbackExecutor{id: "claude", failAuthID: map[string]struct{}{}}
+			manager.RegisterExecutor(executor)
+
+			baseID := uuid.NewString()
+			meteredID := baseID + "-metered-auth"
+			perRequestID := baseID + "-per-request-auth"
+
+			reg := registry.GetGlobalRegistry()
+			for _, auth := range []*Auth{
+				{ID: meteredID, Provider: "claude", Status: StatusActive, Attributes: map[string]string{"billing_class": "metered", "priority": tc.meteredPriority}},
+				{ID: perRequestID, Provider: "claude", Status: StatusActive, Attributes: map[string]string{"billing_class": "per-request", "priority": tc.perReqPriority}},
+			} {
+				reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
+				t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+					t.Fatalf("register %s: %v", auth.ID, errRegister)
+				}
+			}
+
+			_, errExecute := manager.Execute(
+				context.Background(),
+				[]string{"claude"},
+				cliproxyexecutor.Request{Model: model},
+				cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.EstimatedInputTokensMetadataKey: tc.tokens}},
+			)
+			if errExecute != nil {
+				t.Fatalf("Execute() error = %v", errExecute)
+			}
+			order := executor.CallOrder()
+			wantID := baseID + "-" + tc.wantAuth
+			if len(order) != 1 || order[0] != wantID {
+				t.Fatalf("expected %s to be used, got %v", wantID, order)
+			}
+		})
+	}
+}
+
+func TestMatchTokenThresholdRule_SupportsUpperLowerAndBounded(t *testing.T) {
+	t.Parallel()
+
+	rules := []internalconfig.TokenThresholdRule{
+		{ModelPattern: "upper-*", MaxTokens: 100, BillingClass: internalconfig.BillingClassMetered, Enabled: true},
+		{ModelPattern: "lower-*", MinTokens: 101, BillingClass: internalconfig.BillingClassPerRequest, Enabled: true},
+		{ModelPattern: "bounded-*", MinTokens: 10, MaxTokens: 20, BillingClass: internalconfig.BillingClassMetered, Enabled: true},
+	}
+
+	tests := []struct {
+		name      string
+		model     string
+		count     int
+		want      internalconfig.BillingClass
+		wantMatch bool
+	}{
+		{name: "upper only exact", model: "upper-opus", count: 100, want: internalconfig.BillingClassMetered, wantMatch: true},
+		{name: "lower only exact", model: "lower-opus", count: 101, want: internalconfig.BillingClassPerRequest, wantMatch: true},
+		{name: "bounded middle", model: "bounded-opus", count: 15, want: internalconfig.BillingClassMetered, wantMatch: true},
+		{name: "bounded over max", model: "bounded-opus", count: 21, wantMatch: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rule, ok := matchTokenThresholdRule(rules, tc.model, tc.count)
+			if ok != tc.wantMatch {
+				t.Fatalf("matchTokenThresholdRule() match = %v, want %v", ok, tc.wantMatch)
+			}
+			if !tc.wantMatch {
+				return
+			}
+			if rule.BillingClass != tc.want {
+				t.Fatalf("billing class = %q, want %q", rule.BillingClass, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagerExecute_ThresholdRouting_MissingTokensOrModelMismatchKeepsExistingBehavior(t *testing.T) {
+	t.Parallel()
+
+	model := "claude-3-opus"
+	setupAuths := func(t *testing.T) (*Manager, *priorityFallbackExecutor, string) {
+		t.Helper()
+		manager := NewManager(nil, &RoundRobinSelector{}, nil)
+		manager.SetRetryConfig(0, 0, 0)
+		manager.SetConfig(&internalconfig.Config{
+			Routing: internalconfig.RoutingConfig{
+				TokenThresholdRules: []internalconfig.TokenThresholdRule{{
+					ModelPattern: "*opus*",
+					MaxTokens:    1500,
+					BillingClass: internalconfig.BillingClassMetered,
+					Enabled:      true,
+				}},
+			},
+		})
+		executor := &priorityFallbackExecutor{id: "claude", failAuthID: map[string]struct{}{}}
+		manager.RegisterExecutor(executor)
+
+		baseID := uuid.NewString()
+		reg := registry.GetGlobalRegistry()
+		for _, auth := range []*Auth{
+			{ID: baseID + "-metered-auth", Provider: "claude", Status: StatusActive, Attributes: map[string]string{"billing_class": "metered", "priority": "100"}},
+			{ID: baseID + "-per-request-auth", Provider: "claude", Status: StatusActive, Attributes: map[string]string{"billing_class": "per-request", "priority": "1"}},
+		} {
+			reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}, {ID: "claude-3-sonnet"}})
+			t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+			if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+				t.Fatalf("register %s: %v", auth.ID, errRegister)
+			}
+		}
+		return manager, executor, baseID
+	}
+
+	t.Run("missing estimated tokens", func(t *testing.T) {
+		manager, executor, baseID := setupAuths(t)
+		_, errExecute := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+		if errExecute != nil {
+			t.Fatalf("Execute() error = %v", errExecute)
+		}
+		order := executor.CallOrder()
+		if len(order) != 1 || order[0] != baseID+"-metered-auth" {
+			t.Fatalf("expected default priority auth, got %v", order)
+		}
+	})
+
+	t.Run("model mismatch", func(t *testing.T) {
+		manager, executor, baseID := setupAuths(t)
+		_, errExecute := manager.Execute(
+			context.Background(),
+			[]string{"claude"},
+			cliproxyexecutor.Request{Model: "claude-3-sonnet"},
+			cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.EstimatedInputTokensMetadataKey: 1200}},
+		)
+		if errExecute != nil {
+			t.Fatalf("Execute() error = %v", errExecute)
+		}
+		order := executor.CallOrder()
+		if len(order) != 1 || order[0] != baseID+"-metered-auth" {
+			t.Fatalf("expected default priority auth on model mismatch, got %v", order)
+		}
+	})
+}
+
+func TestAuthBillingClass_RecognizesAttributeAndMetadataVariants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		auth *Auth
+		want string
+	}{
+		{name: "attribute snake case", auth: &Auth{Attributes: map[string]string{"billing_class": "metered"}}, want: "metered"},
+		{name: "attribute kebab case", auth: &Auth{Attributes: map[string]string{"billing-class": "per-request"}}, want: "per-request"},
+		{name: "metadata snake case", auth: &Auth{Metadata: map[string]any{"billing_class": "per_request"}}, want: "per-request"},
+		{name: "metadata kebab case", auth: &Auth{Metadata: map[string]any{"billing-class": "metered"}}, want: "metered"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := authBillingClass(tc.auth); got != tc.want {
+				t.Fatalf("authBillingClass() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

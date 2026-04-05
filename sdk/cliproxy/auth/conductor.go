@@ -1525,7 +1525,7 @@ func (m *Manager) filterProvidersForThreshold(routeModel string, providers []str
 			if auth == nil || auth.Disabled || strings.ToLower(strings.TrimSpace(auth.Provider)) != providerKey {
 				continue
 			}
-			if strings.EqualFold(strings.TrimSpace(auth.Attributes["billing_class"]), target) {
+			if strings.EqualFold(authBillingClass(auth), target) {
 				matchedProviders = append(matchedProviders, providerKey)
 				seen[providerKey] = struct{}{}
 				break
@@ -1561,10 +1561,54 @@ func estimatedInputTokensFromMetadata(meta map[string]any) (int, bool) {
 	}
 }
 
+func normalizeRuntimeBillingClass(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case string(internalconfig.BillingClassMetered):
+		return string(internalconfig.BillingClassMetered)
+	case "per_request", string(internalconfig.BillingClassPerRequest):
+		return string(internalconfig.BillingClassPerRequest)
+	default:
+		return ""
+	}
+}
+
+func authBillingClass(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if normalized := normalizeRuntimeBillingClass(auth.Attributes["billing_class"]); normalized != "" {
+		return normalized
+	}
+	if normalized := normalizeRuntimeBillingClass(auth.Attributes["billing-class"]); normalized != "" {
+		return normalized
+	}
+	if raw, ok := auth.Metadata["billing_class"].(string); ok {
+		if normalized := normalizeRuntimeBillingClass(raw); normalized != "" {
+			return normalized
+		}
+	}
+	if raw, ok := auth.Metadata["billing-class"].(string); ok {
+		if normalized := normalizeRuntimeBillingClass(raw); normalized != "" {
+			return normalized
+		}
+	}
+	return ""
+}
+
 func matchTokenThresholdRule(rules []internalconfig.TokenThresholdRule, routeModel string, count int) (internalconfig.TokenThresholdRule, bool) {
 	model := strings.TrimSpace(routeModel)
 	for _, rule := range rules {
-		if !rule.Enabled || rule.MaxTokens <= 0 || count > rule.MaxTokens {
+		if !rule.Enabled {
+			continue
+		}
+		if rule.MinTokens > 0 && count < rule.MinTokens {
+			continue
+		}
+		if rule.MaxTokens > 0 && count > rule.MaxTokens {
+			continue
+		}
+		if rule.MinTokens <= 0 && rule.MaxTokens <= 0 {
 			continue
 		}
 		pattern := strings.TrimSpace(rule.ModelPattern)
@@ -2766,7 +2810,7 @@ func (m *Manager) authMatchesThresholdRule(auth *Auth, routeModel string, opts c
 	if auth == nil {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(auth.Attributes["billing_class"]), strings.TrimSpace(string(rule.BillingClass)))
+	return strings.EqualFold(authBillingClass(auth), strings.TrimSpace(string(rule.BillingClass)))
 }
 
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
