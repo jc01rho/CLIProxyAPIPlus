@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -85,6 +86,22 @@ func getFallbackInfoFromContext(c *gin.Context) (requestedModel, actualModel str
 		return v["requested_model"], v["actual_model"]
 	}
 	return "", ""
+}
+
+func getUsageDetailFromContext(c *gin.Context) *usage.Detail {
+	if c == nil {
+		return nil
+	}
+
+	if v, exists := c.Get("usageDetail"); exists {
+		if detail, ok := v.(*usage.Detail); ok {
+			return detail
+		}
+		if detail, ok := v.(usage.Detail); ok {
+			return &detail
+		}
+	}
+	return nil
 }
 
 // GinLogrusLogger returns a Gin middleware handler that logs HTTP requests and responses
@@ -198,6 +215,15 @@ func GinLogrusLogger() gin.HandlerFunc {
 				logLine = logLine + " | " + providerInfo
 			} else if authKeyName != "" {
 				logLine = logLine + " | " + authKeyName
+			}
+		}
+
+		// Append token usage if available
+		if isAIAPIPath(path) {
+			detail := getUsageDetailFromContext(c)
+			if detail != nil && (detail.InputTokens > 0 || detail.OutputTokens > 0) {
+				tokenSegment := fmt.Sprintf("tokens in=%d out=%d", detail.InputTokens, detail.OutputTokens)
+				logLine = logLine + " | " + tokenSegment
 			}
 		}
 
