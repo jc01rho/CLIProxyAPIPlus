@@ -587,6 +587,9 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 	cooldownCount := 0
 	var earliest time.Time
 	for _, candidate := range auths {
+		if m.shouldExcludeAntigravityNonPrimary(provider, candidate) {
+			continue
+		}
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
 		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
 		if !blocked {
@@ -631,6 +634,16 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
 	}
 	return available, nil
+}
+
+func (m *Manager) shouldExcludeAntigravityNonPrimary(provider string, auth *Auth) bool {
+	if !strings.EqualFold(strings.TrimSpace(provider), "antigravity") {
+		return false
+	}
+	if auth == nil || auth.PrimaryInfo == nil {
+		return false
+	}
+	return !auth.PrimaryInfo.IsPrimary
 }
 
 func selectionArgForSelector(selector Selector, routeModel string) string {
@@ -2178,6 +2191,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.Status = StatusError
 					auth.UpdatedAt = now
 					updateAggregatedAvailability(auth, now)
+
+					if isAntigravityHandoffError(statusCode) &&
+						strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") &&
+						auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
+						cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+						if cfg != nil && cfg.AntigravityPrimaryHandoff {
+							m.promoteNextAntigravityPrimary(ctx, auth.ID)
+						}
+					}
 				}
 			} else {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now)
@@ -2382,6 +2404,71 @@ func statusCodeFromResult(err *Error) int {
 		return 0
 	}
 	return err.StatusCode()
+}
+
+// isAntigravityHandoffError returns true if the error status code should trigger
+// a primary credential handoff for Antigravity provider.
+func isAntigravityHandoffError(statusCode int) bool {
+	switch statusCode {
+	case 401, 403, 429, 502, 503, 504:
+		return true
+	default:
+		return false
+	}
+}
+
+// promoteNextAntigravityPrimary disables the current primary Antigravity credential
+// and promotes the next one in order (wrap-around to first if all exhausted).
+// Must be called with m.mu held.
+func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuthID string) {
+	var allAntigravity []*Auth
+	for _, auth := range m.auths {
+		if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") && auth.PrimaryInfo != nil {
+			allAntigravity = append(allAntigravity, auth)
+		}
+	}
+	if len(allAntigravity) == 0 {
+		return
+	}
+
+	sort.Slice(allAntigravity, func(i, j int) bool {
+		return allAntigravity[i].PrimaryInfo.Order < allAntigravity[j].PrimaryInfo.Order
+	})
+
+	currentIdx := -1
+	for i, auth := range allAntigravity {
+		if auth.ID == currentAuthID {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx < 0 {
+		return
+	}
+
+	current := allAntigravity[currentIdx]
+	current.Disabled = true
+	current.Status = StatusDisabled
+	current.PrimaryInfo.IsPrimary = false
+	current.UpdatedAt = time.Now()
+	_ = m.persist(ctx, current)
+
+	nextIdx := (currentIdx + 1) % len(allAntigravity)
+	next := allAntigravity[nextIdx]
+	next.Disabled = false
+	next.Status = StatusActive
+	next.StatusMessage = ""
+	next.Unavailable = false
+	next.PrimaryInfo.IsPrimary = true
+	next.UpdatedAt = time.Now()
+	_ = m.persist(ctx, next)
+
+	log.WithFields(log.Fields{
+		"old_primary": current.ID,
+		"new_primary": next.ID,
+		"old_order":   current.PrimaryInfo.Order,
+		"new_order":   next.PrimaryInfo.Order,
+	}).Info("antigravity primary handoff: promoted next credential")
 }
 
 func isModelSupportErrorMessage(message string) bool {

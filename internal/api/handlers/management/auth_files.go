@@ -1180,6 +1180,11 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	}
 	targetAuth.UpdatedAt = time.Now()
 
+	isAntigravity := strings.EqualFold(strings.TrimSpace(targetAuth.Provider), "antigravity")
+	if isAntigravity && !*req.Disabled && targetAuth.PrimaryInfo != nil {
+		h.ensureSoleAntigravityPrimary(ctx, targetAuth)
+	}
+
 	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
@@ -1498,6 +1503,41 @@ func (h *Handler) disableAuth(ctx context.Context, id string) {
 	}
 }
 
+func (h *Handler) ensureSoleAntigravityPrimary(ctx context.Context, primaryAuth *coreauth.Auth) {
+	if h.authManager == nil || primaryAuth == nil {
+		return
+	}
+	auths := h.authManager.List()
+	for _, auth := range auths {
+		if auth == nil || auth.ID == primaryAuth.ID {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+			continue
+		}
+		if auth.PrimaryInfo == nil {
+			continue
+		}
+		if auth.PrimaryInfo.IsPrimary {
+			auth.Disabled = true
+			auth.Status = coreauth.StatusDisabled
+			auth.StatusMessage = "demoted via primary handoff"
+			auth.PrimaryInfo.IsPrimary = false
+			auth.UpdatedAt = time.Now()
+			_, _ = h.authManager.Update(ctx, auth)
+		}
+	}
+	primaryAuth.Disabled = false
+	primaryAuth.Status = coreauth.StatusActive
+	primaryAuth.StatusMessage = ""
+	primaryAuth.Unavailable = false
+	if primaryAuth.PrimaryInfo != nil {
+		primaryAuth.PrimaryInfo.IsPrimary = true
+	}
+	primaryAuth.UpdatedAt = time.Now()
+	_, _ = h.authManager.Update(ctx, primaryAuth)
+}
+
 func (h *Handler) deleteTokenRecord(ctx context.Context, path string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("auth path is empty")
@@ -1534,12 +1574,68 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if store == nil {
 		return "", fmt.Errorf("token store unavailable")
 	}
+	h.initAntigravityPrimaryInfo(ctx, record)
 	if h.postAuthHook != nil {
 		if err := h.postAuthHook(ctx, record); err != nil {
 			return "", fmt.Errorf("post-auth hook failed: %w", err)
 		}
 	}
-	return store.Save(ctx, record)
+	savedPath, err := store.Save(ctx, record)
+	if err != nil {
+		return "", err
+	}
+	if err := h.upsertAuthRecord(ctx, record); err != nil {
+		cleanupErr := store.Delete(ctx, record.ID)
+		if cleanupErr != nil {
+			return "", fmt.Errorf("upsert failed: %w (cleanup also failed: %w)", err, cleanupErr)
+		}
+		return "", fmt.Errorf("upsert failed: %w (cleanup succeeded)", err)
+	}
+	return savedPath, nil
+}
+
+func (h *Handler) initAntigravityPrimaryInfo(ctx context.Context, record *coreauth.Auth) {
+	if h == nil || h.cfg == nil {
+		return
+	}
+	if record == nil || !strings.EqualFold(strings.TrimSpace(record.Provider), "antigravity") {
+		return
+	}
+	if !h.cfg.AntigravityPrimaryHandoff {
+		return
+	}
+	existingPrimary := false
+	maxOrder := 0
+	if h.authManager != nil {
+		for _, auth := range h.authManager.List() {
+			if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+				continue
+			}
+			if auth.PrimaryInfo != nil {
+				if auth.PrimaryInfo.Order > maxOrder {
+					maxOrder = auth.PrimaryInfo.Order
+				}
+				if auth.PrimaryInfo.IsPrimary {
+					existingPrimary = true
+				}
+			}
+		}
+	}
+	if existingPrimary {
+		record.PrimaryInfo = &coreauth.PrimaryInfo{
+			IsPrimary: false,
+			Order:     maxOrder + 1,
+		}
+		record.Disabled = true
+		record.Status = coreauth.StatusDisabled
+	} else {
+		record.PrimaryInfo = &coreauth.PrimaryInfo{
+			IsPrimary: true,
+			Order:     maxOrder + 1,
+		}
+		record.Disabled = false
+		record.Status = coreauth.StatusActive
+	}
 }
 
 func gitLabBaseURLFromRequest(c *gin.Context) string {
