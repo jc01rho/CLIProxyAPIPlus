@@ -1601,9 +1601,6 @@ func (h *Handler) initAntigravityPrimaryInfo(ctx context.Context, record *coreau
 	if record == nil || !strings.EqualFold(strings.TrimSpace(record.Provider), "antigravity") {
 		return
 	}
-	if !h.cfg.AntigravityPrimaryHandoff {
-		return
-	}
 	existingPrimary := false
 	maxOrder := 0
 	if h.authManager != nil {

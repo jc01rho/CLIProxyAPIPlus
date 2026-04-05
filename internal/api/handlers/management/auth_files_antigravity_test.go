@@ -209,6 +209,100 @@ func TestInitAntigravityPrimaryInfo_NilSafety(t *testing.T) {
 	h.initAntigravityPrimaryInfo(ctx, &coreauth.Auth{Provider: "claude"})
 }
 
+func TestInitAntigravityPrimaryInfo_DefaultOnBehavior_NoConfig(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Config without AntigravityPrimaryHandoff (defaults to false)
+	cfg := &config.Config{
+		AuthDir: tmpDir,
+		// AntigravityPrimaryHandoff: NOT SET → defaults to false
+	}
+	store := &memoryAuthStore{items: make(map[string]*coreauth.Auth)}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := NewHandlerWithoutConfigFilePath(cfg, manager)
+
+	first := &coreauth.Auth{
+		ID:       "antigravity-default-1",
+		Provider: "antigravity",
+		FileName: "antigravity-default-1.json",
+		Label:    "test-1",
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "test-token-1",
+		},
+	}
+
+	h.initAntigravityPrimaryInfo(ctx, first)
+
+	// Should be primary EVEN WITHOUT config being set explicitly
+	if first.PrimaryInfo == nil {
+		t.Fatal("expected PrimaryInfo to be set even without explicit config, got nil")
+	}
+	if !first.PrimaryInfo.IsPrimary {
+		t.Error("expected IsPrimary=true for first credential even without config, got false")
+	}
+	if first.Disabled {
+		t.Error("expected Disabled=false for first credential, got true")
+	}
+	if first.Status != coreauth.StatusActive {
+		t.Errorf("expected Status=StatusActive, got %v", first.Status)
+	}
+}
+
+func TestInitAntigravityPrimaryInfo_DefaultOnBehavior_MultipleCredentials(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Config without AntigravityPrimaryHandoff (defaults to false)
+	cfg := &config.Config{
+		AuthDir: tmpDir,
+		// AntigravityPrimaryHandoff: NOT SET → defaults to false
+	}
+	store := &memoryAuthStore{items: make(map[string]*coreauth.Auth)}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := NewHandlerWithoutConfigFilePath(cfg, manager)
+
+	first := &coreauth.Auth{
+		ID:       "antigravity-default-1",
+		Provider: "antigravity",
+		FileName: "antigravity-default-1.json",
+		Label:    "test-1",
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "test-token-1",
+		},
+	}
+	_, _ = h.saveTokenRecord(ctx, first)
+
+	second := &coreauth.Auth{
+		ID:       "antigravity-default-2",
+		Provider: "antigravity",
+		FileName: "antigravity-default-2.json",
+		Label:    "test-2",
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "test-token-2",
+		},
+	}
+
+	_, _ = h.saveTokenRecord(ctx, second)
+
+	// Second should be non-primary EVEN WITHOUT explicit config
+	if second.PrimaryInfo == nil {
+		t.Fatal("expected PrimaryInfo to be set even without explicit config, got nil")
+	}
+	if second.PrimaryInfo.IsPrimary {
+		t.Error("expected IsPrimary=false for second credential, got true")
+	}
+	if !second.Disabled {
+		t.Error("expected Disabled=true for second credential, got false")
+	}
+	if second.Status != coreauth.StatusDisabled {
+		t.Errorf("expected Status=StatusDisabled, got %v", second.Status)
+	}
+}
+
 func TestEnsureSoleAntigravityPrimary_DemotesPreviousPrimary(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
