@@ -665,7 +665,114 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 		return true
 	}
 	selectionKey := m.selectionModelKeyForAuth(auth, routeModel)
-	return selectionKey != "" && selectionKey != routeKey && registryRef.ClientSupportsModel(auth.ID, selectionKey)
+	if selectionKey != "" && selectionKey != routeKey && registryRef.ClientSupportsModel(auth.ID, selectionKey) {
+		return true
+	}
+	for _, aliasKey := range m.aliasRegistryModelKeysForAuth(auth, routeModel, routeKey, selectionKey) {
+		if aliasKey == "" || aliasKey == routeKey || aliasKey == selectionKey {
+			continue
+		}
+		if registryRef.ClientSupportsModel(auth.ID, aliasKey) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) aliasRegistryModelKeysForAuth(auth *Auth, routeModel, routeKey, selectionKey string) []string {
+	if m == nil || auth == nil {
+		return nil
+	}
+	kind, _ := auth.AccountInfo()
+	if !strings.EqualFold(strings.TrimSpace(kind), "api_key") {
+		return nil
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		return nil
+	}
+	keys := apiKeyRegistryAliasKeys(cfg, auth, routeKey, selectionKey)
+	if len(keys) > 0 {
+		return keys
+	}
+	rewritten := rewriteModelForAuth(routeModel, auth)
+	if strings.TrimSpace(rewritten) == "" {
+		rewritten = strings.TrimSpace(routeModel)
+	}
+	fallbackKey := canonicalModelKey(rewritten)
+	if fallbackKey == "" {
+		return nil
+	}
+	return []string{fallbackKey}
+}
+
+func apiKeyRegistryAliasKeys(cfg *internalconfig.Config, auth *Auth, targets ...string) []string {
+	if cfg == nil || auth == nil {
+		return nil
+	}
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	switch provider {
+	case "gemini":
+		if entry := resolveGeminiAPIKeyConfig(cfg, auth); entry != nil {
+			return configModelAliasKeysMatchingUpstream(entry.Models, targets...)
+		}
+	case "claude":
+		if entry := resolveClaudeAPIKeyConfig(cfg, auth); entry != nil {
+			return configModelAliasKeysMatchingUpstream(entry.Models, targets...)
+		}
+	case "codex":
+		if entry := resolveCodexAPIKeyConfig(cfg, auth); entry != nil {
+			return configModelAliasKeysMatchingUpstream(entry.Models, targets...)
+		}
+	case "vertex":
+		if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
+			return configModelAliasKeysMatchingUpstream(entry.Models, targets...)
+		}
+	default:
+		if entry := resolveOpenAICompatConfig(cfg, strings.TrimSpace(auth.Attributes["provider_key"]), strings.TrimSpace(auth.Attributes["compat_name"]), auth.Provider); entry != nil {
+			return configModelAliasKeysMatchingUpstream(entry.Models, targets...)
+		}
+	}
+	return nil
+}
+
+func configModelAliasKeysMatchingUpstream[T interface {
+	GetName() string
+	GetAlias() string
+}](models []T, targets ...string) []string {
+	if len(models) == 0 || len(targets) == 0 {
+		return nil
+	}
+	targetSet := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		if key := canonicalModelKey(target); key != "" {
+			targetSet[key] = struct{}{}
+		}
+	}
+	if len(targetSet) == 0 {
+		return nil
+	}
+	keys := make([]string, 0)
+	seen := make(map[string]struct{})
+	for i := range models {
+		nameKey := canonicalModelKey(models[i].GetName())
+		if _, ok := targetSet[nameKey]; !ok {
+			continue
+		}
+		registryKey := canonicalModelKey(models[i].GetAlias())
+		if registryKey == "" {
+			registryKey = nameKey
+		}
+		if registryKey == "" {
+			continue
+		}
+		if _, ok := seen[registryKey]; ok {
+			continue
+		}
+		seen[registryKey] = struct{}{}
+		keys = append(keys, registryKey)
+	}
+	return keys
 }
 
 func discardStreamChunks(ch <-chan cliproxyexecutor.StreamChunk) {
