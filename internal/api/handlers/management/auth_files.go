@@ -261,8 +261,28 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	}
 	auths := h.authManager.List()
 	files := make([]gin.H, 0, len(auths))
+	antigravityFallbackOrder := 1
+	antigravityPrimaryAssigned := false
 	for _, auth := range auths {
 		if entry := h.buildAuthFileEntry(auth); entry != nil {
+			if primaryInfo, ok := entry["primary_info"].(gin.H); ok {
+				if isPrimary, ok := primaryInfo["is_primary"].(bool); ok && isPrimary {
+					antigravityPrimaryAssigned = true
+				}
+				if orderValue, ok := primaryInfo["order"].(int); ok && orderValue >= antigravityFallbackOrder {
+					antigravityFallbackOrder = orderValue + 1
+				}
+			} else {
+				entry = ensureAntigravityPrimaryInfoEntry(entry, auth, antigravityFallbackOrder, antigravityPrimaryAssigned)
+				if primaryInfo, ok := entry["primary_info"].(gin.H); ok {
+					if isPrimary, ok := primaryInfo["is_primary"].(bool); ok && isPrimary {
+						antigravityPrimaryAssigned = true
+					}
+					if orderValue, ok := primaryInfo["order"].(int); ok && orderValue >= antigravityFallbackOrder {
+						antigravityFallbackOrder = orderValue + 1
+					}
+				}
+			}
 			files = append(files, entry)
 		}
 	}
@@ -272,6 +292,24 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		return strings.ToLower(nameI) < strings.ToLower(nameJ)
 	})
 	c.JSON(200, gin.H{"files": files})
+}
+
+func ensureAntigravityPrimaryInfoEntry(entry gin.H, auth *coreauth.Auth, fallbackOrder int, primaryAlreadyAssigned bool) gin.H {
+	if entry == nil || auth == nil {
+		return entry
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		return entry
+	}
+	if _, exists := entry["primary_info"]; exists {
+		return entry
+	}
+	isPrimary := !primaryAlreadyAssigned && !auth.Disabled && auth.Status != coreauth.StatusDisabled
+	entry["primary_info"] = gin.H{
+		"is_primary": isPrimary,
+		"order":      fallbackOrder,
+	}
+	return entry
 }
 
 // GetAuthFileModels returns the models supported by a specific auth file
