@@ -423,6 +423,44 @@ func TestFileSynthesizer_Synthesize_BillingClassParsing(t *testing.T) {
 	}
 }
 
+func TestFileSynthesizer_Synthesize_AntigravityPrimaryInfo(t *testing.T) {
+	tempDir := t.TempDir()
+	authData := map[string]any{
+		"type":     "antigravity",
+		"disabled": true,
+		"primary_info": map[string]any{
+			"is_primary": false,
+			"order":      2,
+		},
+	}
+	data, _ := json.Marshal(authData)
+	if err := os.WriteFile(filepath.Join(tempDir, "antigravity.json"), data, 0644); err != nil {
+		t.Fatalf("failed to write auth file: %v", err)
+	}
+
+	synth := NewFileSynthesizer()
+	ctx := &SynthesisContext{Config: &config.Config{}, AuthDir: tempDir, Now: time.Now(), IDGenerator: NewStableIDGenerator()}
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	if auths[0].PrimaryInfo == nil {
+		t.Fatal("expected primary info to be restored")
+	}
+	if auths[0].PrimaryInfo.IsPrimary {
+		t.Fatal("expected antigravity auth to remain standby")
+	}
+	if auths[0].PrimaryInfo.Order != 2 {
+		t.Fatalf("expected order 2, got %d", auths[0].PrimaryInfo.Order)
+	}
+	if !auths[0].Disabled {
+		t.Fatal("expected disabled standby auth to remain disabled")
+	}
+}
+
 func TestFileSynthesizer_Synthesize_OAuthExcludedModelsMerged(t *testing.T) {
 	tempDir := t.TempDir()
 	authData := map[string]any{

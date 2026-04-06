@@ -1,6 +1,13 @@
 package auth
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+)
 
 func TestExtractAccessToken(t *testing.T) {
 	t.Parallel()
@@ -76,5 +83,45 @@ func TestExtractAccessToken(t *testing.T) {
 				t.Errorf("extractAccessToken() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestFileTokenStore_PersistsAntigravityPrimaryInfo(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auth := &cliproxyauth.Auth{
+		ID:       "antigravity-primary.json",
+		FileName: "antigravity-primary.json",
+		Provider: "antigravity",
+		Disabled: false,
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "token",
+		},
+		PrimaryInfo: &cliproxyauth.PrimaryInfo{IsPrimary: true, Order: 1},
+	}
+
+	path, err := store.Save(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected saved file at %s: %v", path, err)
+	}
+	loaded, err := store.readAuthFile(filepath.Join(baseDir, "antigravity-primary.json"), baseDir)
+	if err != nil {
+		t.Fatalf("readAuthFile() error = %v", err)
+	}
+	if loaded.PrimaryInfo == nil {
+		t.Fatal("expected primary info to round-trip through filestore")
+	}
+	if !loaded.PrimaryInfo.IsPrimary {
+		t.Fatal("expected loaded auth to remain primary")
+	}
+	if loaded.PrimaryInfo.Order != 1 {
+		t.Fatalf("expected order 1, got %d", loaded.PrimaryInfo.Order)
 	}
 }

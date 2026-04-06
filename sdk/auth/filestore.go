@@ -72,6 +72,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 
 	switch {
 	case auth.Storage != nil:
+		applyPrimaryInfoMetadata(auth)
 		if setter, ok := auth.Storage.(metadataSetter); ok {
 			setter.SetMetadata(auth.Metadata)
 		}
@@ -79,6 +80,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 			return "", err
 		}
 	case auth.Metadata != nil:
+		applyPrimaryInfoMetadata(auth)
 		auth.Metadata["disabled"] = auth.Disabled
 		raw, errMarshal := json.Marshal(auth.Metadata)
 		if errMarshal != nil {
@@ -272,11 +274,54 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		LastRefreshedAt:  time.Time{},
 		NextRefreshAfter: nextRefreshAfter,
 	}
+	if provider == "antigravity" {
+		auth.PrimaryInfo = extractPrimaryInfo(metadata)
+	}
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		auth.Attributes["email"] = email
 	}
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
 	return auth, nil
+}
+
+func applyPrimaryInfoMetadata(auth *cliproxyauth.Auth) {
+	if auth == nil || auth.Metadata == nil {
+		return
+	}
+	if auth.PrimaryInfo == nil {
+		delete(auth.Metadata, "primary_info")
+		return
+	}
+	auth.Metadata["primary_info"] = map[string]any{
+		"is_primary": auth.PrimaryInfo.IsPrimary,
+		"order":      auth.PrimaryInfo.Order,
+	}
+}
+
+func extractPrimaryInfo(metadata map[string]any) *cliproxyauth.PrimaryInfo {
+	if metadata == nil {
+		return nil
+	}
+	rawPrimaryInfo, ok := metadata["primary_info"]
+	if !ok {
+		return nil
+	}
+	primaryInfoMap, ok := rawPrimaryInfo.(map[string]any)
+	if !ok {
+		return nil
+	}
+	isPrimary, ok := primaryInfoMap["is_primary"].(bool)
+	if !ok {
+		return nil
+	}
+	order := 0
+	switch value := primaryInfoMap["order"].(type) {
+	case float64:
+		order = int(value)
+	case int:
+		order = value
+	}
+	return &cliproxyauth.PrimaryInfo{IsPrimary: isPrimary, Order: order}
 }
 
 func (s *FileTokenStore) idFor(path, baseDir string) string {
