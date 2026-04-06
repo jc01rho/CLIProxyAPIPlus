@@ -2,11 +2,16 @@ package management
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/gin-gonic/gin"
 )
 
 func TestSaveTokenRecord_AntigravityPrimaryHandoff_FirstCredential(t *testing.T) {
@@ -359,5 +364,111 @@ func TestEnsureSoleAntigravityPrimary_DemotesPreviousPrimary(t *testing.T) {
 	}
 	if updatedPrimary.PrimaryInfo.IsPrimary {
 		t.Error("expected primary to no longer be primary after demotion")
+	}
+}
+
+func TestListAuthFiles_BackfillsAntigravityPrimaryInfoForLegacyRecords(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	cfg := &config.Config{AuthDir: tmpDir}
+	store := &memoryAuthStore{items: make(map[string]*coreauth.Auth)}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := NewHandlerWithoutConfigFilePath(cfg, manager)
+
+	primary := &coreauth.Auth{
+		ID:       "legacy-antigravity-primary",
+		Provider: "antigravity",
+		FileName: "legacy-antigravity-primary.json",
+		Label:    "legacy-primary",
+		Status:   coreauth.StatusActive,
+		Disabled: false,
+		Attributes: map[string]string{
+			"path": filepath.Join(tmpDir, "legacy-antigravity-primary.json"),
+		},
+	}
+	secondary := &coreauth.Auth{
+		ID:       "legacy-antigravity-standby",
+		Provider: "antigravity",
+		FileName: "legacy-antigravity-standby.json",
+		Label:    "legacy-standby",
+		Status:   coreauth.StatusDisabled,
+		Disabled: true,
+		Attributes: map[string]string{
+			"path": filepath.Join(tmpDir, "legacy-antigravity-standby.json"),
+		},
+	}
+
+	if _, err := manager.Register(ctx, primary); err != nil {
+		t.Fatalf("register primary failed: %v", err)
+	}
+	if _, err := manager.Register(ctx, secondary); err != nil {
+		t.Fatalf("register secondary failed: %v", err)
+	}
+	if err := os.WriteFile(primary.Attributes["path"], []byte(`{"type":"antigravity"}`), 0o644); err != nil {
+		t.Fatalf("write primary file failed: %v", err)
+	}
+	if err := os.WriteFile(secondary.Attributes["path"], []byte(`{"type":"antigravity","disabled":true}`), 0o644); err != nil {
+		t.Fatalf("write secondary file failed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+
+	h.ListAuthFiles(ginCtx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Files []struct {
+			Name        string `json:"name"`
+			Disabled    bool   `json:"disabled"`
+			PrimaryInfo *struct {
+				IsPrimary bool `json:"is_primary"`
+				Order     int  `json:"order"`
+			} `json:"primary_info"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+	if len(payload.Files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(payload.Files))
+	}
+
+	var primaryInfoFound bool
+	var primaryIsPrimary bool
+	var secondaryInfoFound bool
+	var secondaryIsPrimary bool
+	for _, file := range payload.Files {
+		switch file.Name {
+		case "legacy-antigravity-primary.json":
+			primaryInfoFound = file.PrimaryInfo != nil
+			if file.PrimaryInfo != nil {
+				primaryIsPrimary = file.PrimaryInfo.IsPrimary
+			}
+		case "legacy-antigravity-standby.json":
+			secondaryInfoFound = file.PrimaryInfo != nil
+			if file.PrimaryInfo != nil {
+				secondaryIsPrimary = file.PrimaryInfo.IsPrimary
+			}
+		}
+	}
+
+	if !primaryInfoFound {
+		t.Fatal("expected primary_info for legacy primary entry")
+	}
+	if !primaryIsPrimary {
+		t.Fatal("expected legacy active antigravity entry to be backfilled as primary")
+	}
+
+	if !secondaryInfoFound {
+		t.Fatal("expected primary_info for legacy standby entry")
+	}
+	if secondaryIsPrimary {
+		t.Fatal("expected disabled legacy antigravity entry to remain standby")
 	}
 }
