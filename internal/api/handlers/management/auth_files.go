@@ -348,6 +348,17 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
+				if dv := gjson.GetBytes(data, "disabled"); dv.Exists() {
+					fileData["disabled"] = dv.Bool()
+				}
+				if strings.EqualFold(strings.TrimSpace(typeValue), "antigravity") {
+					if pv := gjson.GetBytes(data, "primary_info.is_primary"); pv.Exists() {
+						fileData["primary_info"] = gin.H{
+							"is_primary": pv.Bool(),
+							"order":      int(gjson.GetBytes(data, "primary_info.order").Int()),
+						}
+					}
+				}
 				if pv := gjson.GetBytes(data, "priority"); pv.Exists() {
 					switch pv.Type {
 					case gjson.Number:
@@ -499,7 +510,39 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			}
 		}
 	}
+	if auth.PrimaryInfo != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		entry["primary_info"] = gin.H{
+			"is_primary": auth.PrimaryInfo.IsPrimary,
+			"order":      auth.PrimaryInfo.Order,
+		}
+	}
 	return entry
+}
+
+func extractPrimaryInfoFromMetadata(metadata map[string]any) *coreauth.PrimaryInfo {
+	if metadata == nil {
+		return nil
+	}
+	rawPrimaryInfo, ok := metadata["primary_info"]
+	if !ok {
+		return nil
+	}
+	primaryInfoMap, ok := rawPrimaryInfo.(map[string]any)
+	if !ok {
+		return nil
+	}
+	isPrimary, ok := primaryInfoMap["is_primary"].(bool)
+	if !ok {
+		return nil
+	}
+	order := 0
+	switch value := primaryInfoMap["order"].(type) {
+	case float64:
+		order = int(value)
+	case int:
+		order = value
+	}
+	return &coreauth.PrimaryInfo{IsPrimary: isPrimary, Order: order}
 }
 
 func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
@@ -1059,6 +1102,10 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
+	if disabled, ok := metadata["disabled"].(bool); ok && disabled {
+		auth.Disabled = true
+		auth.Status = coreauth.StatusDisabled
+	}
 	if hasLastRefresh {
 		auth.LastRefreshedAt = lastRefresh
 	}
@@ -1094,6 +1141,9 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 				auth.Attributes["billing_class"] = normalized
 			}
 		}
+	}
+	if primaryInfo := extractPrimaryInfoFromMetadata(metadata); primaryInfo != nil && strings.EqualFold(strings.TrimSpace(provider), "antigravity") {
+		auth.PrimaryInfo = primaryInfo
 	}
 	if h != nil && h.authManager != nil {
 		if existing, ok := h.authManager.GetByID(authID); ok {
