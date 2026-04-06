@@ -565,6 +565,297 @@ func TestManagerExecute_ThresholdRouting_OpusBoundarySelectsBillingClass(t *test
 	}
 }
 
+func TestManagerExecute_ThresholdRouting_ClaudeAPIKeyAliasSupportsUpstreamRouteModel(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetRetryConfig(0, 0, 0)
+	manager.SetConfig(&internalconfig.Config{
+		ClaudeKey: []internalconfig.ClaudeKey{{
+			APIKey:       "config-metered-key",
+			BaseURL:      "https://api.apertis.ai",
+			BillingClass: internalconfig.BillingClassMetered,
+			Models: []internalconfig.ClaudeModel{{
+				Name:  "code:claude-opus-4-6",
+				Alias: "opus",
+			}},
+		}},
+		Routing: internalconfig.RoutingConfig{
+			TokenThresholdRules: []internalconfig.TokenThresholdRule{{
+				ModelPattern: "*opus*",
+				MaxTokens:    1500,
+				BillingClass: internalconfig.BillingClassMetered,
+				Enabled:      true,
+			}},
+		},
+	})
+	executor := &priorityFallbackExecutor{id: "claude", failAuthID: map[string]struct{}{}}
+	manager.RegisterExecutor(executor)
+
+	meteredAuth := &Auth{
+		ID:       "config-metered-auth",
+		Provider: "claude",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"billing_class": "metered",
+			"priority":      "1",
+			"api_key":       "config-metered-key",
+			"base_url":      "https://api.apertis.ai",
+			"auth_kind":     "apikey",
+		},
+	}
+	perRequestAuth := &Auth{
+		ID:       "oauth-per-request-auth",
+		Provider: "claude",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"billing_class": "per-request",
+			"priority":      "100",
+			"auth_kind":     "oauth",
+		},
+	}
+
+	for _, auth := range []*Auth{meteredAuth, perRequestAuth} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register %s: %v", auth.ID, errRegister)
+		}
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(meteredAuth.ID, "claude", []*registry.ModelInfo{{ID: "opus"}})
+	t.Cleanup(func() { reg.UnregisterClient(meteredAuth.ID) })
+	reg.RegisterClient(perRequestAuth.ID, "claude", []*registry.ModelInfo{{ID: "code:claude-opus-4-6"}})
+	t.Cleanup(func() { reg.UnregisterClient(perRequestAuth.ID) })
+
+	_, errExecute := manager.Execute(
+		context.Background(),
+		[]string{"claude"},
+		cliproxyexecutor.Request{Model: "code:claude-opus-4-6"},
+		cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.EstimatedInputTokensMetadataKey: 1200}},
+	)
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+	order := executor.CallOrder()
+	if len(order) != 1 || order[0] != meteredAuth.ID {
+		t.Fatalf("expected metered API key auth to be used for upstream route model, got %v", order)
+	}
+}
+
+func TestManagerExecute_ThresholdRouting_OpenAICompatPoolSupportsDirectUpstreamRouteModel(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetRetryConfig(0, 0, 0)
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
+			Name: "pool",
+			Models: []internalconfig.OpenAICompatibilityModel{
+				{Name: "qwen3.5-plus", Alias: "claude-opus-4.66"},
+				{Name: "glm-5", Alias: "claude-opus-4.66"},
+			},
+		}},
+		Routing: internalconfig.RoutingConfig{
+			TokenThresholdRules: []internalconfig.TokenThresholdRule{{
+				ModelPattern: "qwen*",
+				MaxTokens:    1500,
+				BillingClass: internalconfig.BillingClassMetered,
+				Enabled:      true,
+			}},
+		},
+	})
+	executor := &priorityFallbackExecutor{id: "pool", failAuthID: map[string]struct{}{}}
+	manager.RegisterExecutor(executor)
+
+	meteredAuth := &Auth{
+		ID:       "pool-metered-auth",
+		Provider: "pool",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"billing_class": "metered",
+			"priority":      "1",
+			"api_key":       "metered-key",
+			"compat_name":   "pool",
+			"provider_key":  "pool",
+		},
+	}
+	perRequestAuth := &Auth{
+		ID:       "pool-per-request-auth",
+		Provider: "pool",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"billing_class": "per-request",
+			"priority":      "100",
+			"api_key":       "per-request-key",
+			"compat_name":   "pool",
+			"provider_key":  "pool",
+		},
+	}
+
+	for _, auth := range []*Auth{meteredAuth, perRequestAuth} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register %s: %v", auth.ID, errRegister)
+		}
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(meteredAuth.ID, "pool", []*registry.ModelInfo{{ID: "claude-opus-4.66"}})
+	t.Cleanup(func() { reg.UnregisterClient(meteredAuth.ID) })
+	reg.RegisterClient(perRequestAuth.ID, "pool", []*registry.ModelInfo{{ID: "qwen3.5-plus"}})
+	t.Cleanup(func() { reg.UnregisterClient(perRequestAuth.ID) })
+
+	_, errExecute := manager.Execute(
+		context.Background(),
+		[]string{"pool"},
+		cliproxyexecutor.Request{Model: "qwen3.5-plus"},
+		cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.EstimatedInputTokensMetadataKey: 1200}},
+	)
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+	order := executor.CallOrder()
+	if len(order) != 1 || order[0] != meteredAuth.ID {
+		t.Fatalf("expected metered pooled alias auth to be used for direct upstream route model, got %v", order)
+	}
+}
+
+func TestManagerExecute_ThresholdRouting_AliasBillingClassAcrossAPIKeyAndAuthFileCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		routeModel string
+		tokens     int
+		wantAuthID string
+	}{
+		{name: "upstream route prefers metered api key", routeModel: "code:claude-opus-4-6", tokens: 1200, wantAuthID: "config-metered-auth"},
+		{name: "upstream route prefers per-request auth file", routeModel: "code:claude-opus-4-6", tokens: 1600, wantAuthID: "file-per-request-auth"},
+		{name: "alias route prefers metered api key", routeModel: "opus", tokens: 1200, wantAuthID: "config-metered-auth"},
+		{name: "alias route prefers per-request auth file", routeModel: "opus", tokens: 1600, wantAuthID: "file-per-request-auth"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := NewManager(nil, &RoundRobinSelector{}, nil)
+			manager.SetRetryConfig(0, 0, 0)
+			manager.SetConfig(&internalconfig.Config{
+				ClaudeKey: []internalconfig.ClaudeKey{{
+					APIKey:       "config-metered-key",
+					BaseURL:      "https://api.apertis.ai",
+					BillingClass: internalconfig.BillingClassMetered,
+					Models: []internalconfig.ClaudeModel{{
+						Name:  "code:claude-opus-4-6",
+						Alias: "opus",
+					}},
+				}},
+				Routing: internalconfig.RoutingConfig{
+					TokenThresholdRules: []internalconfig.TokenThresholdRule{
+						{ModelPattern: "*opus*", MaxTokens: 1500, BillingClass: internalconfig.BillingClassMetered, Enabled: true},
+						{ModelPattern: "*opus*", MinTokens: 1501, BillingClass: internalconfig.BillingClassPerRequest, Enabled: true},
+					},
+				},
+			})
+			manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+				"claude": {{Name: "code:claude-opus-4-6", Alias: "opus"}},
+			})
+			executor := &priorityFallbackExecutor{id: "claude", failAuthID: map[string]struct{}{}}
+			manager.RegisterExecutor(executor)
+
+			meteredAuth := &Auth{
+				ID:       "config-metered-auth",
+				Provider: "claude",
+				Status:   StatusActive,
+				Attributes: map[string]string{
+					"billing_class": "metered",
+					"priority":      "100",
+					"api_key":       "config-metered-key",
+					"base_url":      "https://api.apertis.ai",
+					"auth_kind":     "apikey",
+				},
+			}
+			fileOAuthAuth := &Auth{
+				ID:       "file-per-request-auth",
+				Provider: "claude",
+				Status:   StatusActive,
+				Attributes: map[string]string{
+					"billing_class": "per-request",
+					"priority":      "1",
+					"auth_kind":     "oauth",
+					"source":        "/tmp/claude-oauth.json",
+					"path":          "/tmp/claude-oauth.json",
+				},
+			}
+
+			for _, auth := range []*Auth{meteredAuth, fileOAuthAuth} {
+				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+					t.Fatalf("register %s: %v", auth.ID, errRegister)
+				}
+			}
+
+			reg := registry.GetGlobalRegistry()
+			reg.RegisterClient(meteredAuth.ID, "claude", []*registry.ModelInfo{{ID: "opus"}})
+			t.Cleanup(func() { reg.UnregisterClient(meteredAuth.ID) })
+			reg.RegisterClient(fileOAuthAuth.ID, "claude", []*registry.ModelInfo{{ID: "code:claude-opus-4-6"}})
+			t.Cleanup(func() { reg.UnregisterClient(fileOAuthAuth.ID) })
+
+			_, errExecute := manager.Execute(
+				context.Background(),
+				[]string{"claude"},
+				cliproxyexecutor.Request{Model: tc.routeModel},
+				cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.EstimatedInputTokensMetadataKey: tc.tokens}},
+			)
+			if errExecute != nil {
+				t.Fatalf("Execute() error = %v", errExecute)
+			}
+			order := executor.CallOrder()
+			if len(order) != 1 || order[0] != tc.wantAuthID {
+				t.Fatalf("expected %s to be used, got %v", tc.wantAuthID, order)
+			}
+		})
+	}
+}
+
+func TestConfigModelAliasKeysMatchingUpstream_DeduplicatesSharedAliasPool(t *testing.T) {
+	t.Parallel()
+
+	models := []internalconfig.OpenAICompatibilityModel{
+		{Name: "qwen3.5-plus", Alias: "claude-opus-4.66"},
+		{Name: "glm-5", Alias: "claude-opus-4.66"},
+		{Name: "kimi-k2.5", Alias: "claude-opus-4.66"},
+	}
+
+	got := configModelAliasKeysMatchingUpstream(models, "qwen3.5-plus", "glm-5")
+	want := []string{"claude-opus-4.66"}
+	if len(got) != len(want) {
+		t.Fatalf("alias keys len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("alias key[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestConfigModelAliasKeysMatchingUpstream_ReturnsAllAliasesForSameUpstream(t *testing.T) {
+	t.Parallel()
+
+	models := []internalconfig.GeminiModel{
+		{Name: "gemini-2.5-pro-exp-03-25", Alias: "g25p"},
+		{Name: "gemini-2.5-pro-exp-03-25", Alias: "gemini-pro"},
+	}
+
+	got := configModelAliasKeysMatchingUpstream(models, "gemini-2.5-pro-exp-03-25")
+	want := []string{"g25p", "gemini-pro"}
+	if len(got) != len(want) {
+		t.Fatalf("alias keys len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("alias key[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestMatchTokenThresholdRule_SupportsUpperLowerAndBounded(t *testing.T) {
 	t.Parallel()
 
