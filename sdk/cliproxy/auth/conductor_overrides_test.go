@@ -3,10 +3,13 @@ package auth
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -488,6 +491,89 @@ func TestManagerExecute_ThresholdRoutingFiltersAcrossConfigAndFileBackedAuth(t *
 	order := executor.CallOrder()
 	if len(order) != 1 || order[0] != oauthID {
 		t.Fatalf("expected only oauth per-request auth to be used, got %v", order)
+	}
+}
+
+func TestManagerExecute_ThresholdRoutingRecordsBillingDecisionInGinContext(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetRetryConfig(0, 0, 0)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			TokenThresholdRules: []internalconfig.TokenThresholdRule{{
+				ModelPattern: "test-*",
+				MaxTokens:    100,
+				BillingClass: internalconfig.BillingClassMetered,
+				Enabled:      true,
+			}},
+		},
+	})
+
+	executor := &priorityFallbackExecutor{id: "claude", failAuthID: map[string]struct{}{}}
+	manager.RegisterExecutor(executor)
+
+	model := "test-model"
+	baseID := uuid.NewString()
+	meteredID := baseID + "-metered-auth"
+	perRequestID := baseID + "-per-request-auth"
+	reg := registry.GetGlobalRegistry()
+	for _, authID := range []string{meteredID, perRequestID} {
+		reg.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: model}})
+	}
+	t.Cleanup(func() {
+		for _, authID := range []string{meteredID, perRequestID} {
+			reg.UnregisterClient(authID)
+		}
+	})
+
+	for _, auth := range []*Auth{
+		{ID: meteredID, Provider: "claude", Attributes: map[string]string{"billing_class": "metered", "priority": "1"}},
+		{ID: perRequestID, Provider: "claude", Attributes: map[string]string{"billing_class": "per-request", "priority": "10"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register %s: %v", auth.ID, errRegister)
+		}
+	}
+
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+
+	_, errExecute := manager.Execute(
+		ctx,
+		[]string{"claude"},
+		cliproxyexecutor.Request{Model: model},
+		cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.EstimatedInputTokensMetadataKey: 50}},
+	)
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+
+	rawDecision, exists := ginCtx.Get(GinBillingDecisionKey)
+	if !exists {
+		t.Fatalf("expected billing decision in gin context")
+	}
+	decision, ok := rawDecision.(map[string]string)
+	if !ok {
+		t.Fatalf("billing decision type = %T, want map[string]string", rawDecision)
+	}
+	if got := decision["billing_class"]; got != "metered" {
+		t.Fatalf("billing_class = %q, want %q", got, "metered")
+	}
+	reason := decision["reason"]
+	for _, want := range []string{
+		"threshold_rule",
+		"pattern=test-*",
+		"estimated_tokens=50",
+		"target=metered",
+		"provider=claude",
+		"auth=" + meteredID,
+		"selected_billing_class=metered",
+	} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason = %q, want substring %q", reason, want)
+		}
 	}
 }
 

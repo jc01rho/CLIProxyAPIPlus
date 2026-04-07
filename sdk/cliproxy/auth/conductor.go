@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -30,6 +31,8 @@ const providerAuthContextKey = "cliproxy.provider_auth"
 const GinProviderAuthKey = "providerAuth"
 const fallbackInfoContextKey = "cliproxy.fallback_info"
 const GinFallbackInfoKey = "fallbackInfo"
+const billingDecisionContextKey = "cliproxy.billing_decision"
+const GinBillingDecisionKey = "billingClassDecision"
 
 func SetProviderAuthInContext(ctx context.Context, provider, authID, authLabel string) context.Context {
 	authInfo := map[string]string{
@@ -78,6 +81,35 @@ func GetFallbackInfoFromContext(ctx context.Context) (requestedModel, actualMode
 	}
 	if v, ok := ctx.Value(fallbackInfoContextKey).(map[string]string); ok {
 		return v["requested_model"], v["actual_model"]
+	}
+	return "", ""
+}
+
+func SetBillingDecisionInContext(ctx context.Context, billingClass, reason string) context.Context {
+	decision := map[string]string{}
+	if normalized := normalizeRuntimeBillingClass(billingClass); normalized != "" {
+		decision["billing_class"] = normalized
+	}
+	if trimmedReason := strings.TrimSpace(reason); trimmedReason != "" {
+		decision["reason"] = trimmedReason
+	}
+	if len(decision) == 0 {
+		return ctx
+	}
+
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
+		ginCtx.Set(GinBillingDecisionKey, decision)
+	}
+
+	return context.WithValue(ctx, billingDecisionContextKey, decision)
+}
+
+func GetBillingDecisionFromContext(ctx context.Context) (billingClass, reason string) {
+	if ctx == nil {
+		return "", ""
+	}
+	if v, ok := ctx.Value(billingDecisionContextKey).(map[string]string); ok {
+		return v["billing_class"], v["reason"]
 	}
 	return "", ""
 }
@@ -1703,6 +1735,76 @@ func authBillingClass(auth *Auth) string {
 	return ""
 }
 
+func thresholdRuleTargetBillingClass(rule internalconfig.TokenThresholdRule) string {
+	return normalizeRuntimeBillingClass(strings.TrimSpace(string(rule.BillingClass)))
+}
+
+func thresholdRuleReason(rule internalconfig.TokenThresholdRule, count int) string {
+	parts := []string{"threshold_rule"}
+	if pattern := strings.TrimSpace(rule.ModelPattern); pattern != "" {
+		parts = append(parts, fmt.Sprintf("pattern=%s", pattern))
+	}
+	if count > 0 {
+		parts = append(parts, fmt.Sprintf("estimated_tokens=%d", count))
+	}
+	if rule.MinTokens > 0 {
+		parts = append(parts, fmt.Sprintf("min_tokens=%d", rule.MinTokens))
+	}
+	if rule.MaxTokens > 0 {
+		parts = append(parts, fmt.Sprintf("max_tokens=%d", rule.MaxTokens))
+	}
+	if target := thresholdRuleTargetBillingClass(rule); target != "" {
+		parts = append(parts, fmt.Sprintf("target=%s", target))
+	}
+	return strings.Join(parts, " ")
+}
+
+func authDecisionLabel(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if label := strings.TrimSpace(auth.Label); label != "" {
+		return label
+	}
+	return strings.TrimSpace(auth.ID)
+}
+
+func (m *Manager) annotateThresholdDecisionSelected(ctx context.Context, routeModel string, opts cliproxyexecutor.Options, provider string, auth *Auth) context.Context {
+	rule, ok := m.thresholdRuleForRequest(routeModel, opts)
+	if !ok {
+		return ctx
+	}
+	count, _ := estimatedInputTokensFromMetadata(opts.Metadata)
+	reasonParts := []string{thresholdRuleReason(rule, count)}
+	if provider = strings.TrimSpace(provider); provider != "" {
+		reasonParts = append(reasonParts, fmt.Sprintf("provider=%s", provider))
+	}
+	if authName := authDecisionLabel(auth); authName != "" {
+		reasonParts = append(reasonParts, fmt.Sprintf("auth=%s", authName))
+	}
+	selectedClass := authBillingClass(auth)
+	if selectedClass != "" {
+		reasonParts = append(reasonParts, fmt.Sprintf("selected_billing_class=%s", selectedClass))
+	}
+	if selectedClass == "" {
+		selectedClass = thresholdRuleTargetBillingClass(rule)
+	}
+	return SetBillingDecisionInContext(ctx, selectedClass, strings.Join(reasonParts, " "))
+}
+
+func (m *Manager) annotateThresholdDecisionNoMatch(ctx context.Context, routeModel string, opts cliproxyexecutor.Options, suffix string) context.Context {
+	rule, ok := m.thresholdRuleForRequest(routeModel, opts)
+	if !ok {
+		return ctx
+	}
+	count, _ := estimatedInputTokensFromMetadata(opts.Metadata)
+	reason := thresholdRuleReason(rule, count)
+	if trimmedSuffix := strings.TrimSpace(suffix); trimmedSuffix != "" {
+		reason = reason + " " + trimmedSuffix
+	}
+	return SetBillingDecisionInContext(ctx, thresholdRuleTargetBillingClass(rule), reason)
+}
+
 func matchTokenThresholdRule(rules []internalconfig.TokenThresholdRule, routeModel string, count int) (internalconfig.TokenThresholdRule, bool) {
 	model := strings.TrimSpace(routeModel)
 	for _, rule := range rules {
@@ -2958,6 +3060,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		candidates = append(candidates, candidate)
 	}
 	if len(candidates) == 0 {
+		m.annotateThresholdDecisionNoMatch(ctx, model, opts, "result=no_matching_auth_for_billing_class")
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
@@ -2975,6 +3078,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	m.annotateThresholdDecisionSelected(ctx, model, opts, provider, selected)
 	authCopy := selected.Clone()
 	m.mu.RUnlock()
 	if !selected.indexAssigned {
@@ -3093,6 +3197,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		candidates = append(candidates, candidate)
 	}
 	if len(candidates) == 0 {
+		m.annotateThresholdDecisionNoMatch(ctx, model, opts, "result=no_matching_auth_for_billing_class")
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
@@ -3111,6 +3216,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
 	providerKey := strings.TrimSpace(strings.ToLower(selected.Provider))
+	m.annotateThresholdDecisionSelected(ctx, model, opts, providerKey, selected)
 	executor, okExecutor := m.executors[providerKey]
 	if !okExecutor {
 		m.mu.RUnlock()

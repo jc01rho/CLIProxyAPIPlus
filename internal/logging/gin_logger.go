@@ -37,6 +37,8 @@ const providerAuthContextKey = "cliproxy.provider_auth"
 const ginProviderAuthKey = "providerAuth"
 const fallbackInfoContextKey = "cliproxy.fallback_info"
 const ginFallbackInfoKey = "fallbackInfo"
+const billingDecisionContextKey = "cliproxy.billing_decision"
+const ginBillingDecisionKey = "billingClassDecision"
 
 func getProviderAuthFromContext(c *gin.Context) (provider, authID, authLabel string) {
 	if c == nil {
@@ -102,6 +104,30 @@ func getUsageDetailFromContext(c *gin.Context) *usage.Detail {
 		}
 	}
 	return nil
+}
+
+func getBillingDecisionFromContext(c *gin.Context) (billingClass, reason string) {
+	if c == nil {
+		return "", ""
+	}
+
+	if v, exists := c.Get(ginBillingDecisionKey); exists {
+		if info, ok := v.(map[string]string); ok {
+			return info["billing_class"], info["reason"]
+		}
+	}
+
+	if c.Request == nil {
+		return "", ""
+	}
+	ctx := c.Request.Context()
+	if ctx == nil {
+		return "", ""
+	}
+	if v, ok := ctx.Value(billingDecisionContextKey).(map[string]string); ok {
+		return v["billing_class"], v["reason"]
+	}
+	return "", ""
 }
 
 // GinLogrusLogger returns a Gin middleware handler that logs HTTP requests and responses
@@ -180,6 +206,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 
 		provider, authID, authLabel := getProviderAuthFromContext(c)
 		requestedModel, actualModel := getFallbackInfoFromContext(c)
+		billingClass, billingReason := getBillingDecisionFromContext(c)
 		providerInfo := ""
 		if provider != "" {
 			displayAuth := authLabel
@@ -215,6 +242,22 @@ func GinLogrusLogger() gin.HandlerFunc {
 				logLine = logLine + " | " + providerInfo
 			} else if authKeyName != "" {
 				logLine = logLine + " | " + authKeyName
+			}
+		}
+
+		if isAIAPIPath(path) && (billingClass != "" || billingReason != "") {
+			billingSegment := ""
+			if billingClass != "" {
+				billingSegment = fmt.Sprintf("billing class=%s", billingClass)
+			}
+			if billingReason != "" {
+				if billingSegment != "" {
+					billingSegment = billingSegment + " "
+				}
+				billingSegment = billingSegment + fmt.Sprintf("reason=%s", billingReason)
+			}
+			if billingSegment != "" {
+				logLine = logLine + " | " + billingSegment
 			}
 		}
 
