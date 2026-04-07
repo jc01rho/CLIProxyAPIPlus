@@ -367,6 +367,154 @@ func TestEnsureSoleAntigravityPrimary_DemotesPreviousPrimary(t *testing.T) {
 	}
 }
 
+func TestEnsureSoleAntigravityPrimary_DemotesLegacyActivePrimary(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		AuthDir:                   tmpDir,
+		AntigravityPrimaryHandoff: true,
+	}
+	store := &memoryAuthStore{items: make(map[string]*coreauth.Auth)}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := NewHandlerWithoutConfigFilePath(cfg, manager)
+
+	legacyPrimary := &coreauth.Auth{
+		ID:       "antigravity-legacy-primary",
+		Provider: "antigravity",
+		FileName: "antigravity-legacy-primary.json",
+		Label:    "legacy-primary",
+		Status:   coreauth.StatusActive,
+		Disabled: false,
+	}
+	standby := &coreauth.Auth{
+		ID:       "antigravity-secondary",
+		Provider: "antigravity",
+		FileName: "antigravity-secondary.json",
+		Label:    "secondary",
+		Status:   coreauth.StatusDisabled,
+		Disabled: true,
+		PrimaryInfo: &coreauth.PrimaryInfo{
+			IsPrimary: false,
+			Order:     2,
+		},
+	}
+
+	if _, err := manager.Register(ctx, legacyPrimary); err != nil {
+		t.Fatalf("register legacy primary failed: %v", err)
+	}
+	if _, err := manager.Register(ctx, standby); err != nil {
+		t.Fatalf("register standby failed: %v", err)
+	}
+
+	h.ensureSoleAntigravityPrimary(ctx, standby)
+
+	updatedLegacyPrimary, _ := manager.GetByID("antigravity-legacy-primary")
+	updatedStandby, _ := manager.GetByID("antigravity-secondary")
+
+	if !updatedLegacyPrimary.Disabled {
+		t.Error("expected legacy active primary to be demoted and disabled")
+	}
+	if updatedLegacyPrimary.PrimaryInfo == nil {
+		t.Fatal("expected demoted legacy primary to receive PrimaryInfo")
+	}
+	if updatedLegacyPrimary.PrimaryInfo.IsPrimary {
+		t.Error("expected demoted legacy primary to no longer be primary")
+	}
+	if updatedStandby.Disabled {
+		t.Error("expected standby to be enabled after promotion")
+	}
+	if updatedStandby.PrimaryInfo == nil || !updatedStandby.PrimaryInfo.IsPrimary {
+		t.Error("expected standby to be promoted to primary")
+	}
+}
+
+func TestSaveTokenRecord_AntigravityPrimaryHandoff_LegacyActivePrimaryStaysUnique(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		AuthDir:                   tmpDir,
+		AntigravityPrimaryHandoff: true,
+	}
+	store := &memoryAuthStore{items: make(map[string]*coreauth.Auth)}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := NewHandlerWithoutConfigFilePath(cfg, manager)
+
+	legacyPrimary := &coreauth.Auth{
+		ID:       "antigravity-legacy-primary",
+		Provider: "antigravity",
+		FileName: "antigravity-legacy-primary.json",
+		Label:    "legacy-primary",
+		Status:   coreauth.StatusActive,
+		Disabled: false,
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "legacy-token",
+		},
+	}
+	standby := &coreauth.Auth{
+		ID:       "antigravity-standby",
+		Provider: "antigravity",
+		FileName: "antigravity-standby.json",
+		Label:    "standby",
+		Status:   coreauth.StatusDisabled,
+		Disabled: true,
+		PrimaryInfo: &coreauth.PrimaryInfo{
+			IsPrimary: false,
+			Order:     2,
+		},
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "standby-token",
+		},
+	}
+
+	if _, err := manager.Register(ctx, legacyPrimary); err != nil {
+		t.Fatalf("register legacy primary failed: %v", err)
+	}
+	if _, err := manager.Register(ctx, standby); err != nil {
+		t.Fatalf("register standby failed: %v", err)
+	}
+
+	newOAuth := &coreauth.Auth{
+		ID:       "antigravity-new-oauth",
+		Provider: "antigravity",
+		FileName: "antigravity-new-oauth.json",
+		Label:    "new-oauth",
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "new-token",
+		},
+	}
+
+	_, err := h.saveTokenRecord(ctx, newOAuth)
+	if err != nil {
+		t.Fatalf("saveTokenRecord failed: %v", err)
+	}
+
+	if newOAuth.PrimaryInfo == nil {
+		t.Fatal("expected new oauth credential to get PrimaryInfo")
+	}
+	if newOAuth.PrimaryInfo.IsPrimary {
+		t.Fatal("expected new oauth credential to remain standby when a legacy active primary exists")
+	}
+	if !newOAuth.Disabled {
+		t.Fatal("expected new oauth credential to be disabled as standby")
+	}
+
+	updatedLegacyPrimary, ok := manager.GetByID("antigravity-legacy-primary")
+	if !ok {
+		t.Fatal("expected legacy primary to remain registered")
+	}
+	if updatedLegacyPrimary.Disabled {
+		t.Fatal("expected legacy primary to remain active")
+	}
+	if updatedLegacyPrimary.PrimaryInfo != nil && !updatedLegacyPrimary.PrimaryInfo.IsPrimary {
+		t.Fatal("expected legacy primary not to be demoted")
+	}
+}
+
 func TestListAuthFiles_BackfillsAntigravityPrimaryInfoForLegacyRecords(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()

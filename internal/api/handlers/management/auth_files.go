@@ -1603,13 +1603,19 @@ func (h *Handler) ensureSoleAntigravityPrimary(ctx context.Context, primaryAuth 
 		if !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
 			continue
 		}
-		if auth.PrimaryInfo == nil {
-			continue
+		shouldDemote := false
+		if auth.PrimaryInfo != nil {
+			shouldDemote = auth.PrimaryInfo.IsPrimary
+		} else if !auth.Disabled && auth.Status != coreauth.StatusDisabled {
+			shouldDemote = true
 		}
-		if auth.PrimaryInfo.IsPrimary {
+		if shouldDemote {
 			auth.Disabled = true
 			auth.Status = coreauth.StatusDisabled
 			auth.StatusMessage = "demoted via primary handoff"
+			if auth.PrimaryInfo == nil {
+				auth.PrimaryInfo = &coreauth.PrimaryInfo{}
+			}
 			auth.PrimaryInfo.IsPrimary = false
 			auth.UpdatedAt = time.Now()
 			_, _ = h.authManager.Update(ctx, auth)
@@ -1696,6 +1702,9 @@ func (h *Handler) initAntigravityPrimaryInfo(ctx context.Context, record *coreau
 			if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
 				continue
 			}
+			if auth.ID == record.ID {
+				continue
+			}
 			if auth.PrimaryInfo != nil {
 				if auth.PrimaryInfo.Order > maxOrder {
 					maxOrder = auth.PrimaryInfo.Order
@@ -1703,6 +1712,10 @@ func (h *Handler) initAntigravityPrimaryInfo(ctx context.Context, record *coreau
 				if auth.PrimaryInfo.IsPrimary {
 					existingPrimary = true
 				}
+				continue
+			}
+			if !auth.Disabled && auth.Status != coreauth.StatusDisabled {
+				existingPrimary = true
 			}
 		}
 	}
