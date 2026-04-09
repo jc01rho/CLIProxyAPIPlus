@@ -68,6 +68,49 @@ func TestManager_ShouldRetryAfterError_RespectsAuthRequestRetryOverride(t *testi
 	}
 }
 
+func TestManager_ShouldRetryAfterError_UsesOAuthModelAliasForCooldown(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	m.SetRetryConfig(3, 30*time.Second, 0)
+	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"qwen": {
+			{Name: "qwen3.6-plus", Alias: "coder-model"},
+		},
+	})
+
+	routeModel := "coder-model"
+	upstreamModel := "qwen3.6-plus"
+	next := time.Now().Add(5 * time.Second)
+
+	auth := &Auth{
+		ID:       "auth-1",
+		Provider: "qwen",
+		ModelStates: map[string]*ModelState{
+			upstreamModel: {
+				Unavailable:    true,
+				Status:         StatusError,
+				NextRetryAfter: next,
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: next,
+				},
+			},
+		},
+	}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	_, _, maxWait := m.retrySettings()
+	wait, shouldRetry := m.shouldRetryAfterError(&Error{HTTPStatus: 429, Message: "quota"}, 0, []string{"qwen"}, routeModel, maxWait)
+	if !shouldRetry {
+		t.Fatalf("expected shouldRetry=true, got false (wait=%v)", wait)
+	}
+	if wait <= 0 {
+		t.Fatalf("expected wait > 0, got %v", wait)
+	}
+}
+
 type credentialRetryLimitExecutor struct {
 	id string
 
