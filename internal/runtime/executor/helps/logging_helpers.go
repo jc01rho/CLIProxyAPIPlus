@@ -577,7 +577,7 @@ func LogWithRequestID(ctx context.Context) *log.Entry {
 // logDetailedAPIError logs detailed error information for API errors at Warn/Error level.
 // This function logs the full error body, URL, status code, and provider information.
 // 4xx errors are logged at Warn level, 5xx errors at Error level.
-func logDetailedAPIError(ctx context.Context, provider string, url string, statusCode int, contentType string, body []byte) {
+func logDetailedAPIError(ctx context.Context, provider string, model string, url string, statusCode int, contentType string, body []byte) {
 	entry := LogWithRequestID(ctx)
 
 	// 4xx는 Warn, 5xx는 Error
@@ -604,6 +604,10 @@ func logDetailedAPIError(ctx context.Context, provider string, url string, statu
 		if displayAuth != "" {
 			providerDisplay = fmt.Sprintf("%s:%s", provider, displayAuth)
 		}
+	}
+	model = strings.TrimSpace(model)
+	if model != "" {
+		providerDisplay = fmt.Sprintf("%s model=%s", providerDisplay, model)
 	}
 
 	logFn("[%s] API error - URL: %s, Status: %d, Content-Type: %s, Response: %s",

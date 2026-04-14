@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -114,7 +115,7 @@ func logWithRequestID(ctx context.Context) *log.Entry {
 	return helps.LogWithRequestID(ctx)
 }
 
-func logDetailedAPIError(ctx context.Context, provider string, url string, statusCode int, contentType string, body []byte) {
+func logDetailedAPIError(ctx context.Context, provider string, model string, url string, statusCode int, contentType string, body []byte) {
 	entry := logWithRequestID(ctx)
 	logFn := entry.Warnf
 	if statusCode >= 500 {
@@ -135,6 +136,10 @@ func logDetailedAPIError(ctx context.Context, provider string, url string, statu
 		if displayAuth != "" {
 			providerDisplay = fmt.Sprintf("%s:%s", provider, displayAuth)
 		}
+	}
+	model = strings.TrimSpace(model)
+	if model != "" {
+		providerDisplay = fmt.Sprintf("%s model=%s", providerDisplay, model)
 	}
 
 	logFn("[%s] API error - URL: %s, Status: %d, Content-Type: %s, Response: %s",
