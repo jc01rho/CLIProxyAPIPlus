@@ -52,7 +52,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		return "", fmt.Errorf("auth filestore: missing file path attribute for %s", auth.ID)
 	}
 
-	if auth.Disabled {
+	if auth.Disabled && !shouldPersistDisabledAuth(auth) {
 		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 			return "", nil
 		}
@@ -122,6 +122,19 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	}
 
 	return path, nil
+}
+
+func shouldPersistDisabledAuth(auth *cliproxyauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		return false
+	}
+	if auth.PrimaryInfo == nil {
+		return false
+	}
+	return !auth.PrimaryInfo.IsPrimary
 }
 
 // List enumerates all auth JSON files under the configured directory.
