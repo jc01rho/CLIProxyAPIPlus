@@ -114,6 +114,28 @@ func TestSaveTokenRecord_AntigravityPrimaryHandoff_SecondCredential(t *testing.T
 	if second.Status != coreauth.StatusDisabled {
 		t.Errorf("expected Status=StatusDisabled, got %v", second.Status)
 	}
+	secondPath := filepath.Join(tmpDir, "antigravity-test-2.json")
+	if _, err := os.Stat(secondPath); err != nil {
+		t.Fatalf("expected standby credential file to be persisted, got stat error: %v", err)
+	}
+	raw, err := os.ReadFile(secondPath)
+	if err != nil {
+		t.Fatalf("read standby credential file failed: %v", err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("unmarshal standby credential file failed: %v", err)
+	}
+	if disabled, ok := stored["disabled"].(bool); !ok || !disabled {
+		t.Fatalf("expected persisted standby credential to be disabled, got %#v", stored["disabled"])
+	}
+	primaryInfo, ok := stored["primary_info"].(map[string]any)
+	if !ok {
+		t.Fatal("expected persisted standby credential to include primary_info")
+	}
+	if isPrimary, ok := primaryInfo["is_primary"].(bool); !ok || isPrimary {
+		t.Fatalf("expected persisted standby credential to be non-primary, got %#v", primaryInfo["is_primary"])
+	}
 }
 
 func TestSaveTokenRecord_NilHandler(t *testing.T) {
@@ -618,5 +640,96 @@ func TestListAuthFiles_BackfillsAntigravityPrimaryInfoForLegacyRecords(t *testin
 	}
 	if secondaryIsPrimary {
 		t.Fatal("expected disabled legacy antigravity entry to remain standby")
+	}
+}
+
+func TestListAuthFiles_ExplicitPrimaryPreventsDuplicateFallbackPrimary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	cfg := &config.Config{AuthDir: tmpDir}
+	store := &memoryAuthStore{items: make(map[string]*coreauth.Auth)}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := NewHandlerWithoutConfigFilePath(cfg, manager)
+
+	explicitPrimary := &coreauth.Auth{
+		ID:       "antigravity-explicit-primary",
+		Provider: "antigravity",
+		FileName: "antigravity-explicit-primary.json",
+		Label:    "explicit-primary",
+		Status:   coreauth.StatusActive,
+		Disabled: false,
+		PrimaryInfo: &coreauth.PrimaryInfo{
+			IsPrimary: true,
+			Order:     1,
+		},
+		Attributes: map[string]string{
+			"path": filepath.Join(tmpDir, "antigravity-explicit-primary.json"),
+		},
+	}
+	legacyActive := &coreauth.Auth{
+		ID:       "antigravity-legacy-active",
+		Provider: "antigravity",
+		FileName: "antigravity-legacy-active.json",
+		Label:    "legacy-active",
+		Status:   coreauth.StatusActive,
+		Disabled: false,
+		Attributes: map[string]string{
+			"path": filepath.Join(tmpDir, "antigravity-legacy-active.json"),
+		},
+	}
+
+	if _, err := manager.Register(ctx, explicitPrimary); err != nil {
+		t.Fatalf("register explicit primary failed: %v", err)
+	}
+	if _, err := manager.Register(ctx, legacyActive); err != nil {
+		t.Fatalf("register legacy active failed: %v", err)
+	}
+	if err := os.WriteFile(explicitPrimary.Attributes["path"], []byte(`{"type":"antigravity","primary_info":{"is_primary":true,"order":1}}`), 0o644); err != nil {
+		t.Fatalf("write explicit primary file failed: %v", err)
+	}
+	if err := os.WriteFile(legacyActive.Attributes["path"], []byte(`{"type":"antigravity"}`), 0o644); err != nil {
+		t.Fatalf("write legacy active file failed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+
+	h.ListAuthFiles(ginCtx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Files []struct {
+			Name        string `json:"name"`
+			PrimaryInfo *struct {
+				IsPrimary bool `json:"is_primary"`
+				Order     int  `json:"order"`
+			} `json:"primary_info"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+
+	primaryCount := 0
+	legacyWasFallbackPrimary := false
+	for _, file := range payload.Files {
+		if file.PrimaryInfo != nil && file.PrimaryInfo.IsPrimary {
+			primaryCount++
+			if file.Name == "antigravity-legacy-active.json" {
+				legacyWasFallbackPrimary = true
+			}
+		}
+	}
+
+	if primaryCount != 1 {
+		t.Fatalf("expected exactly one primary entry, got %d", primaryCount)
+	}
+	if legacyWasFallbackPrimary {
+		t.Fatal("expected legacy active entry not to become fallback primary when explicit primary exists")
 	}
 }
