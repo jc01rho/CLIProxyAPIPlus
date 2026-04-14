@@ -262,7 +262,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	auths := h.authManager.List()
 	files := make([]gin.H, 0, len(auths))
 	antigravityFallbackOrder := 1
-	antigravityPrimaryAssigned := false
+	antigravityPrimaryAssigned := hasExplicitAntigravityPrimary(auths)
 	for _, auth := range auths {
 		if entry := h.buildAuthFileEntry(auth); entry != nil {
 			if primaryInfo, ok := entry["primary_info"].(gin.H); ok {
@@ -292,6 +292,18 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		return strings.ToLower(nameI) < strings.ToLower(nameJ)
 	})
 	c.JSON(200, gin.H{"files": files})
+}
+
+func hasExplicitAntigravityPrimary(auths []*coreauth.Auth) bool {
+	for _, auth := range auths {
+		if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+			continue
+		}
+		if auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureAntigravityPrimaryInfoEntry(entry gin.H, auth *coreauth.Auth, fallbackOrder int, primaryAlreadyAssigned bool) gin.H {
