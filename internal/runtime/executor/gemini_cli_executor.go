@@ -230,7 +230,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 
 		lastStatus = httpResp.StatusCode
 		lastBody = append([]byte(nil), data...)
-		logDetailedAPIError(ctx, e.Identifier(), url, httpResp.StatusCode, httpResp.Header.Get("Content-Type"), data)
+		logDetailedAPIError(ctx, e.Identifier(), attemptModel, url, httpResp.StatusCode, httpResp.Header.Get("Content-Type"), data)
 		if httpResp.StatusCode == 429 {
 			if idx+1 < len(models) {
 				log.Debugf("gemini cli executor: rate limited, retrying with next model: %s", models[idx+1])
@@ -367,7 +367,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 			appendAPIResponseChunk(ctx, e.cfg, data)
 			lastStatus = httpResp.StatusCode
 			lastBody = append([]byte(nil), data...)
-			logDetailedAPIError(ctx, e.Identifier(), url, httpResp.StatusCode, httpResp.Header.Get("Content-Type"), data)
+			logDetailedAPIError(ctx, e.Identifier(), attemptModel, url, httpResp.StatusCode, httpResp.Header.Get("Content-Type"), data)
 			if httpResp.StatusCode == 429 {
 				if idx+1 < len(models) {
 					log.Debugf("gemini cli executor: rate limited, retrying with next model: %s", models[idx+1])
