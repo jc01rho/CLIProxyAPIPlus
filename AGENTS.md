@@ -1,58 +1,73 @@
-# AGENTS.md
+# CLIPROXYAPIPLUS KNOWLEDGE BASE
 
-Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with OAuth and round-robin load balancing.
+**Updated:** 2026-04-15
+**Commit:** 9be69e5f
+**Branch:** master
 
-## Repository
-- GitHub: https://github.com/router-for-me/CLIProxyAPI
+## OVERVIEW
 
-## Commands
-```bash
-gofmt -w . # Format (required after Go changes)
-go build -o cli-proxy-api ./cmd/server # Build
-go run ./cmd/server # Run dev server
-go test ./... # Run all tests
-go test -v -run TestName ./path/to/pkg # Run single test
-go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRED after changes)
+Go 1.26 기반 AI 프록시 서버. CLI/웹 OAuth, 다수 provider executor, translator, 관리 API, SDK를 한 저장소에서 유지한다.
+
+## STRUCTURE
+
+```text
+CLIProxyAPIPlus/
+├── cmd/                  # 서버/유틸 CLI 진입점
+├── internal/             # 비공개 핵심 구현
+├── sdk/                  # 임베딩 가능한 공개 SDK
+├── auths/                # 기본 인증 저장 위치
+├── test/                 # 통합 테스트
+└── config.yaml           # 런타임 설정
 ```
-- Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 
-## Config
-- Default config: `config.yaml` (template: `config.example.yaml`)
-- `.env` is auto-loaded from the working directory
-- Auth material defaults under `auths/`
-- Storage backends: file-based default; optional Postgres/git/object store (`PGSTORE_*`, `GITSTORE_*`, `OBJECTSTORE_*`)
+## WHERE TO LOOK
 
-## Architecture
-- `cmd/server/` — Server entrypoint
-- `internal/api/` — Gin HTTP API (routes, middleware, modules)
-- `internal/api/modules/amp/` — Amp integration (Amp-style routes + reverse proxy)
-- `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Do not break this "canonical representation → per-provider translation" architecture.
-- `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket)
-- `internal/translator/` — Provider protocol translators (and shared `common`)
-- `internal/registry/` — Model registry + remote updater (`StartModelsUpdater`); `--local-model` disables remote updates
-- `internal/store/` — Storage implementations and secret resolution
-- `internal/managementasset/` — Config snapshots and management assets
-- `internal/cache/` — Request signature caching
-- `internal/watcher/` — Config hot-reload and watchers
-- `internal/wsrelay/` — WebSocket relay sessions
-- `internal/usage/` — Usage and token accounting
-- `internal/tui/` — Bubbletea terminal UI (`--tui`, `--standalone`)
-- `sdk/cliproxy/` — Embeddable SDK entry (service/builder/watchers/pipeline)
-- `test/` — Cross-module integration tests
+| Task | Location | Notes |
+|------|----------|-------|
+| 서버 부팅/플래그 | `cmd/server/main.go` | login 플래그, TUI, local-model |
+| 관리 API | `internal/api/` | `/v0/management/*` |
+| provider 인증 | `internal/auth/` | provider별 OAuth 구현 |
+| 요청 실행 | `internal/runtime/executor/` | provider별 executor |
+| 포맷 변환 | `internal/translator/` | source→target 프로토콜 변환 |
+| 모델 라우팅 | `internal/registry/` | 정적 정의 + remote updater |
+| 공개 임베딩 API | `sdk/` | Builder 기반 사용 |
 
-## Code Conventions
-- Keep changes small and simple (KISS)
-- Comments in English only
-- If editing code that already contains non-English comments, translate them to English (don’t add new non-English comments)
-- For user-visible strings, keep the existing language used in that file/area
-- New Markdown docs should be in English unless the file is explicitly language-specific (e.g. `README_CN.md`)
-- As a rule, do not make standalone changes to `internal/translator/`. You may modify it only as part of broader changes elsewhere.
-- If a task requires changing only `internal/translator/`, run `gh repo view --json viewerPermission -q .viewerPermission` to confirm you have `WRITE`, `MAINTAIN`, or `ADMIN`. If you do, you may proceed; otherwise, file a GitHub issue including the goal, rationale, and the intended implementation code, then stop further work.
-- `internal/runtime/executor/` should contain executors and their unit tests only. Place any helper/supporting files under `internal/runtime/executor/helps/`.
-- Follow `gofmt`; keep imports goimports-style; wrap errors with context where helpful
-- Do not use `log.Fatal`/`log.Fatalf` (terminates the process); prefer returning errors and logging via logrus
-- Shadowed variables: use method suffix (`errStart := server.Start()`)
-- Wrap defer errors: `defer func() { if err := f.Close(); err != nil { log.Errorf(...) } }()`
-- Use logrus structured logging; avoid leaking secrets/tokens in logs
-- Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
-- Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
+## COMMANDS
+
+```bash
+gofmt -w .
+go build ./cmd/server
+go run ./cmd/server --config config.yaml
+go test ./...
+go test -run TestName ./path/to/pkg
+```
+
+주요 플래그: `--config`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port`.
+
+## CONVENTIONS
+
+- Go 코드는 `gofmt`/goimports 스타일을 유지한다.
+- 로그는 logrus structured logging을 사용하고, 토큰·쿠키·키는 마스킹한다.
+- `internal/runtime/executor/`의 공용 헬퍼는 `helps/` 아래에 둔다.
+- translator 단독 수정은 피하고, 관련 config/executor/handler와 함께 변경 의도를 맞춘다.
+- 사용자 가시 문자열은 해당 영역의 기존 언어를 따른다. 코드 주석은 영어를 유지한다.
+
+## ANTI-PATTERNS
+
+- `http.DefaultClient` 직접 사용 금지.
+- `log.Fatal`/`log.Fatalf`로 프로세스를 종료하지 않는다.
+- HTTP handler에서 panic으로 흐름을 끊지 않는다.
+- upstream 연결 이후 임의 타임아웃을 추가하지 않는다. 예외는 현재 구현이 명시한 websocket/liveness/management timeout 범위만 허용한다.
+
+## SUB-DOCUMENTS
+
+- `internal/AGENTS.md`
+- `internal/api/AGENTS.md`
+- `internal/auth/kiro/AGENTS.md`
+- `internal/config/AGENTS.md`
+- `internal/registry/AGENTS.md`
+- `internal/runtime/executor/AGENTS.md`
+- `internal/translator/AGENTS.md`
+- `internal/util/AGENTS.md`
+- `sdk/AGENTS.md`
+- `sdk/cliproxy/AGENTS.md`
