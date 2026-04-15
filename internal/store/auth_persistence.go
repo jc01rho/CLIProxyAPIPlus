@@ -6,6 +6,14 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
+func syncPrimaryInfoMetadata(auth *cliproxyauth.Auth) {
+	cliproxyauth.SyncPrimaryInfoMetadata(auth)
+	if auth == nil || auth.Metadata == nil {
+		return
+	}
+	auth.Metadata["disabled"] = auth.Disabled
+}
+
 func shouldPersistDisabledAuth(auth *cliproxyauth.Auth) bool {
 	if auth == nil {
 		return false

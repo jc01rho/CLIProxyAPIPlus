@@ -72,7 +72,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 
 	switch {
 	case auth.Storage != nil:
-		applyPrimaryInfoMetadata(auth)
+		cliproxyauth.SyncPrimaryInfoMetadata(auth)
 		if setter, ok := auth.Storage.(metadataSetter); ok {
 			setter.SetMetadata(auth.Metadata)
 		}
@@ -80,7 +80,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 			return "", err
 		}
 	case auth.Metadata != nil:
-		applyPrimaryInfoMetadata(auth)
+		cliproxyauth.SyncPrimaryInfoMetadata(auth)
 		auth.Metadata["disabled"] = auth.Disabled
 		raw, errMarshal := json.Marshal(auth.Metadata)
 		if errMarshal != nil {
@@ -296,21 +296,6 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
 	return auth, nil
 }
-
-func applyPrimaryInfoMetadata(auth *cliproxyauth.Auth) {
-	if auth == nil || auth.Metadata == nil {
-		return
-	}
-	if auth.PrimaryInfo == nil {
-		delete(auth.Metadata, "primary_info")
-		return
-	}
-	auth.Metadata["primary_info"] = map[string]any{
-		"is_primary": auth.PrimaryInfo.IsPrimary,
-		"order":      auth.PrimaryInfo.Order,
-	}
-}
-
 func extractPrimaryInfo(metadata map[string]any) *cliproxyauth.PrimaryInfo {
 	if metadata == nil {
 		return nil

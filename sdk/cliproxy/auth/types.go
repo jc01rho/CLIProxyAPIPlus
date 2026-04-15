@@ -180,6 +180,22 @@ func (a *Auth) Clone() *Auth {
 	return &copyAuth
 }
 
+// SyncPrimaryInfoMetadata keeps persisted metadata aligned with the canonical
+// PrimaryInfo state for providers that serialize handoff information.
+func SyncPrimaryInfoMetadata(auth *Auth) {
+	if auth == nil || auth.Metadata == nil {
+		return
+	}
+	if auth.PrimaryInfo == nil {
+		delete(auth.Metadata, "primary_info")
+		return
+	}
+	auth.Metadata["primary_info"] = map[string]any{
+		"is_primary": auth.PrimaryInfo.IsPrimary,
+		"order":      auth.PrimaryInfo.Order,
+	}
+}
+
 func stableAuthIndex(seed string) string {
 	seed = strings.TrimSpace(seed)
 	if seed == "" {
