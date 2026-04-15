@@ -261,37 +261,171 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	}
 	auths := h.authManager.List()
 	files := make([]gin.H, 0, len(auths))
-	antigravityFallbackOrder := 1
-	antigravityPrimaryAssigned := hasExplicitAntigravityPrimary(auths)
 	for _, auth := range auths {
 		if entry := h.buildAuthFileEntry(auth); entry != nil {
-			if primaryInfo, ok := entry["primary_info"].(gin.H); ok {
-				if isPrimary, ok := primaryInfo["is_primary"].(bool); ok && isPrimary {
-					antigravityPrimaryAssigned = true
-				}
-				if orderValue, ok := primaryInfo["order"].(int); ok && orderValue >= antigravityFallbackOrder {
-					antigravityFallbackOrder = orderValue + 1
-				}
-			} else {
-				entry = ensureAntigravityPrimaryInfoEntry(entry, auth, antigravityFallbackOrder, antigravityPrimaryAssigned)
-				if primaryInfo, ok := entry["primary_info"].(gin.H); ok {
-					if isPrimary, ok := primaryInfo["is_primary"].(bool); ok && isPrimary {
-						antigravityPrimaryAssigned = true
-					}
-					if orderValue, ok := primaryInfo["order"].(int); ok && orderValue >= antigravityFallbackOrder {
-						antigravityFallbackOrder = orderValue + 1
-					}
-				}
-			}
 			files = append(files, entry)
 		}
 	}
+	normalizeAntigravityPrimaryEntries(files)
 	sort.Slice(files, func(i, j int) bool {
 		nameI, _ := files[i]["name"].(string)
 		nameJ, _ := files[j]["name"].(string)
 		return strings.ToLower(nameI) < strings.ToLower(nameJ)
 	})
 	c.JSON(200, gin.H{"files": files})
+}
+
+func normalizeAntigravityPrimaryEntries(entries []gin.H) {
+	if len(entries) == 0 {
+		return
+	}
+
+	antigravityEntries := make([]gin.H, 0)
+	nextOrder := 1
+	for _, entry := range entries {
+		if !isAntigravityEntry(entry) {
+			continue
+		}
+		antigravityEntries = append(antigravityEntries, entry)
+		if orderValue, ok := antigravityEntryOrder(entry); ok && orderValue >= nextOrder {
+			nextOrder = orderValue + 1
+		}
+	}
+	if len(antigravityEntries) == 0 {
+		return
+	}
+
+	primaryEntry := selectAntigravityPrimaryEntry(antigravityEntries)
+	for _, entry := range antigravityEntries {
+		primaryInfo, _ := entry["primary_info"].(gin.H)
+		if primaryInfo == nil {
+			primaryInfo = gin.H{"order": nextOrder}
+			entry["primary_info"] = primaryInfo
+			nextOrder++
+		} else if orderValue, ok := antigravityEntryOrder(entry); !ok || orderValue <= 0 {
+			primaryInfo["order"] = nextOrder
+			nextOrder++
+		}
+		primaryInfo["is_primary"] = primaryEntry != nil && antigravityEntryIdentity(entry) == antigravityEntryIdentity(primaryEntry)
+	}
+}
+
+func selectAntigravityPrimaryEntry(entries []gin.H) gin.H {
+	var primaryEntry gin.H
+	for _, entry := range entries {
+		if isDisabledAntigravityEntry(entry) {
+			continue
+		}
+		if primaryEntry == nil {
+			primaryEntry = entry
+			continue
+		}
+		if compareAntigravityPrimaryEntry(entry, primaryEntry) < 0 {
+			primaryEntry = entry
+		}
+	}
+	return primaryEntry
+}
+
+func compareAntigravityPrimaryEntry(left, right gin.H) int {
+	leftOrder, leftHasOrder := antigravityEntryOrder(left)
+	rightOrder, rightHasOrder := antigravityEntryOrder(right)
+	if leftHasOrder && rightHasOrder && leftOrder != rightOrder {
+		return leftOrder - rightOrder
+	}
+	if leftHasOrder != rightHasOrder {
+		if leftHasOrder {
+			return -1
+		}
+		return 1
+	}
+
+	leftName := strings.ToLower(strings.TrimSpace(antigravityEntryString(left, "name")))
+	rightName := strings.ToLower(strings.TrimSpace(antigravityEntryString(right, "name")))
+	if leftName != rightName {
+		if leftName < rightName {
+			return -1
+		}
+		return 1
+	}
+
+	leftID := strings.ToLower(strings.TrimSpace(antigravityEntryIdentity(left)))
+	rightID := strings.ToLower(strings.TrimSpace(antigravityEntryIdentity(right)))
+	if leftID < rightID {
+		return -1
+	}
+	if leftID > rightID {
+		return 1
+	}
+	return 0
+}
+
+func antigravityEntryOrder(entry gin.H) (int, bool) {
+	if entry == nil {
+		return 0, false
+	}
+	primaryInfo, ok := entry["primary_info"].(gin.H)
+	if !ok || primaryInfo == nil {
+		return 0, false
+	}
+	switch value := primaryInfo["order"].(type) {
+	case int:
+		if value > 0 {
+			return value, true
+		}
+	case int32:
+		if value > 0 {
+			return int(value), true
+		}
+	case int64:
+		if value > 0 {
+			return int(value), true
+		}
+	case float64:
+		if value > 0 {
+			return int(value), true
+		}
+	}
+	return 0, false
+}
+
+func isAntigravityEntry(entry gin.H) bool {
+	return strings.EqualFold(strings.TrimSpace(antigravityEntryString(entry, "type")), "antigravity") ||
+		strings.EqualFold(strings.TrimSpace(antigravityEntryString(entry, "provider")), "antigravity")
+}
+
+func isDisabledAntigravityEntry(entry gin.H) bool {
+	if entry == nil {
+		return true
+	}
+	if disabled, ok := entry["disabled"].(bool); ok && disabled {
+		return true
+	}
+	status := strings.TrimSpace(antigravityEntryString(entry, "status"))
+	return strings.EqualFold(status, string(coreauth.StatusDisabled))
+}
+
+func antigravityEntryString(entry gin.H, key string) string {
+	if entry == nil {
+		return ""
+	}
+	if value, ok := entry[key].(string); ok {
+		return value
+	}
+	return ""
+}
+
+func antigravityEntryIdentity(entry gin.H) string {
+	if entry == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(antigravityEntryString(entry, "id")); id != "" {
+		return id
+	}
+	if name := strings.TrimSpace(antigravityEntryString(entry, "name")); name != "" {
+		return name
+	}
+	return antigravityEntryString(entry, "path")
 }
 
 func hasExplicitAntigravityPrimary(auths []*coreauth.Auth) bool {
@@ -438,6 +572,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 			files = append(files, fileData)
 		}
 	}
+	normalizeAntigravityPrimaryEntries(files)
 	c.JSON(200, gin.H{"files": files})
 }
 
@@ -929,11 +1064,26 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err != nil {
 		return err
 	}
-	if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		h.initAntigravityPrimaryInfo(ctx, auth)
+		coreauth.SyncPrimaryInfoMetadata(auth)
+	}
+	dataToWrite := data
+	if auth.Metadata != nil {
+		marshaled, errMarshal := json.Marshal(auth.Metadata)
+		if errMarshal != nil {
+			return fmt.Errorf("failed to marshal auth metadata: %w", errMarshal)
+		}
+		dataToWrite = marshaled
+	}
+	if errWrite := os.WriteFile(dst, dataToWrite, 0o600); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}
 	if err := h.upsertAuthRecord(ctx, auth); err != nil {
 		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") && auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
+		h.ensureSoleAntigravityPrimary(ctx, auth)
 	}
 	return nil
 }
@@ -1301,13 +1451,13 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string            `json:"name"`
-		Prefix   *string           `json:"prefix"`
-		ProxyURL *string           `json:"proxy_url"`
-		Headers  map[string]string `json:"headers"`
-		Priority *int              `json:"priority"`
-		Note     *string           `json:"note"`
-		BillingClass *string       `json:"billing_class"`
+		Name         string            `json:"name"`
+		Prefix       *string           `json:"prefix"`
+		ProxyURL     *string           `json:"proxy_url"`
+		Headers      map[string]string `json:"headers"`
+		Priority     *int              `json:"priority"`
+		Note         *string           `json:"note"`
+		BillingClass *string           `json:"billing_class"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
