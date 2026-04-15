@@ -688,6 +688,52 @@ func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string
 	return models
 }
 
+func countRemainingProviderOptions(currentProvider string, providers []string, tried map[string]struct{}, auths map[string]*Auth) int {
+	if len(providers) == 0 || len(auths) == 0 {
+		return 0
+	}
+	currentProvider = strings.TrimSpace(strings.ToLower(currentProvider))
+	providerSet := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		providerKey := strings.TrimSpace(strings.ToLower(provider))
+		if providerKey == "" || providerKey == currentProvider {
+			continue
+		}
+		providerSet[providerKey] = struct{}{}
+	}
+	if len(providerSet) == 0 {
+		return 0
+	}
+	remaining := make(map[string]struct{}, len(providerSet))
+	for _, auth := range auths {
+		if auth == nil || auth.Disabled {
+			continue
+		}
+		if _, used := tried[auth.ID]; used {
+			continue
+		}
+		providerKey := strings.TrimSpace(strings.ToLower(auth.Provider))
+		if _, ok := providerSet[providerKey]; !ok {
+			continue
+		}
+		remaining[providerKey] = struct{}{}
+	}
+	return len(remaining)
+}
+
+func (m *Manager) shouldCountAttemptBudget(err error, currentProvider string, providers []string, tried map[string]struct{}) bool {
+	if err == nil {
+		return true
+	}
+	if statusCodeFromError(err) != http.StatusTooManyRequests {
+		return true
+	}
+	m.mu.RLock()
+	remainingProviders := countRemainingProviderOptions(currentProvider, providers, tried, m.auths)
+	m.mu.RUnlock()
+	return remainingProviders == 0
+}
+
 func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
 	if len(auths) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
@@ -1577,8 +1623,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if len(models) == 0 {
 			continue
 		}
-		attempted[auth.ID] = struct{}{}
 		var authErr error
+		countBudget := true
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -1604,11 +1650,17 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
+				if !m.shouldCountAttemptBudget(errExec, provider, providers, tried) {
+					countBudget = false
+				}
 				authErr = errExec
 				continue
 			}
 			m.MarkResult(attemptCtx, result)
 			return resp, nil
+		}
+		if countBudget {
+			attempted[auth.ID] = struct{}{}
 		}
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
@@ -1662,8 +1714,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		if len(models) == 0 {
 			continue
 		}
-		attempted[auth.ID] = struct{}{}
 		var authErr error
+		countBudget := true
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -1689,11 +1741,17 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
+				if !m.shouldCountAttemptBudget(errExec, provider, providers, tried) {
+					countBudget = false
+				}
 				authErr = errExec
 				continue
 			}
 			m.MarkResult(attemptCtx, result)
 			return resp, nil
+		}
+		if countBudget {
+			attempted[auth.ID] = struct{}{}
 		}
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
@@ -1958,7 +2016,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		if len(models) == 0 {
 			continue
 		}
-		attempted[auth.ID] = struct{}{}
+		countBudget := true
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, req, opts, routeModel, models, pooled)
 		if errStream != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
@@ -1967,9 +2025,16 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
 			}
+			if !m.shouldCountAttemptBudget(errStream, provider, providers, tried) {
+				countBudget = false
+			}
+			if countBudget {
+				attempted[auth.ID] = struct{}{}
+			}
 			lastErr = errStream
 			continue
 		}
+		attempted[auth.ID] = struct{}{}
 		return streamResult, nil
 	}
 }
