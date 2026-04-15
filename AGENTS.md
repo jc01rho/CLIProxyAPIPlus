@@ -1,150 +1,98 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-03-03
-**Commit:** 18e06f0f
+**Updated:** 2026-04-15
+**Commit:** 9be69e5f
 **Branch:** master
-**Type:** Monorepo (Backend + Frontend + Dashboard)
+**Type:** Monorepo (Go backend + React management center + Python/React dashboard)
 
 ## OVERVIEW
 
-CLI Proxy API: AI 모델 프록시 시스템. Go 백엔드가 15+ AI 프로바이더(Claude, Gemini, OpenAI, Codex, Kiro, Antigravity, iFlow, Cline, Qwen, Kimi 등)를 OpenAI 호환 API로 통합. React 프론트엔드가 관리 대시보드 제공, Python/React 대시보드가 사용량 모니터링.
-
-## REMOVED PROVIDERS
-
-### Trae Provider (Removed 2026-02-09)
-The Trae provider has been completely removed from the codebase. All Trae-related authentication, translation, and configuration code has been deleted from the backend. The provider is no longer supported or available in the API.
+CLI Proxy monorepo. `CLIProxyAPIPlus`가 다수의 AI provider를 OpenAI 호환 프록시로 통합하고, `Cli-Proxy-API-Management-Center`가 Management API용 운영 UI를 제공하며, `CLIProxyAPI-Dashboard`가 사용량/비용/자격증명 상태를 수집·시각화한다.
 
 ## STRUCTURE
 
-```
+```text
 cli-proxy/
-├── CLIProxyAPIPlus/                  # Go 백엔드 (API 프록시 서버)
-│   ├── cmd/server/                   # CLI 진입점
-│   ├── internal/                     # 핵심 구현 (비공개)
-│   │   ├── api/                      # HTTP 서버, 라우팅
-│   │   ├── auth/                     # 프로바이더별 OAuth
-│   │   ├── translator/               # 프로토콜 변환 엔진
-│   │   └── runtime/executor/         # 요청 실행기
-│   ├── sdk/                          # Public SDK
-│   └── AGENTS.md                     # 백엔드 상세 문서
-│
-├── Cli-Proxy-API-Management-Center/  # React 프론트엔드 (관리 UI)
-│   ├── src/
-│   │   ├── pages/                    # 라우트별 페이지
-│   │   ├── components/               # UI 컴포넌트
-│   │   ├── services/api/             # 백엔드 API 클라이언트
-│   │   ├── stores/                   # Zustand 상태 관리
-│   │   └── types/                    # TypeScript 타입
-│   └── AGENTS.md                     # 프론트엔드 상세 문서
-│
-└── CLIProxyAPI-Dashboard/            # 모니터링 대시보드
-    ├── collector/                    # Python 수집기 (Flask + APScheduler)
-    ├── frontend/                     # React 대시보드 (Vite)
-    └── AGENTS.md                     # 대시보드 상세 문서
+├── CLIProxyAPIPlus/                  # Go 프록시 서버, OAuth, translator, SDK
+├── Cli-Proxy-API-Management-Center/  # React 19 관리 UI (Vite, Zustand, Axios)
+└── CLIProxyAPI-Dashboard/            # Python collector + React dashboard + local DB stack
 ```
-
-## BACKEND-FRONTEND INTEGRATION
-
-### API 연결
-
-| Frontend | Backend Endpoint | Purpose |
-|----------|------------------|---------|
-| `services/api/providers.ts` | `/v0/management/auths/*` | 프로바이더 인증 관리 |
-| `services/api/apiKeys.ts` | `/v0/management/api-keys/*` | API 키 CRUD |
-| `services/api/config.ts` | `/v0/management/config/*` | 서버 설정 |
-| `services/api/logs.ts` | `/v0/management/logs/*` | 로그 조회 |
-| `services/api/usage.ts` | `/v0/management/usage/*` | 사용량 통계 |
-| `services/api/oauth.ts` | `/v0/management/oauth/*` | OAuth 콜백 |
-
-### 인증 흐름
-
-```
-Frontend (React)                    Backend (Go)
-     │                                   │
-     │ ── Management Key ──────────────> │ middleware/auth.go
-     │ <── Bearer Token ─────────────────│
-     │                                   │
-     │ ── /v0/management/* ────────────> │ handlers/management/
-     │                                   │
-```
-
-### 공유 타입 매핑
-
-| Frontend Type | Backend Type | Location |
-|---------------|--------------|----------|
-| `Auth` (types/auth.ts) | `auth.Auth` | sdk/cliproxy/auth/ |
-| `Config` (types/config.ts) | `config.Config` | internal/config/ |
-| `UsageStats` (types/usage.ts) | `usage.Event` | sdk/cliproxy/usage/ |
 
 ## WHERE TO LOOK
 
-| Task | Backend | Frontend |
-|------|---------|----------|
-| 새 AI 프로바이더 추가 | `internal/auth/{provider}/` | `components/providers/{Provider}Section/` |
-| API 엔드포인트 추가 | `internal/api/handlers/management/` | `services/api/` |
-| 프로토콜 변환 | `internal/translator/{src}/{tgt}/` | N/A |
-| UI 컴포넌트 추가 | N/A | `components/` |
-| 상태 관리 | N/A | `stores/` |
-| 설정 필드 추가 | `internal/config/config.go` | `types/config.ts` |
+| Task | Primary Location | Notes |
+|------|------------------|-------|
+| 새 provider 인증/실행 추가 | `CLIProxyAPIPlus/internal/auth/`, `internal/runtime/executor/` | 인증과 실행을 분리 유지 |
+| 프로토콜 변환 수정 | `CLIProxyAPIPlus/internal/translator/` | translator는 HTTP 호출 금지 |
+| 관리 API/설정 수정 | `CLIProxyAPIPlus/internal/api/handlers/management/`, `internal/config/` | `/v0/management/*` 중심 |
+| 관리 UI 페이지/상태 수정 | `Cli-Proxy-API-Management-Center/src/pages/`, `src/stores/` | API 호출은 `src/services/api/`만 사용 |
+| 대시보드 수집/집계 수정 | `CLIProxyAPI-Dashboard/collector/` | schema 변경 시 migration 동반 |
+| 대시보드 시각화/로그인 수정 | `CLIProxyAPI-Dashboard/frontend/src/` | dev/prod auth 흐름 동일성 주의 |
 
-## TECH STACK
+## CROSS-PROJECT RULES
 
-| Layer | Technology |
-|-------|------------|
-| **Backend** | Go 1.26, Gin Framework, logrus |
-| **Frontend** | React 19, TypeScript, Vite 7, Zustand, axios |
-| **i18n** | react-i18next (en, zh-CN, ru) |
-| **Charts** | Recharts (dashboard), chart.js (frontend) |
+- 백엔드 토큰/쿠키/비밀값은 로그에 그대로 남기지 않는다. 마스킹 유틸을 우선 사용한다.
+- translator에서는 네트워크 호출을 하지 않는다. 입력/출력 포맷 변환만 담당한다.
+- 관리 UI에서는 브라우저에서 직접 endpoint를 호출하지 않는다. `src/services/api/` 레이어를 거친다.
+- Zustand store는 액션으로만 갱신한다. 컴포넌트에서 전역 상태를 직접 변형하지 않는다.
+- 대시보드 DB 스키마를 바꿀 때는 `init-db/schema.sql`과 `collector/migrations/*.sql`를 함께 갱신한다.
 
 ## COMMANDS
 
 ```bash
 # Backend
 cd CLIProxyAPIPlus
-go build -o cliproxy ./cmd/server
-./cliproxy -c config.yaml
+go build ./cmd/server
+go run ./cmd/server --config config.yaml
 go test ./...
 
-# Frontend
+# Management Center
 cd Cli-Proxy-API-Management-Center
 npm install
-npm run dev      # 개발 서버 (Vite)
-npm run build    # 프로덕션 빌드
-npm run lint     # ESLint 검사
+npm run dev
+npm run build
+npm run lint
+npm run type-check
+
+# Dashboard
+cd CLIProxyAPI-Dashboard
+COMPOSE_PROFILES=localdb docker compose up -d
+cd frontend && npm install && npm run dev
+cd ../collector && python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt && python main.py
 ```
 
-## ANTI-PATTERNS (GLOBAL)
+## ACTIVE SUB-DOCUMENTS
 
 ### Backend
-- **NEVER** `http.DefaultClient` 사용 → `util.NewProxyClient()` 사용
-- **NEVER** 토큰 직접 로깅 → 마스킹 필수
-- **NEVER** translator에서 HTTP 호출 → 변환만 담당
+- `CLIProxyAPIPlus/AGENTS.md`
+- `CLIProxyAPIPlus/internal/AGENTS.md`
+- `CLIProxyAPIPlus/internal/api/AGENTS.md`
+- `CLIProxyAPIPlus/internal/auth/kiro/AGENTS.md`
+- `CLIProxyAPIPlus/internal/config/AGENTS.md`
+- `CLIProxyAPIPlus/internal/registry/AGENTS.md`
+- `CLIProxyAPIPlus/internal/runtime/executor/AGENTS.md`
+- `CLIProxyAPIPlus/internal/translator/AGENTS.md`
+- `CLIProxyAPIPlus/internal/util/AGENTS.md`
+- `CLIProxyAPIPlus/sdk/AGENTS.md`
+- `CLIProxyAPIPlus/sdk/cliproxy/AGENTS.md`
 
-### Frontend
-- **NEVER** API 직접 호출 → `services/api/` 통해 호출
-- **NEVER** 전역 상태 직접 수정 → Zustand store 사용
-- **NEVER** `as any` 타입 단언 → 적절한 타입 정의
+### Management Center
+- `Cli-Proxy-API-Management-Center/AGENTS.md`
+- `Cli-Proxy-API-Management-Center/src/pages/AGENTS.md`
+- `Cli-Proxy-API-Management-Center/src/services/api/AGENTS.md`
+- `Cli-Proxy-API-Management-Center/src/stores/AGENTS.md`
+- `Cli-Proxy-API-Management-Center/src/components/providers/AGENTS.md`
+- `Cli-Proxy-API-Management-Center/src/components/ui/AGENTS.md`
 
-## CONVENTIONS
+### Dashboard
+- `CLIProxyAPI-Dashboard/AGENTS.md`
+- `CLIProxyAPI-Dashboard/collector/AGENTS.md`
+- `CLIProxyAPI-Dashboard/frontend/AGENTS.md`
 
-### 파일 명명
-- Backend: `{provider}_auth.go`, `{src}_{tgt}_request.go`
-- Frontend: `{Name}Page.tsx`, `use{Name}.ts`, `{name}.ts` (서비스)
+## NOTES
 
-### 코드 스타일
-- Backend: Go 표준, logrus 로깅
-- Frontend: ESLint + Prettier, 함수형 컴포넌트 + hooks
-
-## SUB-DOCUMENTS
-
-| Path | Scope |
-|------|-------|
-| [CLIProxyAPIPlus/AGENTS.md](./CLIProxyAPIPlus/AGENTS.md) | 백엔드 전체 |
-| [CLIProxyAPIPlus/internal/AGENTS.md](./CLIProxyAPIPlus/internal/AGENTS.md) | internal 패키지 |
-| [CLIProxyAPIPlus/sdk/AGENTS.md](./CLIProxyAPIPlus/sdk/AGENTS.md) | SDK 패키지 |
-| [Cli-Proxy-API-Management-Center/AGENTS.md](./Cli-Proxy-API-Management-Center/AGENTS.md) | 프론트엔드 전체 |
-| [CLIProxyAPI-Dashboard/AGENTS.md](./CLIProxyAPI-Dashboard/AGENTS.md) | 대시보드 전체 |
-| [CLIProxyAPI-Dashboard/collector/AGENTS.md](./CLIProxyAPI-Dashboard/collector/AGENTS.md) | Python 수집기 |
+- Trae provider 지원은 제거된 상태다. 새 문서나 코드에서 Trae 전용 흐름을 되살리지 않는다.
+- 초기 glob 검색은 일부 중첩 `AGENTS.md`를 놓칠 수 있다. 실제 인벤토리는 리포지토리 루트 기준 재검증한다.
 
 
 # Memorix — Automatic Memory Rules
