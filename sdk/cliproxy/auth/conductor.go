@@ -2554,6 +2554,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	clearModelQuota := false
 	setModelQuota := false
 	var authSnapshot *Auth
+	var handoffSnapshots []*Auth
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
@@ -2672,7 +2673,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
 						cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 						if cfg != nil && cfg.AntigravityPrimaryHandoff {
-							m.promoteNextAntigravityPrimary(ctx, auth.ID)
+							handoffSnapshots = m.promoteNextAntigravityPrimary(ctx, auth.ID)
 						}
 					}
 				}
@@ -2687,6 +2688,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.mu.Unlock()
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
+	}
+	if m.scheduler != nil {
+		for _, snapshot := range handoffSnapshots {
+			if snapshot == nil {
+				continue
+			}
+			m.scheduler.upsertAuth(snapshot)
+		}
 	}
 
 	if clearModelQuota && result.Model != "" {
@@ -2928,9 +2937,9 @@ func isAntigravityHandoffError(statusCode int) bool {
 }
 
 // promoteNextAntigravityPrimary disables the current primary Antigravity credential
-// and promotes the next one in order (wrap-around to first if all exhausted).
+// and promotes the next standby in ascending order.
 // Must be called with m.mu held.
-func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuthID string) {
+func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuthID string) []*Auth {
 	var allAntigravity []*Auth
 	for _, auth := range m.auths {
 		if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") && auth.PrimaryInfo != nil {
@@ -2938,7 +2947,7 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 		}
 	}
 	if len(allAntigravity) == 0 {
-		return
+		return nil
 	}
 
 	sort.Slice(allAntigravity, func(i, j int) bool {
@@ -2953,24 +2962,41 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 		}
 	}
 	if currentIdx < 0 {
-		return
+		return nil
+	}
+
+	nextIdx := -1
+	for i := currentIdx + 1; i < len(allAntigravity); i++ {
+		if allAntigravity[i] == nil || allAntigravity[i].PrimaryInfo == nil {
+			continue
+		}
+		nextIdx = i
+		break
+	}
+	if nextIdx < 0 {
+		return nil
 	}
 
 	current := allAntigravity[currentIdx]
+	now := time.Now()
 	current.Disabled = true
 	current.Status = StatusDisabled
 	current.PrimaryInfo.IsPrimary = false
-	current.UpdatedAt = time.Now()
+	current.UpdatedAt = now
+	SyncPrimaryInfoMetadata(current)
 	_ = m.persist(ctx, current)
 
-	nextIdx := (currentIdx + 1) % len(allAntigravity)
 	next := allAntigravity[nextIdx]
 	next.Disabled = false
 	next.Status = StatusActive
 	next.StatusMessage = ""
 	next.Unavailable = false
+	next.LastError = nil
+	next.NextRetryAfter = time.Time{}
+	next.Quota = QuotaState{}
 	next.PrimaryInfo.IsPrimary = true
-	next.UpdatedAt = time.Now()
+	next.UpdatedAt = now
+	SyncPrimaryInfoMetadata(next)
 	_ = m.persist(ctx, next)
 
 	log.WithFields(log.Fields{
@@ -2979,6 +3005,11 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 		"old_order":   current.PrimaryInfo.Order,
 		"new_order":   next.PrimaryInfo.Order,
 	}).Info("antigravity primary handoff: promoted next credential")
+
+	if current.ID == next.ID {
+		return []*Auth{current.Clone()}
+	}
+	return []*Auth{current.Clone(), next.Clone()}
 }
 
 func isModelSupportErrorMessage(message string) bool {
