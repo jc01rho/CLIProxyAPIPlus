@@ -226,7 +226,7 @@ func (b *Builder) Build() (*Service, error) {
 		case "fill-first", "fillfirst", "ff":
 			selector = &coreauth.FillFirstSelector{}
 		default:
-			selector = &coreauth.RoundRobinSelector{Mode: mode}
+			selector = &coreauth.RoundRobinSelector{}
 		}
 
 		// Wrap with session affinity if enabled (failover is always on)
@@ -243,8 +243,6 @@ func (b *Builder) Build() (*Service, error) {
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
 	coreManager.SetConfig(b.cfg)
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
-	coreManager.SetFallbackModels(b.cfg.Routing.FallbackModels)
-	coreManager.SetFallbackChain(b.cfg.Routing.FallbackChain, b.cfg.Routing.FallbackMaxDepth)
 
 	service := &Service{
 		cfg:            b.cfg,

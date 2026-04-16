@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
-	kilocodeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kilocode"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
@@ -441,18 +440,14 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
 	case "kiro":
 		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
-	case "cline":
-		s.coreManager.RegisterExecutor(executor.NewClineExecutor(s.cfg))
 	case "kilo":
 		s.coreManager.RegisterExecutor(executor.NewKiloExecutor(s.cfg))
 	case "cursor":
 		s.coreManager.RegisterExecutor(executor.NewCursorExecutor(s.cfg))
 	case "github-copilot":
 		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(s.cfg))
-	case "kilocode":
-		s.coreManager.RegisterExecutor(executor.NewKilocodeExecutor(s.cfg))
 	case "codebuddy":
-		s.coreManager.RegisterExecutor(executor.NewCodeBuddyExecutor(s.cfg))	
+		s.coreManager.RegisterExecutor(executor.NewCodeBuddyExecutor(s.cfg))
 	case "gitlab":
 		s.coreManager.RegisterExecutor(executor.NewGitLabExecutor(s.cfg))
 	default:
@@ -661,7 +656,6 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 
 		nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
-		nextMode := strings.ToLower(strings.TrimSpace(newCfg.Routing.Mode))
 		normalizeStrategy := func(strategy string) string {
 			switch strategy {
 			case "fill-first", "fillfirst", "ff":
@@ -686,7 +680,7 @@ func (s *Service) Run(ctx context.Context) error {
 			case "fill-first":
 				selector = &coreauth.FillFirstSelector{}
 			default:
-				selector = &coreauth.RoundRobinSelector{Mode: nextMode}
+				selector = &coreauth.RoundRobinSelector{}
 			}
 
 			if nextSessionAffinity {
@@ -703,7 +697,6 @@ func (s *Service) Run(ctx context.Context) error {
 			}
 
 			s.coreManager.SetSelector(selector)
-			log.Infof("routing strategy updated to %s (mode: %s)", nextStrategy, nextMode)
 		}
 
 		s.applyRetryConfig(newCfg)
@@ -717,8 +710,6 @@ func (s *Service) Run(ctx context.Context) error {
 		if s.coreManager != nil {
 			s.coreManager.SetConfig(newCfg)
 			s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
-			s.coreManager.SetFallbackModels(newCfg.Routing.FallbackModels)
-			s.coreManager.SetFallbackChain(newCfg.Routing.FallbackChain, newCfg.Routing.FallbackMaxDepth)
 		}
 		s.rebindExecutors()
 	}
@@ -990,12 +981,7 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	case "kiro":
 		models = s.fetchKiroModels(a)
 		models = applyExcludedModels(models, excluded)
-	case "cline":
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		models = executor.FetchClineModels(ctx, a, s.cfg)
-		cancel()
-		models = applyExcludedModels(models, excluded)
-	case "kilo", "kilocode":
+	case "kilo":
 		models = executor.FetchKiloModels(context.Background(), a, s.cfg)
 		models = applyExcludedModels(models, excluded)
 	case "gitlab":
@@ -1522,15 +1508,12 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 	}
 	channel := coreauth.OAuthModelAliasChannel(provider, authKind)
 	if channel == "" || len(cfg.OAuthModelAlias) == 0 {
-		log.Debugf("applyOAuthModelAlias: no channel or aliases (provider=%s, authKind=%s, channel=%s)", provider, authKind, channel)
 		return models
 	}
 	aliases := cfg.OAuthModelAlias[channel]
 	if len(aliases) == 0 {
-		log.Debugf("applyOAuthModelAlias: no aliases for channel=%s", channel)
 		return models
 	}
-	log.Debugf("applyOAuthModelAlias: processing %d aliases for channel=%s with %d models", len(aliases), channel, len(models))
 
 	type aliasEntry struct {
 		alias string
@@ -1552,18 +1535,6 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 	}
 	if len(forward) == 0 {
 		return models
-	}
-
-	realIDs := make(map[string]struct{}, len(models))
-	for _, model := range models {
-		if model == nil {
-			continue
-		}
-		id := strings.ToLower(strings.TrimSpace(model.ID))
-		if id == "" {
-			continue
-		}
-		realIDs[id] = struct{}{}
 	}
 
 	out := make([]*ModelInfo, 0, len(models))
@@ -1611,22 +1582,17 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 				continue
 			}
 			aliasKey := strings.ToLower(mappedID)
-			if _, isRealModel := realIDs[aliasKey]; isRealModel {
-				continue
-			}
 			if _, exists := seen[aliasKey]; exists {
 				continue
 			}
 			seen[aliasKey] = struct{}{}
 			clone := *model
 			clone.ID = mappedID
-			clone.ExecutionTarget = id
 			if clone.Name != "" {
 				clone.Name = rewriteModelInfoName(clone.Name, id, mappedID)
 			}
 			out = append(out, &clone)
 			addedAlias = true
-			log.Debugf("applyOAuthModelAlias: created alias model id=%s from target=%s", mappedID, id)
 		}
 
 		if !keepOriginal && !addedAlias {
@@ -1686,83 +1652,6 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 
 	log.Infof("kiro: successfully fetched %d models from API (including agentic variants)", len(models))
 	return models
-}
-
-// fetchKilocodeModels attempts to dynamically fetch Kilocode models from the API.
-// If dynamic fetch fails, it falls back to static registry.GetKilocodeModels().
-func (s *Service) fetchKilocodeModels(a *coreauth.Auth) []*ModelInfo {
-	if a == nil {
-		log.Debug("kilocode: auth is nil, using static models")
-		return registry.GetKilocodeModels()
-	}
-
-	token := s.extractKilocodeToken(a)
-	if token == "" {
-		log.Debug("kilocode: no valid token in auth, using static models")
-		return registry.GetKilocodeModels()
-	}
-
-	// Create KilocodeAuth instance
-	kAuth := kilocodeauth.NewKilocodeAuth(s.cfg)
-	if kAuth == nil {
-		log.Warn("kilocode: failed to create KilocodeAuth instance, using static models")
-		return registry.GetKilocodeModels()
-	}
-
-	// Use timeout context for API call
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	// Attempt to fetch dynamic models
-	models, err := kAuth.FetchModels(ctx, token)
-	if err != nil {
-		log.Warnf("kilocode: failed to fetch dynamic models: %v, using static models", err)
-		return registry.GetKilocodeModels()
-	}
-
-	if len(models) == 0 {
-		log.Debug("kilocode: API returned no models, using static models")
-		return registry.GetKilocodeModels()
-	}
-
-	log.Infof("kilocode: successfully fetched %d free models from API", len(models))
-	return models
-}
-
-// extractKilocodeToken extracts Kilocode access token from auth attributes and metadata.
-// It supports both config-based tokens (stored in Attributes) and file-based tokens (stored in Metadata).
-func (s *Service) extractKilocodeToken(a *coreauth.Auth) string {
-	if a == nil {
-		return ""
-	}
-
-	var token string
-
-	// Priority 1: Try to get from Attributes (config.yaml source)
-	if a.Attributes != nil {
-		token = strings.TrimSpace(a.Attributes["token"])
-		if token == "" {
-			token = strings.TrimSpace(a.Attributes["access_token"])
-		}
-	}
-
-	// Priority 2: If not found in Attributes, try Metadata (JSON file source)
-	if token == "" && a.Metadata != nil {
-		if tokenVal, ok := a.Metadata["token"]; ok {
-			if tokenStr, isStr := tokenVal.(string); isStr {
-				token = strings.TrimSpace(tokenStr)
-			}
-		}
-		if token == "" {
-			if accessTokenVal, ok := a.Metadata["access_token"]; ok {
-				if accessTokenStr, isStr := accessTokenVal.(string); isStr {
-					token = strings.TrimSpace(accessTokenStr)
-				}
-			}
-		}
-	}
-
-	return token
 }
 
 // extractKiroTokenData extracts KiroTokenData from auth attributes and metadata.
@@ -1886,50 +1775,6 @@ func generateKiroAgenticVariants(models []*ModelInfo) []*ModelInfo {
 	result := make([]*ModelInfo, 0, len(models)*2)
 	result = append(result, models...)
 
-	// [새로 추가] KiroExecutor가 지원하는 가상 Friendly ID들을 명시적으로 추가
-	// 이를 통해 사용자가 OAuthModelAlias에서 이 이름들을 타겟으로 사용할 수 있게 함
-	virtualModels := []struct {
-		ID          string
-		DisplayName string
-	}{
-		{"kiro-claude-sonnet-4-5", "Kiro Claude Sonnet 4.5"},
-		{"kiro-claude-sonnet-4", "Kiro Claude Sonnet 4"},
-		{"kiro-claude-haiku-4-5", "Kiro Claude Haiku 4.5"},
-		{"kiro-claude-sonnet-4-5-agentic", "Kiro Claude Sonnet 4.5 (Agentic)"},
-		{"kiro-claude-sonnet-4-agentic", "Kiro Claude Sonnet 4 (Agentic)"},
-		{"kiro-claude-haiku-4-5-agentic", "Kiro Claude Haiku 4.5 (Agentic)"},
-	}
-
-	seen := make(map[string]bool)
-	for _, m := range models {
-		seen[m.ID] = true
-	}
-
-	// 가상 모델 중 아직 등록되지 않은 것만 추가
-	addedVirtuals := 0
-	for _, vm := range virtualModels {
-		if !seen[vm.ID] {
-			virtual := &ModelInfo{
-				ID:                  vm.ID,
-				Object:              "model",
-				Created:             time.Now().Unix(),
-				OwnedBy:             "aws",
-				Type:                "kiro",
-				DisplayName:         vm.DisplayName,
-				Description:         "Virtual model compatible with Kiro Executor",
-				ContextLength:       200000,
-				MaxCompletionTokens: 64000,
-				Thinking:            &registry.ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
-			}
-			result = append(result, virtual)
-			seen[vm.ID] = true
-			addedVirtuals++
-		}
-	}
-	if addedVirtuals > 0 {
-		log.Debugf("generateKiroAgenticVariants: added %d virtual models", addedVirtuals)
-	}
-
 	for _, m := range models {
 		if m == nil {
 			continue
@@ -1945,15 +1790,9 @@ func generateKiroAgenticVariants(models []*ModelInfo) []*ModelInfo {
 			continue
 		}
 
-		// Skip if agentic variant already exists (from virtual models)
-		agenticID := m.ID + "-agentic"
-		if seen[agenticID] {
-			continue
-		}
-
 		// Create agentic variant
 		agentic := &ModelInfo{
-			ID:                  agenticID,
+			ID:                  m.ID + "-agentic",
 			Object:              m.Object,
 			Created:             m.Created,
 			OwnedBy:             m.OwnedBy,
@@ -1975,7 +1814,6 @@ func generateKiroAgenticVariants(models []*ModelInfo) []*ModelInfo {
 		}
 
 		result = append(result, agentic)
-		seen[agenticID] = true
 	}
 
 	return result

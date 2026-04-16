@@ -241,6 +241,22 @@ type RoutingConfig struct {
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
+	// Mode configures the routing mode.
+	// Supported values: "" (default, provider-scoped), "key-based" (model-only key).
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+
+	// FallbackModels maps original model names to fallback model names.
+	// When all credentials for the original model fail with 429/401/5xx,
+	// the request is automatically retried with the fallback model.
+	FallbackModels map[string]string `yaml:"fallback-models,omitempty" json:"fallback-models,omitempty"`
+
+	// FallbackChain is a general fallback chain for models not in FallbackModels.
+	// Models are tried in order when the original model fails.
+	FallbackChain []string `yaml:"fallback-chain,omitempty" json:"fallback-chain,omitempty"`
+
+	// FallbackMaxDepth limits the number of fallback attempts (default: 3).
+	FallbackMaxDepth int `yaml:"fallback-max-depth,omitempty" json:"fallback-max-depth,omitempty"`
+
 	// ClaudeCodeSessionAffinity enables session-sticky routing for Claude Code clients.
 	// When enabled, requests with the same session ID (extracted from metadata.user_id)
 	// are routed to the same auth credential when available.
@@ -256,6 +272,30 @@ type RoutingConfig struct {
 	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
 	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
 	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
+
+	// TokenThresholdRules defines routing rules that filter eligible credentials
+	// by billing class when the estimated input token count is at or below a threshold.
+	TokenThresholdRules []TokenThresholdRule `yaml:"token-threshold-rules,omitempty" json:"token-threshold-rules,omitempty"`
+}
+
+// BillingClass identifies how a credential/provider is billed for routing policy.
+type BillingClass string
+
+const (
+	BillingClassMetered    BillingClass = "metered"
+	BillingClassPerRequest BillingClass = "per-request"
+)
+
+// TokenThresholdRule routes matching requests to credentials of a target billing class
+// when the estimated input token count matches the specified range.
+// Three forms are supported: upper-only (MaxTokens), lower-only (MinTokens), bounded (both).
+// At least one of MinTokens or MaxTokens must be specified.
+type TokenThresholdRule struct {
+	ModelPattern string       `yaml:"model-pattern,omitempty" json:"model-pattern,omitempty"`
+	MinTokens    int          `yaml:"min-tokens,omitempty" json:"min-tokens,omitempty"`
+	MaxTokens    int          `yaml:"max-tokens,omitempty" json:"max-tokens,omitempty"`
+	BillingClass BillingClass `yaml:"billing-class" json:"billing-class"`
+	Enabled      bool         `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
