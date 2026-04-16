@@ -737,17 +737,36 @@ func countRemainingProviderOptions(currentProvider string, providers []string, t
 	return len(remaining)
 }
 
+func shouldPreserveAttemptBudgetForStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Manager) shouldCountAttemptBudget(err error, currentProvider string, providers []string, tried map[string]struct{}) bool {
 	if err == nil {
 		return true
 	}
-	if statusCodeFromError(err) != http.StatusTooManyRequests {
+	statusCode := statusCodeFromError(err)
+	if !shouldPreserveAttemptBudgetForStatus(statusCode) {
 		return true
 	}
 	m.mu.RLock()
 	remainingProviders := countRemainingProviderOptions(currentProvider, providers, tried, m.auths)
 	m.mu.RUnlock()
 	return remainingProviders == 0
+}
+
+func logProviderFallbackRetry(ctx context.Context, provider, model string, err error) {
+	statusCode := statusCodeFromError(err)
+	if !shouldPreserveAttemptBudgetForStatus(statusCode) {
+		return
+	}
+	entry := logEntryWithRequestID(ctx)
+	entry.Warnf("provider %s failed with upstream status %d for model %s; retrying with another untried provider", provider, statusCode, strings.TrimSpace(model))
 }
 
 func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
@@ -1642,7 +1661,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			continue
 		}
 		var authErr error
-		countBudget := true
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -1668,21 +1686,22 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
-				if !m.shouldCountAttemptBudget(errExec, provider, providers, tried) {
-					countBudget = false
-				}
 				authErr = errExec
 				continue
 			}
 			m.MarkResult(attemptCtx, result)
 			return resp, nil
 		}
+		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
 		if countBudget {
 			attempted[auth.ID] = struct{}{}
 		}
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
+			}
+			if !countBudget {
+				logProviderFallbackRetry(execCtx, provider, routeModel, authErr)
 			}
 			lastErr = authErr
 			continue
@@ -1733,7 +1752,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			continue
 		}
 		var authErr error
-		countBudget := true
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -1759,21 +1777,22 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
-				if !m.shouldCountAttemptBudget(errExec, provider, providers, tried) {
-					countBudget = false
-				}
 				authErr = errExec
 				continue
 			}
 			m.MarkResult(attemptCtx, result)
 			return resp, nil
 		}
+		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
 		if countBudget {
 			attempted[auth.ID] = struct{}{}
 		}
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
+			}
+			if !countBudget {
+				logProviderFallbackRetry(execCtx, provider, routeModel, authErr)
 			}
 			lastErr = authErr
 			continue
@@ -2045,6 +2064,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if !m.shouldCountAttemptBudget(errStream, provider, providers, tried) {
 				countBudget = false
+			}
+			if !countBudget {
+				logProviderFallbackRetry(execCtx, provider, routeModel, errStream)
 			}
 			if countBudget {
 				attempted[auth.ID] = struct{}{}
