@@ -69,6 +69,10 @@ type Config struct {
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
+	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh worker pool.
+	// When <= 0, the default worker count is used.
+	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
+
 	// RequestRetry defines the retry times when the request failed.
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
 	// MaxRetryCredentials defines the maximum number of credentials to try for a failed request.
@@ -138,12 +142,12 @@ type Config struct {
 	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
 
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
-	// Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kiro, github-copilot.
+	// Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, iflow, kiro, github-copilot.
 	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
 
 	// OAuthModelAlias defines global model name aliases for OAuth/file-backed auth channels.
 	// These aliases affect both model listing and model routing for supported channels:
-	// gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kiro, github-copilot.
+	// gemini-cli, vertex, aistudio, antigravity, claude, codex, iflow, kiro, github-copilot.
 	//
 	// NOTE: This does not apply to existing per-credential model alias features under:
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
@@ -237,45 +241,21 @@ type RoutingConfig struct {
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
-	// Mode configures the routing mode.
-	// Supported values: "" (default, provider-scoped), "key-based" (model-only key).
-	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// ClaudeCodeSessionAffinity enables session-sticky routing for Claude Code clients.
+	// When enabled, requests with the same session ID (extracted from metadata.user_id)
+	// are routed to the same auth credential when available.
+	// Deprecated: Use SessionAffinity instead for universal session support.
+	ClaudeCodeSessionAffinity bool `yaml:"claude-code-session-affinity,omitempty" json:"claude-code-session-affinity,omitempty"`
 
-	// FallbackModels maps original model names to fallback model names.
-	// When all credentials for the original model fail with 429/401/5xx,
-	// the request is automatically retried with the fallback model.
-	FallbackModels map[string]string `yaml:"fallback-models,omitempty" json:"fallback-models,omitempty"`
+	// SessionAffinity enables universal session-sticky routing for all clients.
+	// Session IDs are extracted from multiple sources:
+	// X-Session-ID header, Idempotency-Key, metadata.user_id, conversation_id, or message hash.
+	// Automatic failover is always enabled when bound auth becomes unavailable.
+	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
 
-	// FallbackChain is a general fallback chain for models not in FallbackModels.
-	// Models are tried in order when the original model fails.
-	FallbackChain []string `yaml:"fallback-chain,omitempty" json:"fallback-chain,omitempty"`
-
-	// FallbackMaxDepth limits the number of fallback attempts (default: 3).
-	FallbackMaxDepth int `yaml:"fallback-max-depth,omitempty" json:"fallback-max-depth,omitempty"`
-
-	// TokenThresholdRules defines routing rules that filter eligible credentials
-	// by billing class when the estimated input token count is at or below a threshold.
-	TokenThresholdRules []TokenThresholdRule `yaml:"token-threshold-rules,omitempty" json:"token-threshold-rules,omitempty"`
-}
-
-// BillingClass identifies how a credential/provider is billed for routing policy.
-type BillingClass string
-
-const (
-	BillingClassMetered    BillingClass = "metered"
-	BillingClassPerRequest BillingClass = "per-request"
-)
-
-// TokenThresholdRule routes matching requests to credentials of a target billing class
-// when the estimated input token count matches the specified range.
-// Three forms are supported: upper-only (MaxTokens), lower-only (MinTokens), bounded (both).
-// At least one of MinTokens or MaxTokens must be specified.
-type TokenThresholdRule struct {
-	ModelPattern string       `yaml:"model-pattern,omitempty" json:"model-pattern,omitempty"`
-	MinTokens    int          `yaml:"min-tokens,omitempty" json:"min-tokens,omitempty"`
-	MaxTokens    int          `yaml:"max-tokens,omitempty" json:"max-tokens,omitempty"`
-	BillingClass BillingClass `yaml:"billing-class" json:"billing-class"`
-	Enabled      bool         `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
+	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
+	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
