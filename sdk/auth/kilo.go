@@ -48,17 +48,8 @@ func (a *KiloAuthenticator) Login(ctx context.Context, cfg *config.Config, opts 
 		return nil, fmt.Errorf("failed to initiate device flow: %w", err)
 	}
 
-	fmt.Printf("\nTo authenticate, please visit: %s\n", resp.VerificationURL)
-	fmt.Printf("And enter the code: %s\n\n", resp.Code)
-
-	// Try to open the browser automatically
-	if !opts.NoBrowser {
-		if browser.IsAvailable() {
-			if errOpen := browser.OpenURL(resp.VerificationURL); errOpen != nil {
-				log.Warnf("Failed to open browser automatically: %v", errOpen)
-			}
-		}
-	}
+	fmt.Printf("Please visit: %s\n", resp.VerificationURL)
+	fmt.Printf("And enter code: %s\n", resp.Code)
 
 	fmt.Println("Waiting for authorization...")
 	status, err := kilocodeAuth.PollForToken(ctx, resp.Code)
