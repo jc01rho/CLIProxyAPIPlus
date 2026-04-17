@@ -1,14 +1,19 @@
 package management
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
 func writeTestConfigFile(t *testing.T) string {
@@ -168,5 +173,100 @@ func TestDeleteCodexKey_RequiresBaseURLWhenAPIKeyDuplicated(t *testing.T) {
 	}
 	if got := len(h.cfg.CodexKey); got != 2 {
 		t.Fatalf("codex keys len = %d, want 2", got)
+	}
+}
+
+type oauthAliasDeleteExecutor struct{}
+
+func (e *oauthAliasDeleteExecutor) Identifier() string { return "claude" }
+
+func (e *oauthAliasDeleteExecutor) Execute(_ context.Context, _ *coreauth.Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{Payload: []byte(req.Model), Headers: make(http.Header)}, nil
+}
+
+func (e *oauthAliasDeleteExecutor) ExecuteStream(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	return nil, &coreauth.Error{HTTPStatus: http.StatusNotImplemented, Message: "ExecuteStream not implemented"}
+}
+
+func (e *oauthAliasDeleteExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *oauthAliasDeleteExecutor) CountTokens(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, &coreauth.Error{HTTPStatus: http.StatusNotImplemented, Message: "CountTokens not implemented"}
+}
+
+func (e *oauthAliasDeleteExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{HTTPStatus: http.StatusNotImplemented, Message: "HttpRequest not implemented"}
+}
+
+func TestDeleteOAuthModelAlias_SyncsAuthManager(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(&oauthAliasDeleteExecutor{})
+	manager.SetOAuthModelAlias(map[string][]config.OAuthModelAlias{
+		"claude": {{Name: "claude-haiku-4-5-20251001", Alias: "haiku-cc", Fork: true}},
+	})
+
+	authEntry := &coreauth.Auth{
+		ID:       "claude-oauth-delete-test",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"email": "claude@example.com",
+		},
+	}
+	registered, err := manager.Register(context.Background(), authEntry)
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(registered.ID, registered.Provider, []*registry.ModelInfo{{ID: "claude-haiku-4-5-20251001"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(registered.ID)
+	})
+	manager.RefreshSchedulerEntry(registered.ID)
+
+	respBefore, err := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: "haiku-cc"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute before delete: %v", err)
+	}
+	if got := string(respBefore.Payload); got != "claude-haiku-4-5-20251001" {
+		t.Fatalf("payload before delete = %q, want %q", got, "claude-haiku-4-5-20251001")
+	}
+
+	h := &Handler{
+		cfg: &config.Config{
+			OAuthModelAlias: map[string][]config.OAuthModelAlias{
+				"claude": {{Name: "claude-haiku-4-5-20251001", Alias: "haiku-cc", Fork: true}},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+		authManager:    manager,
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/oauth-model-alias?channel=claude", nil)
+
+	h.DeleteOAuthModelAlias(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if aliases, ok := h.cfg.OAuthModelAlias["claude"]; !ok || aliases != nil {
+		t.Fatalf("cfg oauth alias after delete = %#v, want explicit nil marker", h.cfg.OAuthModelAlias["claude"])
+	}
+
+	_, err = manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: "haiku-cc"}, cliproxyexecutor.Options{})
+	if err == nil {
+		t.Fatalf("execute after delete unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "auth_not_found") {
+		t.Fatalf("execute after delete error = %v, want auth_not_found", err)
 	}
 }

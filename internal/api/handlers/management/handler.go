@@ -105,10 +105,28 @@ func NewHandlerWithoutConfigFilePath(cfg *config.Config, manager *coreauth.Manag
 }
 
 // SetConfig updates the in-memory config reference when the server hot-reloads.
-func (h *Handler) SetConfig(cfg *config.Config) { h.cfg = cfg }
+func (h *Handler) SetConfig(cfg *config.Config) {
+	h.cfg = cfg
+	if h.authManager != nil {
+		var aliases map[string][]config.OAuthModelAlias
+		if cfg != nil {
+			aliases = cfg.OAuthModelAlias
+		}
+		h.authManager.SetOAuthModelAlias(aliases)
+	}
+}
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
-func (h *Handler) SetAuthManager(manager *coreauth.Manager) { h.authManager = manager }
+func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
+	h.authManager = manager
+	if h.authManager != nil {
+		var aliases map[string][]config.OAuthModelAlias
+		if h.cfg != nil {
+			aliases = h.cfg.OAuthModelAlias
+		}
+		h.authManager.SetOAuthModelAlias(aliases)
+	}
+}
 
 // SetUsageStatistics allows replacing the usage statistics reference.
 func (h *Handler) SetUsageStatistics(stats *usage.RequestStatistics) { h.usageStats = stats }
