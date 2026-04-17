@@ -291,3 +291,72 @@ func TestManagerExecuteCount_FallsBackToOtherProviderOn504WhenRetryBudgetIsOne(t
 		t.Fatalf("second count calls = %v", got)
 	}
 }
+
+func TestManagerExecute_FallsBackAcrossCompatProviderKeysOn429(t *testing.T) {
+	const model = "minimax-kimi"
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	m.SetRetryConfig(0, 0, 1)
+
+	first := &providerFallbackExecutor{id: "aperties-free"}
+	second := &providerFallbackExecutor{id: "openrouter-free"}
+	first.executeErr = &Error{HTTPStatus: http.StatusTooManyRequests, Message: "rate limited"}
+	m.RegisterExecutor(first)
+	m.RegisterExecutor(second)
+
+	firstAuth := &Auth{
+		ID:       t.Name() + "-first",
+		Provider: "openai-compatibility",
+		Status:   StatusActive,
+		Metadata: map[string]any{"kind": "api_key"},
+		Attributes: map[string]string{
+			"provider_key": "aperties-free",
+			"compat_name":  "aperties-free",
+			"api_key":      "test-aperties-free",
+		},
+	}
+	secondAuth := &Auth{
+		ID:       t.Name() + "-second",
+		Provider: "openai-compatibility",
+		Status:   StatusActive,
+		Metadata: map[string]any{"kind": "api_key"},
+		Attributes: map[string]string{
+			"provider_key": "openrouter-free",
+			"compat_name":  "openrouter-free",
+			"api_key":      "test-openrouter-free",
+		},
+	}
+	if _, err := m.Register(context.Background(), firstAuth); err != nil {
+		t.Fatalf("register first compat auth: %v", err)
+	}
+	if _, err := m.Register(context.Background(), secondAuth); err != nil {
+		t.Fatalf("register second compat auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(firstAuth.ID, "aperties-free", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(secondAuth.ID, "openrouter-free", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(firstAuth.ID)
+		reg.UnregisterClient(secondAuth.ID)
+	})
+
+	logBuf, restoreLogger := captureStandardLogger(t)
+	defer restoreLogger()
+
+	resp, err := m.Execute(context.Background(), []string{"aperties-free", "openrouter-free"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute error = %v, want compat fallback success", err)
+	}
+	if got := string(resp.Payload); got != "openai-compatibility:"+t.Name()+"-second:"+model {
+		t.Fatalf("payload = %q, want second compat provider success", got)
+	}
+	if got := first.ExecuteCalls(); len(got) != 1 || got[0] != "openai-compatibility:"+t.Name()+"-first:"+model {
+		t.Fatalf("first execute calls = %v", got)
+	}
+	if got := second.ExecuteCalls(); len(got) != 1 || got[0] != "openai-compatibility:"+t.Name()+"-second:"+model {
+		t.Fatalf("second execute calls = %v", got)
+	}
+	if got := logBuf.String(); !bytes.Contains([]byte(got), []byte("provider aperties-free failed with upstream status 429")) {
+		t.Fatalf("fallback log = %q, want compat provider key retry log", got)
+	}
+}

@@ -536,6 +536,16 @@ func openAICompatProviderKey(auth *Auth) string {
 	return strings.ToLower(strings.TrimSpace(auth.Provider))
 }
 
+func effectiveProviderKey(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if isOpenAICompatAPIKeyAuth(auth) {
+		return openAICompatProviderKey(auth)
+	}
+	return strings.ToLower(strings.TrimSpace(auth.Provider))
+}
+
 func openAICompatModelPoolKey(auth *Auth, requestedModel string) string {
 	base := strings.TrimSpace(thinking.ParseSuffix(requestedModel).ModelName)
 	if base == "" {
@@ -728,7 +738,7 @@ func countRemainingProviderOptions(currentProvider string, providers []string, t
 		if _, used := tried[auth.ID]; used {
 			continue
 		}
-		providerKey := strings.TrimSpace(strings.ToLower(auth.Provider))
+		providerKey := effectiveProviderKey(auth)
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
@@ -3385,7 +3395,10 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
-		if candidate.Provider != provider || candidate.Disabled {
+		if candidate.Disabled {
+			continue
+		}
+		if effectiveProviderKey(candidate) != provider {
 			continue
 		}
 		if !m.authMatchesThresholdRule(candidate, model, opts) {
@@ -3445,7 +3458,10 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if strings.TrimSpace(model) != "" {
 		m.mu.RLock()
 		for _, candidate := range m.auths {
-			if candidate == nil || candidate.Provider != provider || candidate.Disabled {
+			if candidate == nil || candidate.Disabled {
+				continue
+			}
+			if effectiveProviderKey(candidate) != provider {
 				continue
 			}
 			if _, used := tried[candidate.ID]; used {
@@ -3521,7 +3537,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
-		providerKey := strings.TrimSpace(strings.ToLower(candidate.Provider))
+		providerKey := effectiveProviderKey(candidate)
 		if providerKey == "" {
 			continue
 		}
@@ -3558,7 +3574,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
-	providerKey := strings.TrimSpace(strings.ToLower(selected.Provider))
+	providerKey := effectiveProviderKey(selected)
 	m.annotateThresholdDecisionSelected(ctx, model, opts, providerKey, selected)
 	executor, okExecutor := m.executors[providerKey]
 	if !okExecutor {
@@ -3615,7 +3631,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			if candidate == nil || candidate.Disabled {
 				continue
 			}
-			if _, ok := providerSet[strings.TrimSpace(strings.ToLower(candidate.Provider))]; !ok {
+			if _, ok := providerSet[effectiveProviderKey(candidate)]; !ok {
 				continue
 			}
 			if _, used := tried[candidate.ID]; used {
