@@ -913,7 +913,11 @@ func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
 	// marker survives config reload and prevents SanitizeOAuthModelAlias from
 	// re-injecting default aliases (fixes #222).
 	h.cfg.OAuthModelAlias[channel] = nil
-	h.persist(c)
+	if h.persist(c) {
+		if h.authManager != nil {
+			h.authManager.SetOAuthModelAlias(h.cfg.OAuthModelAlias)
+		}
+	}
 }
 
 // codex-api-key: []CodexKey
