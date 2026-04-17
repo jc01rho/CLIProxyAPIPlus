@@ -510,7 +510,7 @@ func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 		return
 	}
 	authID := strings.TrimSpace(auth.ID)
-	providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
+	providerKey := effectiveProviderKey(auth)
 	if authID == "" || providerKey == "" || auth.Disabled {
 		s.removeAuthLocked(authID)
 		return
@@ -557,7 +557,7 @@ func (s *authScheduler) ensureProviderLocked(providerKey string) *providerSchedu
 
 // buildScheduledAuthMeta extracts the scheduling metadata needed for shard bookkeeping.
 func buildScheduledAuthMeta(auth *Auth) *scheduledAuthMeta {
-	providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
+	providerKey := effectiveProviderKey(auth)
 	virtualParent := ""
 	if auth.Attributes != nil {
 		virtualParent = strings.TrimSpace(auth.Attributes["gemini_virtual_parent"])
