@@ -1,20 +1,25 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	gin "github.com/gin-gonic/gin"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
@@ -231,5 +236,139 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), "error-") && strings.HasSuffix(entry.Name(), ".log") {
 			t.Fatalf("unexpected forced error log in config dir %s", configLogsDir)
 		}
+	}
+}
+
+func TestNewServer_InjectsOAuthModelAliasIntoAuthManager(t *testing.T) {
+	server, authManager, _ := newAliasWiringTestServer(t, map[string][]proxyconfig.OAuthModelAlias{
+		"claude": {{Name: "claude-haiku-4-5-20251001", Alias: "haiku-cc", Fork: true}},
+	})
+	defer server.Stop(context.Background())
+
+	assertManagerExecutesAlias(t, authManager, "haiku-cc", "claude-haiku-4-5-20251001")
+}
+
+func TestServerUpdateClients_RefreshesOAuthModelAliasIntoAuthManager(t *testing.T) {
+	server, authManager, cfg := newAliasWiringTestServer(t, nil)
+	defer server.Stop(context.Background())
+
+	updated := *cfg
+	updated.OAuthModelAlias = map[string][]proxyconfig.OAuthModelAlias{
+		"claude": {{Name: "claude-haiku-4-5-20251001", Alias: "haiku-cc", Fork: true}},
+	}
+	server.UpdateClients(&updated)
+
+	assertManagerExecutesAlias(t, authManager, "haiku-cc", "claude-haiku-4-5-20251001")
+}
+
+type aliasCaptureExecutor struct {
+	id     string
+	mu     sync.Mutex
+	models []string
+}
+
+func (e *aliasCaptureExecutor) Identifier() string { return e.id }
+
+func (e *aliasCaptureExecutor) Execute(_ context.Context, _ *auth.Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	e.mu.Lock()
+	e.models = append(e.models, req.Model)
+	e.mu.Unlock()
+	return cliproxyexecutor.Response{Payload: []byte(req.Model), Headers: make(http.Header)}, nil
+}
+
+func (e *aliasCaptureExecutor) ExecuteStream(context.Context, *auth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	return nil, &auth.Error{HTTPStatus: http.StatusNotImplemented, Message: "ExecuteStream not implemented"}
+}
+
+func (e *aliasCaptureExecutor) Refresh(_ context.Context, a *auth.Auth) (*auth.Auth, error) {
+	return a, nil
+}
+
+func (e *aliasCaptureExecutor) CountTokens(context.Context, *auth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, &auth.Error{HTTPStatus: http.StatusNotImplemented, Message: "CountTokens not implemented"}
+}
+
+func (e *aliasCaptureExecutor) HttpRequest(context.Context, *auth.Auth, *http.Request) (*http.Response, error) {
+	return nil, &auth.Error{HTTPStatus: http.StatusNotImplemented, Message: "HttpRequest not implemented"}
+}
+
+func (e *aliasCaptureExecutor) Models() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.models))
+	copy(out, e.models)
+	return out
+}
+
+func newAliasWiringTestServer(t *testing.T, aliases map[string][]proxyconfig.OAuthModelAlias) (*Server, *auth.Manager, *proxyconfig.Config) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: []string{"test-key"},
+		},
+		Port:                   0,
+		AuthDir:                authDir,
+		Debug:                  true,
+		LoggingToFile:          false,
+		UsageStatisticsEnabled: false,
+		OAuthModelAlias:        aliases,
+	}
+	authManager := auth.NewManager(nil, nil, nil)
+	accessManager := sdkaccess.NewManager()
+	server := NewServer(cfg, authManager, accessManager, filepath.Join(tmpDir, "config.yaml"))
+	return server, authManager, cfg
+}
+
+func assertManagerExecutesAlias(t *testing.T, manager *auth.Manager, routeModel, wantModel string) {
+	t.Helper()
+
+	executor := &aliasCaptureExecutor{id: "claude"}
+	manager.RegisterExecutor(executor)
+
+	authID := fmt.Sprintf("claude-oauth-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+	authEntry := &auth.Auth{
+		ID:       authID,
+		Provider: "claude",
+		Status:   auth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"email": "claude@example.com",
+		},
+	}
+	registered, err := manager.Register(context.Background(), authEntry)
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(registered.ID, registered.Provider, []*registry.ModelInfo{{ID: wantModel}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(registered.ID)
+	})
+	manager.RefreshSchedulerEntry(registered.ID)
+
+	resp, err := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute error: %v", err)
+	}
+	if got := string(resp.Payload); got != wantModel {
+		t.Fatalf("response payload = %q, want %q", got, wantModel)
+	}
+	models := executor.Models()
+	if len(models) != 1 {
+		t.Fatalf("executed models = %v, want single %q", models, wantModel)
+	}
+	if models[0] != wantModel {
+		t.Fatalf("executed model = %q, want %q", models[0], wantModel)
 	}
 }
