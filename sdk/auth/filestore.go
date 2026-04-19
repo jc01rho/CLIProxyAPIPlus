@@ -209,9 +209,7 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		return nil, fmt.Errorf("unmarshal auth json: %w", err)
 	}
 	provider, _ := metadata["type"].(string)
-	if provider == "" {
-		provider = "unknown"
-	}
+	provider = canonicalizeAuthProvider(provider)
 	if provider == "antigravity" || provider == "gemini" {
 		projectID := ""
 		if pid, ok := metadata["project_id"].(string); ok {
