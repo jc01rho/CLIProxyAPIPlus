@@ -79,7 +79,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	if t == "" {
 		return nil
 	}
-	provider := strings.ToLower(t)
+	provider := canonicalizeAuthProvider(t)
 	if provider == "gemini" {
 		provider = "gemini-cli"
 	}
