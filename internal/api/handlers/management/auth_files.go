@@ -527,9 +527,10 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 			// Read file to get type field
 			full := filepath.Join(h.cfg.AuthDir, name)
 			if data, errRead := os.ReadFile(full); errRead == nil {
-				typeValue := gjson.GetBytes(data, "type").String()
+				typeValue := canonicalizeAuthProvider(gjson.GetBytes(data, "type").String())
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
+				fileData["provider"] = typeValue
 				fileData["email"] = emailValue
 				if dv := gjson.GetBytes(data, "disabled"); dv.Exists() {
 					fileData["disabled"] = dv.Bool()
@@ -592,12 +593,13 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if name == "" {
 		name = auth.ID
 	}
+	provider := canonicalizeAuthProvider(auth.Provider)
 	entry := gin.H{
 		"id":             auth.ID,
 		"auth_index":     auth.Index,
 		"name":           name,
-		"type":           strings.TrimSpace(auth.Provider),
-		"provider":       strings.TrimSpace(auth.Provider),
+		"type":           provider,
+		"provider":       provider,
 		"label":          auth.Label,
 		"status":         auth.Status,
 		"status_message": auth.StatusMessage,
@@ -1272,10 +1274,7 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("invalid auth file: %w", err)
 	}
-	provider, _ := metadata["type"].(string)
-	if provider == "" {
-		provider = "unknown"
-	}
+	provider := canonicalizeAuthProvider(valueAsString(metadata["type"]))
 	label := provider
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		label = email
@@ -4301,9 +4300,9 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 	fmt.Println("Initializing Kilo authentication...")
 
 	state := fmt.Sprintf("kil-%d", time.Now().UnixNano())
-	kilocodeAuth := kilo.NewKiloAuth()
+	kiloAuth := kilo.NewKiloAuth()
 
-	resp, err := kilocodeAuth.InitiateDeviceFlow(ctx)
+	resp, err := kiloAuth.InitiateDeviceFlow(ctx)
 	if err != nil {
 		log.Errorf("Failed to initiate device flow: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initiate device flow"})
@@ -4315,14 +4314,14 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 	go func() {
 		fmt.Printf("Please visit %s and enter code: %s\n", resp.VerificationURL, resp.Code)
 
-		status, err := kilocodeAuth.PollForToken(ctx, resp.Code)
+		status, err := kiloAuth.PollForToken(ctx, resp.Code)
 		if err != nil {
 			SetOAuthSessionError(state, "Authentication failed")
 			fmt.Printf("Authentication failed: %v\n", err)
 			return
 		}
 
-		profile, err := kilocodeAuth.GetProfile(ctx, status.Token)
+		profile, err := kiloAuth.GetProfile(ctx, status.Token)
 		if err != nil {
 			log.Warnf("Failed to fetch profile: %v", err)
 			profile = &kilo.Profile{Email: status.UserEmail}
@@ -4333,7 +4332,7 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 			orgID = profile.Orgs[0].ID
 		}
 
-		defaults, err := kilocodeAuth.GetDefaults(ctx, status.Token, orgID)
+		defaults, err := kiloAuth.GetDefaults(ctx, status.Token, orgID)
 		if err != nil {
 			defaults = &kilo.Defaults{}
 		}

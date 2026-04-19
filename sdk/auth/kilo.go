@@ -38,10 +38,10 @@ func (a *KiloAuthenticator) Login(ctx context.Context, cfg *config.Config, opts 
 		opts = &LoginOptions{}
 	}
 
-	kilocodeAuth := kilo.NewKiloAuth()
+	kiloAuth := kilo.NewKiloAuth()
 
 	fmt.Println("Initiating Kilo device authentication...")
-	resp, err := kilocodeAuth.InitiateDeviceFlow(ctx)
+	resp, err := kiloAuth.InitiateDeviceFlow(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initiate device flow: %w", err)
 	}
@@ -50,14 +50,14 @@ func (a *KiloAuthenticator) Login(ctx context.Context, cfg *config.Config, opts 
 	fmt.Printf("And enter code: %s\n", resp.Code)
 
 	fmt.Println("Waiting for authorization...")
-	status, err := kilocodeAuth.PollForToken(ctx, resp.Code)
+	status, err := kiloAuth.PollForToken(ctx, resp.Code)
 	if err != nil {
 		return nil, fmt.Errorf("authentication failed: %w", err)
 	}
 
 	fmt.Printf("Authentication successful for %s\n", status.UserEmail)
 
-	profile, err := kilocodeAuth.GetProfile(ctx, status.Token)
+	profile, err := kiloAuth.GetProfile(ctx, status.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch profile: %w", err)
 	}
@@ -90,7 +90,7 @@ func (a *KiloAuthenticator) Login(ctx context.Context, cfg *config.Config, opts 
 		orgID = profile.Orgs[0].ID
 	}
 
-	defaults, err := kilocodeAuth.GetDefaults(ctx, status.Token, orgID)
+	defaults, err := kiloAuth.GetDefaults(ctx, status.Token, orgID)
 	if err != nil {
 		fmt.Printf("Warning: failed to fetch defaults: %v\n", err)
 		defaults = &kilo.Defaults{}
