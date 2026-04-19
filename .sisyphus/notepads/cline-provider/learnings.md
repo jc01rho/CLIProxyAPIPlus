@@ -15,7 +15,7 @@
 - Kilo provider pattern is the closest reference (device flow vs OAuth, but same executor pattern)
 - Module path: `github.com/router-for-me/CLIProxyAPI/v6`
 - Use `util.NewProxyClient()` or `newProxyAwareHTTPClient()` for HTTP clients
-- `refresh_registry.go` already has `kilocode` entry - "kilo" and "kilocode" are different providers
+- Kilo provider executor/auth flow was a useful reference during early Cline implementation analysis.
 
 ## 2026-02-18 Task: Cline auth package implementation
 - `internal/auth/cline/cline_token.go` was added following Kilo token persistence pattern exactly (MkdirAll 0700, JSON encode, `misc.LogSavingCredentials`, `Type="cline"`).
