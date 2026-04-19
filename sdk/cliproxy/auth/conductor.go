@@ -665,6 +665,72 @@ func (m *Manager) selectionModelKeyForAuth(auth *Auth, routeModel string) string
 	return canonicalModelKey(m.selectionModelForAuth(auth, routeModel))
 }
 
+// ResolveRouteModelForAuth resolves the execution model for a specific auth while
+// preserving the caller's route model externally.
+func (m *Manager) ResolveRouteModelForAuth(auth *Auth, routeModel string) string {
+	if auth == nil {
+		return strings.TrimSpace(routeModel)
+	}
+	resolved := strings.TrimSpace(m.selectionModelForAuth(auth, routeModel))
+	if resolved == "" {
+		return strings.TrimSpace(routeModel)
+	}
+	return resolved
+}
+
+// AuthSupportsRouteModel reports whether an auth can execute the caller-visible
+// route model after applying auth-specific alias resolution.
+func (m *Manager) AuthSupportsRouteModel(auth *Auth, routeModel string) bool {
+	if m == nil || auth == nil {
+		return false
+	}
+	authID := strings.TrimSpace(auth.ID)
+	if authID == "" {
+		return false
+	}
+	modelKey := m.selectionModelKeyForAuth(auth, routeModel)
+	if modelKey == "" {
+		return false
+	}
+	reg := registry.GetGlobalRegistry()
+	if reg == nil {
+		return false
+	}
+	return reg.ClientSupportsModel(authID, modelKey)
+}
+
+// ProvidersForRouteModel returns provider keys that can execute the caller-visible
+// route model after auth-specific alias resolution.
+func (m *Manager) ProvidersForRouteModel(routeModel string) []string {
+	if m == nil {
+		return nil
+	}
+	auths := m.List()
+	if len(auths) == 0 {
+		return nil
+	}
+	providers := make([]string, 0, len(auths))
+	seen := make(map[string]struct{}, len(auths))
+	for _, auth := range auths {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+			continue
+		}
+		if !m.AuthSupportsRouteModel(auth, routeModel) {
+			continue
+		}
+		providerKey := effectiveProviderKey(auth)
+		if providerKey == "" {
+			continue
+		}
+		if _, exists := seen[providerKey]; exists {
+			continue
+		}
+		seen[providerKey] = struct{}{}
+		providers = append(providers, providerKey)
+	}
+	return providers
+}
+
 func (m *Manager) stateModelForExecution(auth *Auth, routeModel, upstreamModel string, pooled bool) string {
 	stateModel := executionResultModel(routeModel, upstreamModel, pooled)
 	selectionModel := m.selectionModelForAuth(auth, routeModel)
