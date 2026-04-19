@@ -567,10 +567,7 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 	if err = json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("unmarshal auth json: %w", err)
 	}
-	provider := strings.TrimSpace(valueAsString(metadata["type"]))
-	if provider == "" {
-		provider = "unknown"
-	}
+	provider := canonicalizeAuthProvider(valueAsString(metadata["type"]))
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat auth file: %w", err)
