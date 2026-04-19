@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
@@ -114,5 +116,42 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 				t.Fatalf("getRequestDetails() model = %v, want %v", model, tt.wantModel)
 			}
 		})
+	}
+}
+
+func TestGetRequestDetails_UsesOAuthAliasForProviderLookup(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	const authID = "test-request-details-github-copilot"
+	const realModel = "gemini-3-pro-preview"
+	const aliasModel = "gemini-3.1-pro-co"
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{})
+	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"github-copilot": {{Name: realModel, Alias: aliasModel, Fork: true}},
+	})
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:         authID,
+		Provider:   "github-copilot",
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	modelRegistry.RegisterClient(authID, "github-copilot", []*registry.ModelInfo{{ID: realModel}})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(authID)
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	providers, model, errMsg := handler.getRequestDetails(aliasModel)
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() error = %v", errMsg)
+	}
+	if !reflect.DeepEqual(providers, []string{"github-copilot"}) {
+		t.Fatalf("getRequestDetails() providers = %v, want %v", providers, []string{"github-copilot"})
+	}
+	if model != aliasModel {
+		t.Fatalf("getRequestDetails() model = %q, want %q", model, aliasModel)
 	}
 }

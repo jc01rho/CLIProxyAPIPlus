@@ -798,6 +798,12 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
 	}
+	if len(providers) == 0 && h != nil && h.AuthManager != nil {
+		providers = h.AuthManager.ProvidersForRouteModel(resolvedModelName)
+		if len(providers) == 0 && baseModel != resolvedModelName {
+			providers = h.AuthManager.ProvidersForRouteModel(baseModel)
+		}
+	}
 
 	if len(providers) == 0 {
 		return nil, "", &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("unknown provider for model %s", modelName)}

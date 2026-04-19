@@ -503,6 +503,12 @@ func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsIncrementalInputFor
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
 	}
+	if len(providers) == 0 && h != nil && h.AuthManager != nil {
+		providers = h.AuthManager.ProvidersForRouteModel(resolvedModelName)
+		if len(providers) == 0 && baseModel != resolvedModelName {
+			providers = h.AuthManager.ProvidersForRouteModel(baseModel)
+		}
+	}
 	if len(providers) == 0 {
 		return false
 	}
@@ -535,10 +541,21 @@ func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsIncrementalInputFor
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
-		if modelKey != "" && registryRef != nil && !registryRef.ClientSupportsModel(auth.ID, modelKey) {
+		resolvedForAuth := resolvedModelName
+		if h.AuthManager != nil {
+			resolvedForAuth = h.AuthManager.ResolveRouteModelForAuth(auth, resolvedModelName)
+		}
+		if strings.TrimSpace(resolvedForAuth) == "" {
+			resolvedForAuth = modelKey
+		}
+		if h.AuthManager != nil {
+			if !h.AuthManager.AuthSupportsRouteModel(auth, resolvedModelName) {
+				continue
+			}
+		} else if modelKey != "" && registryRef != nil && !registryRef.ClientSupportsModel(auth.ID, modelKey) {
 			continue
 		}
-		if !responsesWebsocketAuthAvailableForModel(auth, modelKey, now) {
+		if !responsesWebsocketAuthAvailableForModel(auth, resolvedForAuth, now) {
 			continue
 		}
 		if websocketUpstreamSupportsIncrementalInput(auth.Attributes, auth.Metadata) {

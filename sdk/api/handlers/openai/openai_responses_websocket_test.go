@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
@@ -864,6 +865,33 @@ func TestWebsocketUpstreamSupportsIncrementalInputForModel(t *testing.T) {
 	h := NewOpenAIResponsesAPIHandler(base)
 	if !h.websocketUpstreamSupportsIncrementalInputForModel("test-model") {
 		t.Fatalf("expected websocket-capable upstream for test-model")
+	}
+}
+
+func TestWebsocketUpstreamSupportsIncrementalInputForAliasedModel(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{})
+	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"github-copilot": {{Name: "gemini-3-pro-preview", Alias: "gemini-3.1-pro-co", Fork: true}},
+	})
+	auth := &coreauth.Auth{
+		ID:         "auth-ws-alias",
+		Provider:   "github-copilot",
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gemini-3-pro-preview"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	if !h.websocketUpstreamSupportsIncrementalInputForModel("gemini-3.1-pro-co") {
+		t.Fatalf("expected websocket-capable upstream for aliased model")
 	}
 }
 
