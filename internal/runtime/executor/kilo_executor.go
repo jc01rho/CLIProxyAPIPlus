@@ -303,7 +303,7 @@ func kiloCredentials(auth *cliproxyauth.Auth) (accessToken, orgID string) {
 		return "", ""
 	}
 
-	// Prefer kilocode specific keys, then fall back to generic keys.
+	// Prefer kilocode-specific keys first, then fall back to generic keys.
 	// Check metadata first, then attributes.
 	if auth.Metadata != nil {
 		if token, ok := auth.Metadata["kilocodeToken"].(string); ok && token != "" {
