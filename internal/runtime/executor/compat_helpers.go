@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,16 +116,18 @@ func logWithRequestID(ctx context.Context) *log.Entry {
 	return helps.LogWithRequestID(ctx)
 }
 
-func logDetailedAPIError(ctx context.Context, provider string, model string, url string, statusCode int, contentType string, body []byte) {
+func formatDetailedAPILogBody(body []byte) string {
+	if len(body) == 0 {
+		return "<empty>"
+	}
+	return strconv.QuoteToASCII(strings.ToValidUTF8(string(body), "�"))
+}
+
+func logDetailedAPIError(ctx context.Context, provider string, model string, url string, statusCode int, contentType string, requestBody []byte, responseBody []byte) {
 	entry := logWithRequestID(ctx)
 	logFn := entry.Warnf
 	if statusCode >= 500 {
 		logFn = entry.Errorf
-	}
-
-	bodyStr := string(body)
-	if len(bodyStr) > 4096 {
-		bodyStr = bodyStr[:4096] + "...[truncated]"
 	}
 
 	providerDisplay := provider
@@ -142,8 +145,14 @@ func logDetailedAPIError(ctx context.Context, provider string, model string, url
 		providerDisplay = fmt.Sprintf("%s model=%s", providerDisplay, model)
 	}
 
-	logFn("[%s] API error - URL: %s, Status: %d, Content-Type: %s, Response: %s",
-		providerDisplay, url, statusCode, contentType, bodyStr)
+	logFn("[%s] API error - URL: %s, Status: %d, Content-Type: %s, Request: %s, Response: %s",
+		providerDisplay,
+		url,
+		statusCode,
+		contentType,
+		formatDetailedAPILogBody(requestBody),
+		formatDetailedAPILogBody(responseBody),
+	)
 }
 
 func jsonPayload(line []byte) []byte {
