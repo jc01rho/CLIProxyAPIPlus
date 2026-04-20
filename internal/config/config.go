@@ -153,7 +153,8 @@ type Config struct {
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
-	// Payload defines default and override rules for provider payload parameters.
+	OAuthEndpointOverrides map[string]OAuthEndpointConfig `yaml:"oauth-endpoint-overrides,omitempty" json:"oauth-endpoint-overrides,omitempty"`
+
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
 	// IncognitoBrowser enables opening OAuth URLs in incognito/private browsing mode.
@@ -306,6 +307,38 @@ type OAuthModelAlias struct {
 	Name  string `yaml:"name" json:"name"`
 	Alias string `yaml:"alias" json:"alias"`
 	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+}
+
+type OAuthEndpointConfig struct {
+	ApiBaseURL        string `yaml:"api-base-url,omitempty" json:"api-base-url,omitempty"`
+	AuthorizeURL      string `yaml:"authorize-url,omitempty" json:"authorize-url,omitempty"`
+	TokenURL          string `yaml:"token-url,omitempty" json:"token-url,omitempty"`
+	RefreshURL        string `yaml:"refresh-url,omitempty" json:"refresh-url,omitempty"`
+	UserinfoURL       string `yaml:"userinfo-url,omitempty" json:"userinfo-url,omitempty"`
+	DeviceAuthorizeURL string `yaml:"device-authorize-url,omitempty" json:"device-authorize-url,omitempty"`
+}
+
+func (c *OAuthEndpointConfig) ApplyDefaults(defaults OAuthEndpointConfig) OAuthEndpointConfig {
+	result := *c
+	if result.ApiBaseURL == "" {
+		result.ApiBaseURL = defaults.ApiBaseURL
+	}
+	if result.AuthorizeURL == "" {
+		result.AuthorizeURL = defaults.AuthorizeURL
+	}
+	if result.TokenURL == "" {
+		result.TokenURL = defaults.TokenURL
+	}
+	if result.RefreshURL == "" {
+		result.RefreshURL = defaults.RefreshURL
+	}
+	if result.UserinfoURL == "" {
+		result.UserinfoURL = defaults.UserinfoURL
+	}
+	if result.DeviceAuthorizeURL == "" {
+		result.DeviceAuthorizeURL = defaults.DeviceAuthorizeURL
+	}
+	return result
 }
 
 // AmpModelMapping defines a model name mapping for Amp CLI requests.
@@ -817,6 +850,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
 
+	cfg.NormalizeOAuthEndpointOverrides()
+
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
@@ -1161,6 +1196,40 @@ func normalizeModelPrefix(prefix string) string {
 		return ""
 	}
 	return trimmed
+}
+
+func (cfg *Config) NormalizeOAuthEndpointOverrides() {
+	if cfg == nil || len(cfg.OAuthEndpointOverrides) == 0 {
+		return
+	}
+	normalized := make(map[string]OAuthEndpointConfig, len(cfg.OAuthEndpointOverrides))
+	for provider, ep := range cfg.OAuthEndpointOverrides {
+		normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
+		if normalizedProvider == "" {
+			continue
+		}
+		ep.ApiBaseURL = strings.TrimSpace(ep.ApiBaseURL)
+		ep.AuthorizeURL = strings.TrimSpace(ep.AuthorizeURL)
+		ep.TokenURL = strings.TrimSpace(ep.TokenURL)
+		ep.RefreshURL = strings.TrimSpace(ep.RefreshURL)
+		ep.UserinfoURL = strings.TrimSpace(ep.UserinfoURL)
+		ep.DeviceAuthorizeURL = strings.TrimSpace(ep.DeviceAuthorizeURL)
+		normalized[normalizedProvider] = ep
+	}
+	cfg.OAuthEndpointOverrides = normalized
+}
+
+func (cfg *Config) GetOAuthEndpointOverride(provider string) OAuthEndpointConfig {
+	if cfg == nil {
+		return OAuthEndpointConfig{}
+	}
+	normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
+	if cfg.OAuthEndpointOverrides != nil {
+		if ep, ok := cfg.OAuthEndpointOverrides[normalizedProvider]; ok {
+			return ep
+		}
+	}
+	return OAuthEndpointConfig{}
 }
 
 // looksLikeBcrypt returns true if the provided string appears to be a bcrypt hash.
