@@ -136,6 +136,29 @@ func getOrCreateDeviceID() string {
 	return uuid.New().String()
 }
 
+func (c *DeviceFlowClient) deviceCodeEndpoint() string {
+	if c.cfg != nil {
+		if ep := c.cfg.GetOAuthEndpointOverride("kimi").DeviceAuthorizeURL; ep != "" {
+			return ep
+		}
+	}
+	return kimiDeviceCodeURL
+}
+
+func (c *DeviceFlowClient) tokenEndpoint(forRefresh ...bool) string {
+	isRefresh := len(forRefresh) > 0 && forRefresh[0]
+	if c.cfg != nil {
+		override := c.cfg.GetOAuthEndpointOverride("kimi")
+		if isRefresh && override.RefreshURL != "" {
+			return override.RefreshURL
+		}
+		if override.TokenURL != "" {
+			return override.TokenURL
+		}
+	}
+	return kimiTokenURL
+}
+
 // getDeviceModel returns a device model string.
 func getDeviceModel() string {
 	osName := runtime.GOOS
@@ -178,7 +201,7 @@ func (c *DeviceFlowClient) RequestDeviceCode(ctx context.Context) (*DeviceCodeRe
 	data := url.Values{}
 	data.Set("client_id", kimiClientID)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kimiDeviceCodeURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.deviceCodeEndpoint(), strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("kimi: failed to create device code request: %w", err)
 	}
@@ -266,7 +289,7 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 	data.Set("device_code", deviceCode)
 	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kimiTokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenEndpoint(), strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("kimi: failed to create token request: %w", err), false
 	}
@@ -346,7 +369,7 @@ func (c *DeviceFlowClient) RefreshToken(ctx context.Context, refreshToken string
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kimiTokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenEndpoint(true), strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("kimi: failed to create refresh request: %w", err)
 	}
