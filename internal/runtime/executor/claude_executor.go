@@ -998,12 +998,19 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 		return "", ""
 	}
 	if a.Attributes != nil {
-		apiKey = a.Attributes["api_key"]
-		baseURL = a.Attributes["base_url"]
+		apiKey = strings.TrimSpace(a.Attributes["api_key"])
+		baseURL = strings.TrimSpace(a.Attributes["base_url"])
 	}
-	if apiKey == "" && a.Metadata != nil {
-		if v, ok := a.Metadata["access_token"].(string); ok {
-			apiKey = v
+	if a.Metadata != nil {
+		if apiKey == "" {
+			if v, ok := a.Metadata["access_token"].(string); ok {
+				apiKey = strings.TrimSpace(v)
+			}
+		}
+		if baseURL == "" {
+			if v, ok := a.Metadata["base_url"].(string); ok {
+				baseURL = strings.TrimSpace(v)
+			}
 		}
 	}
 	return

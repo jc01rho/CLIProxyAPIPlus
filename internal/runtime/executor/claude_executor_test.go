@@ -2045,3 +2045,37 @@ func TestRemapOAuthToolNames_Lowercase_ReverseApplied(t *testing.T) {
 		t.Fatalf("content.0.name = %q, want %q", got, "bash")
 	}
 }
+
+func TestClaudeExecutor_UsesMetadataBaseURLFallback(t *testing.T) {
+	t.Parallel()
+
+	var requestedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-3-5-sonnet","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{
+			"api_key": "key-123",
+		},
+		Metadata: map[string]any{
+			"base_url": server.URL,
+		},
+	}
+
+	payload := []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	if _, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if requestedPath != "/v1/messages" {
+		t.Fatalf("requested path = %q, want %q", requestedPath, "/v1/messages")
+	}
+}
