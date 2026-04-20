@@ -71,6 +71,7 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	authData := map[string]any{
 		"type":      "claude",
 		"email":     "test@example.com",
+		"base_url":  "https://proxy.example.com/anthropic",
 		"proxy_url": "http://proxy.local",
 		"prefix":    "test-prefix",
 		"headers": map[string]string{
@@ -113,6 +114,9 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	}
 	if auths[0].ProxyURL != "http://proxy.local" {
 		t.Errorf("expected proxy_url http://proxy.local, got %s", auths[0].ProxyURL)
+	}
+	if got := auths[0].Attributes["base_url"]; got != "https://proxy.example.com/anthropic" {
+		t.Errorf("expected base_url https://proxy.example.com/anthropic, got %s", got)
 	}
 	if got := auths[0].Attributes["header:X-Test"]; got != "value" {
 		t.Errorf("expected header:X-Test value, got %q", got)

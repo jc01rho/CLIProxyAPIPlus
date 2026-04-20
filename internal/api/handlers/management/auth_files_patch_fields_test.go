@@ -42,7 +42,7 @@ func TestPatchAuthFileFields_MergeHeadersAndDeleteEmptyValues(t *testing.T) {
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
 
-	body := `{"name":"test.json","prefix":"p1","proxy_url":"http://proxy.local","headers":{"X-Old":"new","X-New":"v","X-Remove":"  ","X-Nope":""}}`
+	body := `{"name":"test.json","prefix":"p1","proxy_url":"http://proxy.local","base_url":"https://proxy.example.com/anthropic","headers":{"X-Old":"new","X-New":"v","X-Remove":"  ","X-Nope":""}}`
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
@@ -65,6 +65,9 @@ func TestPatchAuthFileFields_MergeHeadersAndDeleteEmptyValues(t *testing.T) {
 	if updated.ProxyURL != "http://proxy.local" {
 		t.Fatalf("proxy_url = %q, want %q", updated.ProxyURL, "http://proxy.local")
 	}
+	if got := updated.Attributes["base_url"]; got != "https://proxy.example.com/anthropic" {
+		t.Fatalf("attrs base_url = %q, want %q", got, "https://proxy.example.com/anthropic")
+	}
 
 	if updated.Metadata == nil {
 		t.Fatalf("expected metadata to be non-nil")
@@ -74,6 +77,9 @@ func TestPatchAuthFileFields_MergeHeadersAndDeleteEmptyValues(t *testing.T) {
 	}
 	if got, _ := updated.Metadata["proxy_url"].(string); got != "http://proxy.local" {
 		t.Fatalf("metadata.proxy_url = %q, want %q", got, "http://proxy.local")
+	}
+	if got, _ := updated.Metadata["base_url"].(string); got != "https://proxy.example.com/anthropic" {
+		t.Fatalf("metadata.base_url = %q, want %q", got, "https://proxy.example.com/anthropic")
 	}
 
 	headersMeta, ok := updated.Metadata["headers"].(map[string]any)

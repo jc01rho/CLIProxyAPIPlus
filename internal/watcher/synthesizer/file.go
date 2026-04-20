@@ -177,6 +177,11 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 		}
 	}
+	if rawBaseURL, ok := metadata["base_url"].(string); ok {
+		if trimmed := strings.TrimSpace(rawBaseURL); trimmed != "" {
+			a.Attributes["base_url"] = trimmed
+		}
+	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
 	// For codex auth files, extract plan_type from the JWT id_token.
