@@ -49,13 +49,50 @@ func NewDeviceFlowClient(cfg *config.Config) *DeviceFlowClient {
 	}
 }
 
+// deviceCodeEndpoint returns the device code endpoint, checking for config override.
+func (c *DeviceFlowClient) deviceCodeEndpoint() string {
+	if c.cfg != nil {
+		if ep := c.cfg.GetOAuthEndpointOverride("github-copilot").DeviceAuthorizeURL; ep != "" {
+			return ep
+		}
+	}
+	return copilotDeviceCodeURL
+}
+
+// tokenEndpoint returns the token endpoint, checking for config override.
+// When forRefresh is true and RefreshURL is set, RefreshURL takes precedence.
+// When forRefresh is true but RefreshURL is empty, TokenURL is used as fallback.
+func (c *DeviceFlowClient) tokenEndpoint(forRefresh ...bool) string {
+	isRefresh := len(forRefresh) > 0 && forRefresh[0]
+	if c.cfg != nil {
+		override := c.cfg.GetOAuthEndpointOverride("github-copilot")
+		if isRefresh && override.RefreshURL != "" {
+			return override.RefreshURL
+		}
+		if override.TokenURL != "" {
+			return override.TokenURL
+		}
+	}
+	return copilotTokenURL
+}
+
+// userinfoEndpoint returns the userinfo endpoint, checking for config override.
+func (c *DeviceFlowClient) userinfoEndpoint() string {
+	if c.cfg != nil {
+		if ep := c.cfg.GetOAuthEndpointOverride("github-copilot").UserinfoURL; ep != "" {
+			return ep
+		}
+	}
+	return copilotUserInfoURL
+}
+
 // RequestDeviceCode initiates the device flow by requesting a device code from GitHub.
 func (c *DeviceFlowClient) RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
 	data := url.Values{}
 	data.Set("client_id", copilotClientID)
 	data.Set("scope", "read:user user:email")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, copilotDeviceCodeURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.deviceCodeEndpoint(), strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, NewAuthenticationError(ErrDeviceCodeFailed, err)
 	}
@@ -149,7 +186,7 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 	data.Set("device_code", deviceCode)
 	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, copilotTokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenEndpoint(), strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, NewAuthenticationError(ErrTokenExchangeFailed, err)
 	}
@@ -227,7 +264,7 @@ func (c *DeviceFlowClient) FetchUserInfo(ctx context.Context, accessToken string
 		return GitHubUserInfo{}, NewAuthenticationError(ErrUserInfoFailed, fmt.Errorf("access token is empty"))
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, copilotUserInfoURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.userinfoEndpoint(), nil)
 	if err != nil {
 		return GitHubUserInfo{}, NewAuthenticationError(ErrUserInfoFailed, err)
 	}

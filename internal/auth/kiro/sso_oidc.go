@@ -43,6 +43,20 @@ const (
 	authCodeCallbackPort = 19877
 )
 
+func (c *SSOOIDCClient) getOIDCEndpointOverride() config.OAuthEndpointConfig {
+	if c.cfg != nil {
+		return c.cfg.GetOAuthEndpointOverride("kiro")
+	}
+	return config.OAuthEndpointConfig{}
+}
+
+func (c *SSOOIDCClient) getOIDCEndpointWithOverride(region string) string {
+	if override := c.getOIDCEndpointOverride(); override.ApiBaseURL != "" {
+		return strings.TrimRight(override.ApiBaseURL, "/")
+	}
+	return getOIDCEndpoint(region)
+}
+
 var (
 	ErrAuthorizationPending = errors.New("authorization_pending")
 	ErrSlowDown             = errors.New("slow_down")
@@ -149,7 +163,7 @@ func promptSelect(prompt string, options []string) int {
 
 // RegisterClientWithRegion registers a new OIDC client with AWS using a specific region.
 func (c *SSOOIDCClient) RegisterClientWithRegion(ctx context.Context, region string) (*RegisterClientResponse, error) {
-	endpoint := getOIDCEndpoint(region)
+	endpoint := c.getOIDCEndpointWithOverride(region)
 
 	payload := map[string]interface{}{
 		"clientName": "Kiro IDE",
@@ -195,7 +209,7 @@ func (c *SSOOIDCClient) RegisterClientWithRegion(ctx context.Context, region str
 
 // StartDeviceAuthorizationWithIDC starts the device authorization flow for IDC.
 func (c *SSOOIDCClient) StartDeviceAuthorizationWithIDC(ctx context.Context, clientID, clientSecret, startURL, region string) (*StartDeviceAuthResponse, error) {
-	endpoint := getOIDCEndpoint(region)
+	endpoint := c.getOIDCEndpointWithOverride(region)
 
 	payload := map[string]string{
 		"clientId":     clientID,
@@ -240,7 +254,7 @@ func (c *SSOOIDCClient) StartDeviceAuthorizationWithIDC(ctx context.Context, cli
 
 // CreateTokenWithRegion polls for the access token after user authorization using a specific region.
 func (c *SSOOIDCClient) CreateTokenWithRegion(ctx context.Context, clientID, clientSecret, deviceCode, region string) (*CreateTokenResponse, error) {
-	endpoint := getOIDCEndpoint(region)
+	endpoint := c.getOIDCEndpointWithOverride(region)
 
 	payload := map[string]string{
 		"clientId":     clientID,
@@ -306,7 +320,7 @@ func (c *SSOOIDCClient) RefreshTokenWithRegion(ctx context.Context, clientID, cl
 	if region == "" {
 		region = defaultIDCRegion
 	}
-	endpoint := getOIDCEndpoint(region)
+	endpoint := c.getOIDCEndpointWithOverride(region)
 
 	payload := map[string]string{
 		"clientId":     clientID,
@@ -564,8 +578,9 @@ func (c *SSOOIDCClient) LoginWithIDCAndOptions(ctx context.Context, startURL, re
 	return c.LoginWithIDC(ctx, startURL, region)
 }
 
-// RegisterClient registers a new OIDC client with AWS.
 func (c *SSOOIDCClient) RegisterClient(ctx context.Context) (*RegisterClientResponse, error) {
+	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
+
 	payload := map[string]interface{}{
 		"clientName": "Kiro IDE",
 		"clientType": "public",
@@ -578,7 +593,7 @@ func (c *SSOOIDCClient) RegisterClient(ctx context.Context) (*RegisterClientResp
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ssoOIDCEndpoint+"/client/register", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/client/register", strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
@@ -608,8 +623,9 @@ func (c *SSOOIDCClient) RegisterClient(ctx context.Context) (*RegisterClientResp
 	return &result, nil
 }
 
-// StartDeviceAuthorization starts the device authorization flow.
 func (c *SSOOIDCClient) StartDeviceAuthorization(ctx context.Context, clientID, clientSecret string) (*StartDeviceAuthResponse, error) {
+	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
+
 	payload := map[string]string{
 		"clientId":     clientID,
 		"clientSecret": clientSecret,
@@ -621,7 +637,7 @@ func (c *SSOOIDCClient) StartDeviceAuthorization(ctx context.Context, clientID, 
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ssoOIDCEndpoint+"/device_authorization", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/device_authorization", strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
@@ -653,6 +669,8 @@ func (c *SSOOIDCClient) StartDeviceAuthorization(ctx context.Context, clientID, 
 
 // CreateToken polls for the access token after user authorization.
 func (c *SSOOIDCClient) CreateToken(ctx context.Context, clientID, clientSecret, deviceCode string) (*CreateTokenResponse, error) {
+	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
+
 	payload := map[string]string{
 		"clientId":     clientID,
 		"clientSecret": clientSecret,
@@ -665,7 +683,7 @@ func (c *SSOOIDCClient) CreateToken(ctx context.Context, clientID, clientSecret,
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ssoOIDCEndpoint+"/token", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
@@ -715,6 +733,8 @@ func (c *SSOOIDCClient) CreateToken(ctx context.Context, clientID, clientSecret,
 // RefreshToken refreshes an access token using the refresh token.
 // Includes retry logic and improved error handling for better reliability.
 func (c *SSOOIDCClient) RefreshToken(ctx context.Context, clientID, clientSecret, refreshToken string) (*KiroTokenData, error) {
+	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
+
 	payload := map[string]string{
 		"clientId":     clientID,
 		"clientSecret": clientSecret,
@@ -727,7 +747,7 @@ func (c *SSOOIDCClient) RefreshToken(ctx context.Context, clientID, clientSecret
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ssoOIDCEndpoint+"/token", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
@@ -903,7 +923,13 @@ func (c *SSOOIDCClient) FetchUserEmail(ctx context.Context, accessToken string) 
 
 // tryUserInfoEndpoint attempts to get user info from AWS SSO OIDC userinfo endpoint.
 func (c *SSOOIDCClient) tryUserInfoEndpoint(ctx context.Context, accessToken string) string {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ssoOIDCEndpoint+"/userinfo", nil)
+	override := c.getOIDCEndpointOverride()
+	userinfoURL := ssoOIDCEndpoint + "/userinfo"
+	if override.UserinfoURL != "" {
+		userinfoURL = override.UserinfoURL
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, userinfoURL, nil)
 	if err != nil {
 		return ""
 	}
@@ -1068,6 +1094,8 @@ func (c *SSOOIDCClient) tryListProfilesLegacy(ctx context.Context, accessToken s
 
 // RegisterClientForAuthCode registers a new OIDC client for authorization code flow.
 func (c *SSOOIDCClient) RegisterClientForAuthCode(ctx context.Context, redirectURI string) (*RegisterClientResponse, error) {
+	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
+
 	payload := map[string]interface{}{
 		"clientName":   "Kiro IDE",
 		"clientType":   "public",
@@ -1082,7 +1110,7 @@ func (c *SSOOIDCClient) RegisterClientForAuthCode(ctx context.Context, redirectU
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ssoOIDCEndpoint+"/client/register", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/client/register", strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
@@ -1267,6 +1295,8 @@ func generateStateForAuthCode() (string, error) {
 
 // CreateTokenWithAuthCode exchanges authorization code for tokens.
 func (c *SSOOIDCClient) CreateTokenWithAuthCode(ctx context.Context, clientID, clientSecret, code, codeVerifier, redirectURI string) (*CreateTokenResponse, error) {
+	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
+
 	payload := map[string]string{
 		"clientId":     clientID,
 		"clientSecret": clientSecret,
@@ -1281,7 +1311,7 @@ func (c *SSOOIDCClient) CreateTokenWithAuthCode(ctx context.Context, clientID, c
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ssoOIDCEndpoint+"/token", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
