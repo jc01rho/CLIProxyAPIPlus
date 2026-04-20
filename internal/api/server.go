@@ -209,7 +209,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 
 	// Add middleware
-	engine.Use(logging.GinLogrusLogger())
+	engine.Use(logging.GinLogrusLogger(cfg))
 	engine.Use(logging.GinLogrusRecovery())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
@@ -598,6 +598,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/request-log", s.mgmt.GetRequestLog)
 		mgmt.PUT("/request-log", s.mgmt.PutRequestLog)
 		mgmt.PATCH("/request-log", s.mgmt.PutRequestLog)
+		mgmt.GET("/request-log-success-body", s.mgmt.GetRequestLogSuccessBody)
+		mgmt.PUT("/request-log-success-body", s.mgmt.PutRequestLogSuccessBody)
+		mgmt.PATCH("/request-log-success-body", s.mgmt.PutRequestLogSuccessBody)
 		mgmt.GET("/ws-auth", s.mgmt.GetWebsocketAuth)
 		mgmt.PUT("/ws-auth", s.mgmt.PutWebsocketAuth)
 		mgmt.PATCH("/ws-auth", s.mgmt.PutWebsocketAuth)

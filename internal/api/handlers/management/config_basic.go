@@ -28,7 +28,7 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		c.JSON(200, gin.H{})
 		return
 	}
-	c.JSON(200, new(*h.cfg))
+	c.JSON(200, h.cfg)
 }
 
 type releaseInfo struct {
@@ -245,6 +245,14 @@ func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 func (h *Handler) GetRequestLog(c *gin.Context) { c.JSON(200, gin.H{"request-log": h.cfg.RequestLog}) }
 func (h *Handler) PutRequestLog(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.RequestLog = v })
+}
+
+// Request log success body
+func (h *Handler) GetRequestLogSuccessBody(c *gin.Context) {
+	c.JSON(200, gin.H{"request-log-success-body": h.cfg.RequestLogSuccessBody})
+}
+func (h *Handler) PutRequestLogSuccessBody(c *gin.Context) {
+	h.updateBoolField(c, func(v bool) { h.cfg.RequestLogSuccessBody = v })
 }
 
 // Websocket auth
