@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -91,7 +92,11 @@ func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string) *ClaudeAuth 
 // authEndpoint returns the authorization endpoint, checking for config override.
 func (o *ClaudeAuth) authEndpoint() string {
 	if o.cfg != nil {
-		if ep := o.cfg.GetOAuthEndpointOverride("claude").AuthorizeURL; ep != "" {
+		override := o.cfg.GetOAuthEndpointOverride("claude")
+		if ep := strings.TrimSpace(override.AuthorizeURL); ep != "" {
+			return ep
+		}
+		if ep := deriveClaudeOAuthEndpoint(override.ApiBaseURL, "/oauth/authorize"); ep != "" {
 			return ep
 		}
 	}
@@ -103,14 +108,42 @@ func (o *ClaudeAuth) authEndpoint() string {
 func (o *ClaudeAuth) tokenEndpoint(forRefresh bool) string {
 	if o.cfg != nil {
 		override := o.cfg.GetOAuthEndpointOverride("claude")
-		if forRefresh && override.RefreshURL != "" {
-			return override.RefreshURL
+		if forRefresh {
+			if ep := strings.TrimSpace(override.RefreshURL); ep != "" {
+				return ep
+			}
 		}
-		if override.TokenURL != "" {
-			return override.TokenURL
+		if ep := strings.TrimSpace(override.TokenURL); ep != "" {
+			return ep
+		}
+		if ep := deriveClaudeOAuthEndpoint(override.ApiBaseURL, "/oauth/token"); ep != "" {
+			return ep
 		}
 	}
 	return TokenURL
+}
+
+func deriveClaudeOAuthEndpoint(apiBaseURL string, suffix string) string {
+	base := strings.TrimSpace(apiBaseURL)
+	if base == "" {
+		return ""
+	}
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	cleanPath := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(cleanPath, "/v1") {
+		cleanPath = strings.TrimSuffix(cleanPath, "/v1")
+	}
+	parsed.Path = path.Clean(strings.TrimRight(cleanPath, "/") + suffix)
+	if parsed.Path == "." {
+		parsed.Path = suffix
+	}
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
 }
 
 // GenerateAuthURL creates the OAuth authorization URL with PKCE.

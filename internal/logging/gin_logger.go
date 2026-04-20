@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -182,7 +183,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 		statusCode := c.Writer.Status()
 		clientIP := c.ClientIP()
 		method := c.Request.Method
-		errorMessage := c.Errors.ByType(gin.ErrorTypePrivate).String()
+		errorMessage := strings.TrimSpace(c.Errors.ByType(gin.ErrorTypePrivate).String())
 
 		modelName := ""
 		if len(requestBody) == 0 {
@@ -272,6 +273,17 @@ func GinLogrusLogger() gin.HandlerFunc {
 
 		if errorMessage != "" {
 			logLine = logLine + " | " + errorMessage
+		}
+
+		if statusCode >= http.StatusBadRequest && isAIAPIPath(path) {
+			if len(requestBody) > 0 {
+				logLine = logLine + " | request=" + strconv.QuoteToASCII(strings.ToValidUTF8(string(requestBody), "�"))
+			}
+			if apiResponse, exists := c.Get("API_RESPONSE"); exists {
+				if bodyBytes, ok := apiResponse.([]byte); ok && len(bodyBytes) > 0 {
+					logLine = logLine + " | response=" + strconv.QuoteToASCII(strings.ToValidUTF8(string(bodyBytes), "�"))
+				}
+			}
 		}
 
 		entry := log.WithField("request_id", requestID)
