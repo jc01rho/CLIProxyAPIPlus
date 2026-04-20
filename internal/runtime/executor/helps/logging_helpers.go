@@ -23,9 +23,15 @@ import (
 const (
 	apiAttemptsKey          = "API_UPSTREAM_ATTEMPTS"
 	apiRequestKey           = "API_REQUEST"
+	apiRequestSummaryKey    = "API_REQUEST_SUMMARY"
 	apiResponseKey          = "API_RESPONSE"
 	apiWebsocketTimelineKey = "API_WEBSOCKET_TIMELINE"
 )
+
+type UpstreamRequestSummary struct {
+	URL   string
+	Model string
+}
 
 // UpstreamRequestLog captures the outbound upstream request details for logging.
 type UpstreamRequestLog struct {
@@ -56,11 +62,15 @@ type upstreamAttempt struct {
 
 // RecordAPIRequest stores the upstream request metadata in Gin context for request logging.
 func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
-	if cfg == nil || !cfg.RequestLog {
-		return
-	}
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
+		return
+	}
+	ginCtx.Set(apiRequestSummaryKey, map[string]string{
+		"url":   strings.TrimSpace(info.URL),
+		"model": strings.TrimSpace(gjson.GetBytes(info.Body, "model").String()),
+	})
+	if cfg == nil || !cfg.RequestLog {
 		return
 	}
 

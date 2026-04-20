@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -70,7 +71,7 @@ func TestGinLogrusLoggerAppendsTokenSegment(t *testing.T) {
 	log.SetLevel(log.InfoLevel)
 
 	engine := gin.New()
-	engine.Use(GinLogrusLogger())
+	engine.Use(GinLogrusLogger(&config.Config{}))
 	engine.POST("/v1/messages", func(c *gin.Context) {
 		detail := usage.Detail{
 			InputTokens:  123,
@@ -100,7 +101,7 @@ func TestGinLogrusLoggerSkipsZeroTokens(t *testing.T) {
 	log.SetLevel(log.InfoLevel)
 
 	engine := gin.New()
-	engine.Use(GinLogrusLogger())
+	engine.Use(GinLogrusLogger(&config.Config{}))
 	engine.POST("/v1/messages", func(c *gin.Context) {
 		detail := usage.Detail{
 			InputTokens:  0,
@@ -130,7 +131,7 @@ func TestGinLogrusLoggerAppendsTokenSegmentPointerType(t *testing.T) {
 	log.SetLevel(log.InfoLevel)
 
 	engine := gin.New()
-	engine.Use(GinLogrusLogger())
+	engine.Use(GinLogrusLogger(&config.Config{}))
 	engine.POST("/v1/messages", func(c *gin.Context) {
 		detail := &usage.Detail{
 			InputTokens:  789,
@@ -160,7 +161,7 @@ func TestGinLogrusLoggerAppendsBillingDecisionSegment(t *testing.T) {
 	log.SetLevel(log.InfoLevel)
 
 	engine := gin.New()
-	engine.Use(GinLogrusLogger())
+	engine.Use(GinLogrusLogger(&config.Config{}))
 	engine.POST("/v1/messages", func(c *gin.Context) {
 		c.Set(ginBillingDecisionKey, map[string]string{
 			"billing_class": "metered",
@@ -178,5 +179,37 @@ func TestGinLogrusLoggerAppendsBillingDecisionSegment(t *testing.T) {
 	logOutput := logBuffer.String()
 	if !bytes.Contains([]byte(logOutput), []byte("billing class=metered reason=threshold_rule pattern=test-* estimated_tokens=50 target=metered provider=claude auth=test-auth selected_billing_class=metered")) {
 		t.Fatalf("expected billing decision segment in log, got: %s", logOutput)
+	}
+}
+
+func TestGinLogrusLoggerIncludesUpstreamEndpointAndResolvedModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var logBuffer bytes.Buffer
+	log.SetOutput(&logBuffer)
+	log.SetLevel(log.InfoLevel)
+
+	engine := gin.New()
+	engine.Use(GinLogrusLogger(&config.Config{}))
+	engine.POST("/v1/messages", func(c *gin.Context) {
+		c.Set(ginAPIRequestSummaryKey, map[string]string{
+			"url":   "https://ccapi.labs.mengmota.com/anthropic/v1/messages?beta=true",
+			"model": "claude-sonnet-4-6",
+		})
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader([]byte(`{"model":"sonnet"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	logOutput := logBuffer.String()
+	if !bytes.Contains([]byte(logOutput), []byte("sonnet → claude-sonnet-4-6")) {
+		t.Fatalf("expected resolved upstream model in log, got: %s", logOutput)
+	}
+	if !bytes.Contains([]byte(logOutput), []byte("upstream=https://ccapi.labs.mengmota.com/anthropic/v1/messages?beta=true")) {
+		t.Fatalf("expected upstream endpoint in log, got: %s", logOutput)
 	}
 }
