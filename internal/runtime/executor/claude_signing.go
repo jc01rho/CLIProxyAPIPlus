@@ -45,7 +45,7 @@ func resolveClaudeKeyConfig(cfg *config.Config, auth *cliproxyauth.Auth) *config
 		return nil
 	}
 
-	apiKey, baseURL := claudeCreds(auth)
+	apiKey, baseURL := claudeCreds(auth, cfg)
 	if apiKey == "" {
 		return nil
 	}

@@ -95,7 +95,7 @@ func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
 	if req == nil {
 		return nil
 	}
-	apiKey, _ := claudeCreds(auth)
+	apiKey, _ := claudeCreds(auth, e.cfg)
 	if strings.TrimSpace(apiKey) == "" {
 		return nil
 	}
@@ -138,7 +138,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	apiKey, baseURL := claudeCreds(auth)
+	apiKey, baseURL := claudeCreds(auth, e.cfg)
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
@@ -312,7 +312,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	apiKey, baseURL := claudeCreds(auth)
+	apiKey, baseURL := claudeCreds(auth, e.cfg)
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
@@ -511,7 +511,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	apiKey, baseURL := claudeCreds(auth)
+	apiKey, baseURL := claudeCreds(auth, e.cfg)
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
@@ -993,8 +993,13 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	}
 }
 
-func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
+func claudeCreds(a *cliproxyauth.Auth, cfg *config.Config) (apiKey, baseURL string) {
 	if a == nil {
+		if cfg != nil {
+			if override := strings.TrimSpace(cfg.GetOAuthEndpointOverride("claude").ApiBaseURL); override != "" {
+				return "", override
+			}
+		}
 		return "", ""
 	}
 	if a.Attributes != nil {
@@ -1011,6 +1016,11 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 			if v, ok := a.Metadata["base_url"].(string); ok {
 				baseURL = strings.TrimSpace(v)
 			}
+		}
+	}
+	if baseURL == "" && cfg != nil {
+		if override := strings.TrimSpace(cfg.GetOAuthEndpointOverride("claude").ApiBaseURL); override != "" {
+			baseURL = override
 		}
 	}
 	return
