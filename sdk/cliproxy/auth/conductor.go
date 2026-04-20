@@ -1608,28 +1608,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-
-	_, maxRetryCredentials, maxWait := m.retrySettings()
-
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		resp, errExec := m.executeMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
-		if errExec == nil {
-			return resp, nil
-		}
-		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait)
-		if !shouldRetry {
-			break
-		}
-		if errWait := waitForCooldown(ctx, wait); errWait != nil {
-			return cliproxyexecutor.Response{}, errWait
-		}
-	}
-	if lastErr != nil {
-		return cliproxyexecutor.Response{}, lastErr
-	}
-	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return m.executeWithRouteFallback(ctx, normalized, req, opts, m.executeMixedOnce)
 }
 
 // ExecuteCount performs a non-streaming execution using the configured selector and executor.
@@ -1639,28 +1618,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-
-	_, maxRetryCredentials, maxWait := m.retrySettings()
-
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
-		if errExec == nil {
-			return resp, nil
-		}
-		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait)
-		if !shouldRetry {
-			break
-		}
-		if errWait := waitForCooldown(ctx, wait); errWait != nil {
-			return cliproxyexecutor.Response{}, errWait
-		}
-	}
-	if lastErr != nil {
-		return cliproxyexecutor.Response{}, lastErr
-	}
-	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return m.executeWithRouteFallback(ctx, normalized, req, opts, m.executeCountMixedOnce)
 }
 
 // ExecuteStream performs a streaming execution using the configured selector and executor.
@@ -1670,29 +1628,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-
-	_, maxRetryCredentials, maxWait := m.retrySettings()
-
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		normalized = m.filterProvidersForThreshold(req.Model, normalized, opts)
-		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
-		if errStream == nil {
-			return result, nil
-		}
-		lastErr = errStream
-		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, normalized, req.Model, maxWait)
-		if !shouldRetry {
-			break
-		}
-		if errWait := waitForCooldown(ctx, wait); errWait != nil {
-			return nil, errWait
-		}
-	}
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return m.executeStreamWithRouteFallback(ctx, normalized, req, opts, m.executeStreamMixedOnce)
 }
 
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (cliproxyexecutor.Response, error) {
@@ -4312,4 +4248,193 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
 	}
 	return exec.HttpRequest(ctx, auth, req)
+}
+
+func (m *Manager) resolveFallbackModels(originalModel string) []string {
+	var candidates []string
+	seen := map[string]struct{}{originalModel: {}}
+
+	if fb, ok := m.getFallbackModel(originalModel); ok && fb != "" {
+		if _, dup := seen[fb]; !dup {
+			candidates = append(candidates, fb)
+			seen[fb] = struct{}{}
+		}
+	}
+
+	for _, chainModel := range m.getFallbackChain() {
+		if _, dup := seen[chainModel]; !dup {
+			candidates = append(candidates, chainModel)
+			seen[chainModel] = struct{}{}
+		}
+	}
+
+	maxDepth := m.getFallbackMaxDepth()
+	if len(candidates) > maxDepth {
+		candidates = candidates[:maxDepth]
+	}
+
+	return candidates
+}
+
+func (m *Manager) executeWithRouteFallback(
+	ctx context.Context,
+	providers []string,
+	req cliproxyexecutor.Request,
+	opts cliproxyexecutor.Options,
+	execOnce func(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (cliproxyexecutor.Response, error),
+) (cliproxyexecutor.Response, error) {
+	_, maxRetryCredentials, maxWait := m.retrySettings()
+
+	var lastErr error
+	originalModel := req.Model
+	attempted := map[string]struct{}{originalModel: {}}
+
+	resp, err := m.executeWithRetry(ctx, providers, req, opts, maxRetryCredentials, maxWait, execOnce)
+	if err == nil {
+		return resp, nil
+	}
+	lastErr = err
+
+	if !m.shouldAllowRouteModelFallback(err) {
+		return cliproxyexecutor.Response{}, lastErr
+	}
+
+	for _, fbModel := range m.resolveFallbackModels(originalModel) {
+		if _, dup := attempted[fbModel]; dup {
+			continue
+		}
+		attempted[fbModel] = struct{}{}
+
+		fbReq := req
+		fbReq.Model = fbModel
+
+		resp, err := m.executeWithRetry(ctx, providers, fbReq, opts, maxRetryCredentials, maxWait, execOnce)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !m.shouldAllowRouteModelFallback(err) {
+			break
+		}
+	}
+
+	return cliproxyexecutor.Response{}, lastErr
+}
+
+func (m *Manager) executeStreamWithRouteFallback(
+	ctx context.Context,
+	providers []string,
+	req cliproxyexecutor.Request,
+	opts cliproxyexecutor.Options,
+	execOnce func(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (*cliproxyexecutor.StreamResult, error),
+) (*cliproxyexecutor.StreamResult, error) {
+	_, maxRetryCredentials, maxWait := m.retrySettings()
+
+	var lastErr error
+	originalModel := req.Model
+	attempted := map[string]struct{}{originalModel: {}}
+
+	result, err := m.executeStreamWithRetry(ctx, providers, req, opts, maxRetryCredentials, maxWait, execOnce)
+	if err == nil {
+		return result, nil
+	}
+	lastErr = err
+
+	if !m.shouldAllowRouteModelFallback(err) {
+		return nil, lastErr
+	}
+
+	for _, fbModel := range m.resolveFallbackModels(originalModel) {
+		if _, dup := attempted[fbModel]; dup {
+			continue
+		}
+		attempted[fbModel] = struct{}{}
+
+		fbReq := req
+		fbReq.Model = fbModel
+
+		result, err := m.executeStreamWithRetry(ctx, providers, fbReq, opts, maxRetryCredentials, maxWait, execOnce)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if !m.shouldAllowRouteModelFallback(err) {
+			break
+		}
+	}
+
+	return nil, lastErr
+}
+
+func (m *Manager) shouldAllowRouteModelFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isRequestInvalidError(err) {
+		return false
+	}
+	status := statusCodeFromError(err)
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return isModelSupportError(err)
+	case http.StatusNotFound:
+		return false
+	default:
+		return true
+	}
+}
+
+func (m *Manager) executeWithRetry(
+	ctx context.Context,
+	providers []string,
+	req cliproxyexecutor.Request,
+	opts cliproxyexecutor.Options,
+	maxRetryCredentials int,
+	maxWait time.Duration,
+	execOnce func(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (cliproxyexecutor.Response, error),
+) (cliproxyexecutor.Response, error) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		resp, errExec := execOnce(ctx, providers, req, opts, maxRetryCredentials)
+		if errExec == nil {
+			return resp, nil
+		}
+		lastErr = errExec
+		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, providers, req.Model, maxWait)
+		if !shouldRetry {
+			break
+		}
+		if errWait := waitForCooldown(ctx, wait); errWait != nil {
+			return cliproxyexecutor.Response{}, errWait
+		}
+	}
+	return cliproxyexecutor.Response{}, lastErr
+}
+
+func (m *Manager) executeStreamWithRetry(
+	ctx context.Context,
+	providers []string,
+	req cliproxyexecutor.Request,
+	opts cliproxyexecutor.Options,
+	maxRetryCredentials int,
+	maxWait time.Duration,
+	execOnce func(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (*cliproxyexecutor.StreamResult, error),
+) (*cliproxyexecutor.StreamResult, error) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		filtered := m.filterProvidersForThreshold(req.Model, providers, opts)
+		result, errStream := execOnce(ctx, filtered, req, opts, maxRetryCredentials)
+		if errStream == nil {
+			return result, nil
+		}
+		lastErr = errStream
+		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, providers, req.Model, maxWait)
+		if !shouldRetry {
+			break
+		}
+		if errWait := waitForCooldown(ctx, wait); errWait != nil {
+			return nil, errWait
+		}
+	}
+	return nil, lastErr
 }
