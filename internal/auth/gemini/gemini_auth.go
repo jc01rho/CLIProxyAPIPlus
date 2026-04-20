@@ -44,6 +44,7 @@ var Scopes = []string{
 // It encapsulates the logic for obtaining, storing, and refreshing authentication tokens
 // for Google's Gemini AI services.
 type GeminiAuth struct {
+	cfg *config.Config
 }
 
 // WebLoginOptions customizes the interactive OAuth flow.
@@ -55,7 +56,52 @@ type WebLoginOptions struct {
 
 // NewGeminiAuth creates a new instance of GeminiAuth.
 func NewGeminiAuth() *GeminiAuth {
-	return &GeminiAuth{}
+	return &GeminiAuth{cfg: nil}
+}
+
+// NewGeminiAuthWithConfig creates a new instance of GeminiAuth with config for endpoint overrides.
+func NewGeminiAuthWithConfig(cfg *config.Config) *GeminiAuth {
+	return &GeminiAuth{cfg: cfg}
+}
+
+// oauthEndpoint returns an oauth2.Endpoint that honors config overrides.
+// Falls back to google.Endpoint when no override is set.
+func (g *GeminiAuth) oauthEndpoint() oauth2.Endpoint {
+	if g.cfg != nil {
+		override := g.cfg.GetOAuthEndpointOverride("gemini")
+		if override.AuthorizeURL != "" || override.TokenURL != "" {
+			ep := google.Endpoint
+			if override.AuthorizeURL != "" {
+				ep.AuthURL = override.AuthorizeURL
+			}
+			if override.TokenURL != "" {
+				ep.TokenURL = override.TokenURL
+			}
+			return ep
+		}
+	}
+	return google.Endpoint
+}
+
+// userinfoEndpoint returns the userinfo endpoint, checking for config override.
+func (g *GeminiAuth) userinfoEndpoint() string {
+	if g.cfg != nil {
+		if ep := g.cfg.GetOAuthEndpointOverride("gemini").UserinfoURL; ep != "" {
+			return ep
+		}
+	}
+	return "https://www.googleapis.com/oauth2/v1/userinfo?alt=json"
+}
+
+// tokenURI returns the token_uri for storage, checking for config override.
+// Falls back to the default Google token endpoint.
+func (g *GeminiAuth) tokenURI() string {
+	if g.cfg != nil {
+		if ep := g.cfg.GetOAuthEndpointOverride("gemini").TokenURL; ep != "" {
+			return ep
+		}
+	}
+	return "https://oauth2.googleapis.com/token"
 }
 
 // GetAuthenticatedClient configures and returns an HTTP client ready for making authenticated API calls.
@@ -94,7 +140,7 @@ func (g *GeminiAuth) GetAuthenticatedClient(ctx context.Context, ts *GeminiToken
 		ClientSecret: ClientSecret,
 		RedirectURL:  callbackURL, // This will be used by the local server.
 		Scopes:       Scopes,
-		Endpoint:     google.Endpoint,
+		Endpoint:     g.oauthEndpoint(),
 	}
 
 	var token *oauth2.Token
@@ -139,7 +185,7 @@ func (g *GeminiAuth) GetAuthenticatedClient(ctx context.Context, ts *GeminiToken
 //   - error: An error if the token storage creation fails, nil otherwise
 func (g *GeminiAuth) createTokenStorage(ctx context.Context, config *oauth2.Config, token *oauth2.Token, projectID string) (*GeminiTokenStorage, error) {
 	httpClient := config.Client(ctx, token)
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://www.googleapis.com/oauth2/v1/userinfo?alt=json", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", g.userinfoEndpoint(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not get user info: %v", err)
 	}
@@ -175,7 +221,7 @@ func (g *GeminiAuth) createTokenStorage(ctx context.Context, config *oauth2.Conf
 		return nil, fmt.Errorf("failed to unmarshal token: %w", err)
 	}
 
-	ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
+	ifToken["token_uri"] = g.tokenURI()
 	ifToken["client_id"] = ClientID
 	ifToken["client_secret"] = ClientSecret
 	ifToken["scopes"] = Scopes

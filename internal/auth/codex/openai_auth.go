@@ -32,6 +32,7 @@ const (
 // exchanging authorization codes for tokens, and refreshing access tokens.
 type CodexAuth struct {
 	httpClient *http.Client
+	cfg        *config.Config
 }
 
 // NewCodexAuth creates a new CodexAuth service instance.
@@ -54,7 +55,33 @@ func NewCodexAuthWithProxyURL(cfg *config.Config, proxyURL string) *CodexAuth {
 	sdkCfg.ProxyURL = effectiveProxyURL
 	return &CodexAuth{
 		httpClient: util.SetProxy(&sdkCfg, &http.Client{}),
+		cfg:        cfg,
 	}
+}
+
+// authEndpoint returns the authorization endpoint, checking for config override.
+func (o *CodexAuth) authEndpoint() string {
+	if o.cfg != nil {
+		if ep := o.cfg.GetOAuthEndpointOverride("codex").AuthorizeURL; ep != "" {
+			return ep
+		}
+	}
+	return AuthURL
+}
+
+// tokenEndpoint returns the token endpoint, checking for config override.
+// For refresh operations, RefreshURL is used if set; otherwise TokenURL is used.
+func (o *CodexAuth) tokenEndpoint(forRefresh bool) string {
+	if o.cfg != nil {
+		override := o.cfg.GetOAuthEndpointOverride("codex")
+		if forRefresh && override.RefreshURL != "" {
+			return override.RefreshURL
+		}
+		if override.TokenURL != "" {
+			return override.TokenURL
+		}
+	}
+	return TokenURL
 }
 
 // GenerateAuthURL creates the OAuth authorization URL with PKCE (Proof Key for Code Exchange).
@@ -78,7 +105,7 @@ func (o *CodexAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string,
 		"codex_cli_simplified_flow":  {"true"},
 	}
 
-	authURL := fmt.Sprintf("%s?%s", AuthURL, params.Encode())
+	authURL := fmt.Sprintf("%s?%s", o.authEndpoint(), params.Encode())
 	return authURL, nil
 }
 
@@ -109,7 +136,7 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 		"code_verifier": {pkceCodes.CodeVerifier},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", o.tokenEndpoint(false), strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
@@ -195,7 +222,7 @@ func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Co
 		"scope":         {"openid profile email"},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", o.tokenEndpoint(true), strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create refresh request: %w", err)
 	}

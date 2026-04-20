@@ -47,6 +47,7 @@ type tokenResponse struct {
 // and refreshing expired tokens using PKCE for enhanced security.
 type ClaudeAuth struct {
 	httpClient *http.Client
+	cfg        *config.Config
 }
 
 // NewClaudeAuth creates a new Anthropic authentication service.
@@ -83,7 +84,33 @@ func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string) *ClaudeAuth 
 	// Cloudflare's bot detection on Anthropic domains
 	return &ClaudeAuth{
 		httpClient: NewAnthropicHttpClient(sdkCfg),
+		cfg:        cfg,
 	}
+}
+
+// authEndpoint returns the authorization endpoint, checking for config override.
+func (o *ClaudeAuth) authEndpoint() string {
+	if o.cfg != nil {
+		if ep := o.cfg.GetOAuthEndpointOverride("claude").AuthorizeURL; ep != "" {
+			return ep
+		}
+	}
+	return AuthURL
+}
+
+// tokenEndpoint returns the token endpoint, checking for config override.
+// For refresh operations, RefreshURL is used if set; otherwise TokenURL is used.
+func (o *ClaudeAuth) tokenEndpoint(forRefresh bool) string {
+	if o.cfg != nil {
+		override := o.cfg.GetOAuthEndpointOverride("claude")
+		if forRefresh && override.RefreshURL != "" {
+			return override.RefreshURL
+		}
+		if override.TokenURL != "" {
+			return override.TokenURL
+		}
+	}
+	return TokenURL
 }
 
 // GenerateAuthURL creates the OAuth authorization URL with PKCE.
@@ -114,7 +141,7 @@ func (o *ClaudeAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string
 		"state":                 {state},
 	}
 
-	authURL := fmt.Sprintf("%s?%s", AuthURL, params.Encode())
+	authURL := fmt.Sprintf("%s?%s", o.authEndpoint(), params.Encode())
 	return authURL, state, nil
 }
 
@@ -177,7 +204,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 
 	// log.Debugf("Token exchange request: %s", string(jsonBody))
 
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(string(jsonBody)))
+	req, err := http.NewRequestWithContext(ctx, "POST", o.tokenEndpoint(false), strings.NewReader(string(jsonBody)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
@@ -254,7 +281,7 @@ func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*C
 		return nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(string(jsonBody)))
+	req, err := http.NewRequestWithContext(ctx, "POST", o.tokenEndpoint(true), strings.NewReader(string(jsonBody)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create refresh request: %w", err)
 	}
