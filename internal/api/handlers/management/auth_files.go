@@ -567,6 +567,11 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						fileData["billing_class"] = normalized
 					}
 				}
+				if uv := gjson.GetBytes(data, "base_url"); uv.Exists() && uv.Type == gjson.String {
+					if trimmed := strings.TrimSpace(uv.String()); trimmed != "" {
+						fileData["base_url"] = trimmed
+					}
+				}
 			}
 
 			files = append(files, fileData)
@@ -693,6 +698,15 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		} else if rawBillingClass, ok := auth.Metadata["billing-class"].(string); ok {
 			if normalized := normalizeBillingClassValue(rawBillingClass); normalized != "" {
 				entry["billing_class"] = normalized
+			}
+		}
+	}
+	if baseURL := strings.TrimSpace(authAttribute(auth, "base_url")); baseURL != "" {
+		entry["base_url"] = baseURL
+	} else if auth.Metadata != nil {
+		if rawBaseURL, ok := auth.Metadata["base_url"].(string); ok {
+			if trimmed := strings.TrimSpace(rawBaseURL); trimmed != "" {
+				entry["base_url"] = trimmed
 			}
 		}
 	}
@@ -1340,6 +1354,11 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 			}
 		}
 	}
+	if rawBaseURL, ok := metadata["base_url"].(string); ok {
+		if trimmed := strings.TrimSpace(rawBaseURL); trimmed != "" {
+			auth.Attributes["base_url"] = trimmed
+		}
+	}
 	if primaryInfo := extractPrimaryInfoFromMetadata(metadata); primaryInfo != nil && strings.EqualFold(strings.TrimSpace(provider), "antigravity") {
 		auth.PrimaryInfo = primaryInfo
 	}
@@ -1452,6 +1471,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		Name         string            `json:"name"`
 		Prefix       *string           `json:"prefix"`
 		ProxyURL     *string           `json:"proxy_url"`
+		BaseURL      *string           `json:"base_url"`
 		Headers      map[string]string `json:"headers"`
 		Priority     *int              `json:"priority"`
 		Note         *string           `json:"note"`
@@ -1513,6 +1533,23 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			delete(targetAuth.Metadata, "proxy_url")
 		} else {
 			targetAuth.Metadata["proxy_url"] = proxyURL
+		}
+		changed = true
+	}
+	if req.BaseURL != nil {
+		baseURL := strings.TrimSpace(*req.BaseURL)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if targetAuth.Attributes == nil {
+			targetAuth.Attributes = make(map[string]string)
+		}
+		if baseURL == "" {
+			delete(targetAuth.Metadata, "base_url")
+			delete(targetAuth.Attributes, "base_url")
+		} else {
+			targetAuth.Metadata["base_url"] = baseURL
+			targetAuth.Attributes["base_url"] = baseURL
 		}
 		changed = true
 	}
