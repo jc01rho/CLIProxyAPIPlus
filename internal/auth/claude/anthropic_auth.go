@@ -370,10 +370,19 @@ func (o *ClaudeAuth) CreateTokenStorage(bundle *ClaudeAuthBundle) *ClaudeTokenSt
 		RefreshToken: bundle.TokenData.RefreshToken,
 		LastRefresh:  bundle.LastRefresh,
 		Email:        bundle.TokenData.Email,
+		BaseURL:      o.runtimeBaseURL(),
 		Expire:       bundle.TokenData.Expire,
 	}
 
 	return storage
+}
+
+func (o *ClaudeAuth) runtimeBaseURL() string {
+	if o == nil || o.cfg == nil {
+		return ""
+	}
+	override := o.cfg.GetOAuthEndpointOverride("claude")
+	return strings.TrimSpace(override.ApiBaseURL)
 }
 
 // RefreshTokensWithRetry refreshes tokens with automatic retry logic.

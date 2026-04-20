@@ -50,3 +50,27 @@ func TestClaudeAuthExplicitOverrideBeatsApiBaseURL(t *testing.T) {
 		t.Fatalf("tokenEndpoint(true) = %q, want explicit refresh URL", got)
 	}
 }
+
+func TestClaudeCreateTokenStoragePersistsRuntimeBaseURL(t *testing.T) {
+	auth := &ClaudeAuth{
+		cfg: &config.Config{
+			OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
+				"claude": {ApiBaseURL: "https://proxy.example.com/anthropic"},
+			},
+		},
+	}
+
+	storage := auth.CreateTokenStorage(&ClaudeAuthBundle{
+		TokenData: ClaudeTokenData{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			Email:        "user@example.com",
+			Expire:       "2099-01-01T00:00:00Z",
+		},
+		LastRefresh: "2099-01-01T00:00:00Z",
+	})
+
+	if storage.BaseURL != "https://proxy.example.com/anthropic" {
+		t.Fatalf("storage.BaseURL = %q, want %q", storage.BaseURL, "https://proxy.example.com/anthropic")
+	}
+}

@@ -31,6 +31,9 @@ type ClaudeTokenStorage struct {
 	// Email is the Anthropic account email address associated with this token.
 	Email string `json:"email"`
 
+	// BaseURL overrides the default Anthropic API host for runtime message requests.
+	BaseURL string `json:"base_url,omitempty"`
+
 	// Type indicates the authentication provider type, always "claude" for this storage.
 	Type string `json:"type"`
 
