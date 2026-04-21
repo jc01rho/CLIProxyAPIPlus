@@ -474,6 +474,7 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
 	if errMsg != nil {
+		attachUnknownProviderUpstreamHint(ctx, modelName, normalizedModel)
 		return nil, nil, errMsg
 	}
 	reqMeta := requestExecutionMetadata(ctx)
@@ -518,6 +519,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
 	if errMsg != nil {
+		attachUnknownProviderUpstreamHint(ctx, modelName, normalizedModel)
 		return nil, nil, errMsg
 	}
 	reqMeta := requestExecutionMetadata(ctx)
@@ -563,6 +565,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
 	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
 	if errMsg != nil {
+		attachUnknownProviderUpstreamHint(ctx, modelName, normalizedModel)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
 		close(errChan)
@@ -803,6 +806,12 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 		if len(providers) == 0 && baseModel != resolvedModelName {
 			providers = h.AuthManager.ProvidersForRouteModel(baseModel)
 		}
+		if len(providers) == 0 {
+			providers = h.AuthManager.ProvidersForOAuthAliasWithoutRegisteredModels(resolvedModelName)
+			if len(providers) == 0 && baseModel != resolvedModelName {
+				providers = h.AuthManager.ProvidersForOAuthAliasWithoutRegisteredModels(baseModel)
+			}
+		}
 	}
 
 	if len(providers) == 0 {
@@ -812,6 +821,108 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+func attachUnknownProviderUpstreamHint(ctx context.Context, originalModel string, resolvedModel string) {
+	if ctx == nil {
+		return
+	}
+	c, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || c == nil {
+		return
+	}
+	model := strings.TrimSpace(resolvedModel)
+	if model == "" {
+		model = strings.TrimSpace(originalModel)
+	}
+	if model == "" {
+		return
+	}
+	provider := ""
+	parsed := thinking.ParseSuffix(model)
+	baseModel := strings.TrimSpace(parsed.ModelName)
+	providers := util.GetProviderName(baseModel)
+	if len(providers) == 0 && baseModel != model {
+		providers = util.GetProviderName(model)
+	}
+	if len(providers) > 0 {
+		provider = strings.TrimSpace(providers[0])
+	}
+	if provider == "" {
+		if configured := configuredClaudeLLMUpstreamURL(c); configured != "" {
+			c.Set("API_REQUEST_SUMMARY", map[string]string{
+				"url":   configured,
+				"model": baseModel,
+			})
+		}
+		return
+	}
+	upstreamURL := defaultLLMUpstreamURL(provider)
+	if provider == "claude" {
+		if configured := configuredClaudeLLMUpstreamURL(c); configured != "" {
+			upstreamURL = configured
+		}
+	}
+	if upstreamURL == "" {
+		return
+	}
+	c.Set("API_REQUEST_SUMMARY", map[string]string{
+		"url":   upstreamURL,
+		"model": baseModel,
+	})
+}
+
+func defaultLLMUpstreamURL(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "claude":
+		return "https://api.anthropic.com/v1/messages?beta=true"
+	case "openai":
+		return "https://api.openai.com/v1/chat/completions"
+	case "gemini":
+		return "https://generativelanguage.googleapis.com/v1beta/models"
+	default:
+		return ""
+	}
+}
+
+func configuredClaudeLLMUpstreamURL(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	handlerVal, exists := c.Get("handler")
+	if !exists {
+		return ""
+	}
+	h, ok := handlerVal.(*BaseAPIHandler)
+	if !ok || h == nil || h.AuthManager == nil {
+		return ""
+	}
+	for _, auth := range h.AuthManager.List() {
+		if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
+			continue
+		}
+		kind, _ := auth.AccountInfo()
+		if kind == "" && auth.Attributes != nil {
+			kind = strings.TrimSpace(auth.Attributes["auth_kind"])
+		}
+		if strings.EqualFold(strings.TrimSpace(kind), "api_key") || strings.EqualFold(strings.TrimSpace(kind), "apikey") {
+			continue
+		}
+		baseURL := ""
+		if auth.Attributes != nil {
+			baseURL = strings.TrimSpace(auth.Attributes["base_url"])
+		}
+		if baseURL == "" && auth.Metadata != nil {
+			if v, ok := auth.Metadata["base_url"].(string); ok {
+				baseURL = strings.TrimSpace(v)
+			}
+		}
+		if baseURL == "" {
+			continue
+		}
+		return strings.TrimRight(baseURL, "/") + "/v1/messages?beta=true"
+	}
+	return ""
 }
 
 func cloneBytes(src []byte) []byte {

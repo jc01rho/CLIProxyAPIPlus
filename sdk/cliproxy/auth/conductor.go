@@ -684,19 +684,7 @@ func (m *Manager) AuthSupportsRouteModel(auth *Auth, routeModel string) bool {
 	if m == nil || auth == nil {
 		return false
 	}
-	authID := strings.TrimSpace(auth.ID)
-	if authID == "" {
-		return false
-	}
-	modelKey := m.selectionModelKeyForAuth(auth, routeModel)
-	if modelKey == "" {
-		return false
-	}
-	reg := registry.GetGlobalRegistry()
-	if reg == nil {
-		return false
-	}
-	return reg.ClientSupportsModel(authID, modelKey)
+	return m.authSupportsRouteModel(registry.GetGlobalRegistry(), auth, routeModel)
 }
 
 // ProvidersForRouteModel returns provider keys that can execute the caller-visible
@@ -729,6 +717,88 @@ func (m *Manager) ProvidersForRouteModel(routeModel string) []string {
 		providers = append(providers, providerKey)
 	}
 	return providers
+}
+
+// ProvidersForOAuthAliasWithoutRegisteredModels returns provider keys for active non-API-key
+// auths whose OAuth alias table can resolve the requested route model even when the registry
+// does not yet advertise any models for that auth.
+func (m *Manager) ProvidersForOAuthAliasWithoutRegisteredModels(routeModel string) []string {
+	if m == nil {
+		return nil
+	}
+	routeModel = strings.TrimSpace(routeModel)
+	if routeModel == "" {
+		return nil
+	}
+	reg := registry.GetGlobalRegistry()
+	providers := make([]string, 0)
+	seen := make(map[string]struct{})
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, auth := range m.auths {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+			continue
+		}
+		providerKey := effectiveProviderKey(auth)
+		if providerKey == "" {
+			continue
+		}
+		kind, _ := auth.AccountInfo()
+		if kind == "" && auth.Attributes != nil {
+			kind = strings.TrimSpace(auth.Attributes["auth_kind"])
+		}
+		if strings.EqualFold(strings.TrimSpace(kind), "api_key") || strings.EqualFold(strings.TrimSpace(kind), "apikey") {
+			continue
+		}
+		if strings.TrimSpace(modelAliasChannel(auth)) == "" {
+			continue
+		}
+		if reg != nil {
+			if models := reg.GetModelsForClient(strings.TrimSpace(auth.ID)); len(models) > 0 {
+				continue
+			}
+		}
+		resolved := strings.TrimSpace(m.resolveOAuthUpstreamModel(auth, routeModel))
+		if resolved == "" || canonicalModelKey(resolved) == canonicalModelKey(routeModel) {
+			continue
+		}
+		resolvedBaseModel := strings.TrimSpace(thinking.ParseSuffix(resolved).ModelName)
+		resolvedProviders := inferProvidersForUnregisteredOAuthAlias(resolvedBaseModel)
+		if len(resolvedProviders) == 0 && resolvedBaseModel != resolved {
+			resolvedProviders = inferProvidersForUnregisteredOAuthAlias(resolved)
+		}
+		if len(resolvedProviders) > 0 {
+			matched := false
+			for _, resolvedProvider := range resolvedProviders {
+				if strings.EqualFold(strings.TrimSpace(resolvedProvider), providerKey) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		if _, ok := seen[providerKey]; ok {
+			continue
+		}
+		seen[providerKey] = struct{}{}
+		providers = append(providers, providerKey)
+	}
+	return providers
+}
+
+func inferProvidersForUnregisteredOAuthAlias(modelName string) []string {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return nil
+	}
+	if info := registry.LookupModelInfo(modelName); info != nil {
+		if providerType := strings.ToLower(strings.TrimSpace(info.Type)); providerType != "" {
+			return []string{providerType}
+		}
+	}
+	return util.GetProviderName(modelName)
 }
 
 func (m *Manager) stateModelForExecution(auth *Auth, routeModel, upstreamModel string, pooled bool) string {
