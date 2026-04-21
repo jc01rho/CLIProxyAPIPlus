@@ -279,6 +279,7 @@ func (m authTabModel) renderDetail(f map[string]any) string {
 		{"Auth Type", "auth_type", false},
 		{"Prefix", "prefix", true},
 		{"Proxy URL", "proxy_url", true},
+		{T("upstream_base_url"), "base_url", false},
 		{"Priority", "priority", true},
 		{"Project ID", "project_id", false},
 		{"Disabled", "disabled", false},
