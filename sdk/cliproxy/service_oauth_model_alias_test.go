@@ -3,6 +3,9 @@ package cliproxy
 import (
 	"testing"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
@@ -154,5 +157,70 @@ func TestApplyOAuthModelAlias_RealModelWinsOnAliasCollision(t *testing.T) {
 	}
 	if out[1].ExecutionTarget != "" {
 		t.Fatalf("expected real model execution target to stay empty, got %q", out[1].ExecutionTarget)
+	}
+}
+
+func TestRegisterModelsForAuth_ClaudeOAuthAliasSetsExecutionTarget(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			OAuthModelAlias: map[string][]config.OAuthModelAlias{
+				"claude": {
+					{Name: "claude-sonnet-4-6", Alias: "sonnet", Fork: true},
+				},
+			},
+			ClaudeKey: []config.ClaudeKey{{
+				APIKey: "key-123",
+				Models: []internalconfig.ClaudeModel{{
+					Name:  "claude-sonnet-4-6",
+					Alias: "claude-sonnet-4-6",
+				}},
+			}},
+		},
+	}
+	auth := &coreauth.Auth{
+		ID:       "auth-claude-oauth-alias-registration",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(auth)
+
+	models := reg.GetModelsForClient(auth.ID)
+	if len(models) == 0 {
+		t.Fatal("expected registered models for claude oauth auth")
+	}
+
+	var original, alias *ModelInfo
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		switch model.ID {
+		case "claude-sonnet-4-6":
+			original = model
+		case "sonnet":
+			alias = model
+		}
+	}
+	if original == nil {
+		t.Fatal("expected original claude-sonnet-4-6 model to be registered")
+	}
+	if alias == nil {
+		t.Fatal("expected aliased sonnet model to be registered")
+	}
+	if alias.ExecutionTarget != "claude-sonnet-4-6" {
+		t.Fatalf("alias execution target = %q, want %q", alias.ExecutionTarget, "claude-sonnet-4-6")
+	}
+	if original.ExecutionTarget != "" {
+		t.Fatalf("original model execution target = %q, want empty", original.ExecutionTarget)
 	}
 }
