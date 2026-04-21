@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -96,9 +95,6 @@ func (o *ClaudeAuth) authEndpoint() string {
 		if ep := strings.TrimSpace(override.AuthorizeURL); ep != "" {
 			return ep
 		}
-		if ep := deriveClaudeOAuthEndpoint(override.ApiBaseURL, "/oauth/authorize"); ep != "" {
-			return ep
-		}
 	}
 	return AuthURL
 }
@@ -116,34 +112,8 @@ func (o *ClaudeAuth) tokenEndpoint(forRefresh bool) string {
 		if ep := strings.TrimSpace(override.TokenURL); ep != "" {
 			return ep
 		}
-		if ep := deriveClaudeOAuthEndpoint(override.ApiBaseURL, "/oauth/token"); ep != "" {
-			return ep
-		}
 	}
 	return TokenURL
-}
-
-func deriveClaudeOAuthEndpoint(apiBaseURL string, suffix string) string {
-	base := strings.TrimSpace(apiBaseURL)
-	if base == "" {
-		return ""
-	}
-	parsed, err := url.Parse(base)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return ""
-	}
-	cleanPath := strings.TrimRight(parsed.Path, "/")
-	if strings.HasSuffix(cleanPath, "/v1") {
-		cleanPath = strings.TrimSuffix(cleanPath, "/v1")
-	}
-	parsed.Path = path.Clean(strings.TrimRight(cleanPath, "/") + suffix)
-	if parsed.Path == "." {
-		parsed.Path = suffix
-	}
-	parsed.RawPath = ""
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String()
 }
 
 // GenerateAuthURL creates the OAuth authorization URL with PKCE.

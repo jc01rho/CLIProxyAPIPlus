@@ -1017,6 +1017,10 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 }
 
 func claudeCreds(a *cliproxyauth.Auth, cfg *config.Config) (apiKey, baseURL string) {
+	return claudeCredsForLLM(a, cfg)
+}
+
+func claudeCredsForLLM(a *cliproxyauth.Auth, cfg *config.Config) (apiKey, baseURL string) {
 	if a == nil {
 		if cfg != nil {
 			if override := strings.TrimSpace(cfg.GetOAuthEndpointOverride("claude").ApiBaseURL); override != "" {
@@ -1044,6 +1048,29 @@ func claudeCreds(a *cliproxyauth.Auth, cfg *config.Config) (apiKey, baseURL stri
 	if baseURL == "" && cfg != nil {
 		if override := strings.TrimSpace(cfg.GetOAuthEndpointOverride("claude").ApiBaseURL); override != "" {
 			baseURL = override
+		}
+	}
+	return
+}
+
+func claudeCredsForAuthLookup(a *cliproxyauth.Auth) (apiKey, baseURL string) {
+	if a == nil {
+		return "", ""
+	}
+	if a.Attributes != nil {
+		apiKey = strings.TrimSpace(a.Attributes["api_key"])
+		baseURL = strings.TrimSpace(a.Attributes["base_url"])
+	}
+	if a.Metadata != nil {
+		if apiKey == "" {
+			if v, ok := a.Metadata["access_token"].(string); ok {
+				apiKey = strings.TrimSpace(v)
+			}
+		}
+		if baseURL == "" {
+			if v, ok := a.Metadata["base_url"].(string); ok {
+				baseURL = strings.TrimSpace(v)
+			}
 		}
 	}
 	return
