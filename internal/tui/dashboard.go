@@ -214,6 +214,10 @@ func (m dashboardModel) renderDashboard(cfg, usage map[string]any, authFiles []m
 		retry := getFloat(cfg, "request-retry")
 		proxyURL := getString(cfg, "proxy-url")
 		loggingToFile := getBool(cfg, "logging-to-file")
+		detailedAPILogFormat := getString(cfg, "detailed-api-error-body-log-format")
+		if strings.TrimSpace(detailedAPILogFormat) == "" {
+			detailedAPILogFormat = "full"
+		}
 		usageEnabled := true
 		if v, ok := cfg["usage-statistics-enabled"]; ok {
 			if b, ok2 := v.(bool); ok2 {
@@ -228,6 +232,7 @@ func (m dashboardModel) renderDashboard(cfg, usage map[string]any, authFiles []m
 			{T("debug_mode"), boolEmoji(debug)},
 			{T("usage_stats"), boolEmoji(usageEnabled)},
 			{T("log_to_file"), boolEmoji(loggingToFile)},
+			{T("detailed_api_error_body_log_format"), detailedAPILogFormat},
 			{T("retry_count"), fmt.Sprintf("%.0f", retry)},
 		}
 		if proxyURL != "" {
