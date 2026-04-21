@@ -155,3 +155,66 @@ func TestGetRequestDetails_UsesOAuthAliasForProviderLookup(t *testing.T) {
 		t.Fatalf("getRequestDetails() model = %q, want %q", model, aliasModel)
 	}
 }
+
+func TestGetRequestDetails_UsesClaudeOAuthAliasWithoutRegisteredAliasModel(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	const authID = "test-request-details-claude-oauth"
+	const realModel = "claude-sonnet-4-6"
+	const aliasModel = "sonnet"
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{})
+	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"claude": {{Name: realModel, Alias: aliasModel, Fork: true}},
+	})
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       authID,
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	modelRegistry.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: realModel}})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(authID)
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	providers, model, errMsg := handler.getRequestDetails(aliasModel)
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() error = %v", errMsg)
+	}
+	if !reflect.DeepEqual(providers, []string{"claude"}) {
+		t.Fatalf("getRequestDetails() providers = %v, want %v", providers, []string{"claude"})
+	}
+	if model != aliasModel {
+		t.Fatalf("getRequestDetails() model = %q, want %q", model, aliasModel)
+	}
+}
+
+func TestGetRequestDetails_DoesNotUseOAuthAliasWhenProviderFamilyMismatches(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{})
+	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"claude": {{Name: "gemini-2.5-pro", Alias: "sonnet", Fork: true}},
+	})
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "test-request-details-claude-oauth-mismatch",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	providers, model, errMsg := handler.getRequestDetails("sonnet")
+	if errMsg == nil {
+		t.Fatalf("expected getRequestDetails() to fail, got providers=%v model=%q", providers, model)
+	}
+}
