@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"context"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -192,6 +194,76 @@ func TestGetRequestDetails_UsesClaudeOAuthAliasWithoutRegisteredAliasModel(t *te
 	}
 	if model != aliasModel {
 		t.Fatalf("getRequestDetails() model = %q, want %q", model, aliasModel)
+	}
+}
+
+func TestGetRequestDetails_UsesClaudeOAuthAliasWithoutAnyRegisteredModels(t *testing.T) {
+	const realModel = "claude-sonnet-4-6"
+	const aliasModel = "sonnet"
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{})
+	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"claude": {{Name: realModel, Alias: aliasModel, Fork: true}},
+	})
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "test-request-details-claude-oauth-no-registry-models",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	providers, model, errMsg := handler.getRequestDetails(aliasModel)
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() error = %v", errMsg)
+	}
+	if !reflect.DeepEqual(providers, []string{"claude"}) {
+		t.Fatalf("getRequestDetails() providers = %v, want %v", providers, []string{"claude"})
+	}
+	if model != aliasModel {
+		t.Fatalf("getRequestDetails() model = %q, want %q", model, aliasModel)
+	}
+}
+
+func TestAttachUnknownProviderUpstreamHint_UsesConfiguredClaudeBaseURL(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "claude-oauth-upstream-hint",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+			"base_url":  "https://proxy.example.com/anthropic",
+		},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("handler", handler)
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	ctx.Request = req.WithContext(context.WithValue(req.Context(), "gin", ctx))
+
+	attachUnknownProviderUpstreamHint(ctx.Request.Context(), "sonnet", "sonnet")
+
+	v, exists := ctx.Get("API_REQUEST_SUMMARY")
+	if !exists {
+		t.Fatal("expected API_REQUEST_SUMMARY to be set")
+	}
+	summary, ok := v.(map[string]string)
+	if !ok {
+		t.Fatalf("API_REQUEST_SUMMARY type = %T, want map[string]string", v)
+	}
+	if got := summary["url"]; got != "https://proxy.example.com/anthropic/v1/messages?beta=true" {
+		t.Fatalf("summary url = %q, want %q", got, "https://proxy.example.com/anthropic/v1/messages?beta=true")
 	}
 }
 

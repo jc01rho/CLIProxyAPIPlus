@@ -6,7 +6,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
-func TestClaudeAuthEndpointsUseApiBaseURLFallback(t *testing.T) {
+func TestClaudeAuthEndpointsDoNotDeriveOAuthURLsFromApiBaseURL(t *testing.T) {
 	auth := &ClaudeAuth{
 		cfg: &config.Config{
 			OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
@@ -15,14 +15,14 @@ func TestClaudeAuthEndpointsUseApiBaseURLFallback(t *testing.T) {
 		},
 	}
 
-	if got := auth.authEndpoint(); got != "https://proxy.example.com/oauth/authorize" {
-		t.Fatalf("authEndpoint() = %q, want %q", got, "https://proxy.example.com/oauth/authorize")
+	if got := auth.authEndpoint(); got != AuthURL {
+		t.Fatalf("authEndpoint() = %q, want %q", got, AuthURL)
 	}
-	if got := auth.tokenEndpoint(false); got != "https://proxy.example.com/oauth/token" {
-		t.Fatalf("tokenEndpoint(false) = %q, want %q", got, "https://proxy.example.com/oauth/token")
+	if got := auth.tokenEndpoint(false); got != TokenURL {
+		t.Fatalf("tokenEndpoint(false) = %q, want %q", got, TokenURL)
 	}
-	if got := auth.tokenEndpoint(true); got != "https://proxy.example.com/oauth/token" {
-		t.Fatalf("tokenEndpoint(true) = %q, want %q", got, "https://proxy.example.com/oauth/token")
+	if got := auth.tokenEndpoint(true); got != TokenURL {
+		t.Fatalf("tokenEndpoint(true) = %q, want %q", got, TokenURL)
 	}
 }
 
@@ -72,5 +72,30 @@ func TestClaudeCreateTokenStoragePersistsRuntimeBaseURL(t *testing.T) {
 
 	if storage.BaseURL != "https://proxy.example.com/anthropic" {
 		t.Fatalf("storage.BaseURL = %q, want %q", storage.BaseURL, "https://proxy.example.com/anthropic")
+	}
+}
+
+func TestClaudeAuthBlankExplicitOverrideFallsBackToDefaultEndpoints(t *testing.T) {
+	auth := &ClaudeAuth{
+		cfg: &config.Config{
+			OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
+				"claude": {
+					ApiBaseURL:   "https://proxy.example.com/v1",
+					AuthorizeURL: "   ",
+					TokenURL:     "",
+					RefreshURL:   " ",
+				},
+			},
+		},
+	}
+
+	if got := auth.authEndpoint(); got != AuthURL {
+		t.Fatalf("authEndpoint() = %q, want %q", got, AuthURL)
+	}
+	if got := auth.tokenEndpoint(false); got != TokenURL {
+		t.Fatalf("tokenEndpoint(false) = %q, want %q", got, TokenURL)
+	}
+	if got := auth.tokenEndpoint(true); got != TokenURL {
+		t.Fatalf("tokenEndpoint(true) = %q, want %q", got, TokenURL)
 	}
 }

@@ -1432,6 +1432,72 @@ func TestManagerClaudeOAuthAlias_Execute_UsesExpandedModelAndOverrideBaseURL(t *
 	}
 }
 
+func TestClaudeExecutor_CountTokens_UsesConfigOAuthApiBaseURL(t *testing.T) {
+	t.Parallel()
+
+	var requestedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"input_tokens":7}`))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{
+		OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
+			"claude": {ApiBaseURL: server.URL},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "claude",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"access_token": "oauth-token",
+		},
+	}
+
+	_, err := executor.CountTokens(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-sonnet-4-6",
+		Payload: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err != nil {
+		t.Fatalf("CountTokens() error = %v", err)
+	}
+
+	if requestedPath != "/v1/messages/count_tokens" {
+		t.Fatalf("requested path = %q, want %q", requestedPath, "/v1/messages/count_tokens")
+	}
+}
+
+func TestResolveClaudeKeyConfig_IgnoresConfigOAuthApiBaseURLForOAuthLookup(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
+			"claude": {ApiBaseURL: "https://override.example.com/anthropic"},
+		},
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey:  "oauth-token",
+			BaseURL: "https://override.example.com/anthropic",
+		}},
+	}
+	auth := &cliproxyauth.Auth{
+		Provider: "claude",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"access_token": "oauth-token",
+		},
+	}
+
+	if entry := resolveClaudeKeyConfig(cfg, auth); entry != nil {
+		t.Fatalf("resolveClaudeKeyConfig() = %+v, want nil because oauth auth should not inherit config ApiBaseURL for auth lookup", entry)
+	}
+}
+
 func hasTTLOrderingViolation(payload []byte) bool {
 	seen5m := false
 	violates := false
