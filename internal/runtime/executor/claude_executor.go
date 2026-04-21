@@ -42,6 +42,29 @@ type ClaudeExecutor struct {
 	cfg *config.Config
 }
 
+func resolveClaudeExecutionModel(auth *cliproxyauth.Auth, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || auth == nil || strings.TrimSpace(auth.ID) == "" {
+		return model
+	}
+
+	models := registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
+	for _, info := range models {
+		if info == nil {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(info.ID), model) {
+			continue
+		}
+		if target := strings.TrimSpace(info.ExecutionTarget); target != "" {
+			return target
+		}
+		break
+	}
+
+	return model
+}
+
 // claudeToolPrefix is empty to match real Claude Code behavior (no tool name prefix).
 // Previously "proxy_" was used but this is a detectable fingerprint difference.
 const claudeToolPrefix = ""
@@ -136,7 +159,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if opts.Alt == "responses/compact" {
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel := resolveClaudeExecutionModel(auth, thinking.ParseSuffix(req.Model).ModelName)
 
 	apiKey, baseURL := claudeCreds(auth, e.cfg)
 	if baseURL == "" {
@@ -310,7 +333,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel := resolveClaudeExecutionModel(auth, thinking.ParseSuffix(req.Model).ModelName)
 
 	apiKey, baseURL := claudeCreds(auth, e.cfg)
 	if baseURL == "" {
@@ -509,7 +532,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 }
 
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel := resolveClaudeExecutionModel(auth, thinking.ParseSuffix(req.Model).ModelName)
 
 	apiKey, baseURL := claudeCreds(auth, e.cfg)
 	if baseURL == "" {
