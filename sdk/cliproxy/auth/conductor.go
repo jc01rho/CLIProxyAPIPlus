@@ -943,6 +943,40 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 			return true
 		}
 	}
+	if m.authSupportsExplicitOAuthAliasWithoutRegistry(registryRef, auth, routeModel) {
+		return true
+	}
+	return false
+}
+
+func (m *Manager) authSupportsExplicitOAuthAliasWithoutRegistry(registryRef *registry.ModelRegistry, auth *Auth, routeModel string) bool {
+	if m == nil || registryRef == nil || auth == nil {
+		return false
+	}
+	authID := strings.TrimSpace(auth.ID)
+	if authID == "" {
+		return false
+	}
+	if models := registryRef.GetModelsForClient(authID); len(models) > 0 {
+		return false
+	}
+	oauthResolved := strings.TrimSpace(m.resolveOAuthUpstreamModel(auth, routeModel))
+	if oauthResolved == "" {
+		return false
+	}
+	providerKey := effectiveProviderKey(auth)
+	if providerKey == "" {
+		return false
+	}
+	providers := util.GetProviderName(strings.TrimSpace(thinking.ParseSuffix(oauthResolved).ModelName))
+	if len(providers) == 0 {
+		providers = util.GetProviderName(oauthResolved)
+	}
+	for _, provider := range providers {
+		if strings.EqualFold(strings.TrimSpace(provider), providerKey) {
+			return true
+		}
+	}
 	return false
 }
 
