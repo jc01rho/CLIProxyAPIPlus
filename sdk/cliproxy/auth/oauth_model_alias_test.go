@@ -572,6 +572,48 @@ func TestResolveOAuthUpstreamModel_AliasExposedModelUsesExecutionTarget(t *testi
 	}
 }
 
+func TestResolveOAuthUpstreamModel_PrefersConfiguredAliasWhenRegistryAdvertisesPlainAliasModel(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil, nil, nil)
+	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"claude": {
+			{Name: "claude-sonnet-4-6", Alias: "sonnet", Fork: true},
+		},
+	})
+
+	auth := &Auth{
+		ID:       "oauth-plain-alias-registry",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{"email": "tester@example.com"},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{
+		{ID: "sonnet"},
+		{ID: "claude-sonnet-4-6"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+
+	resolved := m.resolveOAuthUpstreamModel(auth, "sonnet")
+	if resolved != "claude-sonnet-4-6" {
+		t.Fatalf("resolveOAuthUpstreamModel(plain registered alias) = %q, want %q", resolved, "claude-sonnet-4-6")
+	}
+
+	resolvedWithSuffix := m.resolveOAuthUpstreamModel(auth, "sonnet(high)")
+	if resolvedWithSuffix != "claude-sonnet-4-6(high)" {
+		t.Fatalf("resolveOAuthUpstreamModel(plain registered alias with suffix) = %q, want %q", resolvedWithSuffix, "claude-sonnet-4-6(high)")
+	}
+}
+
 func TestPrepareExecutionModels_AuthSpecificRealFirstAliasSecond(t *testing.T) {
 	t.Parallel()
 
