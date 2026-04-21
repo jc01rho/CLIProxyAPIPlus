@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
@@ -1195,6 +1196,93 @@ func TestClaudeExecutor_Execute_InjectsMaxTokensWhenMissing(t *testing.T) {
 	}
 	if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != defaultClaudeMaxTokens {
 		t.Fatalf("request max_tokens = %d, want %d", got, defaultClaudeMaxTokens)
+	}
+}
+
+func TestManagerClaudeOAuthAlias_Execute_UsesExpandedModelAndOverrideBaseURL(t *testing.T) {
+	const (
+		routeModel    = "sonnet"
+		targetModel   = "claude-sonnet-4-6"
+		provider      = "claude"
+		oauthAuthID   = "claude-oauth-sonnet"
+		requestPath   = "/v1/messages"
+		overrideSuffix = "?beta=true"
+	)
+
+	var (
+		gotPath string
+		gotBody []byte
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.String()
+		body, _ := io.ReadAll(r.Body)
+		gotBody = bytes.Clone(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
+			"claude": {
+				ApiBaseURL: server.URL,
+			},
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewClaudeExecutor(cfg))
+	manager.SetOAuthModelAlias(map[string][]config.OAuthModelAlias{
+		"claude": {{Name: targetModel, Alias: routeModel, Fork: true}},
+	})
+
+	oauthAuth := &coreauth.Auth{
+		ID:       oauthAuthID,
+		Provider: provider,
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"email":       "oauth@example.com",
+			"access_token": "oauth-token",
+		},
+	}
+	if _, err := manager.Register(context.Background(), oauthAuth); err != nil {
+		t.Fatalf("register oauth auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(oauthAuth.ID, provider, []*registry.ModelInfo{{ID: routeModel}, {ID: targetModel}})
+	defer reg.UnregisterClient(oauthAuth.ID)
+	manager.RefreshSchedulerEntry(oauthAuth.ID)
+
+	payload := []byte(`{"model":"sonnet","max_tokens":48000,"thinking":{"type":"enabled","budget_tokens":16000},"system":[{"type":"text","text":"hi"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	resp, err := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{
+		Model:   routeModel,
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestedModelMetadataKey: routeModel,
+		},
+	})
+	if err != nil {
+		t.Fatalf("manager execute error: %v", err)
+	}
+	if got := gjson.GetBytes(resp.Payload, "model").String(); got != targetModel {
+		t.Fatalf("response model = %q, want %q", got, targetModel)
+	}
+	if gotPath != requestPath+overrideSuffix {
+		t.Fatalf("upstream path = %q, want %q", gotPath, requestPath+overrideSuffix)
+	}
+	if len(gotBody) == 0 {
+		t.Fatal("expected upstream request body to be captured")
+	}
+	if got := gjson.GetBytes(gotBody, "model").String(); got != targetModel {
+		t.Fatalf("upstream body model = %q, want %q; body=%s", got, targetModel, string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, "max_tokens").Int(); got != 48000 {
+		t.Fatalf("upstream body max_tokens = %d, want %d; body=%s", got, int64(48000), string(gotBody))
 	}
 }
 
