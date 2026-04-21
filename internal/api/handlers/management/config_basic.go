@@ -255,6 +255,35 @@ func (h *Handler) PutRequestLogSuccessBody(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.RequestLogSuccessBody = v })
 }
 
+// Detailed API error body log format
+func (h *Handler) GetDetailedAPIErrorBodyLogFormat(c *gin.Context) {
+	format := strings.TrimSpace(h.cfg.DetailedAPIErrorBodyLogFormat)
+	if format == "" {
+		format = "full"
+	}
+	c.JSON(200, gin.H{"detailed-api-error-body-log-format": format})
+}
+func (h *Handler) PutDetailedAPIErrorBodyLogFormat(c *gin.Context) {
+	var body struct {
+		Value *string `json:"value"`
+	}
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	format := strings.ToLower(strings.TrimSpace(*body.Value))
+	switch format {
+	case "", "full":
+		h.cfg.DetailedAPIErrorBodyLogFormat = "full"
+	case "summary":
+		h.cfg.DetailedAPIErrorBodyLogFormat = "summary"
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid value"})
+		return
+	}
+	h.persist(c)
+}
+
 // Websocket auth
 func (h *Handler) GetWebsocketAuth(c *gin.Context) {
 	c.JSON(200, gin.H{"ws-auth": h.cfg.WebsocketAuth})
