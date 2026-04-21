@@ -72,6 +72,16 @@ error-logs-max-files: 10
 # Keep this disabled unless you are actively debugging provider behavior.
 request-log-success-body: false
 
+# Maximum number of quoted request/response body characters included in detailed warn/error upstream API logs
+# when detailed-api-error-body-log-format is "full".
+# Set to 0 to use the default limit (4096). Set to a negative value to disable truncation entirely.
+detailed-api-error-body-log-limit: 4096
+
+# Warn/error upstream API log body format.
+# Use "full" for quoted full request/response bodies (subject to the limit above),
+# or "summary" to use the previous summarized format.
+detailed-api-error-body-log-format: "full"
+
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
