@@ -15,9 +15,10 @@ type Provider interface {
 
 // Result conveys authentication outcome.
 type Result struct {
-	Provider  string
-	Principal string
-	Metadata  map[string]string
+	Provider     string
+	ProviderType string
+	Principal    string
+	Metadata     map[string]string
 }
 
 var (
