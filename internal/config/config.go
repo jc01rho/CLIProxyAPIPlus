@@ -96,6 +96,10 @@ type Config struct {
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 
+	// APIKeyIPBlacklist configures automatic temporary IP blocking for repeated
+	// invalid inline API key attempts on the main API surface.
+	APIKeyIPBlacklist APIKeyIPBlacklistConfig `yaml:"api-key-ip-blacklist,omitempty" json:"api-key-ip-blacklist,omitempty"`
+
 	// AntigravitySignatureCacheEnabled controls whether signature cache validation is enabled for thinking blocks.
 	// When true (default), cached signatures are preferred and validated.
 	// When false, client signatures are used directly after normalization (bypass mode).
@@ -277,6 +281,14 @@ type RoutingConfig struct {
 	// TokenThresholdRules defines routing rules that filter eligible credentials
 	// by billing class when the estimated input token count is at or below a threshold.
 	TokenThresholdRules []TokenThresholdRule `yaml:"token-threshold-rules,omitempty" json:"token-threshold-rules,omitempty"`
+}
+
+// APIKeyIPBlacklistConfig defines the automatic IP blacklist policy applied to
+// repeated invalid inline API key attempts on the main API.
+type APIKeyIPBlacklistConfig struct {
+	FailureThreshold int    `yaml:"failure-threshold,omitempty" json:"failure-threshold,omitempty"`
+	FailureWindow    string `yaml:"failure-window,omitempty" json:"failure-window,omitempty"`
+	BlockDuration    string `yaml:"block-duration,omitempty" json:"block-duration,omitempty"`
 }
 
 // BillingClass identifies how a credential/provider is billed for routing policy.
@@ -844,6 +856,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize token-threshold routing rules.
 	cfg.SanitizeTokenThresholdRules()
 
+	// Normalize automatic API-key IP blacklist policy.
+	cfg.SanitizeAPIKeyIPBlacklist()
+
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 
@@ -869,6 +884,19 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Return the populated configuration struct.
 	return &cfg, nil
+}
+
+// SanitizeAPIKeyIPBlacklist trims user-provided duration strings and clamps the
+// failure threshold to a non-negative value.
+func (cfg *Config) SanitizeAPIKeyIPBlacklist() {
+	if cfg == nil {
+		return
+	}
+	if cfg.APIKeyIPBlacklist.FailureThreshold < 0 {
+		cfg.APIKeyIPBlacklist.FailureThreshold = 0
+	}
+	cfg.APIKeyIPBlacklist.FailureWindow = strings.TrimSpace(cfg.APIKeyIPBlacklist.FailureWindow)
+	cfg.APIKeyIPBlacklist.BlockDuration = strings.TrimSpace(cfg.APIKeyIPBlacklist.BlockDuration)
 }
 
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.
