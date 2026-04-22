@@ -10,10 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -42,6 +43,38 @@ const ginFallbackInfoKey = "fallbackInfo"
 const billingDecisionContextKey = "cliproxy.billing_decision"
 const ginBillingDecisionKey = "billingClassDecision"
 const ginAPIRequestSummaryKey = "API_REQUEST_SUMMARY"
+const defaultDetailedAPILogBodyLimit = 4096
+
+func detailedAPILogBodyLimit(cfg *config.Config) int {
+	if cfg == nil || cfg.DetailedAPIErrorBodyLogLimit == 0 {
+		return defaultDetailedAPILogBodyLimit
+	}
+	return cfg.DetailedAPIErrorBodyLogLimit
+}
+
+func truncateDetailedAPILogBody(body string, limit int) string {
+	if limit < 0 || len(body) <= limit {
+		return body
+	}
+	if limit == 0 {
+		return "...[truncated]"
+	}
+	if !utf8.ValidString(body[:limit]) {
+		for limit > 0 && !utf8.ValidString(body[:limit]) {
+			limit--
+		}
+	}
+	return body[:limit] + "...[truncated]"
+}
+
+func formatDetailedLogBody(cfg *config.Config, body []byte) string {
+	if len(body) == 0 {
+		return "\"\""
+	}
+	formatted := strings.ToValidUTF8(string(body), "�")
+	formatted = truncateDetailedAPILogBody(formatted, detailedAPILogBodyLimit(cfg))
+	return strconv.QuoteToASCII(formatted)
+}
 
 func getProviderAuthFromContext(c *gin.Context) (provider, authID, authLabel string) {
 	if c == nil {
@@ -310,17 +343,17 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 		}
 
 		if errorMessage != "" {
-			logLine = logLine + " | " + errorMessage
+			logLine = logLine + " | " + truncateDetailedAPILogBody(strings.ToValidUTF8(errorMessage, "�"), detailedAPILogBodyLimit(cfg))
 		}
 
 		logBodies := isAIAPIPath(path) && (statusCode >= http.StatusBadRequest || (cfg != nil && cfg.RequestLogSuccessBody))
 		if logBodies {
 			if len(requestBody) > 0 {
-				logLine = logLine + " | request=" + strconv.QuoteToASCII(strings.ToValidUTF8(string(requestBody), "�"))
+				logLine = logLine + " | request=" + formatDetailedLogBody(cfg, requestBody)
 			}
 			if apiResponse, exists := c.Get("API_RESPONSE"); exists {
 				if bodyBytes, ok := apiResponse.([]byte); ok && len(bodyBytes) > 0 {
-					logLine = logLine + " | response=" + strconv.QuoteToASCII(strings.ToValidUTF8(string(bodyBytes), "�"))
+					logLine = logLine + " | response=" + formatDetailedLogBody(cfg, bodyBytes)
 				}
 			}
 		}
