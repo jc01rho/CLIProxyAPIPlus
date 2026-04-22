@@ -106,45 +106,53 @@ func NewHandlerWithoutConfigFilePath(cfg *config.Config, manager *coreauth.Manag
 
 // SetConfig updates the in-memory config reference when the server hot-reloads.
 func (h *Handler) SetConfig(cfg *config.Config) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
 	h.cfg = cfg
-	if h.authManager != nil {
+	manager := h.authManager
+	h.mu.Unlock()
+	if manager != nil {
 		var aliases map[string][]config.OAuthModelAlias
-		if cfg != nil {
-			aliases = cfg.OAuthModelAlias
-		}
-		h.authManager.SetOAuthModelAlias(aliases)
 		var fallbackModels map[string]string
 		var fallbackChain []string
 		var fallbackMaxDepth int
 		if cfg != nil {
+			aliases = cfg.OAuthModelAlias
 			fallbackModels = cfg.Routing.FallbackModels
 			fallbackChain = cfg.Routing.FallbackChain
 			fallbackMaxDepth = cfg.Routing.FallbackMaxDepth
 		}
-		h.authManager.SetFallbackModels(fallbackModels)
-		h.authManager.SetFallbackChain(fallbackChain, fallbackMaxDepth)
+		manager.SetOAuthModelAlias(aliases)
+		manager.SetFallbackModels(fallbackModels)
+		manager.SetFallbackChain(fallbackChain, fallbackMaxDepth)
 	}
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
 func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
 	h.authManager = manager
-	if h.authManager != nil {
+	cfg := h.cfg
+	h.mu.Unlock()
+	if manager != nil {
 		var aliases map[string][]config.OAuthModelAlias
-		if h.cfg != nil {
-			aliases = h.cfg.OAuthModelAlias
-		}
-		h.authManager.SetOAuthModelAlias(aliases)
 		var fallbackModels map[string]string
 		var fallbackChain []string
 		var fallbackMaxDepth int
-		if h.cfg != nil {
-			fallbackModels = h.cfg.Routing.FallbackModels
-			fallbackChain = h.cfg.Routing.FallbackChain
-			fallbackMaxDepth = h.cfg.Routing.FallbackMaxDepth
+		if cfg != nil {
+			aliases = cfg.OAuthModelAlias
+			fallbackModels = cfg.Routing.FallbackModels
+			fallbackChain = cfg.Routing.FallbackChain
+			fallbackMaxDepth = cfg.Routing.FallbackMaxDepth
 		}
-		h.authManager.SetFallbackModels(fallbackModels)
-		h.authManager.SetFallbackChain(fallbackChain, fallbackMaxDepth)
+		manager.SetOAuthModelAlias(aliases)
+		manager.SetFallbackModels(fallbackModels)
+		manager.SetFallbackChain(fallbackChain, fallbackMaxDepth)
 	}
 }
 
@@ -314,6 +322,12 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 func (h *Handler) persist(c *gin.Context) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.persistLocked(c)
+}
+
+// persistLocked saves the current in-memory config to disk.
+// It expects the caller to hold h.mu.
+func (h *Handler) persistLocked(c *gin.Context) bool {
 	// Preserve comments when writing
 	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
