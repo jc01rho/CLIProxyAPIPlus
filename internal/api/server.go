@@ -159,6 +159,7 @@ type Server struct {
 
 	// management handler
 	mgmt *managementHandlers.Handler
+	apiKeyIPBlacklist *managementHandlers.APIKeyIPBlacklistStore
 
 	// ampModule is the Amp routing module for model mapping hot-reload
 	ampModule *ampmodule.AmpModule
@@ -269,6 +270,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+	s.apiKeyIPBlacklist = s.mgmt.APIKeyIPBlacklistStore()
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
 	}
@@ -277,18 +279,24 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if optionState.postAuthHook != nil {
 		s.mgmt.SetPostAuthHook(optionState.postAuthHook)
 	}
+	s.mgmt.SetOnConfigApplied(func(updatedCfg *config.Config) {
+		if updatedCfg == nil {
+			return
+		}
+		s.UpdateClients(updatedCfg)
+	})
 	s.localPassword = optionState.localPassword
 
 	// Setup routes
 	s.setupRoutes()
 
 	// Register Amp module using V2 interface with Context
-	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager))
+	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager, s.apiKeyIPBlacklist))
 	ctx := modules.Context{
 		Engine:         engine,
 		BaseHandler:    s.handlers,
 		Config:         cfg,
-		AuthMiddleware: AuthMiddleware(accessManager),
+		AuthMiddleware: AuthMiddleware(accessManager, s.apiKeyIPBlacklist),
 	}
 	if err := modules.RegisterModule(ctx, s.ampModule); err != nil {
 		log.Errorf("Failed to register Amp module: %v", err)
@@ -348,7 +356,7 @@ func (s *Server) setupRoutes() {
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(AuthMiddleware(s.accessManager, s.apiKeyIPBlacklist))
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -362,7 +370,7 @@ func (s *Server) setupRoutes() {
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(AuthMiddleware(s.accessManager, s.apiKeyIPBlacklist))
 	{
 		v1beta.GET("/models", geminiHandlers.GeminiModels)
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -513,7 +521,7 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 	s.wsRoutes[trimmed] = struct{}{}
 	s.wsRouteMu.Unlock()
 
-	authMiddleware := AuthMiddleware(s.accessManager)
+	authMiddleware := AuthMiddleware(s.accessManager, s.apiKeyIPBlacklist)
 	conditionalAuth := func(c *gin.Context) {
 		if !s.wsAuthEnabled.Load() {
 			c.Next()
@@ -548,6 +556,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
+		mgmt.GET("/api-key-ip-blacklist", s.mgmt.GetAPIKeyIPBlacklist)
+		mgmt.DELETE("/api-key-ip-blacklist", s.mgmt.DeleteAPIKeyIPBlacklist)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 
 		mgmt.GET("/debug", s.mgmt.GetDebug)
@@ -1114,15 +1124,33 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 // AuthMiddleware returns a Gin middleware handler that authenticates requests
 // using the configured authentication providers. When no providers are available,
 // it allows all requests (legacy behaviour).
-func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
+func AuthMiddleware(manager *sdkaccess.Manager, apiKeyIPBlacklist ...*managementHandlers.APIKeyIPBlacklistStore) gin.HandlerFunc {
+	var blacklist *managementHandlers.APIKeyIPBlacklistStore
+	if len(apiKeyIPBlacklist) > 0 {
+		blacklist = apiKeyIPBlacklist[0]
+	}
 	return func(c *gin.Context) {
 		if manager == nil {
 			c.Next()
 			return
 		}
 
+		if blacklist != nil {
+			if blockedEntry, blocked := blacklist.IsBlocked(c.ClientIP()); blocked {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"error":                   "IP blocked due to repeated invalid API key attempts",
+					"blocked-until":           blockedEntry.BlockedUntil,
+					"remaining-block-seconds": blockedEntry.RemainingBlockSeconds,
+				})
+				return
+			}
+		}
+
 		result, err := manager.Authenticate(c.Request.Context(), c.Request)
 		if err == nil {
+			if blacklist != nil && result != nil && result.ProviderType == sdkaccess.AccessProviderTypeConfigAPIKey {
+				blacklist.ResetFailures(c.ClientIP())
+			}
 			if result != nil {
 				c.Set("apiKey", result.Principal)
 				c.Set("accessProvider", result.Provider)
@@ -1135,6 +1163,9 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		}
 
 		statusCode := err.HTTPStatusCode()
+		if blacklist != nil && statusCode == http.StatusUnauthorized && sdkaccess.IsAuthErrorCode(err, sdkaccess.AuthErrorCodeInvalidCredential) && strings.EqualFold(strings.TrimSpace(err.ProviderType), sdkaccess.AccessProviderTypeConfigAPIKey) {
+			blacklist.RecordFailure(c.ClientIP())
+		}
 		if statusCode >= http.StatusInternalServerError {
 			log.Errorf("authentication middleware error: %v", err)
 		}

@@ -89,6 +89,73 @@ func TestHealthz(t *testing.T) {
 	})
 }
 
+func TestAuthMiddleware_BlocksAfterRepeatedInvalidAPIKeys(t *testing.T) {
+	server := newTestServer(t)
+
+	performRequest := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.RemoteAddr = "203.0.113.20:1234"
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		return rr
+	}
+
+	for i := 0; i < 3; i++ {
+		rr := performRequest("wrong-key")
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+
+	blocked := performRequest("wrong-key")
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 after threshold reached, got %d body=%s", blocked.Code, blocked.Body.String())
+	}
+	if !strings.Contains(blocked.Body.String(), "IP blocked") {
+		t.Fatalf("expected blocked response body, got %s", blocked.Body.String())
+	}
+}
+
+func TestAuthMiddleware_SuccessClearsPendingFailures(t *testing.T) {
+	server := newTestServer(t)
+
+	performRequest := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.RemoteAddr = "203.0.113.21:1234"
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		return rr
+	}
+
+	for i := 0; i < 2; i++ {
+		rr := performRequest("wrong-key")
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+
+	valid := performRequest("test-key")
+	if valid.Code != http.StatusOK {
+		t.Fatalf("expected successful auth to pass, got %d body=%s", valid.Code, valid.Body.String())
+	}
+
+	for i := 0; i < 2; i++ {
+		rr := performRequest("wrong-key")
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("post-reset attempt %d: expected 401, got %d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+
+	stillUnauthorized := performRequest("wrong-key")
+	if stillUnauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("expected threshold to restart after success reset, got %d body=%s", stillUnauthorized.Code, stillUnauthorized.Body.String())
+	}
+}
+
 func TestAmpProviderModelRoutes(t *testing.T) {
 	testCases := []struct {
 		name         string
