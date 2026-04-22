@@ -13,6 +13,45 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
+func TestPutConfigYAML_AppliesRuntimeConfigCallback(t *testing.T) {
+	configPath := createTempConfigFile(t)
+	cfg := &config.Config{}
+	h := NewHandler(cfg, configPath, nil)
+
+	var applied *config.Config
+	h.SetOnConfigApplied(func(updated *config.Config) {
+		applied = updated
+	})
+
+	r := setupTestRouter(h)
+	r.PUT("/config-yaml", h.PutConfigYAML)
+
+	body := []byte("api-key-ip-blacklist:\n  failure-threshold: 5\n  failure-window: 15m\n  block-duration: 2h\n")
+	req := httptest.NewRequest(http.MethodPut, "/config-yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/yaml")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if applied == nil {
+		t.Fatalf("expected runtime config callback to be invoked")
+	}
+	if applied.APIKeyIPBlacklist.FailureThreshold != 5 {
+		t.Fatalf("expected applied failure threshold 5, got %d", applied.APIKeyIPBlacklist.FailureThreshold)
+	}
+	if applied.APIKeyIPBlacklist.FailureWindow != "15m" {
+		t.Fatalf("expected applied failure window 15m, got %q", applied.APIKeyIPBlacklist.FailureWindow)
+	}
+	if applied.APIKeyIPBlacklist.BlockDuration != "2h" {
+		t.Fatalf("expected applied block duration 2h, got %q", applied.APIKeyIPBlacklist.BlockDuration)
+	}
+	if h.apiKeyIPBlacklist.Policy().FailureThreshold != 5 {
+		t.Fatalf("expected in-memory blacklist policy to update via callback, got %d", h.apiKeyIPBlacklist.Policy().FailureThreshold)
+	}
+}
+
 func setupTestRouter(h *Handler) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
