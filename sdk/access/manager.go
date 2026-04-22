@@ -52,8 +52,9 @@ func (m *Manager) Authenticate(ctx context.Context, r *http.Request) (*Result, *
 	}
 
 	var (
-		missing bool
-		invalid bool
+		missing      bool
+		invalid      bool
+		firstInvalid *AuthError
 	)
 
 	for _, provider := range providers {
@@ -73,12 +74,18 @@ func (m *Manager) Authenticate(ctx context.Context, r *http.Request) (*Result, *
 		}
 		if IsAuthErrorCode(authErr, AuthErrorCodeInvalidCredential) {
 			invalid = true
+			if firstInvalid == nil {
+				firstInvalid = authErr
+			}
 			continue
 		}
 		return nil, authErr
 	}
 
 	if invalid {
+		if firstInvalid != nil {
+			return nil, firstInvalid
+		}
 		return nil, NewInvalidCredentialError()
 	}
 	if missing {
