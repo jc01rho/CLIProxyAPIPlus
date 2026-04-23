@@ -557,6 +557,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/api-key-ip-blacklist", s.mgmt.GetAPIKeyIPBlacklist)
+		mgmt.POST("/api-key-ip-blacklist", s.mgmt.PostAPIKeyIPBlacklist)
 		mgmt.DELETE("/api-key-ip-blacklist", s.mgmt.DeleteAPIKeyIPBlacklist)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 

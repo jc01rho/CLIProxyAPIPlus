@@ -1,6 +1,7 @@
 package management
 
 import (
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -250,6 +251,23 @@ func (s *APIKeyIPBlacklistStore) Unban(ip string) bool {
 	return true
 }
 
+func (s *APIKeyIPBlacklistStore) ManualBan(ip string) (APIKeyIPBlacklistEntry, bool) {
+	if s == nil {
+		return APIKeyIPBlacklistEntry{}, false
+	}
+	normalizedIP := strings.TrimSpace(ip)
+	if normalizedIP == "" {
+		return APIKeyIPBlacklistEntry{}, false
+	}
+	now := s.currentTime()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.getOrCreateStateLocked(normalizedIP)
+	state.lastSeen = now
+	state.blockedUntil = now.Add(s.policy.BlockDuration)
+	return buildAPIKeyIPBlacklistEntry(normalizedIP, state, now), true
+}
+
 func (s *APIKeyIPBlacklistStore) getOrCreateStateLocked(ip string) *apiKeyIPBlacklistState {
 	state, ok := s.states[ip]
 	if !ok || state == nil {
@@ -378,4 +396,35 @@ func (h *Handler) DeleteAPIKeyIPBlacklist(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "ip": ip})
+}
+
+type apiKeyIPBlacklistManualBanRequest struct {
+	IP string `json:"ip"`
+}
+
+func (h *Handler) PostAPIKeyIPBlacklist(c *gin.Context) {
+	if h == nil || h.apiKeyIPBlacklist == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ip blacklist unavailable"})
+		return
+	}
+	var req apiKeyIPBlacklistManualBanRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	ip := strings.TrimSpace(req.IP)
+	if ip == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing ip"})
+		return
+	}
+	if parsedIP := net.ParseIP(ip); parsedIP == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ip"})
+		return
+	}
+	entry, ok := h.apiKeyIPBlacklist.ManualBan(ip)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unable to ban ip"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "entry": entry})
 }
