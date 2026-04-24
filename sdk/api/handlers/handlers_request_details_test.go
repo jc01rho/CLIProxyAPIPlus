@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,28 +20,14 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	now := time.Now().Unix()
 
-	modelRegistry.RegisterClient("test-request-details-gemini", "gemini", []*registry.ModelInfo{
-		{ID: "gemini-2.5-pro", Created: now + 30},
-		{ID: "gemini-2.5-flash", Created: now + 25},
-	})
-	modelRegistry.RegisterClient("test-request-details-openai", "openai", []*registry.ModelInfo{
-		{ID: "gpt-5.2", Created: now + 20},
-	})
-	modelRegistry.RegisterClient("test-request-details-claude", "claude", []*registry.ModelInfo{
-		{ID: "claude-sonnet-4-5", Created: now + 5},
-	})
+	modelRegistry.RegisterClient("test-request-details-gemini", "gemini", []*registry.ModelInfo{{ID: "gemini-2.5-pro", Created: now + 30}, {ID: "gemini-2.5-flash", Created: now + 25}})
+	modelRegistry.RegisterClient("test-request-details-openai", "openai", []*registry.ModelInfo{{ID: "gpt-5.2", Created: now + 20}})
+	modelRegistry.RegisterClient("test-request-details-claude", "claude", []*registry.ModelInfo{{ID: "claude-sonnet-4-5", Created: now + 5}})
 
-	// Ensure cleanup of all test registrations.
-	clientIDs := []string{
-		"test-request-details-gemini",
-		"test-request-details-openai",
-		"test-request-details-claude",
-	}
+	clientIDs := []string{"test-request-details-gemini", "test-request-details-openai", "test-request-details-claude"}
 	for _, clientID := range clientIDs {
 		id := clientID
-		t.Cleanup(func() {
-			modelRegistry.UnregisterClient(id)
-		})
+		t.Cleanup(func() { modelRegistry.UnregisterClient(id) })
 	}
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
@@ -51,55 +39,13 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 		wantModel     string
 		wantErr       bool
 	}{
-		{
-			name:          "numeric suffix preserved",
-			inputModel:    "gemini-2.5-pro(8192)",
-			wantProviders: []string{"gemini"},
-			wantModel:     "gemini-2.5-pro(8192)",
-			wantErr:       false,
-		},
-		{
-			name:          "level suffix preserved",
-			inputModel:    "gpt-5.2(high)",
-			wantProviders: []string{"openai"},
-			wantModel:     "gpt-5.2(high)",
-			wantErr:       false,
-		},
-		{
-			name:          "no suffix unchanged",
-			inputModel:    "claude-sonnet-4-5",
-			wantProviders: []string{"claude"},
-			wantModel:     "claude-sonnet-4-5",
-			wantErr:       false,
-		},
-		{
-			name:          "unknown model with suffix",
-			inputModel:    "unknown-model(8192)",
-			wantProviders: nil,
-			wantModel:     "",
-			wantErr:       true,
-		},
-		{
-			name:          "auto suffix resolved",
-			inputModel:    "auto(high)",
-			wantProviders: []string{"gemini"},
-			wantModel:     "gemini-2.5-pro(high)",
-			wantErr:       false,
-		},
-		{
-			name:          "special suffix none preserved",
-			inputModel:    "gemini-2.5-flash(none)",
-			wantProviders: []string{"gemini"},
-			wantModel:     "gemini-2.5-flash(none)",
-			wantErr:       false,
-		},
-		{
-			name:          "special suffix auto preserved",
-			inputModel:    "claude-sonnet-4-5(auto)",
-			wantProviders: []string{"claude"},
-			wantModel:     "claude-sonnet-4-5(auto)",
-			wantErr:       false,
-		},
+		{name: "numeric suffix preserved", inputModel: "gemini-2.5-pro(8192)", wantProviders: []string{"gemini"}, wantModel: "gemini-2.5-pro(8192)", wantErr: false},
+		{name: "level suffix preserved", inputModel: "gpt-5.2(high)", wantProviders: []string{"openai"}, wantModel: "gpt-5.2(high)", wantErr: false},
+		{name: "no suffix unchanged", inputModel: "claude-sonnet-4-5", wantProviders: []string{"claude"}, wantModel: "claude-sonnet-4-5", wantErr: false},
+		{name: "unknown model with suffix", inputModel: "unknown-model(8192)", wantProviders: nil, wantModel: "", wantErr: true},
+		{name: "auto suffix resolved", inputModel: "auto(high)", wantProviders: []string{"gemini"}, wantModel: "gemini-2.5-pro(high)", wantErr: false},
+		{name: "special suffix none preserved", inputModel: "gemini-2.5-flash(none)", wantProviders: []string{"gemini"}, wantModel: "gemini-2.5-flash(none)", wantErr: false},
+		{name: "special suffix auto preserved", inputModel: "claude-sonnet-4-5(auto)", wantProviders: []string{"claude"}, wantModel: "claude-sonnet-4-5(auto)", wantErr: false},
 	}
 
 	for _, tt := range tests {
@@ -132,18 +78,11 @@ func TestGetRequestDetails_UsesOAuthAliasForProviderLookup(t *testing.T) {
 	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
 		"github-copilot": {{Name: realModel, Alias: aliasModel, Fork: true}},
 	})
-	if _, err := manager.Register(context.Background(), &coreauth.Auth{
-		ID:         authID,
-		Provider:   "github-copilot",
-		Status:     coreauth.StatusActive,
-		Attributes: map[string]string{"websockets": "true"},
-	}); err != nil {
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: authID, Provider: "github-copilot", Status: coreauth.StatusActive, Attributes: map[string]string{"websockets": "true"}}); err != nil {
 		t.Fatalf("Register auth: %v", err)
 	}
 	modelRegistry.RegisterClient(authID, "github-copilot", []*registry.ModelInfo{{ID: realModel}})
-	t.Cleanup(func() {
-		modelRegistry.UnregisterClient(authID)
-	})
+	t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 	providers, model, errMsg := handler.getRequestDetails(aliasModel)
@@ -169,20 +108,11 @@ func TestGetRequestDetails_UsesClaudeOAuthAliasWithoutRegisteredAliasModel(t *te
 	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
 		"claude": {{Name: realModel, Alias: aliasModel, Fork: true}},
 	})
-	if _, err := manager.Register(context.Background(), &coreauth.Auth{
-		ID:       authID,
-		Provider: "claude",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-	}); err != nil {
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: authID, Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}}); err != nil {
 		t.Fatalf("Register auth: %v", err)
 	}
 	modelRegistry.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: realModel}})
-	t.Cleanup(func() {
-		modelRegistry.UnregisterClient(authID)
-	})
+	t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 	providers, model, errMsg := handler.getRequestDetails(aliasModel)
@@ -206,14 +136,7 @@ func TestGetRequestDetails_UsesClaudeOAuthAliasWithoutAnyRegisteredModels(t *tes
 	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
 		"claude": {{Name: realModel, Alias: aliasModel, Fork: true}},
 	})
-	if _, err := manager.Register(context.Background(), &coreauth.Auth{
-		ID:       "test-request-details-claude-oauth-no-registry-models",
-		Provider: "claude",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-	}); err != nil {
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: "test-request-details-claude-oauth-no-registry-models", Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}}); err != nil {
 		t.Fatalf("Register auth: %v", err)
 	}
 
@@ -232,15 +155,7 @@ func TestGetRequestDetails_UsesClaudeOAuthAliasWithoutAnyRegisteredModels(t *tes
 
 func TestAttachUnknownProviderUpstreamHint_UsesConfiguredClaudeBaseURL(t *testing.T) {
 	manager := coreauth.NewManager(nil, nil, nil)
-	if _, err := manager.Register(context.Background(), &coreauth.Auth{
-		ID:       "claude-oauth-upstream-hint",
-		Provider: "claude",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-			"base_url":  "https://proxy.example.com/anthropic",
-		},
-	}); err != nil {
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: "claude-oauth-upstream-hint", Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth", "base_url": "https://proxy.example.com/anthropic"}}); err != nil {
 		t.Fatalf("Register auth: %v", err)
 	}
 
@@ -273,14 +188,7 @@ func TestGetRequestDetails_DoesNotUseOAuthAliasWhenProviderFamilyMismatches(t *t
 	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
 		"claude": {{Name: "gemini-2.5-pro", Alias: "sonnet", Fork: true}},
 	})
-	if _, err := manager.Register(context.Background(), &coreauth.Auth{
-		ID:       "test-request-details-claude-oauth-mismatch",
-		Provider: "claude",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-	}); err != nil {
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: "test-request-details-claude-oauth-mismatch", Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}}); err != nil {
 		t.Fatalf("Register auth: %v", err)
 	}
 
@@ -288,5 +196,30 @@ func TestGetRequestDetails_DoesNotUseOAuthAliasWhenProviderFamilyMismatches(t *t
 	providers, model, errMsg := handler.getRequestDetails("sonnet")
 	if errMsg == nil {
 		t.Fatalf("expected getRequestDetails() to fail, got providers=%v model=%q", providers, model)
+	}
+	if len(providers) != 0 || model != "" {
+		t.Fatalf("expected no providers/model on mismatch, got providers=%v model=%q", providers, model)
+	}
+	if !strings.Contains(errMsg.Error.Error(), "sonnet") {
+		t.Fatalf("expected mismatch error to mention model, got %v", errMsg.Error)
+	}
+}
+
+func TestGetRequestDetails_ImageModelReturns503(t *testing.T) {
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+
+	_, _, errMsg := handler.getRequestDetails("gpt-image-2")
+	if errMsg == nil {
+		t.Fatalf("expected error for gpt-image-2, got nil")
+	}
+	if errMsg.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("unexpected status code: got %d want %d", errMsg.StatusCode, http.StatusServiceUnavailable)
+	}
+	if errMsg.Error == nil {
+		t.Fatalf("expected error message, got nil")
+	}
+	msg := errMsg.Error.Error()
+	if !strings.Contains(msg, "/v1/images/generations") || !strings.Contains(msg, "/v1/images/edits") {
+		t.Fatalf("unexpected error message: %q", msg)
 	}
 }
