@@ -88,3 +88,50 @@ func TestPrepareExecutionModels_SameAuthRealModelBeatsAliasExposedCollision(t *t
 		t.Fatalf("prepareExecutionModels(collision real-first) = %v, want [%q]", models, "gpt-5.4")
 	}
 }
+
+func TestResolveOAuthUpstreamModel_RealRegisteredAliasNameBeatsConfiguredForkAlias(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil, nil, nil)
+	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"codex": {
+			{Name: "gpt-5.4", Alias: "gpt-5.5", Fork: true},
+		},
+	})
+
+	auth := &Auth{
+		ID:       "codex-auth-real-model-wins-over-configured-alias",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{"username": "tester"},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{
+		{ID: "gpt-5.4"},
+		{ID: "gpt-5.5"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+
+	resolved := m.resolveOAuthUpstreamModel(auth, "gpt-5.5")
+	if resolved != "gpt-5.5" {
+		t.Fatalf("resolveOAuthUpstreamModel(real model beats configured alias) = %q, want %q", resolved, "gpt-5.5")
+	}
+
+	resolvedWithSuffix := m.resolveOAuthUpstreamModel(auth, "gpt-5.5(high)")
+	if resolvedWithSuffix != "gpt-5.5(high)" {
+		t.Fatalf("resolveOAuthUpstreamModel(real model beats configured alias with suffix) = %q, want %q", resolvedWithSuffix, "gpt-5.5(high)")
+	}
+
+	models := m.prepareExecutionModels(auth, "gpt-5.5")
+	if len(models) != 1 || models[0] != "gpt-5.5" {
+		t.Fatalf("prepareExecutionModels(real model beats configured alias) = %v, want [%q]", models, "gpt-5.5")
+	}
+}
