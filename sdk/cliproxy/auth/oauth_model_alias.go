@@ -319,10 +319,6 @@ func resolveRequestedModelForAuth(m *Manager, auth *Auth, channel string, candid
 			}
 			target := strings.TrimSpace(model.ExecutionTarget)
 			if target == "" {
-				if configured := configuredAliasTargetForCandidate(m, channel, candidate, requestResult); configured != "" {
-					log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: candidate %s is registered plainly for auth %s but configured alias maps upstream to %s", candidate, auth.ID, configured)
-					return configured
-				}
 				log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: candidate %s is a real registered model for auth %s, returning as-is", candidate, auth.ID)
 				return preserveResolvedModelSuffix(candidate, requestResult)
 			}

@@ -604,13 +604,13 @@ func TestResolveOAuthUpstreamModel_PrefersConfiguredAliasWhenRegistryAdvertisesP
 	})
 
 	resolved := m.resolveOAuthUpstreamModel(auth, "sonnet")
-	if resolved != "claude-sonnet-4-6" {
-		t.Fatalf("resolveOAuthUpstreamModel(plain registered alias) = %q, want %q", resolved, "claude-sonnet-4-6")
+	if resolved != "sonnet" {
+		t.Fatalf("resolveOAuthUpstreamModel(plain registered alias) = %q, want %q", resolved, "sonnet")
 	}
 
 	resolvedWithSuffix := m.resolveOAuthUpstreamModel(auth, "sonnet(high)")
-	if resolvedWithSuffix != "claude-sonnet-4-6(high)" {
-		t.Fatalf("resolveOAuthUpstreamModel(plain registered alias with suffix) = %q, want %q", resolvedWithSuffix, "claude-sonnet-4-6(high)")
+	if resolvedWithSuffix != "sonnet(high)" {
+		t.Fatalf("resolveOAuthUpstreamModel(plain registered alias with suffix) = %q, want %q", resolvedWithSuffix, "sonnet(high)")
 	}
 }
 
