@@ -1532,6 +1532,18 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 		return models
 	}
 
+	realIDs := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		id := strings.ToLower(strings.TrimSpace(model.ID))
+		if id == "" {
+			continue
+		}
+		realIDs[id] = struct{}{}
+	}
+
 	out := make([]*ModelInfo, 0, len(models))
 	seen := make(map[string]struct{}, len(models))
 	for _, model := range models {
@@ -1577,6 +1589,9 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 				continue
 			}
 			aliasKey := strings.ToLower(mappedID)
+			if _, isRealModel := realIDs[aliasKey]; isRealModel {
+				continue
+			}
 			if _, exists := seen[aliasKey]; exists {
 				continue
 			}
