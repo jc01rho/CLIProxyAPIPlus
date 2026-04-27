@@ -127,11 +127,6 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 			log.Warnf("amp upstream responded with client error [%d] for %s %s", resp.StatusCode, method, path)
 		}
 
-		// Only process successful responses for gzip decompression
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil
-		}
-
 		// Skip if already marked as gzip (Content-Encoding set)
 		if resp.Header.Get("Content-Encoding") != "" {
 			return nil
