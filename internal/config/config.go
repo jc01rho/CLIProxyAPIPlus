@@ -323,11 +323,11 @@ type OAuthModelAlias struct {
 }
 
 type OAuthEndpointConfig struct {
-	ApiBaseURL        string `yaml:"api-base-url,omitempty" json:"api-base-url,omitempty"`
-	AuthorizeURL      string `yaml:"authorize-url,omitempty" json:"authorize-url,omitempty"`
-	TokenURL          string `yaml:"token-url,omitempty" json:"token-url,omitempty"`
-	RefreshURL        string `yaml:"refresh-url,omitempty" json:"refresh-url,omitempty"`
-	UserinfoURL       string `yaml:"userinfo-url,omitempty" json:"userinfo-url,omitempty"`
+	ApiBaseURL         string `yaml:"api-base-url,omitempty" json:"api-base-url,omitempty"`
+	AuthorizeURL       string `yaml:"authorize-url,omitempty" json:"authorize-url,omitempty"`
+	TokenURL           string `yaml:"token-url,omitempty" json:"token-url,omitempty"`
+	RefreshURL         string `yaml:"refresh-url,omitempty" json:"refresh-url,omitempty"`
+	UserinfoURL        string `yaml:"userinfo-url,omitempty" json:"userinfo-url,omitempty"`
 	DeviceAuthorizeURL string `yaml:"device-authorize-url,omitempty" json:"device-authorize-url,omitempty"`
 }
 
@@ -681,6 +681,9 @@ type OpenAICompatibility struct {
 
 	// BillingClass classifies this provider for threshold-based routing policies.
 	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+
+	// Disabled prevents this provider from being used for routing.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 
 	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/kimi-k2").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`

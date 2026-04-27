@@ -69,6 +69,13 @@ func containsString(items []string, want string) bool {
 	return false
 }
 
+func TestCodexFreeModelsExcludeGPT55(t *testing.T) {
+	model := findModelInfo(GetCodexFreeModels(), "gpt-5.5")
+	if model != nil {
+		t.Fatal("expected codex free tier to NOT include gpt-5.5")
+	}
+}
+
 func TestCodexStaticModelsIncludeGPT55(t *testing.T) {
 	tierModels := map[string][]*ModelInfo{
 		"team": GetCodexTeamModels(),
@@ -148,7 +155,7 @@ func assertGPT55ModelInfo(t *testing.T, source string, model *ModelInfo) {
 	}
 	for i, level := range want {
 		if model.Thinking.Levels[i] != level {
-			 t.Fatalf("%s thinking level %d mismatch: got %q, want %q", source, i, model.Thinking.Levels[i], level)
+			t.Fatalf("%s thinking level %d mismatch: got %q, want %q", source, i, model.Thinking.Levels[i], level)
 		}
 	}
 }
