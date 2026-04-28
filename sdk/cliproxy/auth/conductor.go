@@ -4675,6 +4675,13 @@ func (m *Manager) resolveFallbackModels(originalModel string) []string {
 	return candidates
 }
 
+func (m *Manager) fallbackSourceForModel(originalModel, fbModel string) string {
+	if fb, ok := m.getFallbackModel(originalModel); ok && fb == fbModel {
+		return "fallback-models"
+	}
+	return "fallback-chain"
+}
+
 func (m *Manager) executeWithRouteFallback(
 	ctx context.Context,
 	providers []string,
@@ -4703,6 +4710,9 @@ func (m *Manager) executeWithRouteFallback(
 			continue
 		}
 		attempted[fbModel] = struct{}{}
+
+		source := m.fallbackSourceForModel(originalModel, fbModel)
+		logEntryWithRequestID(ctx).Infof("attempting fallback model %s (from %s) for original model %s", fbModel, source, originalModel)
 
 		fbReq := req
 		fbReq.Model = fbModel
@@ -4748,6 +4758,9 @@ func (m *Manager) executeStreamWithRouteFallback(
 			continue
 		}
 		attempted[fbModel] = struct{}{}
+
+		source := m.fallbackSourceForModel(originalModel, fbModel)
+		logEntryWithRequestID(ctx).Infof("attempting fallback model %s (from %s) for original model %s", fbModel, source, originalModel)
 
 		fbReq := req
 		fbReq.Model = fbModel
