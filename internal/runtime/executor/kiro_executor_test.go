@@ -2,11 +2,25 @@ package executor
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
+
+func TestKiroExecutorDoesNotLogTokenRefreshFailuresAtErrorLevel(t *testing.T) {
+	source, err := os.ReadFile("kiro_executor.go")
+	if err != nil {
+		t.Fatalf("read kiro_executor.go: %v", err)
+	}
+
+	forbidden := `log.Errorf("kiro: token refresh failed:`
+	if strings.Contains(string(source), forbidden) {
+		t.Fatalf("kiro token refresh failures should be returned without duplicate error logs")
+	}
+}
 
 func TestBuildKiroEndpointConfigs(t *testing.T) {
 	tests := []struct {
