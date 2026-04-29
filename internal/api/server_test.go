@@ -91,6 +91,13 @@ func TestHealthz(t *testing.T) {
 
 func TestAuthMiddleware_BlocksAfterRepeatedInvalidAPIKeys(t *testing.T) {
 	server := newTestServer(t)
+	rootOKReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	rootOKReq.RemoteAddr = "203.0.113.20:1234"
+	rootOK := httptest.NewRecorder()
+	server.engine.ServeHTTP(rootOK, rootOKReq)
+	if rootOK.Code != http.StatusOK {
+		t.Fatalf("expected root endpoint to remain public before IP block, got %d body=%s", rootOK.Code, rootOK.Body.String())
+	}
 
 	performRequest := func(token string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -116,6 +123,17 @@ func TestAuthMiddleware_BlocksAfterRepeatedInvalidAPIKeys(t *testing.T) {
 	}
 	if !strings.Contains(blocked.Body.String(), "IP blocked") {
 		t.Fatalf("expected blocked response body, got %s", blocked.Body.String())
+	}
+
+	rootReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	rootReq.RemoteAddr = "203.0.113.20:1234"
+	rootBlocked := httptest.NewRecorder()
+	server.engine.ServeHTTP(rootBlocked, rootReq)
+	if rootBlocked.Code != http.StatusForbidden {
+		t.Fatalf("expected root endpoint to return 403 for blocked IP, got %d body=%s", rootBlocked.Code, rootBlocked.Body.String())
+	}
+	if !strings.Contains(rootBlocked.Body.String(), "IP blocked") {
+		t.Fatalf("expected root blocked response body, got %s", rootBlocked.Body.String())
 	}
 }
 

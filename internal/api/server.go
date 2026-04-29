@@ -168,7 +168,7 @@ type Server struct {
 	wsAuthEnabled atomic.Bool
 
 	// management handler
-	mgmt *managementHandlers.Handler
+	mgmt              *managementHandlers.Handler
 	apiKeyIPBlacklist *managementHandlers.APIKeyIPBlacklistStore
 
 	// ampModule is the Amp routing module for model mapping hot-reload
@@ -400,7 +400,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Root endpoint
-	s.engine.GET("/", func(c *gin.Context) {
+	s.engine.GET("/", s.apiKeyIPBlacklistMiddleware(), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "CLI Proxy API Server",
 			"endpoints": []string{
@@ -1228,6 +1228,22 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 }
 
 // (management handlers moved to internal/api/handlers/management)
+
+func (s *Server) apiKeyIPBlacklistMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s.apiKeyIPBlacklist != nil {
+			if blockedEntry, blocked := s.apiKeyIPBlacklist.IsBlocked(c.ClientIP()); blocked {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"error":                   "IP blocked due to repeated invalid API key attempts",
+					"blocked-until":           blockedEntry.BlockedUntil,
+					"remaining-block-seconds": blockedEntry.RemainingBlockSeconds,
+				})
+				return
+			}
+		}
+		c.Next()
+	}
+}
 
 // AuthMiddleware returns a Gin middleware handler that authenticates requests
 // using the configured authentication providers. When no providers are available,
