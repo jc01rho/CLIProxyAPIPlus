@@ -35,16 +35,19 @@ var aiAPIPrefixes = []string{
 	"/api/provider/",
 }
 
-const skipGinLogKey = "__gin_skip_request_logging__"
-const requestBodyKey = "__gin_request_body__"
-const providerAuthContextKey = "cliproxy.provider_auth"
-const ginProviderAuthKey = "providerAuth"
-const fallbackInfoContextKey = "cliproxy.fallback_info"
-const ginFallbackInfoKey = "fallbackInfo"
-const billingDecisionContextKey = "cliproxy.billing_decision"
-const ginBillingDecisionKey = "billingClassDecision"
-const ginAPIRequestSummaryKey = "API_REQUEST_SUMMARY"
-const defaultDetailedAPILogBodyLimit = 4096
+const (
+	skipGinLogKey                  = "__gin_skip_request_logging__"
+	requestBodyKey                 = "__gin_request_body__"
+	creditsUsedKey                 = "__antigravity_credits_used__"
+	providerAuthContextKey         = "cliproxy.provider_auth"
+	ginProviderAuthKey             = "providerAuth"
+	fallbackInfoContextKey         = "cliproxy.fallback_info"
+	ginFallbackInfoKey             = "fallbackInfo"
+	billingDecisionContextKey      = "cliproxy.billing_decision"
+	ginBillingDecisionKey          = "billingClassDecision"
+	ginAPIRequestSummaryKey        = "API_REQUEST_SUMMARY"
+	defaultDetailedAPILogBodyLimit = 4096
+)
 
 func detailedAPILogBodyLimit(cfg *config.Config) int {
 	if cfg == nil || cfg.DetailedAPIErrorBodyLogLimit == 0 {
@@ -343,6 +346,9 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 			}
 		}
 
+		if creditsUsed(c) {
+			logLine += " [credits]"
+		}
 		if errorMessage != "" {
 			logLine = logLine + " | " + truncateDetailedAPILogBody(strings.ToValidUTF8(errorMessage, "�"), detailedAPILogBodyLimit(cfg))
 		}
@@ -443,4 +449,16 @@ func GetRequestBody(c *gin.Context) []byte {
 		return body
 	}
 	return nil
+}
+
+func creditsUsed(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	val, exists := c.Get(creditsUsedKey)
+	if !exists {
+		return false
+	}
+	flag, ok := val.(bool)
+	return ok && flag
 }
