@@ -23,7 +23,7 @@ func TestApplyPayloadConfigWithRoot_RemovesThinkingBudgetForGemmaModel(t *testin
 
 	payload := []byte(`{"generationConfig":{"thinkingConfig":{"thinkingBudget":1024,"includeThoughts":true}}}`)
 
-	out := ApplyPayloadConfigWithRoot(cfg, "gemma-4-31b-it", "gemini", "", payload, nil, "")
+	out := ApplyPayloadConfigWithRoot(cfg, "gemma-4-31b-it", "gemini", "", payload, nil, "", "")
 
 	if gjson.GetBytes(out, "generationConfig.thinkingConfig.thinkingBudget").Exists() {
 		t.Fatalf("thinkingBudget should be removed, body=%s", string(out))
@@ -49,7 +49,7 @@ func TestApplyPayloadConfigWithRoot_RemovesThinkingBudgetForRequestedGemmaAlias(
 
 	payload := []byte(`{"generationConfig":{"thinkingConfig":{"thinkingBudget":2048,"includeThoughts":true}}}`)
 
-	out := ApplyPayloadConfigWithRoot(cfg, "gemma-4-31b-it", "gemini", "", payload, nil, "gemma4")
+	out := ApplyPayloadConfigWithRoot(cfg, "gemma-4-31b-it", "gemini", "", payload, nil, "gemma4", "")
 
 	if gjson.GetBytes(out, "generationConfig.thinkingConfig.thinkingBudget").Exists() {
 		t.Fatalf("thinkingBudget should be removed for requested alias, body=%s", string(out))
