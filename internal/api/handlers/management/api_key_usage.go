@@ -9,6 +9,12 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
+type apiKeyUsageEntry struct {
+	Success        int64                          `json:"success"`
+	Failed         int64                          `json:"failed"`
+	RecentRequests []coreauth.RecentRequestBucket `json:"recent_requests"`
+}
+
 func mergeRecentRequestBuckets(dst, src []coreauth.RecentRequestBucket) []coreauth.RecentRequestBucket {
 	if len(dst) == 0 {
 		return src
@@ -35,7 +41,7 @@ func mergeRecentRequestBuckets(dst, src []coreauth.RecentRequestBucket) []coreau
 }
 
 // GetAPIKeyUsage returns recent request buckets for all in-memory api_key auths,
-// grouped by provider and keyed by the raw api-key value.
+// grouped by provider and keyed by "base_url|api_key".
 func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 	if h == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler not initialized"})
@@ -51,7 +57,7 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 	}
 
 	now := time.Now()
-	out := make(map[string]map[string][]coreauth.RecentRequestBucket)
+	out := make(map[string]map[string]apiKeyUsageEntry)
 	for _, auth := range manager.List() {
 		if auth == nil {
 			continue
@@ -64,6 +70,14 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 		if apiKey == "" {
 			continue
 		}
+		baseURL := ""
+		if auth.Attributes != nil {
+			baseURL = strings.TrimSpace(auth.Attributes["base_url"])
+			if baseURL == "" {
+				baseURL = strings.TrimSpace(auth.Attributes["base-url"])
+			}
+		}
+		compositeKey := baseURL + "|" + apiKey
 		provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 		if provider == "" {
 			provider = "unknown"
@@ -72,14 +86,21 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 		recent := auth.RecentRequestsSnapshot(now)
 		providerBucket, ok := out[provider]
 		if !ok {
-			providerBucket = make(map[string][]coreauth.RecentRequestBucket)
+			providerBucket = make(map[string]apiKeyUsageEntry)
 			out[provider] = providerBucket
 		}
-		if existing, exists := providerBucket[apiKey]; exists {
-			providerBucket[apiKey] = mergeRecentRequestBuckets(existing, recent)
+		if existing, exists := providerBucket[compositeKey]; exists {
+			existing.Success += auth.Success
+			existing.Failed += auth.Failed
+			existing.RecentRequests = mergeRecentRequestBuckets(existing.RecentRequests, recent)
+			providerBucket[compositeKey] = existing
 			continue
 		}
-		providerBucket[apiKey] = recent
+		providerBucket[compositeKey] = apiKeyUsageEntry{
+			Success:        auth.Success,
+			Failed:         auth.Failed,
+			RecentRequests: recent,
+		}
 	}
 
 	c.JSON(http.StatusOK, out)
