@@ -31,7 +31,8 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		ID:       "codex-auth",
 		Provider: "codex",
 		Attributes: map[string]string{
-			"api_key": "codex-key",
+			"api_key":  "codex-key",
+			"base_url": "https://codex.example.com",
 		},
 	}); err != nil {
 		t.Fatalf("register codex auth: %v", err)
@@ -40,7 +41,8 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		ID:       "claude-auth",
 		Provider: "claude",
 		Attributes: map[string]string{
-			"api_key": "claude-key",
+			"api_key":  "claude-key",
+			"base_url": "https://claude.example.com",
 		},
 	}); err != nil {
 		t.Fatalf("register claude auth: %v", err)
@@ -62,25 +64,31 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	var payload map[string]map[string][]coreauth.RecentRequestBucket
+	var payload map[string]map[string]apiKeyUsageEntry
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
 
-	codexBuckets := payload["codex"]["codex-key"]
-	if len(codexBuckets) != 20 {
-		t.Fatalf("codex buckets len = %d, want 20", len(codexBuckets))
+	codexEntry := payload["codex"]["https://codex.example.com|codex-key"]
+	if codexEntry.Success != 1 || codexEntry.Failed != 1 {
+		t.Fatalf("codex totals = %d/%d, want 1/1", codexEntry.Success, codexEntry.Failed)
 	}
-	codexSuccess, codexFailed := sumRecentRequestBuckets(codexBuckets)
+	if len(codexEntry.RecentRequests) != 20 {
+		t.Fatalf("codex buckets len = %d, want 20", len(codexEntry.RecentRequests))
+	}
+	codexSuccess, codexFailed := sumRecentRequestBuckets(codexEntry.RecentRequests)
 	if codexSuccess != 1 || codexFailed != 1 {
 		t.Fatalf("codex totals = %d/%d, want 1/1", codexSuccess, codexFailed)
 	}
 
-	claudeBuckets := payload["claude"]["claude-key"]
-	if len(claudeBuckets) != 20 {
-		t.Fatalf("claude buckets len = %d, want 20", len(claudeBuckets))
+	claudeEntry := payload["claude"]["https://claude.example.com|claude-key"]
+	if claudeEntry.Success != 1 || claudeEntry.Failed != 0 {
+		t.Fatalf("claude totals = %d/%d, want 1/0", claudeEntry.Success, claudeEntry.Failed)
 	}
-	claudeSuccess, claudeFailed := sumRecentRequestBuckets(claudeBuckets)
+	if len(claudeEntry.RecentRequests) != 20 {
+		t.Fatalf("claude buckets len = %d, want 20", len(claudeEntry.RecentRequests))
+	}
+	claudeSuccess, claudeFailed := sumRecentRequestBuckets(claudeEntry.RecentRequests)
 	if claudeSuccess != 1 || claudeFailed != 0 {
 		t.Fatalf("claude totals = %d/%d, want 1/0", claudeSuccess, claudeFailed)
 	}
