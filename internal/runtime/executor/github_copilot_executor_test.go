@@ -117,18 +117,8 @@ func TestUseGitHubCopilotResponsesEndpoint_CodexModel(t *testing.T) {
 	}
 }
 
-func TestUseGitHubCopilotResponsesEndpoint_RegistryResponsesOnlyModel(t *testing.T) {
-	// Not parallel: shares global model registry with DynamicRegistryWinsOverStatic.
-	if !useGitHubCopilotResponsesEndpoint(sdktranslator.FromString("openai"), "gpt-5.4") {
-		t.Fatal("expected responses-only registry model to use /responses")
-	}
-	if !useGitHubCopilotResponsesEndpoint(sdktranslator.FromString("openai"), "gpt-5.4-mini") {
-		t.Fatal("expected responses-only registry model to use /responses")
-	}
-}
-
 func TestUseGitHubCopilotResponsesEndpoint_DynamicRegistryWinsOverStatic(t *testing.T) {
-	// Not parallel: mutates global model registry, conflicts with RegistryResponsesOnlyModel.
+	// Not parallel: mutates global model registry.
 
 	reg := registry.GetGlobalRegistry()
 	clientID := "github-copilot-test-client"
