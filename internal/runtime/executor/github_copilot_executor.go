@@ -210,7 +210,7 @@ func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.
 	if !isHTTPSuccess(httpResp.StatusCode) {
 		data, _ := io.ReadAll(httpResp.Body)
 		appendAPIResponseChunk(ctx, e.cfg, data)
-		log.Debugf("github-copilot executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+		e.logUpstreamError(ctx, auth, req.Model, body, url, httpResp.StatusCode, httpResp.Header.Get("Content-Type"), data)
 		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
 		return resp, err
 	}
@@ -355,7 +355,7 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			return nil, readErr
 		}
 		appendAPIResponseChunk(ctx, e.cfg, data)
-		log.Debugf("github-copilot executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+		e.logUpstreamError(ctx, auth, req.Model, body, url, httpResp.StatusCode, httpResp.Header.Get("Content-Type"), data)
 		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
 		return nil, err
 	}
@@ -772,6 +772,28 @@ func (e *GitHubCopilotExecutor) normalizeModel(model string, body []byte) []byte
 		body, _ = sjson.SetBytes(body, "model", baseModel)
 	}
 	return body
+}
+
+func (e *GitHubCopilotExecutor) logUpstreamError(ctx context.Context, auth *cliproxyauth.Auth, requestedModel string, requestBody []byte, url string, statusCode int, contentType string, responseBody []byte) {
+	upstreamModel := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
+	if upstreamModel == "" {
+		upstreamModel = thinking.ParseSuffix(requestedModel).ModelName
+	}
+	logProvider := e.Identifier()
+	if ctxProvider, _, _ := cliproxyauth.GetProviderAuthFromContext(ctx); ctxProvider == "" && auth != nil {
+		displayAuth := strings.TrimSpace(auth.Label)
+		if displayAuth == "" {
+			displayAuth = strings.TrimSpace(auth.ID)
+		}
+		if displayAuth != "" {
+			logProvider = fmt.Sprintf("%s:%s", logProvider, displayAuth)
+		}
+	}
+	logModel := upstreamModel
+	if requested := strings.TrimSpace(requestedModel); requested != "" && requested != upstreamModel {
+		logModel = fmt.Sprintf("%s requested_model=%s", upstreamModel, requested)
+	}
+	logDetailedAPIError(ctx, e.cfg, logProvider, logModel, url, statusCode, contentType, requestBody, responseBody)
 }
 
 // copilotUnsupportedBetas lists beta headers that are Anthropic-specific and

@@ -12,10 +12,12 @@ import (
 
 	copilotauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/copilot"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	intlogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
 
@@ -63,6 +65,41 @@ func TestGitHubCopilotNormalizeModel_StripsSuffix(t *testing.T) {
 				t.Fatalf("normalizeModel() model = %q, want %q", gotModel, tt.wantModel)
 			}
 		})
+	}
+}
+
+func TestGitHubCopilotLogUpstreamErrorUsesDetailedWarnWithAuthAndModels(t *testing.T) {
+	originalOutput := log.StandardLogger().Out
+	originalFormatter := log.StandardLogger().Formatter
+	originalLevel := log.StandardLogger().Level
+	defer func() {
+		log.SetOutput(originalOutput)
+		log.SetFormatter(originalFormatter)
+		log.SetLevel(originalLevel)
+	}()
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFormatter(&log.TextFormatter{DisableTimestamp: true, DisableLevelTruncation: true})
+	log.SetLevel(log.WarnLevel)
+
+	e := NewGitHubCopilotExecutor(&config.Config{})
+	ctx := intlogging.WithRequestID(context.Background(), "copilot-test")
+	auth := &cliproxyauth.Auth{ID: "auth-1", Label: "work", Provider: "github-copilot"}
+	e.logUpstreamError(ctx, auth, "claude-sonnet-4-6", []byte(`{"model":"claude-sonnet-4.6","messages":[]}`), "https://api.githubcopilot.com/chat/completions", http.StatusBadRequest, "application/json", []byte(`{"error":{"message":"The requested model is not supported.","code":"model_not_supported"}}`))
+
+	output := buf.String()
+	for _, want := range []string{
+		"github-copilot:work model=claude-sonnet-4.6 requested_model=claude-sonnet-4-6",
+		"Status: 400",
+		"Request:",
+		"Response:",
+		"model_not_supported",
+		"request_id=copilot-test",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected log to contain %q, got: %s", want, output)
+		}
 	}
 }
 
