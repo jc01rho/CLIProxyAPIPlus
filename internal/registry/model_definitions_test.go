@@ -28,35 +28,28 @@ func TestGitHubCopilotGeminiModelsAreChatOnly(t *testing.T) {
 	}
 }
 
-func TestGitHubCopilotClaudeModelsSupportMessages(t *testing.T) {
+func TestGitHubCopilotStaticModelsOnlyIncludeHaikuAndGemini(t *testing.T) {
 	models := GetGitHubCopilotModels()
-	required := map[string]bool{
-		"claude-haiku-4.5":  false,
-		"claude-opus-4.1":   false,
-		"claude-opus-4.5":   false,
-		"claude-opus-4.6":   false,
-		"claude-sonnet-4":   false,
-		"claude-sonnet-4.5": false,
-		"claude-sonnet-4.6": false,
+	allowed := map[string]bool{
+		"claude-haiku-4.5":       true,
+		"gemini-2.5-pro":         true,
+		"gemini-3-pro-preview":   true,
+		"gemini-3.1-pro-preview": true,
+		"gemini-3-flash-preview": true,
 	}
 
 	for _, model := range models {
-		if _, ok := required[model.ID]; !ok {
-			continue
+		if !allowed[model.ID] {
+			t.Fatalf("unexpected GitHub Copilot static model %q", model.ID)
 		}
-		required[model.ID] = true
-		if !containsString(model.SupportedEndpoints, "/chat/completions") {
-			t.Fatalf("model %q supported endpoints = %v, missing /chat/completions", model.ID, model.SupportedEndpoints)
-		}
-		if !containsString(model.SupportedEndpoints, "/messages") {
-			t.Fatalf("model %q supported endpoints = %v, missing /messages", model.ID, model.SupportedEndpoints)
+		delete(allowed, model.ID)
+		if model.ID == "claude-haiku-4.5" && !containsString(model.SupportedEndpoints, "/messages") {
+			t.Fatalf("haiku supported endpoints = %v, missing /messages", model.SupportedEndpoints)
 		}
 	}
 
-	for modelID, found := range required {
-		if !found {
-			t.Fatalf("expected GitHub Copilot model %q in definitions", modelID)
-		}
+	for modelID := range allowed {
+		t.Fatalf("expected GitHub Copilot static model %q in definitions", modelID)
 	}
 }
 
