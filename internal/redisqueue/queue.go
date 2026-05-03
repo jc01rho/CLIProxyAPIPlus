@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	defaultRetentionSeconds int64 = 60
+	defaultRetentionSeconds int64 = 300
 	maxRetentionSeconds     int64 = 3600
 )
 
