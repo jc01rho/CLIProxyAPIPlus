@@ -4691,6 +4691,29 @@ func (m *Manager) fallbackSourceForModel(originalModel, fbModel string) string {
 	return "fallback-chain"
 }
 
+func logRouteModelFallbackAttempt(ctx context.Context, originalModel, fallbackModel, source string, err error) {
+	fields := log.Fields{
+		"requested_model": strings.TrimSpace(originalModel),
+		"fallback_model":  strings.TrimSpace(fallbackModel),
+		"fallback_source": strings.TrimSpace(source),
+	}
+	if status := statusCodeFromError(err); status > 0 {
+		fields["upstream_status"] = status
+	}
+	if err != nil {
+		fields["fallback_reason"] = err.Error()
+	}
+	logEntryWithRequestID(ctx).WithFields(fields).Warn("routing request through fallback model")
+}
+
+func logRouteModelFallbackSuccess(ctx context.Context, originalModel, fallbackModel, source string) {
+	logEntryWithRequestID(ctx).WithFields(log.Fields{
+		"requested_model": strings.TrimSpace(originalModel),
+		"fallback_model":  strings.TrimSpace(fallbackModel),
+		"fallback_source": strings.TrimSpace(source),
+	}).Info("fallback model request completed")
+}
+
 func (m *Manager) executeWithRouteFallback(
 	ctx context.Context,
 	providers []string,
@@ -4721,13 +4744,14 @@ func (m *Manager) executeWithRouteFallback(
 		attempted[fbModel] = struct{}{}
 
 		source := m.fallbackSourceForModel(originalModel, fbModel)
-		logEntryWithRequestID(ctx).Infof("attempting fallback model %s (from %s) for original model %s", fbModel, source, originalModel)
+		logRouteModelFallbackAttempt(ctx, originalModel, fbModel, source, lastErr)
 
 		fbReq := req
 		fbReq.Model = fbModel
 
 		resp, err := m.executeWithRetry(ctx, providers, fbReq, opts, maxRetryCredentials, maxWait, execOnce)
 		if err == nil {
+			logRouteModelFallbackSuccess(ctx, originalModel, fbModel, source)
 			return resp, nil
 		}
 		lastErr = err
@@ -4769,13 +4793,14 @@ func (m *Manager) executeStreamWithRouteFallback(
 		attempted[fbModel] = struct{}{}
 
 		source := m.fallbackSourceForModel(originalModel, fbModel)
-		logEntryWithRequestID(ctx).Infof("attempting fallback model %s (from %s) for original model %s", fbModel, source, originalModel)
+		logRouteModelFallbackAttempt(ctx, originalModel, fbModel, source, lastErr)
 
 		fbReq := req
 		fbReq.Model = fbModel
 
 		result, err := m.executeStreamWithRetry(ctx, providers, fbReq, opts, maxRetryCredentials, maxWait, execOnce)
 		if err == nil {
+			logRouteModelFallbackSuccess(ctx, originalModel, fbModel, source)
 			return result, nil
 		}
 		lastErr = err
