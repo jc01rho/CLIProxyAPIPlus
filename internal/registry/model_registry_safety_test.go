@@ -136,14 +136,26 @@ func TestGetAvailableModelsReturnsClonedSupportedParameters(t *testing.T) {
 }
 
 func TestLookupModelInfoReturnsCloneForStaticDefinitions(t *testing.T) {
-	first := LookupModelInfo("claude-sonnet-4-6")
-	if first == nil || first.Thinking == nil || len(first.Thinking.Levels) == 0 {
-		t.Fatalf("expected static model with thinking levels, got %+v", first)
+	first := LookupModelInfo("claude-haiku-4.5")
+	if first == nil || first.DisplayName == "" {
+		t.Fatalf("expected static model, got %+v", first)
 	}
-	first.Thinking.Levels[0] = "mutated"
+	first.DisplayName = "mutated"
 
-	second := LookupModelInfo("claude-sonnet-4-6")
-	if second == nil || second.Thinking == nil || len(second.Thinking.Levels) == 0 || second.Thinking.Levels[0] == "mutated" {
+	second := LookupModelInfo("claude-haiku-4.5")
+	if second == nil || second.DisplayName == "mutated" {
 		t.Fatalf("expected static lookup clone, got %+v", second)
+	}
+}
+
+func TestLookupModelInfoProviderStaticFallbackIsProviderScoped(t *testing.T) {
+	if model := LookupModelInfo("claude-haiku-4.5", "github-copilot"); model == nil {
+		t.Fatal("expected github-copilot static fallback to include haiku")
+	}
+	if model := LookupModelInfo("claude-sonnet-4", "github-copilot"); model != nil {
+		t.Fatalf("expected github-copilot static fallback to exclude sonnet, got %+v", model)
+	}
+	if model := LookupModelInfo("claude-haiku-4.5", "claude"); model != nil {
+		t.Fatalf("expected claude provider static fallback to exclude copilot haiku, got %+v", model)
 	}
 }

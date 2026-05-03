@@ -383,6 +383,20 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 	return nil
 }
 
+// LookupStaticModelInfoForProvider searches static model definitions for a provider only.
+// Returns nil if the provider has no static definitions or no matching model is found.
+func LookupStaticModelInfoForProvider(modelID string, provider string) *ModelInfo {
+	if modelID == "" {
+		return nil
+	}
+	for _, m := range GetStaticModelDefinitionsByChannel(provider) {
+		if m != nil && m.ID == modelID {
+			return cloneModelInfo(m)
+		}
+	}
+	return nil
+}
+
 // defaultCopilotClaudeContextLength is the conservative prompt token limit for
 // Claude models accessed via the GitHub Copilot API. Individual accounts are
 // capped at 128K; business accounts at 168K. When the dynamic /models API fetch

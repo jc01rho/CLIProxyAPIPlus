@@ -1296,8 +1296,8 @@ func TestEnsureClaudeMaxTokens_UsesModelDefaultWhenKnown(t *testing.T) {
 
 	out := ensureClaudeMaxTokens(body, "claude-sonnet-4")
 
-	if got := gjson.GetBytes(out, "max_tokens").Int(); got != 64000 {
-		t.Fatalf("max_tokens = %d, want %d", got, 64000)
+	if got := gjson.GetBytes(out, "max_tokens").Int(); got != defaultClaudeMaxTokens {
+		t.Fatalf("max_tokens = %d, want %d", got, defaultClaudeMaxTokens)
 	}
 }
 
