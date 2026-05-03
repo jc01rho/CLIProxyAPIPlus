@@ -178,6 +178,9 @@ func LookupModelInfo(modelID string, provider ...string) *ModelInfo {
 	if info := GetGlobalRegistry().GetModelInfo(modelID, p); info != nil {
 		return cloneModelInfo(info)
 	}
+	if p != "" {
+		return cloneModelInfo(LookupStaticModelInfoForProvider(modelID, p))
+	}
 	return cloneModelInfo(LookupStaticModelInfo(modelID))
 }
 
