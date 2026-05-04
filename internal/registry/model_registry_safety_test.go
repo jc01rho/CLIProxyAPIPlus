@@ -150,7 +150,7 @@ func TestLookupModelInfoReturnsCloneForStaticDefinitions(t *testing.T) {
 
 func TestLookupModelInfoProviderStaticFallbackIsProviderScoped(t *testing.T) {
 	if model := LookupModelInfo("claude-haiku-4.5", "github-copilot"); model == nil {
-		t.Fatal("expected github-copilot static fallback to include haiku")
+		t.Fatal("expected github-copilot static fallback to include allowed haiku")
 	}
 	if model := LookupModelInfo("claude-sonnet-4", "github-copilot"); model != nil {
 		t.Fatalf("expected github-copilot static fallback to exclude sonnet, got %+v", model)
