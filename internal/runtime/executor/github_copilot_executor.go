@@ -1700,6 +1700,9 @@ func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg 
 		if entry.ID == "" {
 			continue
 		}
+		if !registry.IsAllowedGitHubCopilotModel(entry.ID) {
+			continue
+		}
 		// Deduplicate model IDs to avoid incorrect reference counting.
 		if _, dup := seen[entry.ID]; dup {
 			continue
