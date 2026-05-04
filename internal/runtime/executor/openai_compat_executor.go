@@ -114,6 +114,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 	}
 	translated = e.applyCompatSafetyMargin(auth, translated)
+	translated, err = e.normalizeToolCallReasoningContent(translated)
+	if err != nil {
+		return resp, err
+	}
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
@@ -217,6 +221,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
+	translated, err = e.normalizeToolCallReasoningContent(translated)
+	if err != nil {
+		return nil, err
+	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -444,6 +452,17 @@ func (e *OpenAICompatExecutor) applyCompatSafetyMargin(auth *cliproxyauth.Auth, 
 		return payload
 	}
 	return updated
+}
+
+func (e *OpenAICompatExecutor) normalizeToolCallReasoningContent(payload []byte) ([]byte, error) {
+	updated, patched, err := normalizeOpenAIToolCallReasoningContent(payload, true)
+	if err != nil {
+		return payload, fmt.Errorf("openai compat executor: normalize reasoning_content: %w", err)
+	}
+	if patched > 0 {
+		log.WithField("patched_reasoning_messages", patched).Debug("openai compat executor: normalized tool-call reasoning_content")
+	}
+	return updated, nil
 }
 
 func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
