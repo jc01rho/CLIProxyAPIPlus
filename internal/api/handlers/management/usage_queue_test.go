@@ -41,12 +41,12 @@ func TestGetUsageQueueDrainsValidJSONPayloads(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var payload usageQueueResponse
+	var payload []json.RawMessage
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	if payload.Count != 2 || len(payload.Items) != 2 {
-		t.Fatalf("payload count/items = %d/%d, want 2/2", payload.Count, len(payload.Items))
+	if len(payload) != 2 {
+		t.Fatalf("payload items = %d, want 2", len(payload))
 	}
 	if remaining := redisqueue.PopOldest(10); len(remaining) != 0 {
 		t.Fatalf("remaining queue items = %d, want 0", len(remaining))
@@ -96,9 +96,9 @@ func TestMaskAPIKey(t *testing.T) {
 		{"1234567890abcdef", "1234***cdef"},
 	}
 	for _, c := range cases {
-		got := maskAPIKey(c.in)
+		got := maskUsageQueueAPIKey(c.in)
 		if got != c.want {
-			t.Errorf("maskAPIKey(%q) = %q, want %q", c.in, got, c.want)
+			t.Errorf("maskUsageQueueAPIKey(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
