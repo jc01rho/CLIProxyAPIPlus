@@ -406,7 +406,7 @@ const defaultCopilotClaudeContextLength = 128000
 
 // GetGitHubCopilotModels returns conservative fallback models for GitHub Copilot.
 // Credential-specific availability should come from the Copilot /models API;
-// this static fallback intentionally keeps only Haiku and Gemini models.
+// this static fallback intentionally keeps only models we allow advertising.
 func GetGitHubCopilotModels() []*ModelInfo {
 	now := int64(1732752000) // 2024-11-27
 	copilotClaudeEndpoints := []string{"/chat/completions", "/messages"}
@@ -472,6 +472,21 @@ func GetGitHubCopilotModels() []*ModelInfo {
 			MaxCompletionTokens: 65536,
 			SupportedEndpoints:  []string{"/chat/completions"},
 		},
+	}
+}
+
+// IsAllowedGitHubCopilotModel reports Copilot models that may be advertised even
+// when GitHub's /models endpoint returns additional unsupported models.
+func IsAllowedGitHubCopilotModel(modelID string) bool {
+	switch strings.ToLower(strings.TrimSpace(modelID)) {
+	case "claude-haiku-4.5",
+		"gemini-2.5-pro",
+		"gemini-3-pro-preview",
+		"gemini-3.1-pro-preview",
+		"gemini-3-flash-preview":
+		return true
+	default:
+		return false
 	}
 }
 
