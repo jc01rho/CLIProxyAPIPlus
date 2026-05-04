@@ -346,10 +346,13 @@ func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {
 	msgs = messages.Array()
 	pending := make([]string, 0)
 	patched := 0
-	patchedReasoning := 0
 	ambiguous := 0
-	latestReasoning := ""
-	hasLatestReasoning := false
+	out, patchedReasoning, err := normalizeOpenAIToolCallReasoningContent(out, false)
+	if err != nil {
+		return body, fmt.Errorf("kimi executor: normalize reasoning_content: %w", err)
+	}
+	messages = gjson.GetBytes(out, "messages")
+	msgs = messages.Array()
 
 	removePending := func(id string) {
 		for idx := range pending {
@@ -366,29 +369,9 @@ func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {
 		role := strings.TrimSpace(msg.Get("role").String())
 		switch role {
 		case "assistant":
-			reasoning := msg.Get("reasoning_content")
-			if reasoning.Exists() {
-				reasoningText := reasoning.String()
-				if strings.TrimSpace(reasoningText) != "" {
-					latestReasoning = reasoningText
-					hasLatestReasoning = true
-				}
-			}
-
 			toolCalls := msg.Get("tool_calls")
 			if !toolCalls.Exists() || !toolCalls.IsArray() || len(toolCalls.Array()) == 0 {
 				continue
-			}
-
-			if !reasoning.Exists() || strings.TrimSpace(reasoning.String()) == "" {
-				reasoningText := fallbackAssistantReasoning(msg, hasLatestReasoning, latestReasoning)
-				path := fmt.Sprintf("messages.%d.reasoning_content", msgIdx)
-				next, err := sjson.SetBytes(out, path, reasoningText)
-				if err != nil {
-					return body, fmt.Errorf("kimi executor: failed to set assistant reasoning_content: %w", err)
-				}
-				out = next
-				patchedReasoning++
 			}
 
 			for _, tc := range toolCalls.Array() {
@@ -536,34 +519,6 @@ func isKimiAssistantContentPartEmpty(part gjson.Result) bool {
 		return true
 	}
 	return strings.TrimSpace(part.Raw) == "{}"
-}
-
-func fallbackAssistantReasoning(msg gjson.Result, hasLatest bool, latest string) string {
-	if hasLatest && strings.TrimSpace(latest) != "" {
-		return latest
-	}
-
-	content := msg.Get("content")
-	if content.Type == gjson.String {
-		if text := strings.TrimSpace(content.String()); text != "" {
-			return text
-		}
-	}
-	if content.IsArray() {
-		parts := make([]string, 0, len(content.Array()))
-		for _, item := range content.Array() {
-			text := strings.TrimSpace(item.Get("text").String())
-			if text == "" {
-				continue
-			}
-			parts = append(parts, text)
-		}
-		if len(parts) > 0 {
-			return strings.Join(parts, "\n")
-		}
-	}
-
-	return "[reasoning unavailable]"
 }
 
 // Refresh refreshes the Kimi token using the refresh token.
