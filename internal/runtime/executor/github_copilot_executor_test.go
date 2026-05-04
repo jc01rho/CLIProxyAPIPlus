@@ -645,6 +645,27 @@ func TestCountTokens_ClaudeSourceFormatTranslates(t *testing.T) {
 	}
 }
 
+func TestGitHubCopilotAllowsOnlySupportedDynamicModels(t *testing.T) {
+	t.Parallel()
+
+	for _, modelID := range []string{
+		"claude-haiku-4.5",
+		"gemini-2.5-pro",
+		"gemini-3-pro-preview",
+		"gemini-3.1-pro-preview",
+		"gemini-3-flash-preview",
+	} {
+		if !registry.IsAllowedGitHubCopilotModel(modelID) {
+			t.Fatalf("expected %s to be allowed for GitHub Copilot dynamic model discovery", modelID)
+		}
+	}
+	for _, modelID := range []string{"gpt-5.5", "claude-sonnet-4.6"} {
+		if registry.IsAllowedGitHubCopilotModel(modelID) {
+			t.Fatalf("expected unsupported Copilot model %s to be hidden", modelID)
+		}
+	}
+}
+
 func TestGitHubCopilotExecute_ClaudeModelUsesNativeGateway(t *testing.T) {
 	t.Parallel()
 
