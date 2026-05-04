@@ -129,6 +129,9 @@ type Config struct {
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
+	// OllamaKey defines Ollama Cloud API key configurations.
+	OllamaKey []OllamaKey `yaml:"ollama-api-key" json:"ollama-api-key"`
+
 	// CodexHeaderDefaults configures fallback headers for Codex OAuth model requests.
 	// These are used only when the client does not send its own headers.
 	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
@@ -585,6 +588,48 @@ type CodexModel struct {
 func (m CodexModel) GetName() string  { return m.Name }
 func (m CodexModel) GetAlias() string { return m.Alias }
 
+// OllamaKey represents the configuration for an Ollama Cloud API key.
+type OllamaKey struct {
+	// APIKey is the authentication key for accessing Ollama Cloud.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Priority controls selection preference when multiple credentials match.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the Ollama API endpoint. If empty, https://ollama.com/api is used.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// BillingClass classifies this credential for threshold-based routing policies.
+	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+
+	// Models defines upstream model names and aliases for request routing.
+	Models []OllamaModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+}
+
+func (k OllamaKey) GetAPIKey() string  { return k.APIKey }
+func (k OllamaKey) GetBaseURL() string { return k.BaseURL }
+
+// OllamaModel describes a mapping between an alias and the actual upstream model name.
+type OllamaModel struct {
+	Name  string `yaml:"name" json:"name"`
+	Alias string `yaml:"alias" json:"alias"`
+}
+
+func (m OllamaModel) GetName() string  { return m.Name }
+func (m OllamaModel) GetAlias() string { return m.Alias }
+
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
 type GeminiKey struct {
@@ -858,6 +903,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize Codex keys: drop entries without base-url
 	cfg.SanitizeCodexKeys()
 
+	// Sanitize Ollama keys.
+	cfg.SanitizeOllamaKeys()
+
 	// Sanitize Codex header defaults.
 	cfg.SanitizeCodexHeaderDefaults()
 
@@ -1116,6 +1164,36 @@ func (cfg *Config) SanitizeCodexKeys() {
 		out = append(out, e)
 	}
 	cfg.CodexKey = out
+}
+
+// SanitizeOllamaKeys normalizes Ollama credentials and drops entries without API keys.
+func (cfg *Config) SanitizeOllamaKeys() {
+	if cfg == nil {
+		return
+	}
+
+	seen := make(map[string]struct{}, len(cfg.OllamaKey))
+	out := cfg.OllamaKey[:0]
+	for i := range cfg.OllamaKey {
+		entry := cfg.OllamaKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		if entry.APIKey == "" {
+			continue
+		}
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.BillingClass = normalizeBillingClass(entry.BillingClass)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		key := strings.ToLower(entry.APIKey) + "\x00" + strings.ToLower(entry.BaseURL)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, entry)
+	}
+	cfg.OllamaKey = out
 }
 
 // SanitizeClaudeKeys normalizes headers for Claude credentials.
