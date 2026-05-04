@@ -1,73 +1,65 @@
 # CLIPROXYAPIPLUS KNOWLEDGE BASE
 
-**Updated:** 2026-04-15
-**Commit:** 9be69e5f
-**Branch:** master
+**Generated:** 2026-05-04
+**Commit:** 9bef8022
+**Branch:** main
 
 ## OVERVIEW
 
-Go 1.26 기반 AI 프록시 서버. CLI/웹 OAuth, 다수 provider executor, translator, 관리 API, SDK를 한 저장소에서 유지한다.
+Go 1.26 AI proxy server. It combines CLI auth flows, OpenAI-compatible API serving, provider executors, protocol translators, runtime model registry, management API, and public SDK.
 
 ## STRUCTURE
 
 ```text
 CLIProxyAPIPlus/
-├── cmd/                  # 서버/유틸 CLI 진입점
-├── internal/             # 비공개 핵심 구현
-├── sdk/                  # 임베딩 가능한 공개 SDK
-├── auths/                # 기본 인증 저장 위치
-├── test/                 # 통합 테스트
-└── config.yaml           # 런타임 설정
+├── cmd/server/main.go          # binary entry: flags, login flows, service boot
+├── internal/                   # private server implementation
+├── sdk/                        # embeddable public API
+├── auths/                      # default auth-file directory
+├── test/                       # cross-package integration/sentinel tests
+├── management.html             # embedded Management Center bundle
+└── config.example.yaml         # config surface reference
 ```
 
 ## WHERE TO LOOK
 
 | Task | Location | Notes |
 |------|----------|-------|
-| 서버 부팅/플래그 | `cmd/server/main.go` | login 플래그, TUI, local-model |
-| 관리 API | `internal/api/` | `/v0/management/*` |
-| provider 인증 | `internal/auth/` | provider별 OAuth 구현 |
-| 요청 실행 | `internal/runtime/executor/` | provider별 executor |
-| 포맷 변환 | `internal/translator/` | source→target 프로토콜 변환 |
-| 모델 라우팅 | `internal/registry/` | 정적 정의 + remote updater |
-| 공개 임베딩 API | `sdk/` | Builder 기반 사용 |
+| Server boot / flags | `cmd/server/main.go` | `--config`, `--tui`, login flags, local-model mode. |
+| Management routes | `internal/api/` | Gin server + `/v0/management/*`. |
+| Provider auth | `internal/auth/` | OAuth/token storage per provider. |
+| Upstream execution | `internal/runtime/executor/` | HTTP/WebSocket calls after translation. |
+| Protocol translation | `internal/translator/` | source/target registration and JSON/SSE transforms. |
+| Model catalog/routing | `internal/registry/` | static fallback, dynamic discovery, provider scoping. |
+| Config/auth synthesis | `internal/config/`, `internal/watcher/` | YAML fields, hot reload, config-backed auths. |
+| SDK embedding | `sdk/cliproxy/` | Builder and service lifecycle. |
 
 ## COMMANDS
 
 ```bash
-gofmt -w .
 go build ./cmd/server
 go run ./cmd/server --config config.yaml
 go test ./...
-go test -run TestName ./path/to/pkg
+goreleaser build --snapshot --clean
 ```
-
-주요 플래그: `--config`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port`.
 
 ## CONVENTIONS
 
-- Go 코드는 `gofmt`/goimports 스타일을 유지한다.
-- 로그는 logrus structured logging을 사용하고, 토큰·쿠키·키는 마스킹한다.
-- `internal/runtime/executor/`의 공용 헬퍼는 `helps/` 아래에 둔다.
-- translator 단독 수정은 피하고, 관련 config/executor/handler와 함께 변경 의도를 맞춘다.
-- 사용자 가시 문자열은 해당 영역의 기존 언어를 따른다. 코드 주석은 영어를 유지한다.
+- YAML keys are kebab-case; Go fields stay CamelCase.
+- Provider additions usually touch config, watcher/synthesizer, registry/model discovery, executor, management API, and Center UI.
+- Executor logs for upstream failures must include masked request and response context when diagnosing 4xx/5xx.
+- `management.html` is served by Plus; local UI edits need Center build output copied back.
 
 ## ANTI-PATTERNS
 
-- `http.DefaultClient` 직접 사용 금지.
-- `log.Fatal`/`log.Fatalf`로 프로세스를 종료하지 않는다.
-- HTTP handler에서 panic으로 흐름을 끊지 않는다.
-- upstream 연결 이후 임의 타임아웃을 추가하지 않는다. 예외는 현재 구현이 명시한 websocket/liveness/management timeout 범위만 허용한다.
+- Do not use `http.DefaultClient`; use configured clients/proxy-aware helpers.
+- Do not log Authorization, cookies, refresh tokens, API keys, or raw auth files.
+- Do not terminate handlers with `panic` or `log.Fatal`.
+- Do not scatter model allowlists in handlers/executors; centralize via registry/config paths.
 
 ## SUB-DOCUMENTS
 
-- `internal/AGENTS.md`
-- `internal/api/AGENTS.md`
-- `internal/auth/kiro/AGENTS.md`
-- `internal/config/AGENTS.md`
-- `internal/registry/AGENTS.md`
-- `internal/runtime/executor/AGENTS.md`
-- `internal/translator/AGENTS.md`
-- `internal/util/AGENTS.md`
-- `sdk/AGENTS.md`
-- `sdk/cliproxy/AGENTS.md`
+```text
+internal/AGENTS.md
+sdk/AGENTS.md
+```
