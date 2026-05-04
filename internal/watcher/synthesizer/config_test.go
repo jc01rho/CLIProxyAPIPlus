@@ -265,6 +265,37 @@ func TestConfigSynthesizer_CodexKeys(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_OllamaKeys(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{OllamaKey: []config.OllamaKey{{
+			APIKey:  "ollama-key",
+			BaseURL: "https://ollama.com/api",
+			Prefix:  "cloud",
+			Models:  []config.OllamaModel{{Name: "gpt-oss:120b", Alias: "oss120"}},
+		}}},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	if auths[0].Provider != "ollama" || auths[0].Prefix != "cloud" {
+		t.Fatalf("unexpected auth: %#v", auths[0])
+	}
+	if auths[0].Attributes["api_key"] != "ollama-key" || auths[0].Attributes["base_url"] != "https://ollama.com/api" {
+		t.Fatalf("unexpected attributes: %#v", auths[0].Attributes)
+	}
+	if auths[0].Attributes["models_hash"] == "" {
+		t.Fatal("expected models_hash attribute")
+	}
+}
+
 func TestConfigSynthesizer_CodexKeys_SkipsEmptyAndHeaders(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{
