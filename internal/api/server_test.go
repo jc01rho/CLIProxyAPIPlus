@@ -89,6 +89,41 @@ func TestHealthz(t *testing.T) {
 	})
 }
 
+func TestScannerProbePathsAreBlockedBeforeRouting(t *testing.T) {
+	server := newTestServer(t)
+
+	testCases := []string{
+		"/mailer/help/info.php",
+		"/config/env/mailer_dsn.env",
+		"/usr/local/app/.env",
+		"/api/backup/database.sql",
+		"/hidden/.env",
+		"/live/.env.production",
+		"/.env.backup.inactive",
+		"/backup.env",
+		"/api/new/wp-config.bak",
+		"/s3/.aws/config.js",
+		"/.aws/credentials.jpg",
+		"/server/laravel/.env",
+		"/config/json/default.bak",
+		"/painel/laravel.log",
+		"/wp-admin/.git/config",
+	}
+
+	for _, path := range testCases {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("expected scanner probe to return 403, got %d body=%s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestAuthMiddleware_BlocksAfterRepeatedInvalidAPIKeys(t *testing.T) {
 	server := newTestServer(t)
 	rootOKReq := httptest.NewRequest(http.MethodGet, "/", nil)

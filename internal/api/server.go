@@ -219,6 +219,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 
 	// Add middleware
+	engine.Use(blockScannerProbeMiddleware())
 	engine.Use(logging.GinLogrusLogger(cfg))
 	engine.Use(logging.GinLogrusRecovery())
 	for _, mw := range optionState.extraMiddleware {
@@ -341,6 +342,39 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 
 	return s
+}
+
+func blockScannerProbeMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if isScannerProbePath(c.Request.URL.Path) {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		c.Next()
+	}
+}
+
+func isScannerProbePath(path string) bool {
+	lower := strings.ToLower(path)
+	segments := strings.Split(lower, "/")
+	for _, segment := range segments {
+		if segment == "" {
+			continue
+		}
+		if segment == ".git" || segment == ".aws" || segment == ".svn" || segment == ".hg" {
+			return true
+		}
+		if segment == "wp-config.php" || strings.HasPrefix(segment, "wp-config.") {
+			return true
+		}
+		if strings.HasPrefix(segment, ".env") || strings.HasSuffix(segment, ".env") || strings.Contains(segment, ".env.") {
+			return true
+		}
+		if strings.HasSuffix(segment, ".bak") || strings.HasSuffix(segment, ".backup") || strings.HasSuffix(segment, ".sql") || strings.HasSuffix(segment, ".log") || strings.HasSuffix(segment, ".php") {
+			return true
+		}
+	}
+	return false
 }
 
 // setupRoutes configures the API routes for the server.
