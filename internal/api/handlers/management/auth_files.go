@@ -37,6 +37,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kilo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -467,11 +468,13 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 
 	// Try to find auth ID via authManager
 	var authID string
+	var matchedAuth *coreauth.Auth
 	if h.authManager != nil {
 		auths := h.authManager.List()
 		for _, auth := range auths {
-			if auth.FileName == name || auth.ID == name {
+			if authMatchesModelsQuery(auth, name) {
 				authID = auth.ID
+				matchedAuth = auth
 				break
 			}
 		}
@@ -484,9 +487,20 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	// Get models from registry
 	reg := registry.GetGlobalRegistry()
 	models := reg.GetModelsForClient(authID)
+	excluded := authFileExcludedModelSet(matchedAuth, h.cfg)
 
 	result := make([]gin.H, 0, len(models))
 	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		modelID := strings.ToLower(strings.TrimSpace(m.ID))
+		if _, blocked := excluded[modelID]; blocked {
+			continue
+		}
+		if isGitHubCopilotModelList(matchedAuth, m) && !registry.IsAllowedGitHubCopilotModel(modelID) {
+			continue
+		}
 		entry := gin.H{
 			"id": m.ID,
 		}
@@ -503,6 +517,56 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{"models": result})
+}
+
+func isGitHubCopilotModelList(auth *coreauth.Auth, model *registry.ModelInfo) bool {
+	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "github-copilot") {
+		return true
+	}
+	return model != nil && strings.EqualFold(strings.TrimSpace(model.Type), "github-copilot")
+}
+
+func authMatchesModelsQuery(auth *coreauth.Auth, name string) bool {
+	if auth == nil {
+		return false
+	}
+	query := strings.TrimSpace(name)
+	if query == "" {
+		return false
+	}
+	if auth.ID == query || auth.FileName == query {
+		return true
+	}
+	return filepath.Base(auth.FileName) == query
+}
+
+func authFileExcludedModelSet(auth *coreauth.Auth, cfg *config.Config) map[string]struct{} {
+	seen := make(map[string]struct{})
+	addCSV := func(raw string) {
+		for _, part := range strings.Split(raw, ",") {
+			if trimmed := strings.ToLower(strings.TrimSpace(part)); trimmed != "" {
+				seen[trimmed] = struct{}{}
+			}
+		}
+	}
+	addList := func(models []string) {
+		for _, model := range models {
+			if trimmed := strings.ToLower(strings.TrimSpace(model)); trimmed != "" {
+				seen[trimmed] = struct{}{}
+			}
+		}
+	}
+
+	if auth != nil {
+		if auth.Attributes != nil {
+			addCSV(auth.Attributes["excluded_models"])
+		}
+		if cfg != nil && cfg.OAuthExcludedModels != nil {
+			providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
+			addList(cfg.OAuthExcludedModels[providerKey])
+		}
+	}
+	return seen
 }
 
 // List auth files from disk when the auth manager is unavailable.
