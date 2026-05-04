@@ -404,19 +404,30 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 					if bytes.HasPrefix(line, dataTag) {
 						segments := sdktranslator.TranslateStream(respCtx, to, from, attemptModel, opts.OriginalRequest, reqBody, bytes.Clone(line), &param)
 						for i := range segments {
-							out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}
+							select {
+							case out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}:
+							case <-ctx.Done():
+								return
+							}
 						}
 					}
 				}
 
 				segments := sdktranslator.TranslateStream(respCtx, to, from, attemptModel, opts.OriginalRequest, reqBody, bytes.Clone([]byte("[DONE]")), &param)
 				for i := range segments {
-					out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}:
+					case <-ctx.Done():
+						return
+					}
 				}
 				if errScan := scanner.Err(); errScan != nil {
-					recordAPIResponseError(ctx, e.cfg, errScan)
+					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 					reporter.publishFailure(ctx)
-					out <- cliproxyexecutor.StreamChunk{Err: errScan}
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+					case <-ctx.Done():
+					}
 					return
 				}
 				reporter.ensurePublished(ctx)
@@ -425,9 +436,12 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 
 			data, errRead := io.ReadAll(resp.Body)
 			if errRead != nil {
-				recordAPIResponseError(ctx, e.cfg, errRead)
+				helps.RecordAPIResponseError(ctx, e.cfg, errRead)
 				reporter.publishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: errRead}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errRead}:
+				case <-ctx.Done():
+				}
 				return
 			}
 			appendAPIResponseChunk(ctx, e.cfg, data)
@@ -435,12 +449,20 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 			var param any
 			segments := sdktranslator.TranslateStream(respCtx, to, from, attemptModel, opts.OriginalRequest, reqBody, data, &param)
 			for i := range segments {
-				out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}:
+				case <-ctx.Done():
+					return
+				}
 			}
 
 			segments = sdktranslator.TranslateStream(respCtx, to, from, attemptModel, opts.OriginalRequest, reqBody, bytes.Clone([]byte("[DONE]")), &param)
 			for i := range segments {
-				out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}(httpResp, append([]byte(nil), payload...), attemptModel)
 
