@@ -255,3 +255,55 @@ func TestRegisterModelsForAuth_ClaudeOAuthAliasSetsExecutionTarget(t *testing.T)
 		t.Fatalf("original model execution target = %q, want empty", original.ExecutionTarget)
 	}
 }
+
+func TestBuildOllamaConfigModels_SetsExecutionTargetWhenAliasDiffers(t *testing.T) {
+	entry := &internalconfig.OllamaKey{
+		Models: []internalconfig.OllamaModel{
+			{Name: "kimi-k2.6", Alias: "higher-coding"},
+			{Name: "gpt-oss:120b", Alias: "gpt-oss:120b"},
+		},
+	}
+
+	out := buildOllamaConfigModels(entry)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(out))
+	}
+
+	aliasModel := out[0]
+	if aliasModel.ID != "higher-coding" {
+		t.Fatalf("expected aliased model id %q, got %q", "higher-coding", aliasModel.ID)
+	}
+	if aliasModel.ExecutionTarget != "kimi-k2.6" {
+		t.Fatalf("aliased model execution target = %q, want %q", aliasModel.ExecutionTarget, "kimi-k2.6")
+	}
+	if !aliasModel.UserDefined {
+		t.Fatal("expected aliased model to be user-defined")
+	}
+
+	canonicalModel := out[1]
+	if canonicalModel.ID != "gpt-oss:120b" {
+		t.Fatalf("expected canonical model id %q, got %q", "gpt-oss:120b", canonicalModel.ID)
+	}
+	if canonicalModel.ExecutionTarget != "" {
+		t.Fatalf("canonical model execution target = %q, want empty", canonicalModel.ExecutionTarget)
+	}
+}
+
+func TestBuildOllamaConfigModels_NoExecutionTargetWhenNameEqualsAlias(t *testing.T) {
+	entry := &internalconfig.OllamaKey{
+		Models: []internalconfig.OllamaModel{
+			{Name: "gpt-oss:120b", Alias: "gpt-oss:120b"},
+		},
+	}
+
+	out := buildOllamaConfigModels(entry)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(out))
+	}
+	if out[0].ID != "gpt-oss:120b" {
+		t.Fatalf("expected model id %q, got %q", "gpt-oss:120b", out[0].ID)
+	}
+	if out[0].ExecutionTarget != "" {
+		t.Fatalf("execution target = %q, want empty", out[0].ExecutionTarget)
+	}
+}
