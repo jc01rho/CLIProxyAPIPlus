@@ -4,6 +4,7 @@ package chat_completions
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
@@ -15,6 +16,19 @@ import (
 )
 
 const geminiFunctionThoughtSignature = "skip_thought_signature_validator"
+
+var geminiOpenAIResponseNameInvalidChars = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
+
+func geminiOpenAIResponseFunctionName(name, fallback string) string {
+	name = util.SanitizeFunctionName(name)
+	if strings.TrimSpace(name) == "" {
+		name = geminiOpenAIResponseNameInvalidChars.ReplaceAllString(strings.TrimSpace(fallback), "_")
+	}
+	if strings.TrimSpace(name) == "" {
+		return "unknown"
+	}
+	return util.SanitizeFunctionName(name)
+}
 
 // ConvertOpenAIRequestToGemini converts an OpenAI Chat Completions request (raw JSON)
 // into a complete Gemini request JSON. All JSON construction uses sjson and lookups use gjson.
@@ -257,7 +271,7 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 							continue
 						}
 						fid := tc.Get("id").String()
-						fname := util.SanitizeFunctionName(tc.Get("function.name").String())
+						fname := geminiOpenAIResponseFunctionName(tc.Get("function.name").String(), fid)
 						fargs := tc.Get("function.arguments").String()
 						node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".functionCall.name", fname)
 						node, _ = sjson.SetRawBytes(node, "parts."+itoa(p)+".functionCall.args", []byte(fargs))
@@ -273,15 +287,14 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 					toolNode := []byte(`{"role":"user","parts":[]}`)
 					pp := 0
 					for _, fid := range fIDs {
-						if name, ok := tcID2Name[fid]; ok {
-							toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.name", util.SanitizeFunctionName(name))
-							resp := toolResponses[fid]
-							if resp == "" {
-								resp = "{}"
-							}
-							toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.response.result", []byte(resp))
-							pp++
+						name := geminiOpenAIResponseFunctionName(tcID2Name[fid], fid)
+						toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.name", name)
+						resp := toolResponses[fid]
+						if resp == "" {
+							resp = "{}"
 						}
+						toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.response.result", []byte(resp))
+						pp++
 					}
 					if pp > 0 {
 						out, _ = sjson.SetRawBytes(out, "contents.-1", toolNode)
