@@ -4,6 +4,7 @@ package chat_completions
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
@@ -15,6 +16,19 @@ import (
 )
 
 const geminiCLIFunctionThoughtSignature = "skip_thought_signature_validator"
+
+var antigravityOpenAIResponseNameInvalidChars = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
+
+func antigravityOpenAIResponseFunctionName(name, fallback string) string {
+	name = util.SanitizeFunctionName(name)
+	if strings.TrimSpace(name) == "" {
+		name = antigravityOpenAIResponseNameInvalidChars.ReplaceAllString(strings.TrimSpace(fallback), "_")
+	}
+	if strings.TrimSpace(name) == "" {
+		return "unknown"
+	}
+	return util.SanitizeFunctionName(name)
+}
 
 // ConvertOpenAIRequestToAntigravity converts an OpenAI Chat Completions request (raw JSON)
 // into a complete Gemini CLI request JSON. All JSON construction uses sjson and lookups use gjson.
@@ -286,7 +300,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							continue
 						}
 						fid := tc.Get("id").String()
-						fname := util.SanitizeFunctionName(tc.Get("function.name").String())
+						fname := antigravityOpenAIResponseFunctionName(tc.Get("function.name").String(), fid)
 						fargs := tc.Get("function.arguments").String()
 						node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".functionCall.id", fid)
 						node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".functionCall.name", fname)
@@ -307,24 +321,23 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					toolNode := []byte(`{"role":"user","parts":[]}`)
 					pp := 0
 					for _, fid := range fIDs {
-						if name, ok := tcID2Name[fid]; ok {
-							toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.id", fid)
-							toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.name", util.SanitizeFunctionName(name))
-							resp := toolResponses[fid]
-							if resp == "" {
-								resp = "{}"
-							}
-							// Handle non-JSON output gracefully (matches dev branch approach)
-							if resp != "null" {
-								parsed := gjson.Parse(resp)
-								if parsed.Type == gjson.JSON {
-									toolNode, _ = sjson.SetRawBytes(toolNode, "parts."+itoa(pp)+".functionResponse.response.result", []byte(parsed.Raw))
-								} else {
-									toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.response.result", resp)
-								}
-							}
-							pp++
+						name := antigravityOpenAIResponseFunctionName(tcID2Name[fid], fid)
+						toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.id", fid)
+						toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.name", name)
+						resp := toolResponses[fid]
+						if resp == "" {
+							resp = "{}"
 						}
+						// Handle non-JSON output gracefully (matches dev branch approach)
+						if resp != "null" {
+							parsed := gjson.Parse(resp)
+							if parsed.Type == gjson.JSON {
+								toolNode, _ = sjson.SetRawBytes(toolNode, "parts."+itoa(pp)+".functionResponse.response.result", []byte(parsed.Raw))
+							} else {
+								toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.response.result", resp)
+							}
+						}
+						pp++
 					}
 					if pp > 0 {
 						out, _ = sjson.SetRawBytes(out, "request.contents.-1", toolNode)

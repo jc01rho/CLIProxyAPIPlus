@@ -117,7 +117,8 @@ func TestConvertGeminiRequestToGemini_BackfillsEmptyName(t *testing.T) {
 }
 
 func TestBackfillEmptyFunctionResponseNames_MoreResponsesThanCalls(t *testing.T) {
-	// Extra responses beyond the call count should not panic and should be left unchanged.
+	// Extra responses beyond the call count should be removed to satisfy Gemini's
+	// functionCall/functionResponse count validation.
 	input := []byte(`{
 		"contents": [
 			{
@@ -142,10 +143,69 @@ func TestBackfillEmptyFunctionResponseNames_MoreResponsesThanCalls(t *testing.T)
 	if name0 != "Bash" {
 		t.Errorf("Expected first name 'Bash', got '%s'", name0)
 	}
-	// Second response has no matching call, should remain empty
+	count := gjson.GetBytes(out, "contents.1.parts.#").Int()
+	if count != 1 {
+		t.Errorf("Expected extra response part to be removed, got %d parts", count)
+	}
+}
+
+func TestBackfillEmptyFunctionResponseNames_AddsMissingResponses(t *testing.T) {
+	input := []byte(`{
+		"contents": [
+			{
+				"role": "model",
+				"parts": [
+					{"functionCall": {"name": "Read", "args": {}}},
+					{"functionCall": {"name": "Grep", "args": {}}}
+				]
+			},
+			{
+				"role": "user",
+				"parts": [
+					{"functionResponse": {"name": "", "response": {"result": "content"}}}
+				]
+			}
+		]
+	}`)
+
+	out := backfillEmptyFunctionResponseNames(input)
+
+	count := gjson.GetBytes(out, "contents.1.parts.#").Int()
+	if count != 2 {
+		t.Fatalf("Expected missing response part to be added, got %d parts", count)
+	}
+	name0 := gjson.GetBytes(out, "contents.1.parts.0.functionResponse.name").String()
 	name1 := gjson.GetBytes(out, "contents.1.parts.1.functionResponse.name").String()
-	if name1 != "" {
-		t.Errorf("Expected second name to remain empty, got '%s'", name1)
+	if name0 != "Read" || name1 != "Grep" {
+		t.Fatalf("Expected response names [Read Grep], got [%s %s]", name0, name1)
+	}
+}
+
+func TestBackfillEmptyFunctionResponseNames_DoesNotAddResponsesToTextTurn(t *testing.T) {
+	input := []byte(`{
+		"contents": [
+			{
+				"role": "model",
+				"parts": [
+					{"functionCall": {"name": "Read", "args": {}}}
+				]
+			},
+			{
+				"role": "user",
+				"parts": [
+					{"text": "I changed my mind"}
+				]
+			}
+		]
+	}`)
+
+	out := backfillEmptyFunctionResponseNames(input)
+
+	if gjson.GetBytes(out, "contents.1.parts.0.functionResponse").Exists() {
+		t.Fatalf("did not expect stub functionResponse to be injected into text-only turn: %s", out)
+	}
+	if got := gjson.GetBytes(out, "contents.1.parts.0.text").String(); got != "I changed my mind" {
+		t.Fatalf("expected text-only turn to remain intact, got %q", got)
 	}
 }
 

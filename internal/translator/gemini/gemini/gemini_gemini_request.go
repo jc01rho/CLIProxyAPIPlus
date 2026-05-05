@@ -97,9 +97,10 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 		out = []byte(strJson)
 	}
 
-	// Backfill empty functionResponse.name from the preceding functionCall.name.
-	// Amp may send function responses with empty names; the Gemini API rejects these.
-	out = backfillEmptyFunctionResponseNames(out)
+	// Backfill empty functionResponse.name and keep functionCall/functionResponse
+	// counts aligned. Gemini rejects history turns where a model functionCall turn
+	// is followed by a response turn with a different number of response parts.
+	out = normalizeFunctionResponseParts(out)
 
 	out = common.AttachDefaultSafetySettings(out, "safetySettings")
 	return out
@@ -110,6 +111,14 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 // For the immediately following user/function turn containing functionResponse
 // parts, any empty name is replaced with the corresponding call name.
 func backfillEmptyFunctionResponseNames(data []byte) []byte {
+	return normalizeFunctionResponseParts(data)
+}
+
+// normalizeFunctionResponseParts walks the contents array and for each model
+// turn containing functionCall parts, repairs the immediately following
+// functionResponse turn. It backfills empty names, drops extra responses, and
+// appends empty stub responses when there are fewer response parts than calls.
+func normalizeFunctionResponseParts(data []byte) []byte {
 	contents := gjson.GetBytes(data, "contents")
 	if !contents.Exists() {
 		return data
@@ -138,11 +147,14 @@ func backfillEmptyFunctionResponseNames(data []byte) []byte {
 			return true
 		}
 
-		// Backfill empty functionResponse names from pending call names
+		// Backfill empty functionResponse names from pending call names and align
+		// the response part count with the preceding functionCall part count.
 		if len(pendingCallNames) > 0 {
-			ri := 0
+			responsePartIndexes := make([]int64, 0)
 			content.Get("parts").ForEach(func(partIdx, part gjson.Result) bool {
 				if part.Get("functionResponse").Exists() {
+					responsePartIndexes = append(responsePartIndexes, partIdx.Int())
+					ri := len(responsePartIndexes) - 1
 					name := part.Get("functionResponse.name").String()
 					if strings.TrimSpace(name) == "" {
 						if ri < len(pendingCallNames) {
@@ -153,10 +165,20 @@ func backfillEmptyFunctionResponseNames(data []byte) []byte {
 							log.Debugf("more function responses than calls at contents[%d], skipping name backfill", contentIdx.Int())
 						}
 					}
-					ri++
 				}
 				return true
 			})
+
+			for i := len(responsePartIndexes) - 1; i >= len(pendingCallNames); i-- {
+				out, _ = sjson.DeleteBytes(out, fmt.Sprintf("contents.%d.parts.%d", contentIdx.Int(), responsePartIndexes[i]))
+			}
+			if len(responsePartIndexes) > 0 {
+				for i := len(responsePartIndexes); i < len(pendingCallNames); i++ {
+					part := []byte(`{"functionResponse":{"name":"","response":{"result":{}}}}`)
+					part, _ = sjson.SetBytes(part, "functionResponse.name", pendingCallNames[i])
+					out, _ = sjson.SetRawBytes(out, fmt.Sprintf("contents.%d.parts.-1", contentIdx.Int()), part)
+				}
+			}
 			pendingCallNames = nil
 		}
 
