@@ -62,11 +62,34 @@ func (e *OllamaExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Aut
 	return newProxyAwareHTTPClient(ctx, e.cfg, auth, 0).Do(httpReq)
 }
 
+func resolveOllamaExecutionModel(auth *cliproxyauth.Auth, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || auth == nil || strings.TrimSpace(auth.ID) == "" {
+		return model
+	}
+
+	models := registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
+	for _, info := range models {
+		if info == nil {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(info.ID), model) {
+			continue
+		}
+		if target := strings.TrimSpace(info.ExecutionTarget); target != "" {
+			return target
+		}
+		break
+	}
+
+	return model
+}
+
 func (e *OllamaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if opts.Alt == "responses/compact" {
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel := resolveOllamaExecutionModel(auth, thinking.ParseSuffix(req.Model).ModelName)
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
 
