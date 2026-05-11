@@ -50,7 +50,7 @@ func GetAIStudioModels() []*ModelInfo {
 
 // GetCodexFreeModels returns model definitions for the Codex free plan tier.
 func GetCodexFreeModels() []*ModelInfo {
-	return WithCodexBuiltins(cloneModelInfos(getModels().CodexFree))
+	return WithCodexBuiltins(filterModelInfos(cloneModelInfos(getModels().CodexFree), "gpt-5.5"))
 }
 
 // GetCodexTeamModels returns model definitions for the Codex team plan tier.
@@ -224,6 +224,33 @@ func codexBuiltinImageModelInfo() *ModelInfo {
 		DisplayName: "GPT Image 2",
 		Version:     codexBuiltinImageModelID,
 	}
+}
+
+func filterModelInfos(models []*ModelInfo, excludedIDs ...string) []*ModelInfo {
+	if len(models) == 0 || len(excludedIDs) == 0 {
+		return models
+	}
+	excluded := make(map[string]struct{}, len(excludedIDs))
+	for _, id := range excludedIDs {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id != "" {
+			excluded[id] = struct{}{}
+		}
+	}
+	if len(excluded) == 0 {
+		return models
+	}
+	filtered := models[:0]
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if _, skip := excluded[strings.ToLower(strings.TrimSpace(model.ID))]; skip {
+			continue
+		}
+		filtered = append(filtered, model)
+	}
+	return filtered
 }
 
 func upsertModelInfos(models []*ModelInfo, extras ...*ModelInfo) []*ModelInfo {

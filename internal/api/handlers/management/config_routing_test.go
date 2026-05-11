@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 func TestPutConfigYAML_AppliesRuntimeConfigCallback(t *testing.T) {
@@ -330,7 +330,7 @@ func TestPutTokenThresholdRules(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]any{"value": []map[string]any{{
 		"model-pattern": "gpt-*",
-		"max-tokens": 100,
+		"max-tokens":    100,
 		"billing-class": "metered",
 	}}})
 	req := httptest.NewRequest(http.MethodPut, "/routing/token-threshold-rules", bytes.NewReader(body))
@@ -360,14 +360,14 @@ func TestPutTokenThresholdRulesWithMinTokensRoundTrip(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"value": []map[string]any{
 		{
 			"model-pattern": "opus-*",
-			"min-tokens": 0,
-			"max-tokens": 1500,
+			"min-tokens":    0,
+			"max-tokens":    1500,
 			"billing-class": "metered",
 		},
 		{
 			"model-pattern": "opus-*",
-			"min-tokens": 1501,
-			"max-tokens": 2000,
+			"min-tokens":    1501,
+			"max-tokens":    2000,
 			"billing-class": "per-request",
 		},
 	}})
@@ -423,12 +423,12 @@ func TestPutTokenThresholdRulesLowerOnlyRoundTrip(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"value": []map[string]any{
 		{
 			"model-pattern": "opus-*",
-			"max-tokens": 1500,
+			"max-tokens":    1500,
 			"billing-class": "metered",
 		},
 		{
 			"model-pattern": "opus-*",
-			"min-tokens": 2001,
+			"min-tokens":    2001,
 			"billing-class": "per-request",
 		},
 	}})

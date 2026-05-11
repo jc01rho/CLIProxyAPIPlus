@@ -27,8 +27,8 @@ func TestOAuthEndpointConfig_ApplyDefaults(t *testing.T) {
 		{
 			name: "partial override",
 			input: OAuthEndpointConfig{
-				TokenURL:    "https://custom.token",
-				RefreshURL:  "https://custom.refresh",
+				TokenURL:   "https://custom.token",
+				RefreshURL: "https://custom.refresh",
 			},
 			expected: OAuthEndpointConfig{
 				ApiBaseURL:         "https://default.api",

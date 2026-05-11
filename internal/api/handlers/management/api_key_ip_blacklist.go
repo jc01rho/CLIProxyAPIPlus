@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 const (
@@ -36,10 +36,10 @@ type APIKeyIPBlacklistEntry struct {
 }
 
 type apiKeyIPBlacklistState struct {
-	failures    []time.Time
+	failures     []time.Time
 	blockedUntil time.Time
-	lastFailure time.Time
-	lastSeen    time.Time
+	lastFailure  time.Time
+	lastSeen     time.Time
 }
 
 type APIKeyIPBlacklistStore struct {

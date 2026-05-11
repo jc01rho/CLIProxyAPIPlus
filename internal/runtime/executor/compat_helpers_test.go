@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	intlogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	intlogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	log "github.com/sirupsen/logrus"
 )
 

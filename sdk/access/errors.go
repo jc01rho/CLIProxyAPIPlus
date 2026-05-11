@@ -18,10 +18,10 @@ const (
 
 // AuthError carries authentication failure details and HTTP status.
 type AuthError struct {
-	Code       AuthErrorCode
-	Message    string
-	StatusCode int
-	Cause      error
+	Code         AuthErrorCode
+	Message      string
+	StatusCode   int
+	Cause        error
 	ProviderType string
 }
 

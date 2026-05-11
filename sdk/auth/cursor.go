@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	cursorauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/cursor"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/browser"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cursorauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 

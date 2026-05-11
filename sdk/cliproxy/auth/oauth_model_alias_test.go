@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
 
 func TestResolveOAuthUpstreamModel_SuffixPreservation(t *testing.T) {

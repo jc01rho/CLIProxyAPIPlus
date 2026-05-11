@@ -6,38 +6,38 @@ import (
 
 func TestOAuthEndpointConfig_RefreshURLDefaultsToTokenURL(t *testing.T) {
 	tests := []struct {
-		name      string
-		override  OAuthEndpointConfig
-		forRefresh bool
-		wantToken string
+		name        string
+		override    OAuthEndpointConfig
+		forRefresh  bool
+		wantToken   string
 		wantRefresh string
 	}{
 		{
-			name:      "token exchange uses TokenURL override",
-			override:  OAuthEndpointConfig{TokenURL: "https://custom.token", RefreshURL: "https://custom.refresh"},
-			forRefresh: false,
-			wantToken:  "https://custom.token",
+			name:        "token exchange uses TokenURL override",
+			override:    OAuthEndpointConfig{TokenURL: "https://custom.token", RefreshURL: "https://custom.refresh"},
+			forRefresh:  false,
+			wantToken:   "https://custom.token",
 			wantRefresh: "https://custom.refresh",
 		},
 		{
-			name:      "refresh uses RefreshURL override",
-			override:  OAuthEndpointConfig{TokenURL: "https://custom.token", RefreshURL: "https://custom.refresh"},
-			forRefresh: true,
-			wantToken:  "https://custom.token",
+			name:        "refresh uses RefreshURL override",
+			override:    OAuthEndpointConfig{TokenURL: "https://custom.token", RefreshURL: "https://custom.refresh"},
+			forRefresh:  true,
+			wantToken:   "https://custom.token",
 			wantRefresh: "https://custom.refresh",
 		},
 		{
-			name:      "refresh falls back to TokenURL when RefreshURL empty",
-			override:  OAuthEndpointConfig{TokenURL: "https://custom.token"},
-			forRefresh: true,
-			wantToken:  "https://custom.token",
+			name:        "refresh falls back to TokenURL when RefreshURL empty",
+			override:    OAuthEndpointConfig{TokenURL: "https://custom.token"},
+			forRefresh:  true,
+			wantToken:   "https://custom.token",
 			wantRefresh: "https://custom.token",
 		},
 		{
-			name:      "empty override returns empty for all fields",
-			override:  OAuthEndpointConfig{},
-			forRefresh: false,
-			wantToken:  "",
+			name:        "empty override returns empty for all fields",
+			override:    OAuthEndpointConfig{},
+			forRefresh:  false,
+			wantToken:   "",
 			wantRefresh: "",
 		},
 	}

@@ -18,7 +18,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // gcInterval defines minimum time between garbage collection runs.
@@ -288,6 +288,9 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 	switch {
 	case auth.Storage != nil:
 		syncPrimaryInfoMetadata(auth)
+		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
+			setter.SetMetadata(auth.Metadata)
+		}
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err
 		}

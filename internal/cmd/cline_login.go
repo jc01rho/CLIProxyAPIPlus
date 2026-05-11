@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 )
 
 // DoClineLogin handles the Cline device flow using the shared authentication manager.

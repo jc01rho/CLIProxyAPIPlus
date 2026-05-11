@@ -17,8 +17,8 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -185,6 +185,9 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 	switch {
 	case auth.Storage != nil:
 		syncPrimaryInfoMetadata(auth)
+		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
+			setter.SetMetadata(auth.Metadata)
+		}
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err
 		}
