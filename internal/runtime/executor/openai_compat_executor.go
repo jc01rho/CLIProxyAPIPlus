@@ -114,7 +114,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 	}
 	translated = e.applyCompatSafetyMargin(auth, translated)
-	translated, err = e.normalizeToolCallReasoningContent(translated)
+	translated, err = e.normalizeToolCallReasoningContentWithAuth(auth, translated)
 	if err != nil {
 		return resp, err
 	}
@@ -221,7 +221,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
-	translated, err = e.normalizeToolCallReasoningContent(translated)
+	translated, err = e.normalizeToolCallReasoningContentWithAuth(auth, translated)
 	if err != nil {
 		return nil, err
 	}
@@ -460,13 +460,32 @@ func (e *OpenAICompatExecutor) applyCompatSafetyMargin(auth *cliproxyauth.Auth, 
 	return updated
 }
 
-func (e *OpenAICompatExecutor) normalizeToolCallReasoningContent(payload []byte) ([]byte, error) {
-	updated, patched, err := normalizeOpenAIToolCallReasoningContent(payload, true)
+func (e *OpenAICompatExecutor) normalizeToolCallReasoningContentWithAuth(auth *cliproxyauth.Auth, payload []byte) ([]byte, error) {
+	providerName := strings.ToLower(strings.TrimSpace(e.provider))
+	compatName := providerName
+	if compat := e.resolveCompatConfig(auth); compat != nil && strings.TrimSpace(compat.Name) != "" {
+		compatName = strings.ToLower(strings.TrimSpace(compat.Name))
+	}
+	if auth != nil {
+		authProvider := strings.ToLower(strings.TrimSpace(auth.Provider))
+		if authProvider != "" {
+			providerName = authProvider
+		}
+	}
+	forceReasoningReplay := compatName == "mistral.ai" || compatName == "xiaomi" || providerName == "mistral.ai" || providerName == "xiaomi"
+	updated, patched, err := normalizeOpenAIToolCallReasoningContentWithOptions(payload, openAIReasoningNormalizationOptions{
+		requireReasoningSignal: true,
+		forceForProvider:       forceReasoningReplay,
+		requireExistingChain:   forceReasoningReplay,
+	})
 	if err != nil {
 		return payload, fmt.Errorf("openai compat executor: normalize reasoning_content: %w", err)
 	}
 	if patched > 0 {
-		log.WithField("patched_reasoning_messages", patched).Debug("openai compat executor: normalized tool-call reasoning_content")
+		log.WithFields(log.Fields{
+			"patched_reasoning_messages": patched,
+			"provider":                  compatName,
+		}).Debug("openai compat executor: normalized tool-call reasoning_content")
 	}
 	return updated, nil
 }

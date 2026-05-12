@@ -197,6 +197,64 @@ func TestOpenAICompatExecutorSkipsReasoningContentWithoutReasoningSignal(t *test
 	}
 }
 
+func TestOpenAICompatExecutorForcesReasoningReplayForMistralProvider(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("mistral.ai", &config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "mistral.ai", Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"mistral-medium","messages":[{"role":"assistant","content":"previous","reasoning_content":"previous reasoning"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "mistral-medium",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := gjson.GetBytes(gotBody, "messages.1.reasoning_content").String(); got != "previous reasoning" {
+		t.Fatalf("messages.1.reasoning_content = %q, want previous reasoning; body=%s", got, string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutorForcesReasoningReplayForXiaomiProvider(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("xiaomi", &config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "xiaomi", Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"mi-thinking","messages":[{"role":"assistant","content":"previous","reasoning_content":"chain reasoning"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "mi-thinking",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := gjson.GetBytes(gotBody, "messages.1.reasoning_content").String(); got != "chain reasoning" {
+		t.Fatalf("messages.1.reasoning_content = %q, want chain reasoning; body=%s", got, string(gotBody))
+	}
+}
+
 func TestOpenAICompatExecutor_NonNvidiaCompatLeavesMaxTokens(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

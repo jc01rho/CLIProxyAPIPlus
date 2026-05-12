@@ -10,7 +10,19 @@ import (
 
 const toolCallReasoningFallback = "[reasoning unavailable]"
 
+type openAIReasoningNormalizationOptions struct {
+	requireReasoningSignal bool
+	forceForProvider       bool
+	requireExistingChain   bool
+}
+
 func normalizeOpenAIToolCallReasoningContent(body []byte, requireReasoningSignal bool) ([]byte, int, error) {
+	return normalizeOpenAIToolCallReasoningContentWithOptions(body, openAIReasoningNormalizationOptions{
+		requireReasoningSignal: requireReasoningSignal,
+	})
+}
+
+func normalizeOpenAIToolCallReasoningContentWithOptions(body []byte, opts openAIReasoningNormalizationOptions) ([]byte, int, error) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return body, 0, nil
 	}
@@ -21,7 +33,7 @@ func normalizeOpenAIToolCallReasoningContent(body []byte, requireReasoningSignal
 	}
 
 	msgs := messages.Array()
-	if requireReasoningSignal && !hasOpenAIReasoningSignal(body, msgs) {
+	if opts.requireReasoningSignal && !opts.forceForProvider && !hasOpenAIReasoningSignal(body, msgs) {
 		return body, 0, nil
 	}
 
@@ -52,6 +64,9 @@ func normalizeOpenAIToolCallReasoningContent(body []byte, requireReasoningSignal
 			continue
 		}
 
+		if opts.requireExistingChain && !hasLatestReasoning {
+			continue
+		}
 		reasoningText := fallbackOpenAIToolCallReasoning(msg, hasLatestReasoning, latestReasoning)
 		path := fmt.Sprintf("messages.%d.reasoning_content", msgIdx)
 		next, err := sjson.SetBytes(out, path, reasoningText)
