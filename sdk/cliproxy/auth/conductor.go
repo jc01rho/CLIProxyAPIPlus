@@ -748,6 +748,26 @@ func (m *Manager) ProvidersForRouteModel(routeModel string) []string {
 	return providers
 }
 
+// ResolveProvidersForFallback returns providers for a fallback model when the original model
+// has no matching provider. It consults the fallback-models map first, then the fallback-chain,
+// and returns the first set of providers found along with the matched model name.
+func (m *Manager) ResolveProvidersForFallback(originalModel string) ([]string, string) {
+	if m == nil {
+		return nil, ""
+	}
+	for _, fbModel := range m.resolveFallbackModels(originalModel) {
+		providers := m.ProvidersForRouteModel(fbModel)
+		if len(providers) > 0 {
+			return providers, fbModel
+		}
+		providers = m.ProvidersForOAuthAliasWithoutRegisteredModels(fbModel)
+		if len(providers) > 0 {
+			return providers, fbModel
+		}
+	}
+	return nil, ""
+}
+
 // ProvidersForOAuthAliasWithoutRegisteredModels returns provider keys for active non-API-key
 // auths whose OAuth alias table can resolve the requested route model even when the registry
 // does not yet advertise any models for that auth.

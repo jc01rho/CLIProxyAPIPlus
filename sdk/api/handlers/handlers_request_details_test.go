@@ -205,6 +205,68 @@ func TestGetRequestDetails_DoesNotUseOAuthAliasWhenProviderFamilyMismatches(t *t
 	}
 }
 
+func TestGetRequestDetails_FallbackModelResolution(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	now := time.Now().Unix()
+
+	modelRegistry.RegisterClient("test-fallback-claude", "claude", []*registry.ModelInfo{{ID: "sonnet", Created: now + 10}})
+	t.Cleanup(func() { modelRegistry.UnregisterClient("test-fallback-claude") })
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetFallbackModels(map[string]string{"gpt-5.5": "sonnet"})
+	manager.SetFallbackChain([]string{"haiku", "free-code"}, 5)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: "test-fallback-claude", Provider: "claude", Status: coreauth.StatusActive}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	providers, model, errMsg := handler.getRequestDetails("gpt-5.5")
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() error = %v (expected fallback to resolve)", errMsg)
+	}
+	if !reflect.DeepEqual(providers, []string{"claude"}) {
+		t.Fatalf("getRequestDetails() providers = %v, want %v", providers, []string{"claude"})
+	}
+	if model != "sonnet" {
+		t.Fatalf("getRequestDetails() model = %q, want %q", model, "sonnet")
+	}
+}
+
+func TestGetRequestDetails_FallbackChainResolution(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	now := time.Now().Unix()
+
+	modelRegistry.RegisterClient("test-fallback-chain-gemini", "gemini", []*registry.ModelInfo{{ID: "haiku", Created: now + 10}})
+	t.Cleanup(func() { modelRegistry.UnregisterClient("test-fallback-chain-gemini") })
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetFallbackChain([]string{"haiku", "free-code"}, 5)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: "test-fallback-chain-gemini", Provider: "gemini", Status: coreauth.StatusActive}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	providers, model, errMsg := handler.getRequestDetails("unknown-model")
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() error = %v (expected fallback chain to resolve)", errMsg)
+	}
+	if !reflect.DeepEqual(providers, []string{"gemini"}) {
+		t.Fatalf("getRequestDetails() providers = %v, want %v", providers, []string{"gemini"})
+	}
+	if model != "haiku" {
+		t.Fatalf("getRequestDetails() model = %q, want %q", model, "haiku")
+	}
+}
+
+func TestGetRequestDetails_NoFallbackConfigReturnsError(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	providers, model, errMsg := handler.getRequestDetails("gpt-5.5")
+	if errMsg == nil {
+		t.Fatalf("expected error for unknown model with no fallback, got providers=%v model=%q", providers, model)
+	}
+}
+
 func TestGetRequestDetails_ImageModelReturns503(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
 
@@ -221,5 +283,64 @@ func TestGetRequestDetails_ImageModelReturns503(t *testing.T) {
 	msg := errMsg.Error.Error()
 	if !strings.Contains(msg, "/v1/images/generations") || !strings.Contains(msg, "/v1/images/edits") {
 		t.Fatalf("unexpected error message: %q", msg)
+	}
+}
+
+func TestGetRequestDetails_UnknownModelFallsBackToConfiguredFallback(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	const authID = "test-request-details-fallback-gemini"
+	const fallbackModel = "gemini-2.5-pro"
+	now := time.Now().Unix()
+
+	modelRegistry.RegisterClient(authID, "gemini", []*registry.ModelInfo{{ID: fallbackModel, Created: now}})
+	t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{})
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:     authID,
+		Label:  "test-fallback",
+		Provider: "gemini",
+		Status: coreauth.StatusActive,
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	manager.SetFallbackModels(map[string]string{
+		"gpt-5.5": fallbackModel,
+	})
+	manager.SetFallbackChain([]string{fallbackModel, "lower-coding", "free-code"}, 3)
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+
+	providers, model, errMsg := handler.getRequestDetails("gpt-5.5")
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() error = %v", errMsg)
+	}
+	if !reflect.DeepEqual(providers, []string{"gemini"}) {
+		t.Fatalf("getRequestDetails() providers = %v, want [gemini]", providers)
+	}
+	if model != fallbackModel {
+		t.Fatalf("getRequestDetails() model = %q, want %q", model, fallbackModel)
+	}
+}
+
+func TestGetRequestDetails_UnknownModelWithoutFallbackReturnsError(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{})
+	manager.SetFallbackModels(map[string]string{})
+	manager.SetFallbackChain(nil, 3)
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+
+	providers, model, errMsg := handler.getRequestDetails("totally-unknown-model-xyz")
+	if errMsg == nil {
+		t.Fatalf("expected error, got providers=%v model=%q", providers, model)
+	}
+	if len(providers) != 0 || model != "" {
+		t.Fatalf("expected empty result, got providers=%v model=%q", providers, model)
+	}
+	if !strings.Contains(errMsg.Error.Error(), "totally-unknown-model-xyz") {
+		t.Fatalf("expected error to mention model, got %v", errMsg.Error)
 	}
 }

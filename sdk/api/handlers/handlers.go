@@ -22,6 +22,7 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tiktoken-go/tokenizer"
 
@@ -899,6 +900,16 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 			if len(providers) == 0 && baseModel != resolvedModelName {
 				providers = h.AuthManager.ProvidersForOAuthAliasWithoutRegisteredModels(baseModel)
 			}
+		}
+	}
+
+	if len(providers) == 0 && h != nil && h.AuthManager != nil {
+		if fbProviders, fbModel := h.AuthManager.ResolveProvidersForFallback(baseModel); len(fbProviders) > 0 {
+			log.WithFields(log.Fields{
+				"requested_model": modelName,
+				"fallback_model":  fbModel,
+			}).Info("resolved unknown model to fallback model")
+			return fbProviders, fbModel, nil
 		}
 	}
 
