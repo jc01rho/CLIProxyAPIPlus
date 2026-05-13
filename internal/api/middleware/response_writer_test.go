@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -154,6 +155,72 @@ func TestFinalizeStreamingWritesAPIWebsocketTimeline(t *testing.T) {
 	}
 }
 
+func TestFinalizeForcesErrorLogWhenLoggerEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	logger := &testRequestLoggerWithOptions{enabled: true}
+	wrapper := &ResponseWriterWrapper{
+		ResponseWriter: c.Writer,
+		body:           &bytes.Buffer{},
+		logger:         logger,
+		requestInfo: &RequestInfo{
+			URL:       "/v1/chat/completions",
+			Method:    "POST",
+			Headers:   map[string][]string{"Content-Type": {"application/json"}},
+			RequestID: "req-force-enabled",
+			Timestamp: time.Now(),
+		},
+		statusCode: http.StatusBadGateway,
+		headers:    map[string][]string{"Content-Type": {"application/json"}},
+	}
+	wrapper.body.WriteString(`{"error":"upstream failure"}`)
+
+	if err := wrapper.Finalize(c); err != nil {
+		t.Fatalf("Finalize error: %v", err)
+	}
+	if len(logger.forcedValues) != 1 {
+		t.Fatalf("force values len = %d, want 1", len(logger.forcedValues))
+	}
+	if !logger.forcedValues[0] {
+		t.Fatal("expected force=true for error response when logger enabled")
+	}
+}
+
+func TestFinalizeDoesNotForceSuccessWhenLoggerEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	logger := &testRequestLoggerWithOptions{enabled: true}
+	wrapper := &ResponseWriterWrapper{
+		ResponseWriter: c.Writer,
+		body:           &bytes.Buffer{},
+		logger:         logger,
+		requestInfo: &RequestInfo{
+			URL:       "/v1/chat/completions",
+			Method:    "POST",
+			Headers:   map[string][]string{"Content-Type": {"application/json"}},
+			RequestID: "req-force-success",
+			Timestamp: time.Now(),
+		},
+		statusCode: http.StatusOK,
+		headers:    map[string][]string{"Content-Type": {"application/json"}},
+	}
+	wrapper.body.WriteString(`{"ok":true}`)
+
+	if err := wrapper.Finalize(c); err != nil {
+		t.Fatalf("Finalize error: %v", err)
+	}
+	if len(logger.forcedValues) != 1 {
+		t.Fatalf("force values len = %d, want 1", len(logger.forcedValues))
+	}
+	if logger.forcedValues[0] {
+		t.Fatal("expected force=false for successful response")
+	}
+}
+
 type testRequestLogger struct {
 	enabled bool
 }
@@ -170,32 +237,42 @@ func (l *testRequestLogger) IsEnabled() bool {
 	return l.enabled
 }
 
+type testRequestLoggerWithOptions struct {
+	enabled      bool
+	forcedValues []bool
+}
+
+func (l *testRequestLoggerWithOptions) LogRequest(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, []byte, []byte, []byte, []*interfaces.ErrorMessage, string, time.Time, time.Time) error {
+	return nil
+}
+
+func (l *testRequestLoggerWithOptions) LogRequestWithOptions(_ string, _ string, _ map[string][]string, _ []byte, _ int, _ map[string][]string, _ []byte, _ []byte, _ []byte, _ []byte, _ []byte, _ []*interfaces.ErrorMessage, force bool, _ string, _ time.Time, _ time.Time) error {
+	l.forcedValues = append(l.forcedValues, force)
+	return nil
+}
+
+func (l *testRequestLoggerWithOptions) LogStreamingRequest(string, string, map[string][]string, []byte, string) (logging.StreamingLogWriter, error) {
+	return &testStreamingLogWriter{}, nil
+}
+
+func (l *testRequestLoggerWithOptions) IsEnabled() bool {
+	return l.enabled
+}
+
 type testStreamingLogWriter struct {
 	apiWebsocketTimeline []byte
 	closed               bool
 }
 
 func (w *testStreamingLogWriter) WriteChunkAsync([]byte) {}
-
-func (w *testStreamingLogWriter) WriteStatus(int, map[string][]string) error {
-	return nil
-}
-
-func (w *testStreamingLogWriter) WriteAPIRequest([]byte) error {
-	return nil
-}
-
-func (w *testStreamingLogWriter) WriteAPIResponse([]byte) error {
-	return nil
-}
-
+func (w *testStreamingLogWriter) WriteStatus(int, map[string][]string) error { return nil }
+func (w *testStreamingLogWriter) WriteAPIRequest([]byte) error               { return nil }
+func (w *testStreamingLogWriter) WriteAPIResponse([]byte) error              { return nil }
 func (w *testStreamingLogWriter) WriteAPIWebsocketTimeline(apiWebsocketTimeline []byte) error {
 	w.apiWebsocketTimeline = bytes.Clone(apiWebsocketTimeline)
 	return nil
 }
-
 func (w *testStreamingLogWriter) SetFirstChunkTimestamp(time.Time) {}
-
 func (w *testStreamingLogWriter) Close() error {
 	w.closed = true
 	return nil
