@@ -906,11 +906,11 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 	if len(providers) == 0 && h != nil && h.AuthManager != nil {
 		if fbProviders, fbModel := h.AuthManager.ResolveProvidersForFallback(baseModel); len(fbProviders) > 0 {
 			log.WithFields(log.Fields{
-				"requested_model": modelName,
-				"base_model":      baseModel,
-				"fallback_model":  fbModel,
-				"providers":       strings.Join(fbProviders, ","),
-			}).Info("resolved unknown model to fallback model")
+				"requested_model":        modelName,
+				"base_model":             baseModel,
+				"selected_fallback_model": fbModel,
+				"providers":              strings.Join(fbProviders, ","),
+			}).Info("resolved request model through route fallback")
 			return fbProviders, fbModel, nil
 		}
 	}

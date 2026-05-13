@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
@@ -298,10 +300,10 @@ func TestGetRequestDetails_UnknownModelFallsBackToConfiguredFallback(t *testing.
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.SetConfig(&internalconfig.Config{})
 	if _, err := manager.Register(context.Background(), &coreauth.Auth{
-		ID:     authID,
-		Label:  "test-fallback",
+		ID:       authID,
+		Label:    "test-fallback",
 		Provider: "gemini",
-		Status: coreauth.StatusActive,
+		Status:   coreauth.StatusActive,
 	}); err != nil {
 		t.Fatalf("Register auth: %v", err)
 	}
@@ -310,6 +312,16 @@ func TestGetRequestDetails_UnknownModelFallsBackToConfiguredFallback(t *testing.
 		"gpt-5.5": fallbackModel,
 	})
 	manager.SetFallbackChain([]string{fallbackModel, "lower-coding", "free-code"}, 3)
+
+	var logBuffer bytes.Buffer
+	originalOutput := log.StandardLogger().Out
+	originalLevel := log.GetLevel()
+	log.SetOutput(&logBuffer)
+	log.SetLevel(log.InfoLevel)
+	t.Cleanup(func() {
+		log.SetOutput(originalOutput)
+		log.SetLevel(originalLevel)
+	})
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 
@@ -322,6 +334,16 @@ func TestGetRequestDetails_UnknownModelFallsBackToConfiguredFallback(t *testing.
 	}
 	if model != fallbackModel {
 		t.Fatalf("getRequestDetails() model = %q, want %q", model, fallbackModel)
+	}
+	logOutput := logBuffer.String()
+	if strings.Contains(logOutput, "resolved unknown model to fallback model") {
+		t.Fatalf("unexpected legacy unknown-model log wording: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "resolved request model through route fallback") {
+		t.Fatalf("expected route fallback resolution log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "selected_fallback_model") {
+		t.Fatalf("expected selected_fallback_model field in log, got: %s", logOutput)
 	}
 }
 
