@@ -287,6 +287,14 @@ func (h *Handler) PutDetailedAPIErrorBodyLogFormat(c *gin.Context) {
 	h.persist(c)
 }
 
+// Detailed API error body log limit
+func (h *Handler) GetDetailedAPIErrorBodyLogLimit(c *gin.Context) {
+	c.JSON(200, gin.H{"detailed-api-error-body-log-limit": h.cfg.DetailedAPIErrorBodyLogLimit})
+}
+func (h *Handler) PutDetailedAPIErrorBodyLogLimit(c *gin.Context) {
+	h.updateIntField(c, func(v int) { h.cfg.DetailedAPIErrorBodyLogLimit = v })
+}
+
 // Websocket auth
 func (h *Handler) GetWebsocketAuth(c *gin.Context) {
 	c.JSON(200, gin.H{"ws-auth": h.cfg.WebsocketAuth})
