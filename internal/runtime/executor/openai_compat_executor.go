@@ -556,6 +556,20 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 			payload = updated
 		}
 	}
+	if isDeepSeekLike {
+		// DeepSeek/nano-gpt rejects tool parameter schemas that contain $schema meta-keys.
+		// Strip tools[*].function.parameters.$schema for all DeepSeek-like upstreams.
+		tools := gjson.GetBytes(payload, "tools")
+		if tools.Exists() && tools.IsArray() {
+			for idx := range tools.Array() {
+				path := "tools." + strconv.Itoa(idx) + ".function.parameters.$schema"
+				updated, errDel := sjson.DeleteBytes(payload, path)
+				if errDel == nil {
+					payload = updated
+				}
+			}
+		}
+	}
 	if !isMistral {
 		return payload
 	}
