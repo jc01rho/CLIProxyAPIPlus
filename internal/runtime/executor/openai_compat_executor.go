@@ -530,7 +530,8 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 	isMistral := compatName == "mistral.ai" || providerName == "mistral.ai"
 	isDeepSeekLike := strings.Contains(baseURL, "api.deepseek.com") || strings.Contains(baseURL, "nano-gpt.com") ||
 		strings.HasPrefix(upstreamModel, "deepseek") || strings.Contains(upstreamModel, "/deepseek") ||
-		strings.HasPrefix(upstreamModelLeaf, "deepseek")
+		strings.HasPrefix(upstreamModelLeaf, "deepseek") ||
+		compatName == "nanogpt" || providerName == "nanogpt"
 
 	shouldStripReasoning := gjson.GetBytes(payload, "reasoning").Exists() &&
 		(gjson.GetBytes(payload, "reasoning_effort").Exists() || isMistral || isDeepSeekLike)
