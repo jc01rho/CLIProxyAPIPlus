@@ -345,6 +345,12 @@ func TestGetRequestDetails_UnknownModelFallsBackToConfiguredFallback(t *testing.
 	if !strings.Contains(logOutput, "selected_fallback_model") {
 		t.Fatalf("expected selected_fallback_model field in log, got: %s", logOutput)
 	}
+	if !strings.Contains(logOutput, "requested=gpt-5.5") {
+		t.Fatalf("expected requested model detail in log message, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "selected="+fallbackModel) {
+		t.Fatalf("expected selected fallback model detail in log message, got: %s", logOutput)
+	}
 }
 
 func TestGetRequestDetails_UnknownModelWithoutFallbackReturnsError(t *testing.T) {

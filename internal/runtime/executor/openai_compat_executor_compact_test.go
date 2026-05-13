@@ -471,6 +471,43 @@ func TestOpenAICompatExecutor_StripsUnsupportedDeepSeekLikeTopLevelFieldsInStrea
 	}
 }
 
+func TestOpenAICompatExecutor_ReasoningEffortConflictResolution(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "openai-compatibility", Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"generic-compatible","reasoning":{"effort":"high"},"reasoning_effort":"medium","reasoningSummary":"auto","include":["reasoning.encrypted_content"],"verbosity":"low","messages":[{"role":"user","content":"hi"}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "generic-compatible",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if value := gjson.GetBytes(gotBody, "reasoning"); value.Exists() {
+		t.Fatalf("reasoning should be stripped when it conflicts with reasoning_effort; body=%s", string(gotBody))
+	}
+	if value := gjson.GetBytes(gotBody, "reasoning_effort"); !value.Exists() {
+		t.Fatalf("reasoning_effort should remain; body=%s", string(gotBody))
+	}
+	for _, path := range []string{"reasoningSummary", "include", "verbosity"} {
+		if value := gjson.GetBytes(gotBody, path); !value.Exists() {
+			t.Fatalf("%s should remain for generic provider; body=%s", path, string(gotBody))
+		}
+	}
+}
+
 func TestOpenAICompatExecutor_NonNvidiaCompatLeavesMaxTokens(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

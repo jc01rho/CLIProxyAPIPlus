@@ -544,6 +544,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 		attachUnknownProviderUpstreamHint(ctx, modelName, normalizedModel)
 		return nil, nil, errMsg
 	}
+	attachRouteFallbackToGinContext(ctx, modelName, normalizedModel)
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	maybeAttachEstimatedInputTokens(reqMeta, sdktranslator.FromString(handlerType), normalizedModel, rawJSON)
@@ -590,6 +591,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 		attachUnknownProviderUpstreamHint(ctx, modelName, normalizedModel)
 		return nil, nil, errMsg
 	}
+	attachRouteFallbackToGinContext(ctx, modelName, normalizedModel)
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	maybeAttachEstimatedInputTokens(reqMeta, sdktranslator.FromString(handlerType), normalizedModel, rawJSON)
@@ -640,6 +642,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 		close(errChan)
 		return nil, nil, errChan
 	}
+	attachRouteFallbackToGinContext(ctx, modelName, normalizedModel)
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	maybeAttachEstimatedInputTokens(reqMeta, sdktranslator.FromString(handlerType), normalizedModel, rawJSON)
@@ -906,11 +909,11 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 	if len(providers) == 0 && h != nil && h.AuthManager != nil {
 		if fbProviders, fbModel := h.AuthManager.ResolveProvidersForFallback(baseModel); len(fbProviders) > 0 {
 			log.WithFields(log.Fields{
-				"requested_model":        modelName,
-				"base_model":             baseModel,
+				"requested_model":         modelName,
+				"base_model":              baseModel,
 				"selected_fallback_model": fbModel,
-				"providers":              strings.Join(fbProviders, ","),
-			}).Info("resolved request model through route fallback")
+				"providers":               strings.Join(fbProviders, ","),
+			}).Infof("resolved request model through route fallback: requested=%s selected=%s", modelName, fbModel)
 			return fbProviders, fbModel, nil
 		}
 	}
@@ -922,6 +925,25 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+func attachRouteFallbackToGinContext(ctx context.Context, requestedModel, normalizedModel string) {
+	if ctx == nil {
+		return
+	}
+	c, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || c == nil {
+		return
+	}
+	rm := strings.TrimSpace(requestedModel)
+	nm := strings.TrimSpace(normalizedModel)
+	if rm == "" || nm == "" || rm == nm {
+		return
+	}
+	c.Set("fallbackInfo", map[string]string{
+		"requested_model": rm,
+		"actual_model":    nm,
+	})
 }
 
 func attachUnknownProviderUpstreamHint(ctx context.Context, originalModel string, resolvedModel string) {

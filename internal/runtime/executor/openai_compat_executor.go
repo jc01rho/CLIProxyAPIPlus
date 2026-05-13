@@ -532,6 +532,15 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 		strings.HasPrefix(upstreamModel, "deepseek") || strings.Contains(upstreamModel, "/deepseek") ||
 		strings.HasPrefix(upstreamModelLeaf, "deepseek")
 
+	shouldStripReasoning := gjson.GetBytes(payload, "reasoning").Exists() &&
+		(gjson.GetBytes(payload, "reasoning_effort").Exists() || isMistral || isDeepSeekLike)
+	if shouldStripReasoning {
+		updated, err := sjson.DeleteBytes(payload, "reasoning")
+		if err == nil {
+			payload = updated
+		}
+	}
+
 	if !isMistral && !isDeepSeekLike {
 		return payload
 	}

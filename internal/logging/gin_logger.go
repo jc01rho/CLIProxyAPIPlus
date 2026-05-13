@@ -301,6 +301,9 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 			requestedMatchesBody := requestedModel != "" && modelName != "" && requestedModel == modelName
 			if requestedMatchesBody && actualModel != "" && requestedModel != actualModel {
 				displayModelName = fmt.Sprintf("%s → %s", requestedModel, actualModel)
+				if upstreamModel != "" && actualModel != upstreamModel && modelName != upstreamModel {
+					displayModelName = fmt.Sprintf("%s → %s", displayModelName, upstreamModel)
+				}
 			} else if displayModelName != "" && upstreamModel != "" && displayModelName != upstreamModel {
 				displayModelName = fmt.Sprintf("%s → %s", displayModelName, upstreamModel)
 			} else if displayModelName == "" && upstreamModel != "" {
