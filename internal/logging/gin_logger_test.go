@@ -205,6 +205,75 @@ func TestGinLogrusLoggerIncludesUpstreamEndpointAndResolvedModel(t *testing.T) {
 	}
 }
 
+func TestGinLogrusLoggerHidesAliasArrowForDirectRealModelCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var logBuffer bytes.Buffer
+	log.SetOutput(&logBuffer)
+	log.SetLevel(log.InfoLevel)
+
+	engine := gin.New()
+	engine.Use(GinLogrusLogger(&config.Config{}))
+	engine.POST("/v1/chat/completions", func(c *gin.Context) {
+		c.Set(ginFallbackInfoKey, map[string]string{
+			"requested_model": "higher-coding",
+			"actual_model":    "mistral-medium-latest",
+		})
+		c.Set(ginAPIRequestSummaryKey, map[string]string{
+			"url":   "https://api.mistral.ai/v1/chat/completions",
+			"model": "mistral-medium-latest",
+		})
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"mistral-medium-latest"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	logOutput := logBuffer.String()
+	if bytes.Contains([]byte(logOutput), []byte("higher-coding → mistral-medium-latest")) {
+		t.Fatalf("direct real-model call should not display alias arrow, got: %s", logOutput)
+	}
+	if !bytes.Contains([]byte(logOutput), []byte("mistral-medium-latest")) {
+		t.Fatalf("expected real model name in log, got: %s", logOutput)
+	}
+}
+
+func TestGinLogrusLoggerKeepsAliasArrowForActualAliasCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var logBuffer bytes.Buffer
+	log.SetOutput(&logBuffer)
+	log.SetLevel(log.InfoLevel)
+
+	engine := gin.New()
+	engine.Use(GinLogrusLogger(&config.Config{}))
+	engine.POST("/v1/chat/completions", func(c *gin.Context) {
+		c.Set(ginFallbackInfoKey, map[string]string{
+			"requested_model": "higher-coding",
+			"actual_model":    "mistral-medium-latest",
+		})
+		c.Set(ginAPIRequestSummaryKey, map[string]string{
+			"url":   "https://api.mistral.ai/v1/chat/completions",
+			"model": "mistral-medium-latest",
+		})
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"higher-coding"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	logOutput := logBuffer.String()
+	if !bytes.Contains([]byte(logOutput), []byte("higher-coding → mistral-medium-latest")) {
+		t.Fatalf("expected alias arrow for real alias call, got: %s", logOutput)
+	}
+}
+
 func TestGinLogrusLoggerIncludesUnknownProviderUpstreamHint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

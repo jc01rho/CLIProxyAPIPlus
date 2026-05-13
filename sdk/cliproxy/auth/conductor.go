@@ -5199,27 +5199,42 @@ func (m *Manager) fallbackSourceForModel(originalModel, fbModel string) string {
 	return "fallback-chain"
 }
 
-func logRouteModelFallbackAttempt(ctx context.Context, originalModel, fallbackModel, source string, err error) {
+func logRouteModelFallbackResult(ctx context.Context, originalModel, fallbackModel, source string, triggerErr, resultErr error, startedAt time.Time) {
 	fields := log.Fields{
-		"requested_model": strings.TrimSpace(originalModel),
-		"fallback_model":  strings.TrimSpace(fallbackModel),
-		"fallback_source": strings.TrimSpace(source),
+		"requested_model":         strings.TrimSpace(originalModel),
+		"selected_fallback_model": strings.TrimSpace(fallbackModel),
+		"fallback_source":         strings.TrimSpace(source),
 	}
-	if status := statusCodeFromError(err); status > 0 {
-		fields["upstream_status"] = status
+	if !startedAt.IsZero() {
+		fields["elapsed_ms"] = time.Since(startedAt).Milliseconds()
 	}
-	if err != nil {
-		fields["fallback_reason"] = err.Error()
+	if status := statusCodeFromError(triggerErr); status > 0 {
+		fields["fallback_trigger_status"] = status
 	}
-	logEntryWithRequestID(ctx).WithFields(fields).Warn("routing request through fallback model")
-}
-
-func logRouteModelFallbackSuccess(ctx context.Context, originalModel, fallbackModel, source string) {
-	logEntryWithRequestID(ctx).WithFields(log.Fields{
-		"requested_model": strings.TrimSpace(originalModel),
-		"fallback_model":  strings.TrimSpace(fallbackModel),
-		"fallback_source": strings.TrimSpace(source),
-	}).Info("fallback model request completed")
+	if triggerErr != nil {
+		fields["fallback_trigger_error"] = triggerErr.Error()
+	}
+	provider, authID, authLabel := GetProviderAuthFromContext(ctx)
+	if trimmed := strings.TrimSpace(provider); trimmed != "" {
+		fields["selected_provider"] = trimmed
+	}
+	if trimmed := strings.TrimSpace(authID); trimmed != "" {
+		fields["selected_auth_id"] = trimmed
+	}
+	if trimmed := strings.TrimSpace(authLabel); trimmed != "" {
+		fields["selected_auth_label"] = trimmed
+	}
+	if resultErr != nil {
+		fields["outcome"] = "error"
+		if status := statusCodeFromError(resultErr); status > 0 {
+			fields["fallback_result_status"] = status
+		}
+		fields["fallback_result_error"] = resultErr.Error()
+		logEntryWithRequestID(ctx).WithFields(fields).Warn("fallback model request finished")
+		return
+	}
+	fields["outcome"] = "success"
+	logEntryWithRequestID(ctx).WithFields(fields).Info("fallback model request finished")
 }
 
 func (m *Manager) executeWithRouteFallback(
@@ -5252,16 +5267,17 @@ func (m *Manager) executeWithRouteFallback(
 		attempted[fbModel] = struct{}{}
 
 		source := m.fallbackSourceForModel(originalModel, fbModel)
-		logRouteModelFallbackAttempt(ctx, originalModel, fbModel, source, lastErr)
+		attemptStartedAt := time.Now()
 
 		fbReq := req
 		fbReq.Model = fbModel
 
 		resp, err := m.executeWithRetry(ctx, providers, fbReq, opts, maxRetryCredentials, maxWait, execOnce)
 		if err == nil {
-			logRouteModelFallbackSuccess(ctx, originalModel, fbModel, source)
+			logRouteModelFallbackResult(ctx, originalModel, fbModel, source, lastErr, nil, attemptStartedAt)
 			return resp, nil
 		}
+		logRouteModelFallbackResult(ctx, originalModel, fbModel, source, lastErr, err, attemptStartedAt)
 		lastErr = err
 		if !m.shouldAllowRouteModelFallback(err) {
 			break
@@ -5301,16 +5317,17 @@ func (m *Manager) executeStreamWithRouteFallback(
 		attempted[fbModel] = struct{}{}
 
 		source := m.fallbackSourceForModel(originalModel, fbModel)
-		logRouteModelFallbackAttempt(ctx, originalModel, fbModel, source, lastErr)
+		attemptStartedAt := time.Now()
 
 		fbReq := req
 		fbReq.Model = fbModel
 
 		result, err := m.executeStreamWithRetry(ctx, providers, fbReq, opts, maxRetryCredentials, maxWait, execOnce)
 		if err == nil {
-			logRouteModelFallbackSuccess(ctx, originalModel, fbModel, source)
+			logRouteModelFallbackResult(ctx, originalModel, fbModel, source, lastErr, nil, attemptStartedAt)
 			return result, nil
 		}
+		logRouteModelFallbackResult(ctx, originalModel, fbModel, source, lastErr, err, attemptStartedAt)
 		lastErr = err
 		if !m.shouldAllowRouteModelFallback(err) {
 			break

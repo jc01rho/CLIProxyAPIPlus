@@ -301,7 +301,7 @@ func TestOpenAICompatExecutorStripsUnsupportedMistralTopLevelFields(t *testing.T
 		"base_url": server.URL + "/v1",
 		"api_key":  "test",
 	}}
-	payload := []byte(`{"model":"mistral-medium","reasoning":{"effort":"high"},"reasoningSummary":"auto","include":["reasoning.encrypted_content"],"verbosity":"low","messages":[{"role":"assistant","content":"previous","reasoning_content":"private chain"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`)
+	payload := []byte(`{"model":"mistral-medium-latest","thinking":{"type":"enabled","budgetTokens":8192},"interleaved":{"field":"reasoning_content"},"reasoning":{"effort":"high"},"reasoningSummary":"auto","include":["reasoning.encrypted_content"],"verbosity":"low","messages":[{"role":"assistant","content":"previous","reasoning_content":"private chain"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`)
 	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "mistral-medium",
 		Payload: payload,
@@ -310,7 +310,7 @@ func TestOpenAICompatExecutorStripsUnsupportedMistralTopLevelFields(t *testing.T
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity"} {
+	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity", "thinking", "interleaved"} {
 		if value := gjson.GetBytes(gotBody, path); value.Exists() {
 			t.Fatalf("%s should be stripped for mistral.ai; body=%s", path, string(gotBody))
 		}
@@ -319,6 +319,46 @@ func TestOpenAICompatExecutorStripsUnsupportedMistralTopLevelFields(t *testing.T
 		if value := gjson.GetBytes(gotBody, path); value.Exists() {
 			t.Fatalf("%s should be stripped for mistral.ai; body=%s", path, string(gotBody))
 		}
+	}
+}
+
+func TestOpenAICompatExecutorStripsUnsupportedMistralTopLevelFieldsInStream(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("mistral.ai", &config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "mistral.ai", Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"mistral-medium-latest","stream":true,"thinking":{"type":"enabled","budgetTokens":8192},"interleaved":{"field":"reasoning_content"},"messages":[{"role":"user","content":"hi"}]}`)
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "mistral-medium-latest",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+	}
+
+	for _, path := range []string{"thinking", "interleaved"} {
+		if value := gjson.GetBytes(gotBody, path); value.Exists() {
+			t.Fatalf("%s should be stripped for mistral.ai stream; body=%s", path, string(gotBody))
+		}
+	}
+	if got := gjson.GetBytes(gotBody, "model").String(); got != "mistral-medium-latest" {
+		t.Fatalf("model = %q, want %q; body=%s", got, "mistral-medium-latest", string(gotBody))
 	}
 }
 
