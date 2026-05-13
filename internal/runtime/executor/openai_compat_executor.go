@@ -510,7 +510,7 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 	if compatName != "mistral.ai" && providerName != "mistral.ai" {
 		return payload
 	}
-	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity"} {
+	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity", "thinking", "interleaved"} {
 		updated, err := sjson.DeleteBytes(payload, path)
 		if err == nil {
 			payload = updated
