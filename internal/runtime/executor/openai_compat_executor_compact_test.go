@@ -417,15 +417,13 @@ func TestOpenAICompatExecutor_StripsUnsupportedDeepSeekLikeTopLevelFields(t *tes
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity", "interleaved"} {
+	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity", "interleaved", "reasoning_effort"} {
 		if value := gjson.GetBytes(gotBody, path); value.Exists() {
 			t.Fatalf("%s should be stripped for deepseek-like upstream; body=%s", path, string(gotBody))
 		}
 	}
-	for _, path := range []string{"thinking", "reasoning_effort"} {
-		if value := gjson.GetBytes(gotBody, path); !value.Exists() {
-			t.Fatalf("%s should remain for deepseek-like upstream; body=%s", path, string(gotBody))
-		}
+	if value := gjson.GetBytes(gotBody, "thinking"); !value.Exists() {
+		t.Fatalf("thinking should remain for deepseek-like upstream; body=%s", string(gotBody))
 	}
 }
 
@@ -459,12 +457,12 @@ func TestOpenAICompatExecutor_StripsUnsupportedDeepSeekLikeTopLevelFieldsInStrea
 		}
 	}
 
-	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity", "interleaved"} {
+	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity", "interleaved", "reasoning_effort"} {
 		if value := gjson.GetBytes(gotBody, path); value.Exists() {
 			t.Fatalf("%s should be stripped for deepseek-like stream upstream; body=%s", path, string(gotBody))
 		}
 	}
-	for _, path := range []string{"thinking", "reasoning_effort", "stream_options.include_usage"} {
+	for _, path := range []string{"thinking", "stream_options.include_usage"} {
 		if value := gjson.GetBytes(gotBody, path); !value.Exists() {
 			t.Fatalf("%s should remain for deepseek-like stream upstream; body=%s", path, string(gotBody))
 		}

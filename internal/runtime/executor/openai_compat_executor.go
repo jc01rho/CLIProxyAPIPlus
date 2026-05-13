@@ -546,7 +546,7 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 		return payload
 	}
 
-	paths := []string{"reasoning", "reasoningSummary", "include", "verbosity", "interleaved"}
+	paths := []string{"reasoning", "reasoningSummary", "include", "verbosity", "interleaved", "reasoning_effort"}
 	if isMistral {
 		paths = append(paths, "thinking")
 	}
