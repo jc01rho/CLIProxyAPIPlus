@@ -393,6 +393,84 @@ func TestOpenAICompatExecutor_NonMistralKeepsTopLevelCompatibilityFields(t *test
 	}
 }
 
+func TestOpenAICompatExecutor_StripsUnsupportedDeepSeekLikeTopLevelFields(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "openai-compatibility", Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"deepseek-v4-pro","reasoning":{"effort":"high"},"reasoningSummary":"auto","include":["reasoning.encrypted_content"],"reasoning_effort":"high","verbosity":"low","thinking":{"type":"enabled"},"interleaved":{"field":"reasoning_content"},"messages":[{"role":"user","content":"hi"}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-v4-pro",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity", "interleaved"} {
+		if value := gjson.GetBytes(gotBody, path); value.Exists() {
+			t.Fatalf("%s should be stripped for deepseek-like upstream; body=%s", path, string(gotBody))
+		}
+	}
+	for _, path := range []string{"thinking", "reasoning_effort"} {
+		if value := gjson.GetBytes(gotBody, path); !value.Exists() {
+			t.Fatalf("%s should remain for deepseek-like upstream; body=%s", path, string(gotBody))
+		}
+	}
+}
+
+func TestOpenAICompatExecutor_StripsUnsupportedDeepSeekLikeTopLevelFieldsInStream(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "openai-compatibility", Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"deepseek-v4-pro","stream":true,"reasoning":{"effort":"high"},"reasoningSummary":"auto","include":["reasoning.encrypted_content"],"reasoning_effort":"high","verbosity":"low","thinking":{"type":"enabled"},"interleaved":{"field":"reasoning_content"},"messages":[{"role":"user","content":"hi"}]}`)
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-v4-pro",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+	}
+
+	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity", "interleaved"} {
+		if value := gjson.GetBytes(gotBody, path); value.Exists() {
+			t.Fatalf("%s should be stripped for deepseek-like stream upstream; body=%s", path, string(gotBody))
+		}
+	}
+	for _, path := range []string{"thinking", "reasoning_effort", "stream_options.include_usage"} {
+		if value := gjson.GetBytes(gotBody, path); !value.Exists() {
+			t.Fatalf("%s should remain for deepseek-like stream upstream; body=%s", path, string(gotBody))
+		}
+	}
+}
+
 func TestOpenAICompatExecutor_NonNvidiaCompatLeavesMaxTokens(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -499,6 +577,234 @@ func TestOpenAICompatExecutor_NvidiaCompatLeavesSmallMaxTokens(t *testing.T) {
 
 	if got := gjson.GetBytes(gotBody, "max_tokens").Int(); got != 2 {
 		t.Fatalf("max_tokens = %d, want %d", got, 2)
+	}
+}
+
+func TestOpenAICompatExecutor_NvidiaCompatNormalizesToolCallIDs(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:    "nvidia-nvapi",
+			BaseURL: server.URL + "/v1",
+		}},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":    server.URL + "/v1",
+		"api_key":     "test",
+		"compat_name": "nvidia-nvapi",
+	}}
+
+	payload := []byte(`{"model":"mistralai/mistral-medium-3.5-128b","messages":[{"role":"assistant","tool_calls":[{"id":"dowrite:1","type":"function","function":{"name":"aft_conflicts","arguments":"{}"}}]},{"role":"tool","tool_call_id":"dowrite:1","content":"ok"}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "mistralai/mistral-medium-3.5-128b",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	toolID := gjson.GetBytes(gotBody, "messages.0.tool_calls.0.id").String()
+	toolResultID := gjson.GetBytes(gotBody, "messages.1.tool_call_id").String()
+	if toolID == "dowrite:1" {
+		t.Fatalf("tool call id should be normalized; body=%s", string(gotBody))
+	}
+	if toolID != toolResultID {
+		t.Fatalf("tool id %q != tool result id %q; body=%s", toolID, toolResultID, string(gotBody))
+	}
+	if len(toolID) != 9 {
+		t.Fatalf("normalized tool id length = %d, want 9; id=%q body=%s", len(toolID), toolID, string(gotBody))
+	}
+	for _, ch := range toolID {
+		if !(ch >= 'a' && ch <= 'z') && !(ch >= 'A' && ch <= 'Z') && !(ch >= '0' && ch <= '9') {
+			t.Fatalf("normalized tool id contains non-alnum %q in %q", ch, toolID)
+		}
+	}
+}
+
+func TestOpenAICompatExecutor_NonNvidiaCompatKeepsToolCallIDs(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:    "other-provider",
+			BaseURL: server.URL + "/v1",
+		}},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":    server.URL + "/v1",
+		"api_key":     "test",
+		"compat_name": "other-provider",
+	}}
+
+	payload := []byte(`{"model":"generic-compatible","messages":[{"role":"assistant","tool_calls":[{"id":"dowrite:1","type":"function","function":{"name":"aft_conflicts","arguments":"{}"}}]},{"role":"tool","tool_call_id":"dowrite:1","content":"ok"}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "generic-compatible",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := gjson.GetBytes(gotBody, "messages.0.tool_calls.0.id").String(); got != "dowrite:1" {
+		t.Fatalf("tool call id = %q, want dowrite:1; body=%s", got, string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, "messages.1.tool_call_id").String(); got != "dowrite:1" {
+		t.Fatalf("tool_call_id = %q, want dowrite:1; body=%s", got, string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutor_MistralMedium35ModelNormalizesToolCallIDs(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:    "other-provider",
+			BaseURL: server.URL + "/v1",
+		}},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":    server.URL + "/v1",
+		"api_key":     "test",
+		"compat_name": "other-provider",
+	}}
+
+	payload := []byte(`{"model":"mistralai/mistral-medium-3.5-128b","messages":[{"role":"assistant","tool_calls":[{"id":"dowrite:1","type":"function","function":{"name":"aft_conflicts","arguments":"{}"}}]},{"role":"tool","tool_call_id":"dowrite:1","content":"ok"}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "mistralai/mistral-medium-3.5-128b",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	toolID := gjson.GetBytes(gotBody, "messages.0.tool_calls.0.id").String()
+	toolResultID := gjson.GetBytes(gotBody, "messages.1.tool_call_id").String()
+	if toolID == "dowrite:1" {
+		t.Fatalf("mistral-medium-3.5 tool call id should be normalized; body=%s", string(gotBody))
+	}
+	if toolID != toolResultID {
+		t.Fatalf("tool id %q != tool result id %q; body=%s", toolID, toolResultID, string(gotBody))
+	}
+	if len(toolID) != 9 {
+		t.Fatalf("normalized mistral-medium-3.5 tool id length = %d, want 9; id=%q body=%s", len(toolID), toolID, string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutor_NvidiaCompatNormalizesToolCallIDsForStream(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:    "nvidia-nvapi",
+			BaseURL: server.URL + "/v1",
+		}},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":    server.URL + "/v1",
+		"api_key":     "test",
+		"compat_name": "nvidia-nvapi",
+	}}
+
+	payload := []byte(`{"model":"mistralai/mistral-medium-3.5-128b","messages":[{"role":"assistant","tool_calls":[{"id":"dowrite:1","type":"function","function":{"name":"aft_conflicts","arguments":"{}"}}]},{"role":"tool","tool_call_id":"dowrite:1","content":"ok"}]}`)
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "mistralai/mistral-medium-3.5-128b",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	drainStreamChunks(t, stream.Chunks)
+
+	toolID := gjson.GetBytes(gotBody, "messages.0.tool_calls.0.id").String()
+	toolResultID := gjson.GetBytes(gotBody, "messages.1.tool_call_id").String()
+	if toolID == "dowrite:1" {
+		t.Fatalf("tool call id should be normalized for stream; body=%s", string(gotBody))
+	}
+	if toolID != toolResultID {
+		t.Fatalf("tool id %q != tool result id %q; body=%s", toolID, toolResultID, string(gotBody))
+	}
+	if len(toolID) != 9 {
+		t.Fatalf("normalized stream tool id length = %d, want 9; id=%q body=%s", len(toolID), toolID, string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutor_MistralMedium35ModelNormalizesToolCallIDsForStream(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:    "other-provider",
+			BaseURL: server.URL + "/v1",
+		}},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":    server.URL + "/v1",
+		"api_key":     "test",
+		"compat_name": "other-provider",
+	}}
+
+	payload := []byte(`{"model":"mistralai/mistral-medium-3.5-128b","messages":[{"role":"assistant","tool_calls":[{"id":"dowrite:1","type":"function","function":{"name":"aft_conflicts","arguments":"{}"}}]},{"role":"tool","tool_call_id":"dowrite:1","content":"ok"}]}`)
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "mistralai/mistral-medium-3.5-128b",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	drainStreamChunks(t, stream.Chunks)
+
+	toolID := gjson.GetBytes(gotBody, "messages.0.tool_calls.0.id").String()
+	toolResultID := gjson.GetBytes(gotBody, "messages.1.tool_call_id").String()
+	if toolID == "dowrite:1" {
+		t.Fatalf("mistral-medium-3.5 stream tool call id should be normalized; body=%s", string(gotBody))
+	}
+	if toolID != toolResultID {
+		t.Fatalf("tool id %q != tool result id %q; body=%s", toolID, toolResultID, string(gotBody))
+	}
+	if len(toolID) != 9 {
+		t.Fatalf("normalized mistral-medium-3.5 stream tool id length = %d, want 9; id=%q body=%s", len(toolID), toolID, string(gotBody))
 	}
 }
 
