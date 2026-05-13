@@ -118,6 +118,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return resp, err
 	}
+	translated = e.stripProviderUnsupportedFields(auth, translated)
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
@@ -225,6 +226,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if err != nil {
 		return nil, err
 	}
+	translated = e.stripProviderUnsupportedFields(auth, translated)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -488,6 +490,29 @@ func (e *OpenAICompatExecutor) normalizeToolCallReasoningContentWithAuth(auth *c
 		}).Debug("openai compat executor: normalized tool-call reasoning_content")
 	}
 	return updated, nil
+}
+
+func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth.Auth, payload []byte) []byte {
+	compatName := ""
+	if compat := e.resolveCompatConfig(auth); compat != nil {
+		compatName = strings.ToLower(strings.TrimSpace(compat.Name))
+	}
+	providerName := strings.ToLower(strings.TrimSpace(e.provider))
+	if auth != nil {
+		if authProvider := strings.ToLower(strings.TrimSpace(auth.Provider)); authProvider != "" {
+			providerName = authProvider
+		}
+	}
+	if compatName != "mistral.ai" && providerName != "mistral.ai" {
+		return payload
+	}
+	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity"} {
+		updated, err := sjson.DeleteBytes(payload, path)
+		if err == nil {
+			payload = updated
+		}
+	}
+	return payload
 }
 
 func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {

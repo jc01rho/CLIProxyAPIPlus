@@ -255,6 +255,68 @@ func TestOpenAICompatExecutorForcesReasoningReplayForXiaomiProvider(t *testing.T
 	}
 }
 
+func TestOpenAICompatExecutorStripsUnsupportedMistralTopLevelFields(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("mistral.ai", &config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "mistral.ai", Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"mistral-medium","reasoning":{"effort":"high"},"reasoningSummary":"auto","include":["reasoning.encrypted_content"],"verbosity":"low","messages":[{"role":"user","content":"hi"}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "mistral-medium",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity"} {
+		if value := gjson.GetBytes(gotBody, path); value.Exists() {
+			t.Fatalf("%s should be stripped for mistral.ai; body=%s", path, string(gotBody))
+		}
+	}
+}
+
+func TestOpenAICompatExecutor_NonMistralKeepsTopLevelCompatibilityFields(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "openai-compatibility", Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"generic-compatible","reasoning":{"effort":"high"},"reasoningSummary":"auto","include":["reasoning.encrypted_content"],"verbosity":"low","messages":[{"role":"user","content":"hi"}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "generic-compatible",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity"} {
+		if value := gjson.GetBytes(gotBody, path); !value.Exists() {
+			t.Fatalf("%s should remain for non-mistral provider; body=%s", path, string(gotBody))
+		}
+	}
+}
+
 func TestOpenAICompatExecutor_NonNvidiaCompatLeavesMaxTokens(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
