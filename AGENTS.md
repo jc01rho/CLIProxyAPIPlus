@@ -89,3 +89,7 @@ CLIProxyAPI-Dashboard/AGENTS.md
 
 - Root `git status` is the source of truth for nested project pointers; `.gitmodules` is absent.
 - Search tools may miss nested gitlink files from root. Re-run file discovery inside nested repos when editing subproject AGENTS.md.
+- When recommending a new root git tag, inspect recent root tags first and continue the latest stable base version unless the user explicitly wants a new base release line.
+- Current root tag convention uses `v<major>.<minor>.<patch>-<sequence>` for follow-up releases on the same base version (example: `v6.10.2-2`, `v6.10.2-3`, `v6.10.2-4`).
+- For a pointer/update follow-up commit like `chore: update ... pointer`, prefer incrementing the suffix on the latest matching base tag instead of bumping the patch version. Example: after `v6.10.2-4`, recommend `v6.10.2-5`.
+- Only propose a new base tag such as `v6.10.3` when the user explicitly wants a new release line or the recent tag history clearly starts a new base series.
