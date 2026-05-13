@@ -1,7 +1,10 @@
 package executor
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -9,6 +12,8 @@ import (
 )
 
 const toolCallReasoningFallback = "[reasoning unavailable]"
+
+var nonAlnumToolCallID = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 type openAIReasoningNormalizationOptions struct {
 	requireReasoningSignal bool
@@ -127,4 +132,99 @@ func fallbackOpenAIToolCallReasoning(msg gjson.Result, hasLatest bool, latest st
 	}
 
 	return toolCallReasoningFallback
+}
+
+func normalizeNVIDIAToolCallIDs(body []byte) ([]byte, int, error) {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body, 0, nil
+	}
+
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return body, 0, nil
+	}
+
+	out := body
+	patched := 0
+	idMap := make(map[string]string)
+	used := make(map[string]struct{})
+
+	for msgIdx, msg := range messages.Array() {
+		toolCalls := msg.Get("tool_calls")
+		if !toolCalls.Exists() || !toolCalls.IsArray() {
+			continue
+		}
+		for callIdx, call := range toolCalls.Array() {
+			current := strings.TrimSpace(call.Get("id").String())
+			if current == "" {
+				continue
+			}
+			normalized := normalizeNVIDIAToolCallID(current, used)
+			used[normalized] = struct{}{}
+			idMap[current] = normalized
+			if normalized == current {
+				continue
+			}
+			path := fmt.Sprintf("messages.%d.tool_calls.%d.id", msgIdx, callIdx)
+			next, err := sjson.SetBytes(out, path, normalized)
+			if err != nil {
+				return body, 0, fmt.Errorf("failed to set normalized tool call id: %w", err)
+			}
+			out = next
+			patched++
+		}
+	}
+
+	if len(idMap) == 0 {
+		return out, patched, nil
+	}
+
+	messages = gjson.GetBytes(out, "messages")
+	for msgIdx, msg := range messages.Array() {
+		for _, field := range []string{"tool_call_id", "call_id"} {
+			current := strings.TrimSpace(msg.Get(field).String())
+			if current == "" {
+				continue
+			}
+			normalized, ok := idMap[current]
+			if !ok || normalized == current {
+				continue
+			}
+			path := fmt.Sprintf("messages.%d.%s", msgIdx, field)
+			next, err := sjson.SetBytes(out, path, normalized)
+			if err != nil {
+				return body, 0, fmt.Errorf("failed to set normalized %s: %w", field, err)
+			}
+			out = next
+			patched++
+		}
+	}
+
+	return out, patched, nil
+}
+
+func normalizeNVIDIAToolCallID(id string, used map[string]struct{}) string {
+	trimmed := strings.TrimSpace(id)
+	cleaned := nonAlnumToolCallID.ReplaceAllString(trimmed, "")
+	if len(cleaned) == 9 {
+		if _, exists := used[cleaned]; !exists {
+			return cleaned
+		}
+	}
+	if len(cleaned) > 9 {
+		candidate := cleaned[:9]
+		if _, exists := used[candidate]; !exists {
+			return candidate
+		}
+	}
+
+	sum := sha1.Sum([]byte(trimmed))
+	hexID := strings.ToUpper(hex.EncodeToString(sum[:]))
+	for i := 0; i+9 <= len(hexID); i++ {
+		candidate := hexID[i : i+9]
+		if _, exists := used[candidate]; !exists {
+			return candidate
+		}
+	}
+	return "TOOLCALL1"
 }
