@@ -257,6 +257,35 @@ func TestOpenAICompatExecutorForcesReasoningReplayForXiaomiProvider(t *testing.T
 	}
 }
 
+func TestOpenAICompatExecutorBackfillsReasoningReplayForXiaomiProviderWithoutExistingChain(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("xiaomi", &config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "xiaomi", Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"mi-thinking","thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":"Need to call tool","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "mi-thinking",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := gjson.GetBytes(gotBody, "messages.0.reasoning_content").String(); got != "Need to call tool" {
+		t.Fatalf("messages.0.reasoning_content = %q, want fallback content; body=%s", got, string(gotBody))
+	}
+}
+
 func TestOpenAICompatExecutorStripsUnsupportedMistralTopLevelFields(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

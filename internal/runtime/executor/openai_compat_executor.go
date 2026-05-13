@@ -475,11 +475,14 @@ func (e *OpenAICompatExecutor) normalizeToolCallReasoningContentWithAuth(auth *c
 			providerName = authProvider
 		}
 	}
-	forceReasoningReplay := compatName == "mistral.ai" || compatName == "xiaomi" || providerName == "mistral.ai" || providerName == "xiaomi"
+	isMistral := compatName == "mistral.ai" || providerName == "mistral.ai"
+	isXiaomi := compatName == "xiaomi" || providerName == "xiaomi"
+	forceReasoningReplay := isMistral || isXiaomi
+	requireExistingChain := isMistral
 	updated, patched, err := normalizeOpenAIToolCallReasoningContentWithOptions(payload, openAIReasoningNormalizationOptions{
 		requireReasoningSignal: true,
 		forceForProvider:       forceReasoningReplay,
-		requireExistingChain:   forceReasoningReplay,
+		requireExistingChain:   requireExistingChain,
 	})
 	if err != nil {
 		return payload, fmt.Errorf("openai compat executor: normalize reasoning_content: %w", err)
