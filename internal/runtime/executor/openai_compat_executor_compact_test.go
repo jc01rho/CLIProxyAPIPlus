@@ -197,7 +197,7 @@ func TestOpenAICompatExecutorSkipsReasoningContentWithoutReasoningSignal(t *test
 	}
 }
 
-func TestOpenAICompatExecutorForcesReasoningReplayForMistralProvider(t *testing.T) {
+func TestOpenAICompatExecutorStripsReasoningReplayForMistralProvider(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -221,8 +221,10 @@ func TestOpenAICompatExecutorForcesReasoningReplayForMistralProvider(t *testing.
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	if got := gjson.GetBytes(gotBody, "messages.1.reasoning_content").String(); got != "previous reasoning" {
-		t.Fatalf("messages.1.reasoning_content = %q, want previous reasoning; body=%s", got, string(gotBody))
+	for _, path := range []string{"messages.0.reasoning_content", "messages.1.reasoning_content"} {
+		if value := gjson.GetBytes(gotBody, path); value.Exists() {
+			t.Fatalf("%s should be stripped for mistral.ai; body=%s", path, string(gotBody))
+		}
 	}
 }
 
@@ -270,7 +272,7 @@ func TestOpenAICompatExecutorStripsUnsupportedMistralTopLevelFields(t *testing.T
 		"base_url": server.URL + "/v1",
 		"api_key":  "test",
 	}}
-	payload := []byte(`{"model":"mistral-medium","reasoning":{"effort":"high"},"reasoningSummary":"auto","include":["reasoning.encrypted_content"],"verbosity":"low","messages":[{"role":"user","content":"hi"}]}`)
+	payload := []byte(`{"model":"mistral-medium","reasoning":{"effort":"high"},"reasoningSummary":"auto","include":["reasoning.encrypted_content"],"verbosity":"low","messages":[{"role":"assistant","content":"previous","reasoning_content":"private chain"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`)
 	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "mistral-medium",
 		Payload: payload,
@@ -280,6 +282,11 @@ func TestOpenAICompatExecutorStripsUnsupportedMistralTopLevelFields(t *testing.T
 	}
 
 	for _, path := range []string{"reasoning", "reasoningSummary", "include", "verbosity"} {
+		if value := gjson.GetBytes(gotBody, path); value.Exists() {
+			t.Fatalf("%s should be stripped for mistral.ai; body=%s", path, string(gotBody))
+		}
+	}
+	for _, path := range []string{"messages.0.reasoning_content", "messages.1.reasoning_content"} {
 		if value := gjson.GetBytes(gotBody, path); value.Exists() {
 			t.Fatalf("%s should be stripped for mistral.ai; body=%s", path, string(gotBody))
 		}

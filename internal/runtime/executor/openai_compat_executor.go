@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -510,6 +511,19 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 		updated, err := sjson.DeleteBytes(payload, path)
 		if err == nil {
 			payload = updated
+		}
+	}
+	messages := gjson.GetBytes(payload, "messages")
+	if messages.Exists() && messages.IsArray() {
+		for idx, msg := range messages.Array() {
+			if strings.TrimSpace(msg.Get("role").String()) != "assistant" {
+				continue
+			}
+			path := "messages." + strconv.Itoa(idx) + ".reasoning_content"
+			updated, err := sjson.DeleteBytes(payload, path)
+			if err == nil {
+				payload = updated
+			}
 		}
 	}
 	return payload
