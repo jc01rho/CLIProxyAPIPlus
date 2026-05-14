@@ -484,7 +484,7 @@ func (e *OpenAICompatExecutor) normalizeToolCallReasoningContentWithAuth(auth *c
 		}
 	}
 	isMistral := compatName == "mistral.ai" || providerName == "mistral.ai"
-	isXiaomi := compatName == "xiaomi" || providerName == "xiaomi"
+	isXiaomi := strings.HasPrefix(compatName, "xiaomi") || strings.HasPrefix(providerName, "xiaomi")
 	forceReasoningReplay := isMistral || isXiaomi
 	requireExistingChain := isMistral
 	updated, patched, err := normalizeOpenAIToolCallReasoningContentWithOptions(payload, openAIReasoningNormalizationOptions{
