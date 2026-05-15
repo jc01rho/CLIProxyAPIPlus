@@ -575,18 +575,75 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 	}
 	messages := gjson.GetBytes(payload, "messages")
 	if messages.Exists() && messages.IsArray() {
-		for idx, msg := range messages.Array() {
-			if strings.TrimSpace(msg.Get("role").String()) != "assistant" {
-				continue
+		msgArray := messages.Array()
+		kept := make([]string, 0, len(msgArray))
+		dropped := 0
+		for idx, msg := range msgArray {
+			if strings.TrimSpace(msg.Get("role").String()) == "assistant" {
+				path := "messages." + strconv.Itoa(idx) + ".reasoning_content"
+				updated, err := sjson.DeleteBytes(payload, path)
+				if err == nil {
+					payload = updated
+				}
 			}
-			path := "messages." + strconv.Itoa(idx) + ".reasoning_content"
-			updated, err := sjson.DeleteBytes(payload, path)
-			if err == nil {
-				payload = updated
+		}
+		messages = gjson.GetBytes(payload, "messages")
+		if messages.Exists() && messages.IsArray() {
+			for _, msg := range messages.Array() {
+				if shouldDropEmptyAssistantMessage(msg) {
+					dropped++
+					continue
+				}
+				kept = append(kept, msg.Raw)
+			}
+			if dropped > 0 {
+				rawMessages := []byte("[" + strings.Join(kept, ",") + "]")
+				next, err := sjson.SetRawBytes(payload, "messages", rawMessages)
+				if err == nil {
+					payload = next
+				}
+				log.WithField("dropped_assistant_messages", dropped).Debug("openai compat: dropped empty assistant messages for Mistral")
 			}
 		}
 	}
 	return payload
+}
+
+func shouldDropEmptyAssistantMessage(msg gjson.Result) bool {
+	if strings.TrimSpace(msg.Get("role").String()) != "assistant" {
+		return false
+	}
+	toolCalls := msg.Get("tool_calls")
+	if toolCalls.Exists() && toolCalls.IsArray() && len(toolCalls.Array()) > 0 {
+		return false
+	}
+	functionCall := msg.Get("function_call")
+	if functionCall.Exists() && functionCall.Type != gjson.Null {
+		if functionCall.IsObject() && strings.TrimSpace(functionCall.Raw) != "{}" {
+			return false
+		}
+	}
+	content := msg.Get("content")
+	if !content.Exists() || content.Type == gjson.Null {
+		return true
+	}
+	if content.Type == gjson.String {
+		return strings.TrimSpace(content.String()) == ""
+	}
+	if content.IsArray() {
+		for _, part := range content.Array() {
+			if part.Exists() && part.Type != gjson.Null {
+				if part.Type == gjson.String && strings.TrimSpace(part.String()) != "" {
+					return false
+				}
+				if part.IsObject() && strings.TrimSpace(part.Raw) != "{}" && strings.TrimSpace(part.Raw) != "null" {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func (e *OpenAICompatExecutor) normalizeProviderToolCallIDs(auth *cliproxyauth.Auth, model string, payload []byte) ([]byte, error) {
