@@ -53,7 +53,11 @@ func GetProviderName(modelName string) []string {
 	}
 
 	if len(providers) > 0 {
-		return providers
+		// When both "claude" and an OpenAI-compatible provider are registered for the
+		// same model, prefer the OpenAI-compatible provider. Models explicitly configured
+		// as OpenAI-compatible must not be routed through the Claude executor, even when
+		// the claude provider has a higher credential count in the registry.
+		return preferOpenAICompatOverClaude(modelName, providers)
 	}
 
 	// Fallback: if cursor provider has registered models, route unknown models to it.
@@ -262,6 +266,44 @@ func MaskSensitiveQuery(raw string) string {
 		return raw
 	}
 	return strings.Join(parts, "&")
+}
+
+// preferOpenAICompatOverClaude returns providers with "claude" removed when any
+// other provider in the list serves the model with Type "openai-compatibility".
+// This prevents models explicitly configured as OpenAI-compatible from being
+// misrouted through the Claude executor when the claude provider has a higher
+// credential count in the registry.
+func preferOpenAICompatOverClaude(modelID string, providers []string) []string {
+	hasClaude := false
+	for _, p := range providers {
+		if strings.EqualFold(p, "claude") {
+			hasClaude = true
+			break
+		}
+	}
+	if !hasClaude {
+		return providers
+	}
+
+	reg := registry.GetGlobalRegistry()
+	for _, p := range providers {
+		if strings.EqualFold(p, "claude") {
+			continue
+		}
+		info := reg.GetModelInfo(modelID, p)
+		if info != nil && strings.EqualFold(strings.TrimSpace(info.Type), "openai-compatibility") {
+			filtered := make([]string, 0, len(providers)-1)
+			for _, provider := range providers {
+				if !strings.EqualFold(provider, "claude") {
+					filtered = append(filtered, provider)
+				}
+			}
+			if len(filtered) > 0 {
+				return filtered
+			}
+		}
+	}
+	return providers
 }
 
 func shouldMaskQueryParam(key string) bool {

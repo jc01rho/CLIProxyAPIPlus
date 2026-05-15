@@ -12,6 +12,8 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 )
 
 // ConvertOpenAIRequestToCodex converts an OpenAI Chat Completions request JSON
@@ -126,7 +128,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				// Create function_call_output object
 				funcOutput := []byte(`{}`)
 				funcOutput, _ = sjson.SetBytes(funcOutput, "type", "function_call_output")
-				funcOutput, _ = sjson.SetBytes(funcOutput, "call_id", toolCallID)
+				funcOutput, _ = sjson.SetBytes(funcOutput, "call_id", util.TruncateCallID(toolCallID, 64))
 				funcOutput = setToolCallOutputContent(funcOutput, content)
 				out, _ = sjson.SetRawBytes(out, "input.-1", funcOutput)
 
@@ -215,7 +217,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 								// Create function_call as top-level object
 								funcCall := []byte(`{}`)
 								funcCall, _ = sjson.SetBytes(funcCall, "type", "function_call")
-								funcCall, _ = sjson.SetBytes(funcCall, "call_id", tc.Get("id").String())
+								funcCall, _ = sjson.SetBytes(funcCall, "call_id", util.TruncateCallID(tc.Get("id").String(), 64))
 								{
 									name := tc.Get("function.name").String()
 									if short, ok := originalToolNameMap[name]; ok {
