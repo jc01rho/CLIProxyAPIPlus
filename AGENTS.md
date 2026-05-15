@@ -49,6 +49,8 @@ goreleaser build --snapshot --clean
 - Provider additions usually touch config, watcher/synthesizer, registry/model discovery, executor, management API, and Center UI.
 - Executor logs for upstream failures must include masked request and response context when diagnosing 4xx/5xx.
 - `management.html` is served by Plus; local UI edits need Center build output copied back.
+- **태그 버전 관리**: 태그를 생성할 때 upstream 최신 버전에 `-2`, `-3`, ...의 넘버링을 추가하는 것으로 version bump 한다. (예: 최신 태그가 `v7.0.4-18`이면 다음은 `v7.0.4-19`)
+- Tag versioning: When creating tags, append `-N` suffixes to the latest upstream version (e.g., if upstream is `v7.0.4-18`, create `v7.0.4-19`, `v7.0.4-20`, etc.) for sequential version bumps.
 
 ## ANTI-PATTERNS
 
