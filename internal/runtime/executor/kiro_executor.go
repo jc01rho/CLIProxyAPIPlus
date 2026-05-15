@@ -1753,6 +1753,18 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		return "claude-opus-4.5"
 	}
 
+	// Qwen models (Aliyun) - map to Kiro-compatible model IDs
+	if strings.Contains(modelLower, "qwen") {
+		// Qwen 3.6-plus and similar models
+		if strings.Contains(modelLower, "3.6") || strings.Contains(modelLower, "36") {
+			log.Debugf("kiro: Qwen 3.6 model '%s', mapping to qwen3.6-plus", model)
+			return model // Return as-is for Qwen models
+		}
+		// Other Qwen models
+		log.Debugf("kiro: Qwen model '%s', mapping to qwen-plus", model)
+		return model
+	}
+
 	// Final fallback to Sonnet 4.5 (most commonly used model)
 	log.Warnf("kiro: unknown model '%s', falling back to claude-sonnet-4.5", model)
 	return "claude-sonnet-4.5"

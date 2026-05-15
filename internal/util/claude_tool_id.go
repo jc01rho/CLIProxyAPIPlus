@@ -12,6 +12,16 @@ var (
 	claudeToolUseIDCounter   uint64
 )
 
+func TruncateCallID(id string, maxLen int) string {
+	if maxLen <= 0 {
+		maxLen = 64
+	}
+	if len(id) <= maxLen {
+		return id
+	}
+	return id[:maxLen]
+}
+
 // SanitizeClaudeToolID ensures the given id conforms to Claude's
 // tool_use.id regex ^[a-zA-Z0-9_-]+$.  Non-conforming characters are
 // replaced with '_'; an empty result gets a generated fallback.
@@ -22,3 +32,5 @@ func SanitizeClaudeToolID(id string) string {
 	}
 	return s
 }
+
+

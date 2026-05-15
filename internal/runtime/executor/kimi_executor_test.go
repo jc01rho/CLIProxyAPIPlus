@@ -270,3 +270,99 @@ func TestNormalizeKimiToolMessageLinks_PreservesAssistantWithToolLinkOrReasoning
 		t.Fatalf("messages.3.content.0.text = %q, want %q", got, " visible ")
 	}
 }
+
+func TestStripKimiUnsupportedFields_RemovesInterleaved(t *testing.T) {
+	body := []byte(`{"model":"kimi-k2","interleaved":true,"messages":[]}`)
+	out := stripKimiUnsupportedFields(body)
+	if gjson.GetBytes(out, "interleaved").Exists() {
+		t.Fatalf("interleaved should be removed, got %s", out)
+	}
+	if gjson.GetBytes(out, "model").String() != "kimi-k2" {
+		t.Fatalf("model should be preserved, got %s", out)
+	}
+}
+
+func TestStripKimiUnsupportedFields_RemovesReasoning(t *testing.T) {
+	body := []byte(`{"model":"kimi-k2","reasoning":{"enabled":true},"messages":[]}`)
+	out := stripKimiUnsupportedFields(body)
+	if gjson.GetBytes(out, "reasoning").Exists() {
+		t.Fatalf("reasoning should be removed, got %s", out)
+	}
+}
+
+func TestStripKimiUnsupportedFields_RemovesReasoningSummary(t *testing.T) {
+	body := []byte(`{"model":"kimi-k2","reasoningSummary":"auto","messages":[]}`)
+	out := stripKimiUnsupportedFields(body)
+	if gjson.GetBytes(out, "reasoningSummary").Exists() {
+		t.Fatalf("reasoningSummary should be removed, got %s", out)
+	}
+}
+
+func TestStripKimiUnsupportedFields_RemovesReasoningEffort(t *testing.T) {
+	body := []byte(`{"model":"kimi-k2","reasoning_effort":"low","messages":[]}`)
+	out := stripKimiUnsupportedFields(body)
+	if gjson.GetBytes(out, "reasoning_effort").Exists() {
+		t.Fatalf("reasoning_effort should be removed, got %s", out)
+	}
+}
+
+func TestStripKimiUnsupportedFields_RemovesInclude(t *testing.T) {
+	body := []byte(`{"model":"kimi-k2","include":["reasoning"],"messages":[]}`)
+	out := stripKimiUnsupportedFields(body)
+	if gjson.GetBytes(out, "include").Exists() {
+		t.Fatalf("include should be removed, got %s", out)
+	}
+}
+
+func TestStripKimiUnsupportedFields_RemovesVerbosity(t *testing.T) {
+	body := []byte(`{"model":"kimi-k2","verbosity":"detailed","messages":[]}`)
+	out := stripKimiUnsupportedFields(body)
+	if gjson.GetBytes(out, "verbosity").Exists() {
+		t.Fatalf("verbosity should be removed, got %s", out)
+	}
+}
+
+func TestStripKimiUnsupportedFields_RemovesAllUnsupportedFields(t *testing.T) {
+	body := []byte(`{"model":"kimi-k2","interleaved":true,"reasoning":{},"reasoningSummary":"auto","reasoning_effort":"low","include":[],"verbosity":"detailed","messages":[]}`)
+	out := stripKimiUnsupportedFields(body)
+	for _, field := range []string{"interleaved", "reasoning", "reasoningSummary", "reasoning_effort", "include", "verbosity"} {
+		if gjson.GetBytes(out, field).Exists() {
+			t.Fatalf("%s should be removed, got %s", field, out)
+		}
+	}
+	if gjson.GetBytes(out, "model").String() != "kimi-k2" {
+		t.Fatalf("model should be preserved, got %s", out)
+	}
+}
+
+func TestStripKimiUnsupportedFields_PreservesSupportedFields(t *testing.T) {
+	body := []byte(`{"model":"moonshot-v1-8k","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	out := stripKimiUnsupportedFields(body)
+	if gjson.GetBytes(out, "model").String() != "moonshot-v1-8k" {
+		t.Fatalf("model should be preserved, got %s", out)
+	}
+	if !gjson.GetBytes(out, "messages").IsArray() {
+		t.Fatalf("messages should be preserved, got %s", out)
+	}
+	if !gjson.GetBytes(out, "stream").Bool() {
+		t.Fatalf("stream should be preserved, got %s", out)
+	}
+}
+
+func TestStripKimiUnsupportedFields_NoUnsupportedFields(t *testing.T) {
+	body := []byte(`{"model":"moonshot-v1-8k","messages":[{"role":"user","content":"hello"}]}`)
+	out := stripKimiUnsupportedFields(body)
+	if gjson.GetBytes(out, "model").String() != "moonshot-v1-8k" {
+		t.Fatalf("model should be preserved, got %s", out)
+	}
+	if !gjson.GetBytes(out, "messages").IsArray() {
+		t.Fatalf("messages should be preserved, got %s", out)
+	}
+}
+
+func TestStripKimiUnsupportedFields_EmptyPayload(t *testing.T) {
+	out := stripKimiUnsupportedFields([]byte{})
+	if len(out) != 0 {
+		t.Fatalf("empty payload should return empty, got %s", out)
+	}
+}

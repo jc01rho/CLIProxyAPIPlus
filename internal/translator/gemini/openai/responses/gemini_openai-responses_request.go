@@ -80,18 +80,18 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 				if len(calls) > 0 {
 					outputMap := make(map[string]gjson.Result, len(outputs))
 					for _, outItem := range outputs {
-						outputMap[outItem.Get("call_id").String()] = outItem
+						outputMap[util.TruncateCallID(outItem.Get("call_id").String(), 64)] = outItem
 					}
 					for _, call := range calls {
 						normalized = append(normalized, call)
-						callID := call.Get("call_id").String()
+						callID := util.TruncateCallID(call.Get("call_id").String(), 64)
 						if resp, ok := outputMap[callID]; ok {
 							normalized = append(normalized, resp)
 							delete(outputMap, callID)
 						}
 					}
 					for _, outItem := range outputs {
-						if _, ok := outputMap[outItem.Get("call_id").String()]; ok {
+						if _, ok := outputMap[util.TruncateCallID(outItem.Get("call_id").String(), 64)]; ok {
 							normalized = append(normalized, outItem)
 						}
 					}
@@ -299,7 +299,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 				functionCall := []byte(`{"functionCall":{"name":"","args":{}}}`)
 				functionCall, _ = sjson.SetBytes(functionCall, "functionCall.name", name)
 				functionCall, _ = sjson.SetBytes(functionCall, "thoughtSignature", geminiResponsesThoughtSignature)
-				functionCall, _ = sjson.SetBytes(functionCall, "functionCall.id", item.Get("call_id").String())
+				functionCall, _ = sjson.SetBytes(functionCall, "functionCall.id", util.TruncateCallID(item.Get("call_id").String(), 64))
 
 				// Parse arguments JSON string and set as args object
 				if arguments != "" {
@@ -312,7 +312,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 
 			case "function_call_output":
 				// Handle function call outputs - convert to function message with functionResponse
-				callID := item.Get("call_id").String()
+				callID := util.TruncateCallID(item.Get("call_id").String(), 64)
 				// Use .Raw to preserve the JSON encoding (includes quotes for strings)
 				outputRaw := item.Get("output").Str
 
@@ -327,7 +327,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 				// We need to look back through the input array to find the matching call
 				if inputArray := root.Get("input"); inputArray.Exists() && inputArray.IsArray() {
 					inputArray.ForEach(func(_, prevItem gjson.Result) bool {
-						if prevItem.Get("type").String() == "function_call" && prevItem.Get("call_id").String() == callID {
+						if prevItem.Get("type").String() == "function_call" && util.TruncateCallID(prevItem.Get("call_id").String(), 64) == callID {
 							functionName = prevItem.Get("name").String()
 							return false // Stop iteration
 						}

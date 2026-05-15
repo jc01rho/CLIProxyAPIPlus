@@ -332,7 +332,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			}
 
 			// OpenAI-compatible streams must use SSE data lines.
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param)
+			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(normalizeDeltaContentArray(trimmedLine)), &param)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
@@ -606,6 +606,36 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 			}
 		}
 	}
+	payload = e.fixMistralMessageOrder(payload)
+	return payload
+}
+
+func (e *OpenAICompatExecutor) fixMistralMessageOrder(payload []byte) []byte {
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return payload
+	}
+	msgArray := messages.Array()
+	if len(msgArray) == 0 {
+		return payload
+	}
+	lastMsg := msgArray[len(msgArray)-1]
+	lastRole := strings.TrimSpace(lastMsg.Get("role").String())
+	if lastRole == "assistant" {
+		if !lastMsg.Get("prefix").Exists() {
+			updated, err := sjson.SetBytes(payload, "messages."+strconv.Itoa(len(msgArray)-1)+".prefix", true)
+			if err == nil {
+				log.Debug("openai compat: added prefix=true to last assistant message for Mistral message order")
+				return updated
+			}
+		}
+		if lastMsg.Get("prefix").Bool() {
+			return payload
+		}
+		placeholderUser := []byte(`{"role":"user","content":"."}`)
+		payload, _ = sjson.SetRawBytes(payload, "messages.-1", placeholderUser)
+		log.Debug("openai compat: appended placeholder user message for Mistral message order")
+	}
 	return payload
 }
 
@@ -709,3 +739,45 @@ func (e statusErr) Error() string {
 }
 func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
+
+func normalizeDeltaContentArray(line []byte) []byte {
+	const prefix = "data: "
+	if !bytes.HasPrefix(line, []byte(prefix)) {
+		return line
+	}
+	jsonPart := bytes.TrimSpace(line[len(prefix):])
+	if len(jsonPart) == 0 || bytes.Equal(jsonPart, []byte("[DONE]")) {
+		return line
+	}
+	choices := gjson.GetBytes(jsonPart, "choices")
+	if !choices.Exists() || !choices.IsArray() {
+		return line
+	}
+	modified := false
+	for idx, choice := range choices.Array() {
+		content := choice.Get("delta.content")
+		if !content.Exists() || !content.IsArray() {
+			continue
+		}
+		var textParts []string
+		for _, part := range content.Array() {
+			if part.Get("type").String() == "text" {
+				textParts = append(textParts, part.Get("text").String())
+			}
+		}
+		path := "choices." + strconv.Itoa(idx) + ".delta.content"
+		updated, err := sjson.SetBytes(jsonPart, path, strings.Join(textParts, ""))
+		if err != nil {
+			continue
+		}
+		jsonPart = updated
+		modified = true
+	}
+	if !modified {
+		return line
+	}
+	result := make([]byte, 0, len(prefix)+len(jsonPart))
+	result = append(result, []byte(prefix)...)
+	result = append(result, jsonPart...)
+	return result
+}
