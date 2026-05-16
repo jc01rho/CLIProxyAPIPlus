@@ -28,7 +28,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules"
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules/amp"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
@@ -225,7 +224,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Add middleware
 	engine.Use(blockScannerProbeMiddleware())
-	engine.Use(logging.GinLogrusLogger(cfg))
+		engine.Use(logging.GinLogrusLogger(cfg))
 	engine.Use(logging.GinLogrusRecovery())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
@@ -263,6 +262,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		handlers:            handlers.NewBaseAPIHandlers(&cfg.SDKConfig, authManager),
 		cfg:                 cfg,
 		accessManager:       accessManager,
+		apiKeyIPBlacklist:   managementHandlers.NewAPIKeyIPBlacklistStore(managementHandlers.DefaultAPIKeyIPBlacklistPolicy()),
 		requestLogger:       requestLogger,
 		loggerToggle:        toggle,
 		configFilePath:      configFilePath,
@@ -285,7 +285,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
-	s.apiKeyIPBlacklist = s.mgmt.APIKeyIPBlacklistStore()
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
 	}
@@ -335,11 +334,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		s.registerManagementRoutes()
 	}
 
-	// === CLIProxyAPIPlus 扩展: 注册 Kiro OAuth Web 路由 ===
-	kiroOAuthHandler := kiro.NewOAuthWebHandler(cfg)
-	kiroOAuthHandler.RegisterRoutes(engine)
-	log.Info("Kiro OAuth Web routes registered at /v0/oauth/kiro/*")
-
 	if optionState.keepAliveEnabled {
 		s.enableKeepAlive(optionState.keepAliveTimeout, optionState.keepAliveOnTimeout)
 	}
@@ -352,33 +346,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	return s
 }
-
 func blockScannerProbeMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if isScannerProbePath(c.Request.URL.Path) {
 			c.AbortWithStatus(http.StatusForbidden)
-			return
-		}
-		c.Next()
-	}
-}
-
-func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if s == nil || s.cfg == nil || !s.cfg.Home.Enabled {
-			c.Next()
-			return
-		}
-		if c != nil && c.Request != nil {
-			path := c.Request.URL.Path
-			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || path == "/management.html" {
-				c.Next()
-				return
-			}
-		}
-		client := home.Current()
-		if client == nil || !client.HeartbeatOK() {
-			c.AbortWithStatus(http.StatusServiceUnavailable)
 			return
 		}
 		c.Next()
@@ -406,6 +377,29 @@ func isScannerProbePath(path string) bool {
 		}
 	}
 	return false
+}
+
+
+func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil || s.cfg == nil || !s.cfg.Home.Enabled {
+			c.Next()
+			return
+		}
+		if c != nil && c.Request != nil {
+			path := c.Request.URL.Path
+			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || path == "/management.html" {
+				c.Next()
+				return
+			}
+		}
+		client := home.Current()
+		if client == nil || !client.HeartbeatOK() {
+			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+		c.Next()
+	}
 }
 
 // setupRoutes configures the API routes for the server.
@@ -447,7 +441,7 @@ func (s *Server) setupRoutes() {
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
-	codexDirect.Use(AuthMiddleware(s.accessManager))
+	codexDirect.Use(AuthMiddleware(s.accessManager, s.apiKeyIPBlacklist))
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
@@ -473,12 +467,6 @@ func (s *Server) setupRoutes() {
 				"GET /v1/models",
 			},
 		})
-	})
-
-	// Event logging endpoint - handles Claude Code telemetry requests
-	// Returns 200 OK to prevent 404 errors in logs
-	s.engine.POST("/api/event_logging/batch", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 	s.engine.POST("/v1internal:method", geminiCLIHandlers.CLIHandler)
 
@@ -513,20 +501,6 @@ func (s *Server) setupRoutes() {
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
 
-	s.engine.GET("/gitlab/callback", func(c *gin.Context) {
-		code := c.Query("code")
-		state := c.Query("state")
-		errStr := c.Query("error")
-		if errStr == "" {
-			errStr = c.Query("error_description")
-		}
-		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "gitlab", state, code, errStr)
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
-	})
-
 	s.engine.GET("/google/callback", func(c *gin.Context) {
 		code := c.Query("code")
 		state := c.Query("state")
@@ -550,34 +524,6 @@ func (s *Server) setupRoutes() {
 		}
 		if state != "" {
 			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "antigravity", state, code, errStr)
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
-	})
-
-	s.engine.GET("/kiro/callback", func(c *gin.Context) {
-		code := c.Query("code")
-		state := c.Query("state")
-		errStr := c.Query("error")
-		if errStr == "" {
-			errStr = c.Query("error_description")
-		}
-		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "kiro", state, code, errStr)
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
-	})
-
-	s.engine.GET("/cline/callback", func(c *gin.Context) {
-		code := c.Query("code")
-		state := c.Query("state")
-		errStr := c.Query("error")
-		if errStr == "" {
-			errStr = c.Query("error_description")
-		}
-		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "cline", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -639,9 +585,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
-		mgmt.GET("/api-key-ip-blacklist", s.mgmt.GetAPIKeyIPBlacklist)
-		mgmt.POST("/api-key-ip-blacklist", s.mgmt.PostAPIKeyIPBlacklist)
-		mgmt.DELETE("/api-key-ip-blacklist", s.mgmt.DeleteAPIKeyIPBlacklist)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 
 		mgmt.GET("/debug", s.mgmt.GetDebug)
@@ -663,7 +606,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/usage-statistics-enabled", s.mgmt.GetUsageStatisticsEnabled)
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
-		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 
 		mgmt.GET("/proxy-url", s.mgmt.GetProxyURL)
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
@@ -680,13 +622,12 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 
-		mgmt.GET("/copilot-quota", s.mgmt.GetCopilotQuota)
-
 		mgmt.GET("/api-keys", s.mgmt.GetAPIKeys)
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
 		mgmt.PATCH("/api-keys", s.mgmt.PatchAPIKeys)
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
+		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
 		mgmt.PUT("/gemini-api-key", s.mgmt.PutGeminiKeys)
@@ -701,15 +642,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/request-log", s.mgmt.GetRequestLog)
 		mgmt.PUT("/request-log", s.mgmt.PutRequestLog)
 		mgmt.PATCH("/request-log", s.mgmt.PutRequestLog)
-		mgmt.GET("/request-log-success-body", s.mgmt.GetRequestLogSuccessBody)
-		mgmt.PUT("/request-log-success-body", s.mgmt.PutRequestLogSuccessBody)
-		mgmt.PATCH("/request-log-success-body", s.mgmt.PutRequestLogSuccessBody)
-		mgmt.GET("/detailed-api-error-body-log-format", s.mgmt.GetDetailedAPIErrorBodyLogFormat)
-		mgmt.PUT("/detailed-api-error-body-log-format", s.mgmt.PutDetailedAPIErrorBodyLogFormat)
-		mgmt.PATCH("/detailed-api-error-body-log-format", s.mgmt.PutDetailedAPIErrorBodyLogFormat)
-		mgmt.GET("/detailed-api-error-body-log-limit", s.mgmt.GetDetailedAPIErrorBodyLogLimit)
-		mgmt.PUT("/detailed-api-error-body-log-limit", s.mgmt.PutDetailedAPIErrorBodyLogLimit)
-		mgmt.PATCH("/detailed-api-error-body-log-limit", s.mgmt.PutDetailedAPIErrorBodyLogLimit)
 		mgmt.GET("/ws-auth", s.mgmt.GetWebsocketAuth)
 		mgmt.PUT("/ws-auth", s.mgmt.PutWebsocketAuth)
 		mgmt.PATCH("/ws-auth", s.mgmt.PutWebsocketAuth)
@@ -753,20 +685,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/routing/strategy", s.mgmt.PutRoutingStrategy)
 		mgmt.PATCH("/routing/strategy", s.mgmt.PutRoutingStrategy)
 
-		mgmt.GET("/routing/mode", s.mgmt.GetRoutingMode)
-		mgmt.PUT("/routing/mode", s.mgmt.PutRoutingMode)
-		mgmt.PATCH("/routing/mode", s.mgmt.PutRoutingMode)
-
-		mgmt.GET("/fallback/models", s.mgmt.GetFallbackModels)
-		mgmt.PUT("/fallback/models", s.mgmt.PutFallbackModels)
-
-		mgmt.GET("/fallback/chain", s.mgmt.GetFallbackChain)
-		mgmt.PUT("/fallback/chain", s.mgmt.PutFallbackChain)
-
-		mgmt.GET("/routing/token-threshold-rules", s.mgmt.GetTokenThresholdRules)
-		mgmt.PUT("/routing/token-threshold-rules", s.mgmt.PutTokenThresholdRules)
-		mgmt.PATCH("/routing/token-threshold-rules", s.mgmt.PutTokenThresholdRules)
-
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)
@@ -776,11 +694,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/codex-api-key", s.mgmt.PutCodexKeys)
 		mgmt.PATCH("/codex-api-key", s.mgmt.PatchCodexKey)
 		mgmt.DELETE("/codex-api-key", s.mgmt.DeleteCodexKey)
-
-		mgmt.GET("/ollama-api-key", s.mgmt.GetOllamaKeys)
-		mgmt.PUT("/ollama-api-key", s.mgmt.PutOllamaKeys)
-		mgmt.PATCH("/ollama-api-key", s.mgmt.PatchOllamaKey)
-		mgmt.DELETE("/ollama-api-key", s.mgmt.DeleteOllamaKey)
 
 		mgmt.GET("/openai-compatibility", s.mgmt.GetOpenAICompat)
 		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)
@@ -810,23 +723,13 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
-		mgmt.POST("/auth-files/:id/refresh-tier", s.mgmt.RefreshTier)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
 
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)
 		mgmt.GET("/codex-auth-url", s.mgmt.RequestCodexToken)
-		mgmt.GET("/gitlab-auth-url", s.mgmt.RequestGitLabToken)
-		mgmt.POST("/gitlab-auth-url", s.mgmt.RequestGitLabPATToken)
 		mgmt.GET("/gemini-cli-auth-url", s.mgmt.RequestGeminiCLIToken)
 		mgmt.GET("/antigravity-auth-url", s.mgmt.RequestAntigravityToken)
-		mgmt.GET("/kilo-auth-url", s.mgmt.RequestKiloToken)
 		mgmt.GET("/kimi-auth-url", s.mgmt.RequestKimiToken)
-		mgmt.GET("/iflow-auth-url", s.mgmt.RequestIFlowToken)
-		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowCookieToken)
-		mgmt.GET("/kiro-auth-url", s.mgmt.RequestKiroToken)
-		mgmt.GET("/cursor-auth-url", s.mgmt.RequestCursorToken)
-		mgmt.GET("/github-auth-url", s.mgmt.RequestGitHubToken)
-		mgmt.POST("/request-cline-token", s.mgmt.RequestClineToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 	}
@@ -1488,6 +1391,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 
 	if s.handlers != nil && s.handlers.AuthManager != nil {
 		s.handlers.AuthManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
+		s.handlers.AuthManager.SetOAuthModelAlias(cfg.OAuthModelAlias)
 		s.handlers.AuthManager.SetFallbackModels(cfg.Routing.FallbackModels)
 		s.handlers.AuthManager.SetFallbackChain(cfg.Routing.FallbackChain, cfg.Routing.FallbackMaxDepth)
 	}
@@ -1572,7 +1476,6 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	geminiAPIKeyCount := len(cfg.GeminiKey)
 	claudeAPIKeyCount := len(cfg.ClaudeKey)
 	codexAPIKeyCount := len(cfg.CodexKey)
-	ollamaAPIKeyCount := len(cfg.OllamaKey)
 	vertexAICompatCount := len(cfg.VertexCompatAPIKey)
 	openAICompatCount := 0
 	for i := range cfg.OpenAICompatibility {
@@ -1583,14 +1486,13 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		openAICompatCount += len(entry.APIKeyEntries)
 	}
 
-	total := authEntries + geminiAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + ollamaAPIKeyCount + vertexAICompatCount + openAICompatCount
-	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Claude API keys + %d Codex keys + %d Ollama keys + %d Vertex-compat + %d OpenAI-compat)\n",
+	total := authEntries + geminiAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + vertexAICompatCount + openAICompatCount
+	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Claude API keys + %d Codex keys + %d Vertex-compat + %d OpenAI-compat)\n",
 		total,
 		authEntries,
 		geminiAPIKeyCount,
 		claudeAPIKeyCount,
 		codexAPIKeyCount,
-		ollamaAPIKeyCount,
 		vertexAICompatCount,
 		openAICompatCount,
 	)
@@ -1604,6 +1506,7 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 }
 
 // (management handlers moved to internal/api/handlers/management)
+
 
 func (s *Server) apiKeyIPBlacklistMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
