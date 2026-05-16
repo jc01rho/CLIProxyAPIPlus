@@ -89,7 +89,8 @@ CLIProxyAPI-Dashboard/AGENTS.md
 
 - Root `git status` is the source of truth for nested project pointers; `.gitmodules` is absent.
 - Search tools may miss nested gitlink files from root. Re-run file discovery inside nested repos when editing subproject AGENTS.md.
-- When recommending a new root git tag, inspect recent root tags first and continue the latest stable base version unless the user explicitly wants a new base release line.
-- Current root tag convention uses `v<major>.<minor>.<patch>-<sequence>` for follow-up releases on the same base version (example: `v6.10.2-2`, `v6.10.2-3`, `v6.10.2-4`).
-- For a pointer/update follow-up commit like `chore: update ... pointer`, prefer incrementing the suffix on the latest matching base tag instead of bumping the patch version. Example: after `v6.10.2-4`, recommend `v6.10.2-5`.
-- Only propose a new base tag such as `v6.10.3` when the user explicitly wants a new release line or the recent tag history clearly starts a new base series.
+- Do not create release tags from the repository root. Create tags only inside the relevant subdirectory repository (`CLIProxyAPIPlus/`, `Cli-Proxy-API-Management-Center/`, or `CLIProxyAPI-Dashboard/`).
+- Before creating or recommending a tag, inspect the latest tags of the target subdirectory repository and continue that repository's own version line.
+- Current observed latest tags are `CLIProxyAPIPlus: v7.0.4-5`, `Cli-Proxy-API-Management-Center: v1.10.1`, and `CLIProxyAPI-Dashboard: v2.8.8-3`; re-check before tagging because each subrepository advances independently.
+- For follow-up releases on the same base version inside a subdirectory repository, prefer incrementing the suffix (`v<major>.<minor>.<patch>-<sequence>`) instead of inventing a root-level tag.
+- Only propose a new base tag inside the target subdirectory repository when the user explicitly wants a new release line or that repository's recent tag history clearly starts a new base series.
