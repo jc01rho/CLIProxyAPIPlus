@@ -6,3 +6,7 @@ trae-auth-flow.md
 .opencode/
 gh-cli-cache/
 node-compile-cache/
+.playwright-mcp/
+.sisyphus/
+.tldr/
+cpa-usage-keeper/
