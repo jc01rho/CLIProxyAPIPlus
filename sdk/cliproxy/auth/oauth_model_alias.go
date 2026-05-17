@@ -317,7 +317,13 @@ func resolveRequestedModelForAuth(m *Manager, auth *Auth, channel string, candid
 			if model == nil || !strings.EqualFold(strings.TrimSpace(model.ID), modelKey) {
 				continue
 			}
-			// ExecutionTarget field removed in upstream; use model.ID for alias resolution
+			execTarget := strings.TrimSpace(model.ExecutionTarget)
+			if execTarget != "" {
+				// Alias-exposed model: resolve to upstream execution target.
+				aliasResolved = preserveResolvedModelSuffix(execTarget, requestResult)
+				break
+			}
+			// Real registered model - return as-is.
 			log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: candidate %s is a real registered model for auth %s, returning as-is", candidate, auth.ID)
 			return preserveResolvedModelSuffix(candidate, requestResult)
 		}
