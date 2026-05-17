@@ -3,7 +3,6 @@
 // and integration with various AI API handlers (OpenAI, Claude, Gemini).
 // The server supports hot-reloading of clients and configuration.
 package api
-
 import (
 	"context"
 	"crypto/subtle"
@@ -21,7 +20,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
@@ -46,9 +44,7 @@ import (
 	"golang.org/x/net/http2"
 	"gopkg.in/yaml.v3"
 )
-
 const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
-
 type serverOptionConfig struct {
 	extraMiddleware      []gin.HandlerFunc
 	engineConfigurator   func(*gin.Engine)
@@ -60,10 +56,8 @@ type serverOptionConfig struct {
 	keepAliveOnTimeout   func()
 	postAuthHook         auth.PostAuthHook
 }
-
 // ServerOption customises HTTP server construction.
 type ServerOption func(*serverOptionConfig)
-
 func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.RequestLogger {
 	configDir := filepath.Dir(configPath)
 	logsDir := logging.ResolveLogDirectory(cfg)
@@ -71,35 +65,30 @@ func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.
 	logger.SetHomeEnabled(cfg != nil && cfg.Home.Enabled)
 	return logger
 }
-
 // WithMiddleware appends additional Gin middleware during server construction.
 func WithMiddleware(mw ...gin.HandlerFunc) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.extraMiddleware = append(cfg.extraMiddleware, mw...)
 	}
 }
-
 // WithEngineConfigurator allows callers to mutate the Gin engine prior to middleware setup.
 func WithEngineConfigurator(fn func(*gin.Engine)) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.engineConfigurator = fn
 	}
 }
-
 // WithRouterConfigurator appends a callback after default routes are registered.
 func WithRouterConfigurator(fn func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.routerConfigurator = fn
 	}
 }
-
 // WithLocalManagementPassword stores a runtime-only management password accepted for localhost requests.
 func WithLocalManagementPassword(password string) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.localPassword = password
 	}
 }
-
 // WithKeepAliveEndpoint enables a keep-alive endpoint with the provided timeout and callback.
 func WithKeepAliveEndpoint(timeout time.Duration, onTimeout func()) ServerOption {
 	return func(cfg *serverOptionConfig) {
@@ -111,89 +100,68 @@ func WithKeepAliveEndpoint(timeout time.Duration, onTimeout func()) ServerOption
 		cfg.keepAliveOnTimeout = onTimeout
 	}
 }
-
 // WithRequestLoggerFactory customises request logger creation.
 func WithRequestLoggerFactory(factory func(*config.Config, string) logging.RequestLogger) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.requestLoggerFactory = factory
 	}
 }
-
 // WithPostAuthHook registers a hook to be called after auth record creation.
 func WithPostAuthHook(hook auth.PostAuthHook) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.postAuthHook = hook
 	}
 }
-
 // Server represents the main API server.
 // It encapsulates the Gin engine, HTTP server, handlers, and configuration.
 type Server struct {
 	// engine is the Gin web framework engine instance.
 	engine *gin.Engine
-
 	// server is the underlying HTTP server.
 	server *http.Server
-
 	// muxBaseListener is the shared TCP listener used to serve both HTTP and Redis protocol traffic.
 	muxBaseListener net.Listener
-
 	// muxHTTPListener receives HTTP connections selected by the multiplexer.
 	muxHTTPListener *muxListener
-
 	// handlers contains the API handlers for processing requests.
 	handlers *handlers.BaseAPIHandler
-
 	// cfg holds the current server configuration.
 	cfg *config.Config
-
 	// oldConfigYaml stores a YAML snapshot of the previous configuration for change detection.
 	// This prevents issues when the config object is modified in place by Management API.
 	oldConfigYaml []byte
-
 	// accessManager handles request authentication providers.
 	accessManager *sdkaccess.Manager
-
 	// requestLogger is the request logger instance for dynamic configuration updates.
 	requestLogger logging.RequestLogger
 	loggerToggle  func(bool)
-
 	// configFilePath is the absolute path to the YAML config file for persistence.
 	configFilePath string
-
 	// currentPath is the absolute path to the current working directory.
 	currentPath string
-
 	// wsRoutes tracks registered websocket upgrade paths.
 	wsRouteMu     sync.Mutex
 	wsRoutes      map[string]struct{}
 	wsAuthChanged func(bool, bool)
 	wsAuthEnabled atomic.Bool
-
 	// management handler
 	mgmt              *managementHandlers.Handler
 	apiKeyIPBlacklist *managementHandlers.APIKeyIPBlacklistStore
-
 	// ampModule is the Amp routing module for model mapping hot-reload
 	ampModule *ampmodule.AmpModule
-
 	// managementRoutesRegistered tracks whether the management routes have been attached to the engine.
 	managementRoutesRegistered atomic.Bool
 	// managementRoutesEnabled controls whether management endpoints serve real handlers.
 	managementRoutesEnabled atomic.Bool
-
 	// envManagementSecret indicates whether MANAGEMENT_PASSWORD is configured.
 	envManagementSecret bool
-
 	localPassword string
-
 	keepAliveEnabled   bool
 	keepAliveTimeout   time.Duration
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
 }
-
 // NewServer creates and initializes a new API server instance.
 // It sets up the Gin engine, middleware, routes, and handlers.
 //
@@ -215,13 +183,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if !cfg.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
-
 	// Create gin engine
 	engine := gin.New()
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
 	}
-
 	// Add middleware
 	engine.Use(blockScannerProbeMiddleware())
 		engine.Use(logging.GinLogrusLogger(cfg))
@@ -229,7 +195,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
 	}
-
 	// Add request logging middleware (positioned after recovery, before auth)
 	// Resolve logs directory relative to the configuration file directory.
 	var requestLogger logging.RequestLogger
@@ -245,17 +210,14 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 			}
 		}
 	}
-
 	engine.Use(corsMiddleware())
 	wd, err := os.Getwd()
 	if err != nil {
 		wd = configFilePath
 	}
-
 	envAdminPassword, envAdminPasswordSet := os.LookupEnv("MANAGEMENT_PASSWORD")
 	envAdminPassword = strings.TrimSpace(envAdminPassword)
 	envManagementSecret := envAdminPasswordSet && envAdminPassword != ""
-
 	// Create server instance
 	s := &Server{
 		engine:              engine,
@@ -300,14 +262,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		s.UpdateClients(updatedCfg)
 	})
 	s.localPassword = optionState.localPassword
-
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
 	// subscribe-config heartbeat connection is healthy.
 	engine.Use(s.homeHeartbeatMiddleware())
-
 	// Setup routes
 	s.setupRoutes()
-
 	// Register Amp module using V2 interface with Context
 	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager, s.apiKeyIPBlacklist))
 	ctx := modules.Context{
@@ -319,12 +278,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if err := modules.RegisterModule(ctx, s.ampModule); err != nil {
 		log.Errorf("Failed to register Amp module: %v", err)
 	}
-
 	// Apply additional router configurators from options
 	if optionState.routerConfigurator != nil {
 		optionState.routerConfigurator(engine, s.handlers, cfg)
 	}
-
 	// Register management routes when configuration or environment secrets are available,
 	// or when a local management password is provided (e.g. TUI mode).
 	hasManagementSecret := cfg.RemoteManagement.SecretKey != "" || envManagementSecret || s.localPassword != ""
@@ -333,17 +290,14 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if hasManagementSecret {
 		s.registerManagementRoutes()
 	}
-
 	if optionState.keepAliveEnabled {
 		s.enableKeepAlive(optionState.keepAliveTimeout, optionState.keepAliveOnTimeout)
 	}
-
 	// Create HTTP server
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Handler: engine,
 	}
-
 	return s
 }
 func blockScannerProbeMiddleware() gin.HandlerFunc {
@@ -355,7 +309,6 @@ func blockScannerProbeMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
-
 func isScannerProbePath(path string) bool {
 	lower := strings.ToLower(path)
 	segments := strings.Split(lower, "/")
@@ -378,8 +331,6 @@ func isScannerProbePath(path string) bool {
 	}
 	return false
 }
-
-
 func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s == nil || s.cfg == nil || !s.cfg.Home.Enabled {
@@ -401,7 +352,6 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
-
 // setupRoutes configures the API routes for the server.
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
@@ -410,19 +360,16 @@ func (s *Server) setupRoutes() {
 			c.Status(http.StatusOK)
 			return
 		}
-
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	}
 	s.engine.GET("/healthz", healthzHandler)
 	s.engine.HEAD("/healthz", healthzHandler)
-
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
-
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager, s.apiKeyIPBlacklist))
@@ -443,7 +390,6 @@ func (s *Server) setupRoutes() {
 		v1.POST("/responses", openaiResponsesHandlers.Responses)
 		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
 	}
-
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
 	codexDirect.Use(AuthMiddleware(s.accessManager, s.apiKeyIPBlacklist))
@@ -452,7 +398,6 @@ func (s *Server) setupRoutes() {
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
 		codexDirect.POST("/responses/compact", openaiResponsesHandlers.Compact)
 	}
-
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager, s.apiKeyIPBlacklist))
@@ -461,7 +406,6 @@ func (s *Server) setupRoutes() {
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
 		v1beta.GET("/models/*action", s.geminiGetHandler(geminiHandlers))
 	}
-
 	// Root endpoint
 	s.engine.GET("/", s.apiKeyIPBlacklistMiddleware(), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -474,7 +418,6 @@ func (s *Server) setupRoutes() {
 		})
 	})
 	s.engine.POST("/v1internal:method", geminiCLIHandlers.CLIHandler)
-
 	// OAuth callback endpoints (reuse main server port)
 	// These endpoints receive provider redirects and persist
 	// the short-lived code/state for the waiting goroutine.
@@ -491,7 +434,6 @@ func (s *Server) setupRoutes() {
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
-
 	s.engine.GET("/codex/callback", func(c *gin.Context) {
 		code := c.Query("code")
 		state := c.Query("state")
@@ -505,7 +447,6 @@ func (s *Server) setupRoutes() {
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
-
 	s.engine.GET("/google/callback", func(c *gin.Context) {
 		code := c.Query("code")
 		state := c.Query("state")
@@ -519,7 +460,6 @@ func (s *Server) setupRoutes() {
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
-
 	s.engine.GET("/antigravity/callback", func(c *gin.Context) {
 		code := c.Query("code")
 		state := c.Query("state")
@@ -533,7 +473,6 @@ func (s *Server) setupRoutes() {
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
-
 	s.engine.GET("/xai/callback", func(c *gin.Context) {
 		code := c.Query("code")
 		state := c.Query("state")
@@ -547,10 +486,8 @@ func (s *Server) setupRoutes() {
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
-
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
 }
-
 // AttachWebsocketRoute registers a websocket upgrade handler on the primary Gin engine.
 // The handler is served as-is without additional middleware beyond the standard stack already configured.
 func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
@@ -571,7 +508,6 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 	}
 	s.wsRoutes[trimmed] = struct{}{}
 	s.wsRouteMu.Unlock()
-
 	authMiddleware := AuthMiddleware(s.accessManager, s.apiKeyIPBlacklist)
 	conditionalAuth := func(c *gin.Context) {
 		if !s.wsAuthEnabled.Load() {
@@ -584,10 +520,8 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 		handler.ServeHTTP(c.Writer, c.Request)
 		c.Abort()
 	}
-
 	s.engine.GET(trimmed, conditionalAuth, finalHandler)
 }
-
 func (s *Server) registerManagementRoutes() {
 	if s == nil || s.engine == nil || s.mgmt == nil {
 		return
@@ -595,9 +529,7 @@ func (s *Server) registerManagementRoutes() {
 	if !s.managementRoutesRegistered.CompareAndSwap(false, true) {
 		return
 	}
-
 	log.Info("management routes registered after secret key configuration")
-
 	mgmt := s.engine.Group("/v0/management")
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
@@ -605,54 +537,42 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
-
 		mgmt.GET("/debug", s.mgmt.GetDebug)
 		mgmt.PUT("/debug", s.mgmt.PutDebug)
 		mgmt.PATCH("/debug", s.mgmt.PutDebug)
-
 		mgmt.GET("/logging-to-file", s.mgmt.GetLoggingToFile)
 		mgmt.PUT("/logging-to-file", s.mgmt.PutLoggingToFile)
 		mgmt.PATCH("/logging-to-file", s.mgmt.PutLoggingToFile)
-
 		mgmt.GET("/logs-max-total-size-mb", s.mgmt.GetLogsMaxTotalSizeMB)
 		mgmt.PUT("/logs-max-total-size-mb", s.mgmt.PutLogsMaxTotalSizeMB)
 		mgmt.PATCH("/logs-max-total-size-mb", s.mgmt.PutLogsMaxTotalSizeMB)
-
 		mgmt.GET("/error-logs-max-files", s.mgmt.GetErrorLogsMaxFiles)
 		mgmt.PUT("/error-logs-max-files", s.mgmt.PutErrorLogsMaxFiles)
 		mgmt.PATCH("/error-logs-max-files", s.mgmt.PutErrorLogsMaxFiles)
-
 		mgmt.GET("/usage-statistics-enabled", s.mgmt.GetUsageStatisticsEnabled)
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
-
 		mgmt.GET("/proxy-url", s.mgmt.GetProxyURL)
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
-
 		mgmt.POST("/api-call", s.mgmt.APICall)
-
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)
 		mgmt.PATCH("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)
-
 		mgmt.GET("/quota-exceeded/switch-preview-model", s.mgmt.GetSwitchPreviewModel)
 		mgmt.PUT("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
-
 		mgmt.GET("/api-keys", s.mgmt.GetAPIKeys)
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
 		mgmt.PATCH("/api-keys", s.mgmt.PatchAPIKeys)
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
-
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
 		mgmt.PUT("/gemini-api-key", s.mgmt.PutGeminiKeys)
 		mgmt.PATCH("/gemini-api-key", s.mgmt.PatchGeminiKey)
 		mgmt.DELETE("/gemini-api-key", s.mgmt.DeleteGeminiKey)
-
 		mgmt.GET("/logs", s.mgmt.GetLogs)
 		mgmt.DELETE("/logs", s.mgmt.DeleteLogs)
 		mgmt.GET("/request-error-logs", s.mgmt.GetRequestErrorLogs)
@@ -664,7 +584,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/ws-auth", s.mgmt.GetWebsocketAuth)
 		mgmt.PUT("/ws-auth", s.mgmt.PutWebsocketAuth)
 		mgmt.PATCH("/ws-auth", s.mgmt.PutWebsocketAuth)
-
 		mgmt.GET("/ampcode", s.mgmt.GetAmpCode)
 		mgmt.GET("/ampcode/upstream-url", s.mgmt.GetAmpUpstreamURL)
 		mgmt.PUT("/ampcode/upstream-url", s.mgmt.PutAmpUpstreamURL)
@@ -688,38 +607,30 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/ampcode/upstream-api-keys", s.mgmt.PutAmpUpstreamAPIKeys)
 		mgmt.PATCH("/ampcode/upstream-api-keys", s.mgmt.PatchAmpUpstreamAPIKeys)
 		mgmt.DELETE("/ampcode/upstream-api-keys", s.mgmt.DeleteAmpUpstreamAPIKeys)
-
 		mgmt.GET("/request-retry", s.mgmt.GetRequestRetry)
 		mgmt.PUT("/request-retry", s.mgmt.PutRequestRetry)
 		mgmt.PATCH("/request-retry", s.mgmt.PutRequestRetry)
 		mgmt.GET("/max-retry-interval", s.mgmt.GetMaxRetryInterval)
 		mgmt.PUT("/max-retry-interval", s.mgmt.PutMaxRetryInterval)
 		mgmt.PATCH("/max-retry-interval", s.mgmt.PutMaxRetryInterval)
-
 		mgmt.GET("/force-model-prefix", s.mgmt.GetForceModelPrefix)
 		mgmt.PUT("/force-model-prefix", s.mgmt.PutForceModelPrefix)
 		mgmt.PATCH("/force-model-prefix", s.mgmt.PutForceModelPrefix)
-
 		mgmt.GET("/routing/strategy", s.mgmt.GetRoutingStrategy)
 		mgmt.PUT("/routing/strategy", s.mgmt.PutRoutingStrategy)
 		mgmt.PATCH("/routing/strategy", s.mgmt.PutRoutingStrategy)
-
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)
 		mgmt.DELETE("/claude-api-key", s.mgmt.DeleteClaudeKey)
-
 		mgmt.GET("/codex-api-key", s.mgmt.GetCodexKeys)
 		mgmt.PUT("/codex-api-key", s.mgmt.PutCodexKeys)
 		mgmt.PATCH("/codex-api-key", s.mgmt.PatchCodexKey)
 		mgmt.DELETE("/codex-api-key", s.mgmt.DeleteCodexKey)
-
 		mgmt.GET("/ollama-api-key", s.mgmt.GetOllamaKeys)
 		mgmt.PUT("/ollama-api-key", s.mgmt.PutOllamaKeys)
 		mgmt.PATCH("/ollama-api-key", s.mgmt.PatchOllamaKey)
 		mgmt.DELETE("/ollama-api-key", s.mgmt.DeleteOllamaKey)
-
-
 		mgmt.GET("/api-key-ip-blacklist", s.mgmt.GetAPIKeyIPBlacklist)
 		mgmt.POST("/api-key-ip-blacklist", s.mgmt.PostAPIKeyIPBlacklist)
 		mgmt.DELETE("/api-key-ip-blacklist", s.mgmt.DeleteAPIKeyIPBlacklist)
@@ -727,25 +638,18 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)
 		mgmt.PATCH("/openai-compatibility", s.mgmt.PatchOpenAICompat)
 		mgmt.DELETE("/openai-compatibility", s.mgmt.DeleteOpenAICompat)
-
-		mgmt.GET("/api-key-ip-blacklist", s.mgmt.GetAPIKeyIPBlacklist)
-		mgmt.POST("/api-key-ip-blacklist", s.mgmt.PostAPIKeyIPBlacklist)
-		mgmt.DELETE("/api-key-ip-blacklist", s.mgmt.DeleteAPIKeyIPBlacklist)
 		mgmt.GET("/vertex-api-key", s.mgmt.GetVertexCompatKeys)
 		mgmt.PUT("/vertex-api-key", s.mgmt.PutVertexCompatKeys)
 		mgmt.PATCH("/vertex-api-key", s.mgmt.PatchVertexCompatKey)
 		mgmt.DELETE("/vertex-api-key", s.mgmt.DeleteVertexCompatKey)
-
 		mgmt.GET("/oauth-excluded-models", s.mgmt.GetOAuthExcludedModels)
 		mgmt.PUT("/oauth-excluded-models", s.mgmt.PutOAuthExcludedModels)
 		mgmt.PATCH("/oauth-excluded-models", s.mgmt.PatchOAuthExcludedModels)
 		mgmt.DELETE("/oauth-excluded-models", s.mgmt.DeleteOAuthExcludedModels)
-
 		mgmt.GET("/oauth-model-alias", s.mgmt.GetOAuthModelAlias)
 		mgmt.PUT("/oauth-model-alias", s.mgmt.PutOAuthModelAlias)
 		mgmt.PATCH("/oauth-model-alias", s.mgmt.PatchOAuthModelAlias)
 		mgmt.DELETE("/oauth-model-alias", s.mgmt.DeleteOAuthModelAlias)
-
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
@@ -755,7 +659,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
-
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)
 		mgmt.GET("/codex-auth-url", s.mgmt.RequestCodexToken)
 		mgmt.GET("/gemini-cli-auth-url", s.mgmt.RequestGeminiCLIToken)
@@ -766,7 +669,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 	}
 }
-
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s == nil || s.cfg == nil {
@@ -784,7 +686,6 @@ func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
-
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	cfg := s.cfg
 	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
@@ -796,7 +697,6 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
-
 	if _, err := os.Stat(filePath); err != nil {
 		if os.IsNotExist(err) {
 			// Synchronously ensure management.html is available with a detached context.
@@ -811,26 +711,20 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 			return
 		}
 	}
-
 	c.File(filePath)
 }
-
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {
 	if timeout <= 0 || onTimeout == nil {
 		return
 	}
-
 	s.keepAliveEnabled = true
 	s.keepAliveTimeout = timeout
 	s.keepAliveOnTimeout = onTimeout
 	s.keepAliveHeartbeat = make(chan struct{}, 1)
 	s.keepAliveStop = make(chan struct{}, 1)
-
 	s.engine.GET("/keep-alive", s.handleKeepAlive)
-
 	go s.watchKeepAlive()
 }
-
 func (s *Server) handleKeepAlive(c *gin.Context) {
 	if s.localPassword != "" {
 		provided := strings.TrimSpace(c.GetHeader("Authorization"))
@@ -848,11 +742,9 @@ func (s *Server) handleKeepAlive(c *gin.Context) {
 			return
 		}
 	}
-
 	s.signalKeepAlive()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
-
 func (s *Server) signalKeepAlive() {
 	if !s.keepAliveEnabled {
 		return
@@ -862,15 +754,12 @@ func (s *Server) signalKeepAlive() {
 	default:
 	}
 }
-
 func (s *Server) watchKeepAlive() {
 	if !s.keepAliveEnabled {
 		return
 	}
-
 	timer := time.NewTimer(s.keepAliveTimeout)
 	defer timer.Stop()
-
 	for {
 		select {
 		case <-timer.C:
@@ -892,7 +781,6 @@ func (s *Server) watchKeepAlive() {
 		}
 	}
 }
-
 // unifiedModelsHandler creates a unified handler for the /v1/models endpoint
 // that routes to different handlers based on the User-Agent header.
 // If User-Agent starts with "claude-cli", it routes to Claude handler,
@@ -907,14 +795,11 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 			openaiHandler.OpenAIModels(c)
 			return
 		}
-
 		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
 			s.handleHomeModels(c)
 			return
 		}
-
 		userAgent := c.GetHeader("User-Agent")
-
 		// Route to Claude handler if User-Agent starts with "claude-cli"
 		if strings.HasPrefix(userAgent, "claude-cli") {
 			// log.Debugf("Routing /v1/models to Claude handler for User-Agent: %s", userAgent)
@@ -925,13 +810,11 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 		}
 	}
 }
-
 func (s *Server) handleHomeCodexClientModels(c *gin.Context) {
 	entries, ok := s.loadHomeModelEntries(c)
 	if !ok {
 		return
 	}
-
 	models := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
 		model := map[string]any{
@@ -950,48 +833,39 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context) {
 		}
 		models = append(models, model)
 	}
-
 	c.JSON(http.StatusOK, openai.CodexClientModelsResponse(models))
 }
-
 func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
 			s.handleHomeGeminiModels(c)
 			return
 		}
-
 		geminiHandler.GeminiModels(c)
 	}
 }
-
 func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
 			s.handleHomeGeminiModel(c)
 			return
 		}
-
 		geminiHandler.GeminiGetHandler(c)
 	}
 }
-
 type homeModelEntry struct {
 	id          string
 	created     int64
 	ownedBy     string
 	displayName string
 }
-
 func (s *Server) handleHomeModels(c *gin.Context) {
 	entries, ok := s.loadHomeModelEntries(c)
 	if !ok {
 		return
 	}
-
 	userAgent := c.GetHeader("User-Agent")
 	isClaude := strings.HasPrefix(userAgent, "claude-cli")
-
 	if isClaude {
 		out := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
@@ -1026,7 +900,6 @@ func (s *Server) handleHomeModels(c *gin.Context) {
 		})
 		return
 	}
-
 	filtered := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
 		model := map[string]any{
@@ -1046,24 +919,20 @@ func (s *Server) handleHomeModels(c *gin.Context) {
 		"data":   filtered,
 	})
 }
-
 func (s *Server) handleHomeGeminiModels(c *gin.Context) {
 	entries, ok := s.loadHomeModelEntries(c)
 	if !ok {
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"models": formatHomeGeminiModels(entries),
 	})
 }
-
 func (s *Server) handleHomeGeminiModel(c *gin.Context) {
 	entries, ok := s.loadHomeModelEntries(c)
 	if !ok {
 		return
 	}
-
 	action := strings.TrimPrefix(c.Param("action"), "/")
 	action = strings.TrimSpace(action)
 	for _, entry := range entries {
@@ -1072,7 +941,6 @@ func (s *Server) handleHomeGeminiModel(c *gin.Context) {
 			return
 		}
 	}
-
 	c.JSON(http.StatusNotFound, handlers.ErrorResponse{
 		Error: handlers.ErrorDetail{
 			Message: "Not Found",
@@ -1080,7 +948,6 @@ func (s *Server) handleHomeGeminiModel(c *gin.Context) {
 		},
 	})
 }
-
 func (s *Server) loadHomeModelEntries(c *gin.Context) ([]homeModelEntry, bool) {
 	if s == nil || c == nil || c.Request == nil {
 		return nil, false
@@ -1095,7 +962,6 @@ func (s *Server) loadHomeModelEntries(c *gin.Context) ([]homeModelEntry, bool) {
 		})
 		return nil, false
 	}
-
 	raw, errGet := client.GetModels(c.Request.Context())
 	if errGet != nil {
 		c.JSON(http.StatusBadGateway, handlers.ErrorResponse{
@@ -1106,7 +972,6 @@ func (s *Server) loadHomeModelEntries(c *gin.Context) ([]homeModelEntry, bool) {
 		})
 		return nil, false
 	}
-
 	entries, errDecode := decodeHomeModels(raw)
 	if errDecode != nil {
 		c.JSON(http.StatusBadGateway, handlers.ErrorResponse{
@@ -1117,10 +982,8 @@ func (s *Server) loadHomeModelEntries(c *gin.Context) ([]homeModelEntry, bool) {
 		})
 		return nil, false
 	}
-
 	return entries, true
 }
-
 func formatHomeGeminiModels(entries []homeModelEntry) []map[string]any {
 	out := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
@@ -1128,7 +991,6 @@ func formatHomeGeminiModels(entries []homeModelEntry) []map[string]any {
 	}
 	return out
 }
-
 func formatHomeGeminiModel(entry homeModelEntry) map[string]any {
 	name := entry.id
 	if !strings.HasPrefix(name, "models/") {
@@ -1145,7 +1007,6 @@ func formatHomeGeminiModel(entry homeModelEntry) map[string]any {
 		"supportedGenerationMethods": []string{"generateContent"},
 	}
 }
-
 func homeGeminiModelMatches(entry homeModelEntry, action string) bool {
 	id := strings.TrimSpace(entry.id)
 	if id == "" || action == "" {
@@ -1155,12 +1016,10 @@ func homeGeminiModelMatches(entry homeModelEntry, action string) bool {
 	normalizedID := strings.TrimPrefix(id, "models/")
 	return action == id || action == "models/"+id || normalizedAction == normalizedID
 }
-
 func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("home models payload is empty")
 	}
-
 	var bySection map[string][]map[string]any
 	if err := json.Unmarshal(raw, &bySection); err != nil {
 		return nil, fmt.Errorf("parse home models payload: %w", err)
@@ -1168,7 +1027,6 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 	if len(bySection) == 0 {
 		return nil, fmt.Errorf("home models payload has no sections")
 	}
-
 	seen := make(map[string]struct{})
 	out := make([]homeModelEntry, 0, 256)
 	for _, models := range bySection {
@@ -1187,7 +1045,6 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 				continue
 			}
 			seen[id] = struct{}{}
-
 			created := int64(0)
 			switch v := model["created"].(type) {
 			case float64:
@@ -1201,7 +1058,6 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 					created = n
 				}
 			}
-
 			ownedBy, _ := model["owned_by"].(string)
 			ownedBy = strings.TrimSpace(ownedBy)
 			displayName, _ := model["display_name"].(string)
@@ -1210,7 +1066,6 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 				displayName, _ = model["displayName"].(string)
 				displayName = strings.TrimSpace(displayName)
 			}
-
 			out = append(out, homeModelEntry{
 				id:          id,
 				created:     created,
@@ -1219,14 +1074,12 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 			})
 		}
 	}
-
 	sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
 	if len(out) == 0 {
 		return nil, fmt.Errorf("home models payload contains no models")
 	}
 	return out, nil
 }
-
 // Start begins listening for and serving HTTP or HTTPS requests.
 // It's a blocking call and will only return on an unrecoverable error.
 //
@@ -1236,13 +1089,11 @@ func (s *Server) Start() error {
 	if s == nil || s.server == nil {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")
 	}
-
 	addr := s.server.Addr
 	listener, errListen := net.Listen("tcp", addr)
 	if errListen != nil {
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
-
 	useTLS := s.cfg != nil && s.cfg.TLS.Enable
 	if useTLS {
 		certPath := strings.TrimSpace(s.cfg.TLS.Cert)
@@ -1260,7 +1111,6 @@ func (s *Server) Start() error {
 			}
 			return fmt.Errorf("failed to start HTTPS server: %v", errLoad)
 		}
-
 		tlsConfig := &tls.Config{
 			Certificates: []tls.Certificate{certPair},
 			NextProtos:   []string{"h2", "http/1.1"},
@@ -1274,21 +1124,17 @@ func (s *Server) Start() error {
 	} else {
 		log.Debugf("Starting API server on %s", addr)
 	}
-
 	httpListener := newMuxListener(listener.Addr(), 1024)
 	s.muxBaseListener = listener
 	s.muxHTTPListener = httpListener
-
 	httpErrCh := make(chan error, 1)
 	acceptErrCh := make(chan error, 1)
-
 	go func() {
 		httpErrCh <- s.server.Serve(httpListener)
 	}()
 	go func() {
 		acceptErrCh <- s.acceptMuxConnections(listener, httpListener)
 	}()
-
 	select {
 	case errServe := <-httpErrCh:
 		if s.muxBaseListener != nil {
@@ -1330,7 +1176,6 @@ func (s *Server) Start() error {
 		return nil
 	}
 }
-
 // Stop gracefully shuts down the API server without interrupting any
 // active connections.
 //
@@ -1341,14 +1186,12 @@ func (s *Server) Start() error {
 //   - error: An error if the server fails to stop
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
-
 	if s.keepAliveEnabled {
 		select {
 		case s.keepAliveStop <- struct{}{}:
 		default:
 		}
 	}
-
 	if s.muxHTTPListener != nil {
 		_ = s.muxHTTPListener.Close()
 	}
@@ -1357,16 +1200,13 @@ func (s *Server) Stop(ctx context.Context) error {
 			log.Debugf("failed to close shared listener: %v", errClose)
 		}
 	}
-
 	// Shutdown the HTTP server.
 	if err := s.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
 	}
-
 	log.Debug("API server stopped")
 	return nil
 }
-
 // corsMiddleware returns a Gin middleware handler that adds CORS headers
 // to every response, allowing cross-origin requests.
 //
@@ -1377,16 +1217,13 @@ func corsMiddleware() gin.HandlerFunc {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "*")
-
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
-
 		c.Next()
 	}
 }
-
 func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {
 	if s == nil || s.accessManager == nil || newCfg == nil {
 		return
@@ -1395,7 +1232,6 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {
 		return
 	}
 }
-
 // UpdateClients updates the server's client list and configuration.
 // This method is called when the configuration or authentication tokens change.
 //
@@ -1408,7 +1244,6 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	if len(s.oldConfigYaml) > 0 {
 		_ = yaml.Unmarshal(s.oldConfigYaml, &oldCfg)
 	}
-
 	// Update request logger enabled state if it has changed
 	previousRequestLog := false
 	if oldCfg != nil {
@@ -1421,55 +1256,44 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 			toggler.SetEnabled(cfg.RequestLog)
 		}
 	}
-
 	if oldCfg == nil || oldCfg.Home.Enabled != cfg.Home.Enabled {
 		if setter, ok := s.requestLogger.(interface{ SetHomeEnabled(bool) }); ok {
 			setter.SetHomeEnabled(cfg.Home.Enabled)
 		}
 	}
-
 	if oldCfg == nil || oldCfg.LoggingToFile != cfg.LoggingToFile || oldCfg.LogsMaxTotalSizeMB != cfg.LogsMaxTotalSizeMB {
 		if err := logging.ConfigureLogOutput(cfg); err != nil {
 			log.Errorf("failed to reconfigure log output: %v", err)
 		}
 	}
-
 	if oldCfg == nil || oldCfg.UsageStatisticsEnabled != cfg.UsageStatisticsEnabled {
 		redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
 	}
-
 	if oldCfg == nil || oldCfg.RedisUsageQueueRetentionSeconds != cfg.RedisUsageQueueRetentionSeconds {
 		redisqueue.SetRetentionSeconds(cfg.RedisUsageQueueRetentionSeconds)
 	}
-
 	if s.requestLogger != nil && (oldCfg == nil || oldCfg.ErrorLogsMaxFiles != cfg.ErrorLogsMaxFiles) {
 		if setter, ok := s.requestLogger.(interface{ SetErrorLogsMaxFiles(int) }); ok {
 			setter.SetErrorLogsMaxFiles(cfg.ErrorLogsMaxFiles)
 		}
 	}
-
 	if oldCfg == nil || oldCfg.DisableCooling != cfg.DisableCooling {
 		auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	}
-
 	if oldCfg != nil && oldCfg.DisableImageGeneration != cfg.DisableImageGeneration {
 		log.Infof("disable-image-generation updated: %v -> %v", oldCfg.DisableImageGeneration, cfg.DisableImageGeneration)
 	}
-
 	applySignatureCacheConfig(oldCfg, cfg)
-
 	if s.handlers != nil && s.handlers.AuthManager != nil {
 		s.handlers.AuthManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
 		s.handlers.AuthManager.SetOAuthModelAlias(cfg.OAuthModelAlias)
 		s.handlers.AuthManager.SetFallbackModels(cfg.Routing.FallbackModels)
 		s.handlers.AuthManager.SetFallbackChain(cfg.Routing.FallbackChain, cfg.Routing.FallbackMaxDepth)
 	}
-
 	// Update log level dynamically when debug flag changes
 	if oldCfg == nil || oldCfg.Debug != cfg.Debug {
 		util.SetLogLevel(cfg)
 	}
-
 	prevSecretEmpty := true
 	if oldCfg != nil {
 		prevSecretEmpty = oldCfg.RemoteManagement.SecretKey == ""
@@ -1502,7 +1326,6 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		}
 	}
 	redisqueue.SetEnabled(s.managementRoutesEnabled.Load() || (cfg != nil && cfg.Home.Enabled))
-
 	s.applyAccessConfig(oldCfg, cfg)
 	s.cfg = cfg
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
@@ -1512,14 +1335,11 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	managementasset.SetCurrentConfig(cfg)
 	// Save YAML snapshot for next comparison
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
-
 	s.handlers.UpdateClients(&cfg.SDKConfig)
-
 	if s.mgmt != nil {
 		s.mgmt.SetConfig(cfg)
 		s.mgmt.SetAuthManager(s.handlers.AuthManager)
 	}
-
 	// Notify Amp module only when Amp config has changed.
 	ampConfigChanged := oldCfg == nil || !reflect.DeepEqual(oldCfg.AmpCode, cfg.AmpCode)
 	if ampConfigChanged {
@@ -1532,7 +1352,6 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 			log.Warnf("amp module is nil, skipping config update")
 		}
 	}
-
 	// Count client sources from configuration and auth store.
 	authEntries := 0
 	if cfg != nil && !cfg.Home.Enabled {
@@ -1554,7 +1373,6 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		}
 		openAICompatCount += len(entry.APIKeyEntries)
 	}
-
 	total := authEntries + geminiAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + vertexAICompatCount + openAICompatCount
 	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Claude API keys + %d Codex keys + %d Vertex-compat + %d OpenAI-compat)\n",
 		total,
@@ -1566,17 +1384,13 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		openAICompatCount,
 	)
 }
-
 func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 	if s == nil {
 		return
 	}
 	s.wsAuthChanged = fn
 }
-
 // (management handlers moved to internal/api/handlers/management)
-
-
 func (s *Server) apiKeyIPBlacklistMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s.apiKeyIPBlacklist != nil {
@@ -1592,7 +1406,6 @@ func (s *Server) apiKeyIPBlacklistMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
-
 // AuthMiddleware returns a Gin middleware handler that authenticates requests
 // using the configured authentication providers. When no providers are available,
 // it allows all requests (legacy behaviour).
@@ -1606,7 +1419,6 @@ func AuthMiddleware(manager *sdkaccess.Manager, apiKeyIPBlacklist ...*management
 			c.Next()
 			return
 		}
-
 		if blacklist != nil {
 			if blockedEntry, blocked := blacklist.IsBlocked(c.ClientIP()); blocked {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
@@ -1617,7 +1429,6 @@ func AuthMiddleware(manager *sdkaccess.Manager, apiKeyIPBlacklist ...*management
 				return
 			}
 		}
-
 		result, err := manager.Authenticate(c.Request.Context(), c.Request)
 		if err == nil {
 			if blacklist != nil && result != nil && result.ProviderType == sdkaccess.AccessProviderTypeConfigAPIKey {
@@ -1633,7 +1444,6 @@ func AuthMiddleware(manager *sdkaccess.Manager, apiKeyIPBlacklist ...*management
 			c.Next()
 			return
 		}
-
 		statusCode := err.HTTPStatusCode()
 		if blacklist != nil && statusCode == http.StatusUnauthorized && sdkaccess.IsAuthErrorCode(err, sdkaccess.AuthErrorCodeInvalidCredential) && strings.EqualFold(strings.TrimSpace(err.ProviderType), sdkaccess.AccessProviderTypeConfigAPIKey) {
 			blacklist.RecordFailure(c.ClientIP())
@@ -1644,14 +1454,12 @@ func AuthMiddleware(manager *sdkaccess.Manager, apiKeyIPBlacklist ...*management
 		c.AbortWithStatusJSON(statusCode, gin.H{"error": err.Message})
 	}
 }
-
 func configuredSignatureCacheEnabled(cfg *config.Config) bool {
 	if cfg != nil && cfg.AntigravitySignatureCacheEnabled != nil {
 		return *cfg.AntigravitySignatureCacheEnabled
 	}
 	return true
 }
-
 func applySignatureCacheConfig(oldCfg, cfg *config.Config) {
 	newVal := configuredSignatureCacheEnabled(cfg)
 	newStrict := configuredSignatureBypassStrict(cfg)
@@ -1660,18 +1468,15 @@ func applySignatureCacheConfig(oldCfg, cfg *config.Config) {
 		cache.SetSignatureBypassStrictMode(newStrict)
 		return
 	}
-
 	oldVal := configuredSignatureCacheEnabled(oldCfg)
 	if oldVal != newVal {
 		cache.SetSignatureCacheEnabled(newVal)
 	}
-
 	oldStrict := configuredSignatureBypassStrict(oldCfg)
 	if oldStrict != newStrict {
 		cache.SetSignatureBypassStrictMode(newStrict)
 	}
 }
-
 func configuredSignatureBypassStrict(cfg *config.Config) bool {
 	if cfg != nil && cfg.AntigravitySignatureBypassStrict != nil {
 		return *cfg.AntigravitySignatureBypassStrict
