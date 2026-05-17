@@ -714,6 +714,15 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/codex-api-key", s.mgmt.PatchCodexKey)
 		mgmt.DELETE("/codex-api-key", s.mgmt.DeleteCodexKey)
 
+		mgmt.GET("/ollama-api-key", s.mgmt.GetOllamaKeys)
+		mgmt.PUT("/ollama-api-key", s.mgmt.PutOllamaKeys)
+		mgmt.PATCH("/ollama-api-key", s.mgmt.PatchOllamaKey)
+		mgmt.DELETE("/ollama-api-key", s.mgmt.DeleteOllamaKey)
+
+
+		mgmt.GET("/api-key-ip-blacklist", s.mgmt.GetAPIKeyIPBlacklist)
+		mgmt.POST("/api-key-ip-blacklist", s.mgmt.PostAPIKeyIPBlacklist)
+		mgmt.DELETE("/api-key-ip-blacklist", s.mgmt.DeleteAPIKeyIPBlacklist)
 		mgmt.GET("/openai-compatibility", s.mgmt.GetOpenAICompat)
 		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)
 		mgmt.PATCH("/openai-compatibility", s.mgmt.PatchOpenAICompat)
