@@ -1,12 +1,13 @@
 # CLIPROXYAPIPLUS KNOWLEDGE BASE
 
-**Generated:** 2026-05-04
-**Commit:** 9bef8022
+**Generated:** 2026-05-18
+**Commit:** f7c2ff45
 **Branch:** main
+**Latest Tag:** v7.1.7-3
 
 ## OVERVIEW
 
-Go 1.26 AI proxy server. It combines CLI auth flows, OpenAI-compatible API serving, provider executors, protocol translators, runtime model registry, management API, and public SDK.
+Go 1.26 AI proxy server. Combines CLI auth flows, OpenAI-compatible API serving, provider executors, protocol translators, runtime model registry, management API, and public SDK.
 
 ## STRUCTURE
 
@@ -26,13 +27,20 @@ CLIProxyAPIPlus/
 | Task | Location | Notes |
 |------|----------|-------|
 | Server boot / flags | `cmd/server/main.go` | `--config`, `--tui`, login flags, local-model mode. |
-| Management routes | `internal/api/` | Gin server + `/v0/management/*`. |
+| Management routes | `internal/api/` | Gin server + `/v0/management/*`. Ollama and IP blacklist routes included. |
 | Provider auth | `internal/auth/` | OAuth/token storage per provider. |
-| Upstream execution | `internal/runtime/executor/` | HTTP/WebSocket calls after translation. |
+| Upstream execution | `internal/runtime/executor/` | HTTP/WebSocket calls after translation. 503 fallback handling. |
 | Protocol translation | `internal/translator/` | source/target registration and JSON/SSE transforms. |
-| Model catalog/routing | `internal/registry/` | static fallback, dynamic discovery, provider scoping. |
+| Model catalog/routing | `internal/registry/` | static fallback, dynamic discovery, provider scoping. Ollama alias resolution. |
 | Config/auth synthesis | `internal/config/`, `internal/watcher/` | YAML fields, hot reload, config-backed auths. |
 | SDK embedding | `sdk/cliproxy/` | Builder and service lifecycle. |
+
+## RECENT CHANGES (v7.1.7-3)
+
+- **Ollama provider support**: Alias resolution fix in conductor switch statements; management routes for Ollama config.
+- **503 fallback handling**: Added 503 to `shouldPreserveAttemptBudgetForStatus` for proper fallback behavior.
+- **IP blacklist feature**: New management routes and runtime enforcement for blocking scanner probes and malicious IPs.
+- **Scanner probe blocking**: Integrated IP blacklist into request validation pipeline.
 
 ## COMMANDS
 
@@ -49,7 +57,7 @@ goreleaser build --snapshot --clean
 - Provider additions usually touch config, watcher/synthesizer, registry/model discovery, executor, management API, and Center UI.
 - Executor logs for upstream failures must include masked request and response context when diagnosing 4xx/5xx.
 - `management.html` is served by Plus; local UI edits need Center build output copied back.
-- **태그 버전 관리**: 태그를 생성할 때 upstream 최신 버전에 `-2`, `-3`, ...의 넘버링을 추가하는 것으로 version bump 한다. (예: 최신 태그가 `v7.0.4-18`이면 다음은 `v7.0.4-19`)
+- Tag versioning: append `-2`, `-3`, ... to upstream base version (e.g., `v7.1.7-3` after `v7.1.7-2`).
 
 ## ANTI-PATTERNS
 
