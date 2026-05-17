@@ -103,6 +103,6 @@ cpa-usage-keeper/AGENTS.md
 - Search tools may miss nested gitlink files from root. Re-run file discovery inside nested repos when editing subproject AGENTS.md.
 - Do not create release tags from the repository root. Create tags only inside the relevant subdirectory repository.
 - Before creating or recommending a tag, inspect the latest tags of the target subdirectory repository and continue that repository's own version line.
-- Current observed latest tags: `CLIProxyAPIPlus: v7.1.7-3`, `Cli-Proxy-API-Management-Center: v1.11.0-2`, `cpa-usage-keeper: v1.7.3-1`. Re-check before tagging; each subrepository advances independently.
+- Current observed latest tags: `CLIProxyAPIPlus: v7.1.8-1`, `Cli-Proxy-API-Management-Center: v1.11.0-3`, `cpa-usage-keeper: v1.7.3-1`. Re-check before tagging; each subrepository advances independently.
 - For follow-up releases on the same base version inside a subdirectory repository, prefer incrementing the suffix (`v<major>.<minor>.<patch>-<sequence>`) instead of inventing a root-level tag.
 - Only propose a new base tag inside the target subdirectory repository when the user explicitly wants a new release line or that repository's recent tag history clearly starts a new base series.
