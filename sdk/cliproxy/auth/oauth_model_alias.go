@@ -141,18 +141,7 @@ func resolveModelAliasPoolFromConfigModels(requestedModel string, models []model
 	out := make([]string, 0)
 	seen := make(map[string]struct{})
 
-	// PRECEDENCE: Check direct name matches FIRST (lines 163-171 moved before alias)
-	for i := range models {
-		name := strings.TrimSpace(models[i].GetName())
-		for _, candidate := range candidates {
-			if candidate == "" || name == "" || !strings.EqualFold(name, candidate) {
-				continue
-			}
-			return []string{preserveResolvedModelSuffix(name, requestResult)}
-		}
-	}
-
-	// FALLBACK: Check alias matches SECOND (lines 135-157 moved after)
+	// PRECEDENCE: Check alias matches FIRST (alias takes priority over direct name)
 	for i := range models {
 		name := strings.TrimSpace(models[i].GetName())
 		alias := strings.TrimSpace(models[i].GetAlias())
@@ -175,6 +164,17 @@ func resolveModelAliasPoolFromConfigModels(requestedModel string, models []model
 			seen[key] = struct{}{}
 			out = append(out, resolved)
 			break
+		}
+	}
+
+	// FALLBACK: Check direct name matches SECOND
+	for i := range models {
+		name := strings.TrimSpace(models[i].GetName())
+		for _, candidate := range candidates {
+			if candidate == "" || name == "" || !strings.EqualFold(name, candidate) {
+				continue
+			}
+			return []string{preserveResolvedModelSuffix(name, requestResult)}
 		}
 	}
 	if len(out) > 0 {
