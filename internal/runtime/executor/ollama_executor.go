@@ -207,7 +207,7 @@ func FetchOllamaModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	if baseURL == "" {
 		baseURL = ollamaDefaultBaseURL
 	}
-	url := strings.TrimSuffix(baseURL, "/") + "/tags"
+	url := strings.TrimSuffix(baseURL, "/") + "/v1/tags"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil
