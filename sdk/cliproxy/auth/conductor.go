@@ -942,7 +942,7 @@ func countRemainingProviderOptions(currentProvider string, providers []string, t
 
 func shouldPreserveAttemptBudgetForStatus(statusCode int) bool {
 	switch statusCode {
-	case http.StatusTooManyRequests, http.StatusGatewayTimeout:
+	case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusServiceUnavailable:
 		return true
 	default:
 		return false
