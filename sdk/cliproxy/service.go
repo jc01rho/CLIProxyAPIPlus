@@ -1699,13 +1699,16 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 			display = alias
 		}
 		info := &ModelInfo{
-			ID:          alias,
+			ID:          name,
 			Object:      "model",
 			Created:     now,
 			OwnedBy:     ownedBy,
 			Type:        modelType,
 			DisplayName: display,
 			UserDefined: true,
+		}
+		if alias != name && alias != "" {
+			info.Alias = alias
 		}
 		if name != alias {
 			info.ExecutionTarget = name

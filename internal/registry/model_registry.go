@@ -65,6 +65,18 @@ type ModelInfo struct {
 
 	// ExecutionTarget marks alias-exposed models with their upstream execution ID.
 	ExecutionTarget string `json:"-"`
+	// Alias is the user-defined alias name for this model (if different from ID).
+	Alias string `json:"alias,omitempty"`
+}
+
+// GetName returns the model name for alias resolution.
+func (m *ModelInfo) GetName() string {
+	return m.ID
+}
+
+// GetAlias returns the model alias for alias resolution.
+func (m *ModelInfo) GetAlias() string {
+	return m.Alias
 }
 
 type availableModelsCacheEntry struct {
