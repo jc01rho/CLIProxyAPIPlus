@@ -1,9 +1,9 @@
 # CLIPROXYAPIPLUS KNOWLEDGE BASE
 
-**Generated:** 2026-05-18
-**Commit:** f7c2ff45
+**Generated:** 2026-05-19
+**Commit:** aa83ff8d
 **Branch:** main
-**Latest Tag:** v7.1.7-3
+**Latest Tag:** v7.1.11-8
 
 ## OVERVIEW
 
@@ -35,12 +35,19 @@ CLIProxyAPIPlus/
 | Config/auth synthesis | `internal/config/`, `internal/watcher/` | YAML fields, hot reload, config-backed auths. |
 | SDK embedding | `sdk/cliproxy/` | Builder and service lifecycle. |
 
-## RECENT CHANGES (v7.1.7-3)
+## RECENT CHANGES (v7.1.11-8)
 
-- **Ollama provider support**: Alias resolution fix in conductor switch statements; management routes for Ollama config.
-- **503 fallback handling**: Added 503 to `shouldPreserveAttemptBudgetForStatus` for proper fallback behavior.
-- **IP blacklist feature**: New management routes and runtime enforcement for blocking scanner probes and malicious IPs.
-- **Scanner probe blocking**: Integrated IP blacklist into request validation pipeline.
+- **400 cooldown**: Added status 400 → 30min cooldown with `suspendReason: "bad_request"` in conductor to prevent repeated failed requests re-entering round-robin.
+- **OAuth alias dedup**: `applyOAuthModelAlias` dedup key changed to `(alias|upstreamID)` to support same alias (e.g. higher-coding) mapped to many upstream models.
+- **API key alias fix**: `aliasRegistryModelKeysForAuth` now falls back to `apiKeyModelAlias` table when `apiKeyRegistryAliasKeys` misses.
+- **xai/ollama channels**: Added xai and ollama to `OAuthModelAliasChannel` supported channels.
+- **Ollama tools cap**: Enforced 200 tools cap in `normalizeXAITools` regardless of namespace normalization.
+- **Registry dedup**: `buildConfigModels` dedup key changed to `(alias|name)` for same-alias multi-model support.
+- **Ollama logging**: All Ollama requests (including ollama.com) are logged on failure; `/api/tags` and `/v1/tags` failures included.
+- **Ollama Cloud API**: Uses `/v1/tags` endpoint; self-hosted Ollama uses `/tags`.
+- **FormProtocol rename**: `FormProtocol` → `FromProtocol` across payload handling.
+- **IP blacklist**: Spoofed IP rejection and local management password validation added.
+- **Ollama alias routing**: Alias registered as separate model entry for priority-based routing; alias match prioritized over direct name.
 
 ## COMMANDS
 
