@@ -2985,6 +2985,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 		auth.recordRecentRequest(now, result.Success, failureReason)
+		if !result.Success && result.Error != nil {
+			logEntryWithRequestID(ctx).WithFields(log.Fields{
+				"auth_id":  result.AuthID,
+				"provider": result.Provider,
+				"model":    result.Model,
+				"code":     result.Error.Code,
+				"status":   result.Error.HTTPStatus,
+			}).WithError(result.Error).Warn("request failed")
+		}
 		if result.Success {
 			auth.Success++
 		} else {
