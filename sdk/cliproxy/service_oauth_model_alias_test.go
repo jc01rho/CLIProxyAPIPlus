@@ -265,25 +265,40 @@ func TestBuildOllamaConfigModels_SetsExecutionTargetWhenAliasDiffers(t *testing.
 	}
 
 	out := buildOllamaConfigModels(entry)
-	if len(out) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(out))
+	// Now returns 3: name-based (kimi-k2.6), alias-based (higher-coding), canonical (gpt-oss:120b)
+	if len(out) != 3 {
+		t.Fatalf("expected 3 models, got %d", len(out))
 	}
 
-	aliasModel := out[0]
-	if aliasModel.ID != "kimi-k2.6" {
-		t.Fatalf("expected aliased model id %q, got %q", "kimi-k2.6", aliasModel.ID)
+	// First: name-based entry (kimi-k2.6)
+	nameModel := out[0]
+	if nameModel.ID != "kimi-k2.6" {
+		t.Fatalf("expected name-based model id %q, got %q", "kimi-k2.6", nameModel.ID)
 	}
-	if aliasModel.Alias != "higher-coding" {
-		t.Fatalf("expected aliased model alias %q, got %q", "higher-coding", aliasModel.Alias)
+	if nameModel.Alias != "higher-coding" {
+		t.Fatalf("expected name-based model alias %q, got %q", "higher-coding", nameModel.Alias)
+	}
+	if nameModel.ExecutionTarget != "kimi-k2.6" {
+		t.Fatalf("name-based model execution target = %q, want %q", nameModel.ExecutionTarget, "kimi-k2.6")
+	}
+	if !nameModel.UserDefined {
+		t.Fatal("expected name-based model to be user-defined")
+	}
+
+	// Second: alias-based entry (higher-coding) - added for registry alias lookup
+	aliasModel := out[1]
+	if aliasModel.ID != "higher-coding" {
+		t.Fatalf("expected alias-based model id %q, got %q", "higher-coding", aliasModel.ID)
 	}
 	if aliasModel.ExecutionTarget != "kimi-k2.6" {
-		t.Fatalf("aliased model execution target = %q, want %q", aliasModel.ExecutionTarget, "kimi-k2.6")
+		t.Fatalf("alias-based model execution target = %q, want %q", aliasModel.ExecutionTarget, "kimi-k2.6")
 	}
-	if !aliasModel.UserDefined {
-		t.Fatal("expected aliased model to be user-defined")
+	if aliasModel.OwnedBy != "ollama" {
+		t.Fatalf("expected ownedBy %q, got %q", "ollama", aliasModel.OwnedBy)
 	}
 
-	canonicalModel := out[1]
+	// Third: canonical model (gpt-oss:120b, name == alias)
+	canonicalModel := out[2]
 	if canonicalModel.ID != "gpt-oss:120b" {
 		t.Fatalf("expected canonical model id %q, got %q", "gpt-oss:120b", canonicalModel.ID)
 	}
