@@ -1,7 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-05-18
-**Commit:** 95e0cfab
+**Generated:** 2026-05-19
+**Commit:** 9eb56e47
 **Branch:** master
 
 ## OVERVIEW
@@ -103,6 +103,15 @@ cpa-usage-keeper/AGENTS.md
 - Search tools may miss nested gitlink files from root. Re-run file discovery inside nested repos when editing subproject AGENTS.md.
 - Do not create release tags from the repository root. Create tags only inside the relevant subdirectory repository.
 - Before creating or recommending a tag, inspect the latest tags of the target subdirectory repository and continue that repository's own version line.
-- Current observed latest tags: `CLIProxyAPIPlus: v7.1.8-1`, `Cli-Proxy-API-Management-Center: v1.11.0-3`, `cpa-usage-keeper: v1.7.3-1`. Re-check before tagging; each subrepository advances independently.
+- Current observed latest tags: `CLIProxyAPIPlus: v7.1.11-8`, `Cli-Proxy-API-Management-Center: v1.11.1-3`, `cpa-usage-keeper: v1.7.3-1`. Re-check before tagging; each subrepository advances independently.
 - For follow-up releases on the same base version inside a subdirectory repository, prefer incrementing the suffix (`v<major>.<minor>.<patch>-<sequence>`) instead of inventing a root-level tag.
 - Only propose a new base tag inside the target subdirectory repository when the user explicitly wants a new release line or that repository's recent tag history clearly starts a new base series.
+- buildConfigModels dedup key changed to (alias|name) to support the same alias (e.g. higher-coding) mapped to many upstream models without dropping later entries from registry/round-robin.
+- applyOAuthModelAlias dedup key also changed to (alias|upstreamID) for the same reason — OAuth provider alias collision.
+- OAuthModelAliasChannel supported channels: removed ollama (API-key only).
+- conductor.go statusCode switches: added case 400 with 30min cooldown and suspendReason "bad_request" to prevent repeated failed requests re-entering round-robin.
+
+## RECENT CHANGES
+
+- **CLIProxyAPIPlus v7.1.11-8**: Added 400 bad_request cooldown (30min) in conductor; changed applyOAuthModelAlias dedup key to (alias|upstreamID); fixed API key model alias resolution via apiKeyModelAlias table; removed ollama from OAuth alias channels; enforced 200 tools cap in normalizeXAITools; changed buildConfigModels dedup key to (alias|name).
+- **Management Center v1.11.1-3**: Added OllamaSection as independent provider section; added Ollama icon and display in providers list; dark mode support for Grok icon; normalized provider keys across components.
