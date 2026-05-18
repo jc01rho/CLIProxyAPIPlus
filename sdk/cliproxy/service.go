@@ -1885,6 +1885,7 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 			}
 		}
 
+
 		addedAlias := false
 		for _, entry := range entries {
 			mappedID := strings.TrimSpace(entry.alias)
@@ -1894,10 +1895,11 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 			if strings.EqualFold(mappedID, id) {
 				continue
 			}
-			aliasKey := strings.ToLower(mappedID)
-			if _, isRealModel := realIDs[aliasKey]; isRealModel {
+			aliasForReal := strings.ToLower(mappedID)
+			if _, isRealModel := realIDs[aliasForReal]; isRealModel {
 				continue
 			}
+			aliasKey := strings.ToLower(mappedID) + "|" + strings.ToLower(id)
 			if _, exists := seen[aliasKey]; exists {
 				continue
 			}
