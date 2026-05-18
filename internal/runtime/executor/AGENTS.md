@@ -25,7 +25,7 @@ executor/
 | Provider execution | `{provider}_executor.go` | Auth injection + upstream request/response. |
 | OpenAI-compatible providers | `openai_compat_executor.go` | Payload config and thinking order matters. |
 | Copilot logging/routing | `github_copilot_executor.go` | Log requested/resolved/upstream model on errors. |
-| Ollama Cloud | `ollama_executor.go` | `/api/tags` and `/api/chat`; non-OpenAI shape. |
+| Ollama Cloud | `ollama_executor.go` | `/v1/tags` for Ollama Cloud, `/tags` for self-hosted; `/api/chat`; non-OpenAI shape. |
 | Shared behavior | `helps/` | Do not duplicate helper logic in provider files. |
 
 ## CONVENTIONS
@@ -34,6 +34,9 @@ executor/
 - 4xx/5xx debug logging should include masked raw request and raw response, provider/auth, resolved model, request id.
 - Stream channel sends should respect context cancellation.
 - Usage reporting failures should go through the existing usage reporter paths.
+- XAI `normalizeXAITools` enforces a hard 200 tools cap regardless of namespace normalization; do not bypass.
+- Ollama Cloud API uses `/v1/tags`; self-hosted Ollama uses `/tags`. `FetchOllamaModels` calls `/v1/tags`.
+- All Ollama requests to `ollama.com` must be logged on failure.
 
 ## ANTI-PATTERNS
 

@@ -38,6 +38,10 @@ auth/
 - OAuth model alias targets must stay in the current auth provider family.
 - Fallback logs should include requested model, selected/fallback model, fallback source/reason, upstream status, and request id.
 - Antigravity OAuth primary handoff triggers on auth/quota failures; do not create temporary fallback semantics there.
+- Status 400 → 30min cooldown with `suspendReason: "bad_request"` prevents repeated failed requests from re-entering round-robin.
+- `OAuthModelAliasChannel` supported channels: ollama removed (API-key only); xai and ollama added.
+- `applyOAuthModelAlias` dedup key is `(alias|upstreamID)` to support same alias mapped to many upstream models.
+- Periodic quota check runs only against the current primary credential.
 
 ## TESTS
 
