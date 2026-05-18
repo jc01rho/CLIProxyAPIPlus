@@ -701,6 +701,20 @@ func normalizeXAITools(body []byte) []byte {
 		}
 		filtered = updated
 	}
+	// xAI limit: max 200 tools (https://docs.x.ai/docs/guides/function-calling)
+	// cap to avoid "Maximum tools limit reached. 247 tools..." error
+	// Always enforce the cap regardless of whether namespace normalization occurred.
+	toolsArr := gjson.GetBytes(filtered, "@this").Array()
+	if len(toolsArr) > 200 {
+		capped := []byte(`[]`)
+		for i := 0; i < 200 && i < len(toolsArr); i++ {
+			updated, _ := sjson.SetRawBytes(capped, "-1", []byte(toolsArr[i].Raw))
+			capped = updated
+		}
+		filtered = capped
+		log.Warnf("xai: capped tools from %d to 200 to satisfy xAI limit", len(toolsArr))
+		changed = true
+	}
 	if !changed {
 		return body
 	}
