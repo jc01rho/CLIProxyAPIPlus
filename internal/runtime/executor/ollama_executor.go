@@ -207,9 +207,15 @@ func FetchOllamaModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	if baseURL == "" {
 		baseURL = ollamaDefaultBaseURL
 	}
-	url := strings.TrimSuffix(baseURL, "/") + "/v1/tags"
+	// Ollama Cloud: /v1/tags and /api/tags supported; self-hosted: /tags or /api/tags
+	endpointPath := "/v1/tags"
+	if !strings.Contains(strings.ToLower(baseURL), "ollama.com") {
+		endpointPath = "/api/tags"
+	}
+	url := strings.TrimSuffix(baseURL, "/") + endpointPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
+		log.Errorf("ollama fetch models: create request error: %v", err)
 		return nil
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -217,16 +223,32 @@ func FetchOllamaModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	if auth != nil {
 		util.ApplyCustomHeadersFromAttrs(req, auth.Attributes)
 	}
+	// log all ollama.com requests as per requirement
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	recordAPIRequest(ctx, cfg, upstreamRequestLog{URL: url, Method: http.MethodGet, Headers: req.Header.Clone(), Body: nil, Provider: "ollama", AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue})
 	resp, err := newProxyAwareHTTPClient(ctx, cfg, auth, 15*time.Second).Do(req)
 	if err != nil {
-		log.Debugf("ollama models fetch failed: %v", err)
+		recordAPIResponseError(ctx, cfg, err)
+		log.Errorf("ollama models fetch failed for %s: %v", url, err)
 		return nil
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	body, readErr := io.ReadAll(resp.Body)
+	recordAPIResponseMetadata(ctx, cfg, resp.StatusCode, resp.Header.Clone())
+	if readErr != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if readErr != nil {
+			recordAPIResponseError(ctx, cfg, readErr)
+		}
+		logDetailedAPIError(ctx, cfg, "ollama", "", url, resp.StatusCode, resp.Header.Get("Content-Type"), nil, body)
+		log.Errorf("ollama models fetch error status: %d url: %s body: %s", resp.StatusCode, url, string(body))
 		return nil
 	}
+	appendAPIResponseChunk(ctx, cfg, body)
 	return parseOllamaTags(body)
 }
 
