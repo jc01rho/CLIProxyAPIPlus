@@ -1123,6 +1123,15 @@ func (m *Manager) aliasRegistryModelKeysForAuth(auth *Auth, routeModel, routeKey
 	if len(keys) > 0 {
 		return keys
 	}
+	// Check the cached apiKeyModelAlias table for alias→upstream resolution.
+	// This handles the case where the route model is an alias (e.g., "higher-coding")
+	// and the upstream model name (e.g., "minimax-m2.7") is what the registry knows about.
+	if upstream := m.lookupAPIKeyUpstreamModel(auth.ID, routeModel); upstream != "" {
+		upstreamKey := canonicalModelKey(upstream)
+		if upstreamKey != "" && upstreamKey != routeKey && upstreamKey != selectionKey {
+			return []string{upstreamKey}
+		}
+	}
 	rewritten := rewriteModelForAuth(routeModel, auth)
 	if strings.TrimSpace(rewritten) == "" {
 		rewritten = strings.TrimSpace(routeModel)
