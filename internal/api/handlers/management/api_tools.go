@@ -255,9 +255,11 @@ func (h *Handler) APICall(c *gin.Context) {
 		}
 	}
 
-	// Log Ollama tags request failures (both /tags and /v1/tags)
+	// Log Ollama tags request failures (self-hosted /api/tags, /v1/tags, and cloud /v1/tags)
 	isOllamaTagsRequest := strings.Contains(strings.ToLower(urlStr), "ollama") && 
-		(strings.Contains(strings.ToLower(urlStr), "/tags") || strings.Contains(strings.ToLower(urlStr), "/v1/tags"))
+		(strings.Contains(strings.ToLower(urlStr), "/api/tags") || 
+		 strings.Contains(strings.ToLower(urlStr), "/tags") || 
+		 strings.Contains(strings.ToLower(urlStr), "/v1/tags"))
 	if isOllamaTagsRequest && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 		log.WithFields(log.Fields{
 			"url":         urlStr,
