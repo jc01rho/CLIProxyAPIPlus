@@ -167,8 +167,8 @@ func TestRecentRequestsSnapshotIncludesCounts(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).In(time.Local)
 	a := &Auth{}
 
-	a.recordRecentRequest(now, true)
-	a.recordRecentRequest(now, false)
+	a.recordRecentRequest(now, true, "")
+	a.recordRecentRequest(now, false, "test_error")
 
 	got := a.RecentRequestsSnapshot(now)
 	if len(got) != recentRequestBucketCount {
@@ -186,8 +186,8 @@ func TestRecentRequestsSnapshotBucketAdvanceMovesCounts(t *testing.T) {
 	next := now.Add(10 * time.Minute)
 	a := &Auth{}
 
-	a.recordRecentRequest(now, true)
-	a.recordRecentRequest(next, false)
+	a.recordRecentRequest(now, true, "")
+	a.recordRecentRequest(next, false, "test_error")
 
 	got := a.RecentRequestsSnapshot(next)
 	if len(got) != recentRequestBucketCount {

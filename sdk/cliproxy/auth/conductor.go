@@ -2975,7 +2975,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
-		auth.recordRecentRequest(now, result.Success)
+		failureReason := ""
+		if !result.Success && result.Error != nil {
+			failureReason = result.Error.Message
+			if result.Error.HTTPStatus != 0 {
+				failureReason = fmt.Sprintf("[%d] %s", result.Error.HTTPStatus, result.Error.Message)
+			} else if result.Error.Code != "" {
+				failureReason = fmt.Sprintf("[%s] %s", result.Error.Code, result.Error.Message)
+			}
+		}
+		auth.recordRecentRequest(now, result.Success, failureReason)
 		if result.Success {
 			auth.Success++
 		} else {
