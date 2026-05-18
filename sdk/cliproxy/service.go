@@ -1719,6 +1719,25 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 			}
 		}
 		out = append(out, info)
+		
+		// Add alias as a separate model entry so it can be found by alias lookup
+		if alias != name && alias != "" {
+			aliasInfo := &ModelInfo{
+				ID:          alias,
+				Object:      "model",
+				Created:     now,
+				OwnedBy:     ownedBy,
+				Type:        modelType,
+				DisplayName: alias,
+				UserDefined: true,
+				Alias:       alias,
+				ExecutionTarget: name,
+			}
+			if upstream := registry.LookupStaticModelInfo(name); upstream != nil && upstream.Thinking != nil {
+				aliasInfo.Thinking = upstream.Thinking
+			}
+			out = append(out, aliasInfo)
+		}
 	}
 	return out
 }
