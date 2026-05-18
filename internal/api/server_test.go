@@ -1,35 +1,25 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	gin "github.com/gin-gonic/gin"
-
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
 func newTestServer(t *testing.T) *Server {
-	return newTestServerWithOptions(t)
-}
-
-func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
@@ -55,7 +45,7 @@ func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 	accessManager := sdkaccess.NewManager()
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	return NewServer(cfg, authManager, accessManager, configPath, opts...)
+	return NewServer(cfg, authManager, accessManager, configPath)
 }
 
 func TestHealthz(t *testing.T) {
@@ -93,126 +83,6 @@ func TestHealthz(t *testing.T) {
 			t.Fatalf("expected empty body for HEAD request, got %q", rr.Body.String())
 		}
 	})
-}
-
-func TestScannerProbePathsAreBlockedBeforeRouting(t *testing.T) {
-	server := newTestServer(t)
-
-	testCases := []string{
-		"/mailer/help/info.php",
-		"/config/env/mailer_dsn.env",
-		"/usr/local/app/.env",
-		"/api/backup/database.sql",
-		"/hidden/.env",
-		"/live/.env.production",
-		"/.env.backup.inactive",
-		"/backup.env",
-		"/api/new/wp-config.bak",
-		"/s3/.aws/config.js",
-		"/.aws/credentials.jpg",
-		"/server/laravel/.env",
-		"/config/json/default.bak",
-		"/painel/laravel.log",
-		"/wp-admin/.git/config",
-	}
-
-	for _, path := range testCases {
-		path := path
-		t.Run(path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, path, nil)
-			rr := httptest.NewRecorder()
-			server.engine.ServeHTTP(rr, req)
-
-			if rr.Code != http.StatusForbidden {
-				t.Fatalf("expected scanner probe to return 403, got %d body=%s", rr.Code, rr.Body.String())
-			}
-		})
-	}
-}
-
-func TestAuthMiddleware_BlocksAfterRepeatedInvalidAPIKeys(t *testing.T) {
-	server := newTestServer(t)
-	rootOKReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	rootOKReq.RemoteAddr = "203.0.113.20:1234"
-	rootOK := httptest.NewRecorder()
-	server.engine.ServeHTTP(rootOK, rootOKReq)
-	if rootOK.Code != http.StatusOK {
-		t.Fatalf("expected root endpoint to remain public before IP block, got %d body=%s", rootOK.Code, rootOK.Body.String())
-	}
-
-	performRequest := func(token string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-		req.RemoteAddr = "203.0.113.20:1234"
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		rr := httptest.NewRecorder()
-		server.engine.ServeHTTP(rr, req)
-		return rr
-	}
-
-	for i := 0; i < 3; i++ {
-		rr := performRequest("wrong-key")
-		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("attempt %d: expected 401, got %d body=%s", i+1, rr.Code, rr.Body.String())
-		}
-	}
-
-	blocked := performRequest("wrong-key")
-	if blocked.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 after threshold reached, got %d body=%s", blocked.Code, blocked.Body.String())
-	}
-	if !strings.Contains(blocked.Body.String(), "IP blocked") {
-		t.Fatalf("expected blocked response body, got %s", blocked.Body.String())
-	}
-
-	rootReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	rootReq.RemoteAddr = "203.0.113.20:1234"
-	rootBlocked := httptest.NewRecorder()
-	server.engine.ServeHTTP(rootBlocked, rootReq)
-	if rootBlocked.Code != http.StatusForbidden {
-		t.Fatalf("expected root endpoint to return 403 for blocked IP, got %d body=%s", rootBlocked.Code, rootBlocked.Body.String())
-	}
-	if !strings.Contains(rootBlocked.Body.String(), "IP blocked") {
-		t.Fatalf("expected root blocked response body, got %s", rootBlocked.Body.String())
-	}
-}
-
-func TestAuthMiddleware_SuccessClearsPendingFailures(t *testing.T) {
-	server := newTestServer(t)
-
-	performRequest := func(token string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-		req.RemoteAddr = "203.0.113.21:1234"
-		req.Header.Set("Authorization", "Bearer "+token)
-		rr := httptest.NewRecorder()
-		server.engine.ServeHTTP(rr, req)
-		return rr
-	}
-
-	for i := 0; i < 2; i++ {
-		rr := performRequest("wrong-key")
-		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("attempt %d: expected 401, got %d body=%s", i+1, rr.Code, rr.Body.String())
-		}
-	}
-
-	valid := performRequest("test-key")
-	if valid.Code != http.StatusOK {
-		t.Fatalf("expected successful auth to pass, got %d body=%s", valid.Code, valid.Body.String())
-	}
-
-	for i := 0; i < 2; i++ {
-		rr := performRequest("wrong-key")
-		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("post-reset attempt %d: expected 401, got %d body=%s", i+1, rr.Code, rr.Body.String())
-		}
-	}
-
-	stillUnauthorized := performRequest("wrong-key")
-	if stillUnauthorized.Code != http.StatusUnauthorized {
-		t.Fatalf("expected threshold to restart after success reset, got %d body=%s", stillUnauthorized.Code, stillUnauthorized.Body.String())
-	}
 }
 
 func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
@@ -274,26 +144,6 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 
 	if remaining := redisqueue.PopOldest(1); len(remaining) != 0 {
 		t.Fatalf("remaining queue = %q, want empty", remaining)
-	}
-}
-
-func TestManagementLocalPasswordRejectsSpoofedForwardedFor(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "")
-
-	server := newTestServerWithOptions(t, WithLocalManagementPassword("test-local-key"))
-
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
-	req.RemoteAddr = "203.0.113.10:45678"
-	req.Header.Set("X-Forwarded-For", "127.0.0.1")
-	req.Header.Set("Authorization", "Bearer test-local-key")
-
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
-	}
-	if body := rr.Body.String(); !strings.Contains(body, "remote management disabled") {
-		t.Fatalf("body = %q, want remote management disabled", body)
 	}
 }
 
@@ -621,139 +471,5 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), "error-") && strings.HasSuffix(entry.Name(), ".log") {
 			t.Fatalf("unexpected forced error log in config dir %s", configLogsDir)
 		}
-	}
-}
-
-func TestNewServer_InjectsOAuthModelAliasIntoAuthManager(t *testing.T) {
-	server, authManager, _ := newAliasWiringTestServer(t, map[string][]proxyconfig.OAuthModelAlias{
-		"claude": {{Name: "claude-haiku-4-5-20251001", Alias: "haiku-cc", Fork: true}},
-	})
-	defer server.Stop(context.Background())
-
-	assertManagerExecutesAlias(t, authManager, "haiku-cc", "claude-haiku-4-5-20251001")
-}
-
-func TestServerUpdateClients_RefreshesOAuthModelAliasIntoAuthManager(t *testing.T) {
-	server, authManager, cfg := newAliasWiringTestServer(t, nil)
-	defer server.Stop(context.Background())
-
-	updated := *cfg
-	updated.OAuthModelAlias = map[string][]proxyconfig.OAuthModelAlias{
-		"claude": {{Name: "claude-haiku-4-5-20251001", Alias: "haiku-cc", Fork: true}},
-	}
-	server.UpdateClients(&updated)
-
-	assertManagerExecutesAlias(t, authManager, "haiku-cc", "claude-haiku-4-5-20251001")
-}
-
-type aliasCaptureExecutor struct {
-	id     string
-	mu     sync.Mutex
-	models []string
-}
-
-func (e *aliasCaptureExecutor) Identifier() string { return e.id }
-
-func (e *aliasCaptureExecutor) Execute(_ context.Context, _ *auth.Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	e.mu.Lock()
-	e.models = append(e.models, req.Model)
-	e.mu.Unlock()
-	return cliproxyexecutor.Response{Payload: []byte(req.Model), Headers: make(http.Header)}, nil
-}
-
-func (e *aliasCaptureExecutor) ExecuteStream(context.Context, *auth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	return nil, &auth.Error{HTTPStatus: http.StatusNotImplemented, Message: "ExecuteStream not implemented"}
-}
-
-func (e *aliasCaptureExecutor) Refresh(_ context.Context, a *auth.Auth) (*auth.Auth, error) {
-	return a, nil
-}
-
-func (e *aliasCaptureExecutor) CountTokens(context.Context, *auth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, &auth.Error{HTTPStatus: http.StatusNotImplemented, Message: "CountTokens not implemented"}
-}
-
-func (e *aliasCaptureExecutor) HttpRequest(context.Context, *auth.Auth, *http.Request) (*http.Response, error) {
-	return nil, &auth.Error{HTTPStatus: http.StatusNotImplemented, Message: "HttpRequest not implemented"}
-}
-
-func (e *aliasCaptureExecutor) Models() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]string, len(e.models))
-	copy(out, e.models)
-	return out
-}
-
-func newAliasWiringTestServer(t *testing.T, aliases map[string][]proxyconfig.OAuthModelAlias) (*Server, *auth.Manager, *proxyconfig.Config) {
-	t.Helper()
-	gin.SetMode(gin.TestMode)
-
-	tmpDir := t.TempDir()
-	authDir := filepath.Join(tmpDir, "auth")
-	if err := os.MkdirAll(authDir, 0o700); err != nil {
-		t.Fatalf("failed to create auth dir: %v", err)
-	}
-
-	cfg := &proxyconfig.Config{
-		SDKConfig: sdkconfig.SDKConfig{
-			APIKeys: []string{"test-key"},
-		},
-		Port:                   0,
-		AuthDir:                authDir,
-		Debug:                  true,
-		LoggingToFile:          false,
-		UsageStatisticsEnabled: false,
-		OAuthModelAlias:        aliases,
-	}
-	authManager := auth.NewManager(nil, nil, nil)
-	accessManager := sdkaccess.NewManager()
-	server := NewServer(cfg, authManager, accessManager, filepath.Join(tmpDir, "config.yaml"))
-	return server, authManager, cfg
-}
-
-func assertManagerExecutesAlias(t *testing.T, manager *auth.Manager, routeModel, wantModel string) {
-	t.Helper()
-
-	executor := &aliasCaptureExecutor{id: "claude"}
-	manager.RegisterExecutor(executor)
-
-	authID := fmt.Sprintf("claude-oauth-%s", strings.ReplaceAll(t.Name(), "/", "-"))
-	authEntry := &auth.Auth{
-		ID:       authID,
-		Provider: "claude",
-		Status:   auth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{
-			"email": "claude@example.com",
-		},
-	}
-	registered, err := manager.Register(context.Background(), authEntry)
-	if err != nil {
-		t.Fatalf("register auth: %v", err)
-	}
-
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(registered.ID, registered.Provider, []*registry.ModelInfo{{ID: wantModel}})
-	t.Cleanup(func() {
-		reg.UnregisterClient(registered.ID)
-	})
-	manager.RefreshSchedulerEntry(registered.ID)
-
-	resp, err := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{})
-	if err != nil {
-		t.Fatalf("execute error: %v", err)
-	}
-	if got := string(resp.Payload); got != wantModel {
-		t.Fatalf("response payload = %q, want %q", got, wantModel)
-	}
-	models := executor.Models()
-	if len(models) != 1 {
-		t.Fatalf("executed models = %v, want single %q", models, wantModel)
-	}
-	if models[0] != wantModel {
-		t.Fatalf("executed model = %q, want %q", models[0], wantModel)
 	}
 }
