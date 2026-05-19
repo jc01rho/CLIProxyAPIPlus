@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -168,12 +169,176 @@ func (e *OllamaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	return resp, nil
 }
 
-func (e *OllamaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	_ = ctx
-	_ = auth
-	_ = req
-	_ = opts
-	return nil, statusErr{code: http.StatusNotImplemented, msg: "ollama streaming is not supported"}
+func (e *OllamaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if opts.Alt == "responses/compact" {
+		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
+	}
+	baseModel := resolveOllamaExecutionModel(auth, thinking.ParseSuffix(req.Model).ModelName)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	defer reporter.trackFailure(ctx, &err)
+
+	apiKey, baseURL := ollamaCredentials(auth)
+	if apiKey == "" {
+		return nil, fmt.Errorf("ollama executor: missing api key")
+	}
+	if baseURL == "" {
+		baseURL = ollamaDefaultBaseURL
+	}
+
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("openai")
+	originalPayloadSource := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		originalPayloadSource = opts.OriginalRequest
+	}
+	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayloadSource, false)
+	translated := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), false)
+	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	if err != nil {
+		return nil, err
+	}
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	translated = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel, requestPath)
+	ollamaPayload := buildOllamaChatPayload(translated, baseModel, true)
+
+	url := strings.TrimSuffix(baseURL, "/") + "/chat"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(ollamaPayload))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("User-Agent", "cli-proxy-ollama")
+	var attrs map[string]string
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		attrs = auth.Attributes
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{URL: url, Method: http.MethodPost, Headers: httpReq.Header.Clone(), Body: ollamaPayload, Provider: e.Identifier(), AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue})
+
+	httpResp, err := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0).Do(httpReq)
+	if err != nil {
+		recordAPIResponseError(ctx, e.cfg, err)
+		return nil, err
+	}
+	recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		b, _ := io.ReadAll(httpResp.Body)
+		appendAPIResponseChunk(ctx, e.cfg, b)
+		logDetailedAPIError(ctx, e.cfg, e.Identifier(), baseModel, url, httpResp.StatusCode, httpResp.Header.Get("Content-Type"), ollamaPayload, b)
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("ollama executor: close response body error: %v", errClose)
+		}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		return nil, err
+	}
+
+	out := make(chan cliproxyexecutor.StreamChunk)
+	go func() {
+		defer close(out)
+		defer func() {
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.Errorf("ollama executor: close response body error: %v", errClose)
+			}
+		}()
+		scanner := bufio.NewScanner(httpResp.Body)
+		scanner.Buffer(nil, 52_428_800) // 50MB
+		var param any
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			appendAPIResponseChunk(ctx, e.cfg, line)
+			trimmed := bytes.TrimSpace(line)
+			if len(trimmed) == 0 {
+				continue
+			}
+			done := gjson.GetBytes(trimmed, "done").Bool()
+			sseData := ollamaStreamChunkToOpenAI(trimmed, baseModel, done)
+			if done {
+				// Extract usage from the final chunk and publish
+				openAIFinal := ollamaChatToOpenAI(trimmed, baseModel)
+				reporter.publish(ctx, parseOpenAIUsage(openAIFinal))
+				// Send the done chunk through the translator then the [DONE] signal
+				chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, sseData, &param)
+				for i := range chunks {
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+					case <-ctx.Done():
+						return
+					}
+				}
+				doneChunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
+				for i := range doneChunks {
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: doneChunks[i]}:
+					case <-ctx.Done():
+						return
+					}
+				}
+				reporter.ensurePublished(ctx)
+				return
+			}
+			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, sseData, &param)
+			for i := range chunks {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		if errScan := scanner.Err(); errScan != nil {
+			recordAPIResponseError(ctx, e.cfg, errScan)
+			reporter.publishFailure(ctx)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
+		} else {
+			// Stream ended without a done:true chunk — emit synthetic [DONE]
+			doneChunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
+			for i := range doneChunks {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: doneChunks[i]}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			reporter.ensurePublished(ctx)
+		}
+	}()
+	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+// ollamaStreamChunkToOpenAI converts a single Ollama NDJSON streaming chunk to an OpenAI SSE data line.
+func ollamaStreamChunkToOpenAI(chunk []byte, model string, done bool) []byte {
+	content := gjson.GetBytes(chunk, "message.content").String()
+	thinking := gjson.GetBytes(chunk, "message.thinking").String()
+	created := time.Now().Unix()
+
+	delta := map[string]any{"role": "assistant", "content": content}
+	if thinking != "" {
+		delta["thinking"] = thinking
+	}
+
+	var finishReason any
+	if done {
+		finishReason = "stop"
+	}
+
+	openAIChunk := map[string]any{
+		"id":      "chatcmpl-ollama",
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finishReason}},
+	}
+	chunkJSON, _ := json.Marshal(openAIChunk)
+	return append([]byte("data: "), chunkJSON...)
 }
 
 func (e *OllamaExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
