@@ -113,6 +113,7 @@ cpa-usage-keeper/AGENTS.md
 
 ## RECENT CHANGES
 
+- **CLIProxyAPIPlus v7.1.17-3**: Fixed double /api prefix in FetchOllamaModels URL construction (ollama.com/api + /api/tags → ollama.com/api/api/tags). Now strips /api suffix before appending endpoint paths.
 - **CLIProxyAPIPlus v7.1.17-2**: Fixed Ollama models fetch URL fallback (tries /v1/tags then /api/tags for ollama.com) and stripped unsupported tool_calls/tool_call_id fields from messages for /api/chat compatibility.
 - **CLIProxyAPIPlus v7.1.17-1**: merge upstream/main (v7.1.17) - test cleanup, README updates, Redis timeout/subscription failover.
 - **CLIProxyAPIPlus v7.1.16-1**: merge upstream/main (v7.1.16) - Redis timeout handling, sponsor docs improvements.
