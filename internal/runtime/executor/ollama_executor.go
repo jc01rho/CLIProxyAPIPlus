@@ -427,17 +427,80 @@ func ollamaCredentials(auth *cliproxyauth.Auth) (apiKey, baseURL string) {
 }
 
 func buildOllamaChatPayload(openAIPayload []byte, model string, stream bool) []byte {
-	messageRaw := json.RawMessage("[]")
-	if raw := gjson.GetBytes(openAIPayload, "messages").Raw; raw != "" {
-		messageRaw = json.RawMessage(raw)
+	var src map[string]any
+	if err := json.Unmarshal(openAIPayload, &src); err != nil {
+		return buildBasicOllamaPayload(model, stream)
 	}
-	payload := map[string]any{"model": model, "messages": messageRaw, "stream": stream}
-	if v := gjson.GetBytes(openAIPayload, "temperature"); v.Exists() {
-		payload["temperature"] = v.Value()
+
+	payload := map[string]any{"model": model, "stream": stream}
+
+	if messages, ok := src["messages"].([]any); ok {
+		payload["messages"] = convertOpenAIMessagesToOllama(messages)
+	} else {
+		payload["messages"] = []any{}
 	}
-	if v := gjson.GetBytes(openAIPayload, "top_p"); v.Exists() {
-		payload["top_p"] = v.Value()
+
+	if temp, ok := src["temperature"]; ok {
+		payload["temperature"] = temp
 	}
+	if topP, ok := src["top_p"]; ok {
+		payload["top_p"] = topP
+	}
+
+	out, _ := json.Marshal(payload)
+	return out
+}
+
+func convertOpenAIMessagesToOllama(openAIMessages []any) []map[string]any {
+	ollama := make([]map[string]any, 0, len(openAIMessages))
+	for _, msg := range openAIMessages {
+		msgMap, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		m := make(map[string]any)
+		if role, ok := msgMap["role"]; ok {
+			m["role"] = role
+		}
+		if content, ok := msgMap["content"]; ok {
+			m["content"] = convertOpenAIContentToString(content)
+		}
+		for k, v := range msgMap {
+			if k != "role" && k != "content" {
+				m[k] = v
+			}
+		}
+		ollama = append(ollama, m)
+	}
+	return ollama
+}
+
+func convertOpenAIContentToString(content any) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case []any:
+		var sb strings.Builder
+		for _, item := range c {
+			itemMap, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			t, _ := itemMap["type"].(string)
+			if t == "text" || t == "output_text" {
+				if text, ok := itemMap["text"].(string); ok {
+					sb.WriteString(text)
+				}
+			}
+		}
+		return sb.String()
+	default:
+		return fmt.Sprintf("%v", content)
+	}
+}
+
+func buildBasicOllamaPayload(model string, stream bool) []byte {
+	payload := map[string]any{"model": model, "messages": []any{}, "stream": stream}
 	out, _ := json.Marshal(payload)
 	return out
 }
