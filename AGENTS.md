@@ -113,6 +113,7 @@ cpa-usage-keeper/AGENTS.md
 
 ## RECENT CHANGES
 
+- **CLIProxyAPIPlus v7.1.15-3**: Fixed Ollama JSON parsing error — convert OpenAI array-based content to Ollama string format; improved error logging by masking message content instead of removing entire messages field.
 - **CLIProxyAPIPlus v7.1.15-2**: Fixed Ollama streaming — implemented ExecuteStream with NDJSON line-by-line reading, Ollama→OpenAI SSE chunk conversion, thinking/reasoning support, and usage tracking on done:true chunk.
 - **CLIProxyAPIPlus v7.1.15**: Merged upstream/main. Added Home CA fingerprint verification, OpenAI image model compatibility, xAI reasoning.effort support, upstream response header tracking, Antigravity Gemini thought signature fixes, and Gemini max output token cap. Conflicts resolved in usage_helpers.go (kept storeUsageDetailInContext), openai_compat_executor.go (merged image constants), openai_compat_executor_compact_test.go (kept both reasoning and image tests), and handlers.go (kept attachRouteFallback + routeModelBaseName).
 - **CLIProxyAPIPlus v7.1.11-8**: Added 400 bad_request cooldown (30min) in conductor; changed applyOAuthModelAlias dedup key to (alias|upstreamID); fixed API key model alias resolution via apiKeyModelAlias table; removed ollama from OAuth alias channels; enforced 200 tools cap in normalizeXAITools; changed buildConfigModels dedup key to (alias|name).
