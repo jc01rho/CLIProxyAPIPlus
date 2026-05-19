@@ -372,9 +372,13 @@ func FetchOllamaModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	if baseURL == "" {
 		baseURL = ollamaDefaultBaseURL
 	}
-	// Ollama Cloud: try /v1/tags first (returns OpenAI-compatible format), fallback to /api/tags
-	endpointPaths := []string{"/v1/tags", "/api/tags"}
-	if !strings.Contains(strings.ToLower(baseURL), "ollama.com") {
+	// Ollama Cloud: strip /api suffix from baseURL, try /v1/tags first, fallback to /api/tags
+	var endpointPaths []string
+	cleanBase := strings.TrimRight(baseURL, "/")
+	if strings.Contains(strings.ToLower(cleanBase), "ollama.com") {
+		cleanBase = strings.TrimSuffix(cleanBase, "/api")
+		endpointPaths = []string{"/v1/tags", "/api/tags"}
+	} else {
 		// Self-hosted Ollama: try /api/tags first, fallback to /tags
 		endpointPaths = []string{"/api/tags", "/tags"}
 	}
@@ -382,7 +386,7 @@ func FetchOllamaModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	var lastStatus int
 	var lastBody []byte
 	for _, path := range endpointPaths {
-		url := strings.TrimSuffix(baseURL, "/") + path
+		url := cleanBase + path
 		lastURL = url
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
