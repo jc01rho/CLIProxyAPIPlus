@@ -650,6 +650,15 @@ func xaiMetadataString(meta map[string]any, key string) string {
 
 func sanitizeXAIResponsesBody(body []byte, model string) []byte {
 	body = removeXAIEncryptedReasoningInclude(body)
+	name := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
+	if strings.HasPrefix(name, "grok-4.3") {
+		// Force reasoning effort to medium for grok-4.3 per user requirement.
+		body, _ = sjson.SetBytes(body, "reasoning.effort", "medium")
+		body, _ = sjson.DeleteBytes(body, "presence_penalty")
+		body, _ = sjson.DeleteBytes(body, "frequency_penalty")
+		body, _ = sjson.DeleteBytes(body, "stop")
+		return body
+	}
 	if xaiSupportsReasoningEffort(model) {
 		// xAI docs: "presencePenalty, frequencyPenalty, and stop cannot be used with reasoning models."
 		body, _ = sjson.DeleteBytes(body, "presence_penalty")

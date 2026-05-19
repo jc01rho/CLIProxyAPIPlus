@@ -5414,7 +5414,16 @@ func (m *Manager) executeWithRouteFallback(
 		fbReq := req
 		fbReq.Model = fbModel
 
-		resp, err := m.executeWithRetry(ctx, providers, fbReq, opts, maxRetryCredentials, maxWait, execOnce)
+		// Resolve providers for the fallback model dynamically, as it may map to a different provider
+		fbProviders := m.ProvidersForRouteModel(fbModel)
+		if len(fbProviders) == 0 {
+			fbProviders = m.ProvidersForOAuthAliasWithoutRegisteredModels(fbModel)
+		}
+		if len(fbProviders) == 0 {
+			fbProviders = providers
+		}
+
+		resp, err := m.executeWithRetry(ctx, fbProviders, fbReq, opts, maxRetryCredentials, maxWait, execOnce)
 		if err == nil {
 			logRouteModelFallbackResult(ctx, originalModel, fbModel, source, lastErr, nil, attemptStartedAt)
 			return resp, nil
@@ -5464,7 +5473,16 @@ func (m *Manager) executeStreamWithRouteFallback(
 		fbReq := req
 		fbReq.Model = fbModel
 
-		result, err := m.executeStreamWithRetry(ctx, providers, fbReq, opts, maxRetryCredentials, maxWait, execOnce)
+		// Resolve providers for the fallback model dynamically, as it may map to a different provider
+		fbProviders := m.ProvidersForRouteModel(fbModel)
+		if len(fbProviders) == 0 {
+			fbProviders = m.ProvidersForOAuthAliasWithoutRegisteredModels(fbModel)
+		}
+		if len(fbProviders) == 0 {
+			fbProviders = providers
+		}
+
+		result, err := m.executeStreamWithRetry(ctx, fbProviders, fbReq, opts, maxRetryCredentials, maxWait, execOnce)
 		if err == nil {
 			logRouteModelFallbackResult(ctx, originalModel, fbModel, source, lastErr, nil, attemptStartedAt)
 			return result, nil
