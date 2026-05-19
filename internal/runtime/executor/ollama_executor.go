@@ -372,49 +372,57 @@ func FetchOllamaModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	if baseURL == "" {
 		baseURL = ollamaDefaultBaseURL
 	}
-	// Ollama Cloud: /v1/tags and /api/tags supported; self-hosted: /tags or /api/tags
-	endpointPath := "/v1/tags"
+	// Ollama Cloud: try /v1/tags first (returns OpenAI-compatible format), fallback to /api/tags
+	endpointPaths := []string{"/v1/tags", "/api/tags"}
 	if !strings.Contains(strings.ToLower(baseURL), "ollama.com") {
-		endpointPath = "/api/tags"
+		// Self-hosted Ollama: try /api/tags first, fallback to /tags
+		endpointPaths = []string{"/api/tags", "/tags"}
 	}
-	url := strings.TrimSuffix(baseURL, "/") + endpointPath
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		log.Errorf("ollama fetch models: create request error: %v", err)
-		return nil
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("User-Agent", "cli-proxy-ollama")
-	if auth != nil {
-		util.ApplyCustomHeadersFromAttrs(req, auth.Attributes)
-	}
-	// log all ollama.com requests as per requirement
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	recordAPIRequest(ctx, cfg, upstreamRequestLog{URL: url, Method: http.MethodGet, Headers: req.Header.Clone(), Body: nil, Provider: "ollama", AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue})
-	resp, err := newProxyAwareHTTPClient(ctx, cfg, auth, 15*time.Second).Do(req)
-	if err != nil {
-		recordAPIResponseError(ctx, cfg, err)
-		log.Errorf("ollama models fetch failed for %s: %v", url, err)
-		return nil
-	}
-	defer resp.Body.Close()
-	body, readErr := io.ReadAll(resp.Body)
-	recordAPIResponseMetadata(ctx, cfg, resp.StatusCode, resp.Header.Clone())
-	if readErr != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if readErr != nil {
-			recordAPIResponseError(ctx, cfg, readErr)
+	var lastURL string
+	var lastStatus int
+	var lastBody []byte
+	for _, path := range endpointPaths {
+		url := strings.TrimSuffix(baseURL, "/") + path
+		lastURL = url
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			log.Errorf("ollama fetch models: create request error: %v", err)
+			return nil
 		}
-		logDetailedAPIError(ctx, cfg, "ollama", "", url, resp.StatusCode, resp.Header.Get("Content-Type"), nil, body)
-		log.Errorf("ollama models fetch error status: %d url: %s body: %s", resp.StatusCode, url, string(body))
-		return nil
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("User-Agent", "cli-proxy-ollama")
+		if auth != nil {
+			util.ApplyCustomHeadersFromAttrs(req, auth.Attributes)
+		}
+		var authID, authLabel, authType, authValue string
+		if auth != nil {
+			authID = auth.ID
+			authLabel = auth.Label
+			authType, authValue = auth.AccountInfo()
+		}
+		recordAPIRequest(ctx, cfg, upstreamRequestLog{URL: url, Method: http.MethodGet, Headers: req.Header.Clone(), Body: nil, Provider: "ollama", AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue})
+		resp, err := newProxyAwareHTTPClient(ctx, cfg, auth, 15*time.Second).Do(req)
+		if err != nil {
+			recordAPIResponseError(ctx, cfg, err)
+			log.Errorf("ollama models fetch failed for %s: %v", url, err)
+			continue
+		}
+		defer resp.Body.Close()
+		body, readErr := io.ReadAll(resp.Body)
+		recordAPIResponseMetadata(ctx, cfg, resp.StatusCode, resp.Header.Clone())
+		lastStatus = resp.StatusCode
+		lastBody = body
+		if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			appendAPIResponseChunk(ctx, cfg, body)
+			return parseOllamaTags(body)
+		}
+		// try next endpoint
 	}
-	appendAPIResponseChunk(ctx, cfg, body)
-	return parseOllamaTags(body)
+	if lastStatus != 0 {
+		logDetailedAPIError(ctx, cfg, "ollama", "", lastURL, lastStatus, "application/json", nil, lastBody)
+		log.Errorf("ollama models fetch error status: %d url: %s body: %s", lastStatus, lastURL, string(lastBody))
+	}
+	return nil
 }
 
 func ollamaCredentials(auth *cliproxyauth.Auth) (apiKey, baseURL string) {
@@ -451,6 +459,9 @@ func buildOllamaChatPayload(openAIPayload []byte, model string, stream bool) []b
 	return out
 }
 
+// convertOpenAIMessagesToOllama converts OpenAI-format messages to Ollama-compatible format.
+// Ollama /api/chat only supports role (system/user/assistant) and content (string).
+// Role "tool" messages, tool_calls, tool_call_id, and other unsupported fields are stripped.
 func convertOpenAIMessagesToOllama(openAIMessages []any) []map[string]any {
 	ollama := make([]map[string]any, 0, len(openAIMessages))
 	for _, msg := range openAIMessages {
@@ -458,17 +469,16 @@ func convertOpenAIMessagesToOllama(openAIMessages []any) []map[string]any {
 		if !ok {
 			continue
 		}
-		m := make(map[string]any)
-		if role, ok := msgMap["role"]; ok {
-			m["role"] = role
+		role, _ := msgMap["role"].(string)
+		// Skip tool messages — Ollama doesn't support function calling
+		if role == "tool" {
+			continue
 		}
-		if content, ok := msgMap["content"]; ok {
+		m := map[string]any{"role": role}
+		if content, ok := msgMap["content"]; ok && content != nil {
 			m["content"] = convertOpenAIContentToString(content)
-		}
-		for k, v := range msgMap {
-			if k != "role" && k != "content" {
-				m[k] = v
-			}
+		} else {
+			m["content"] = ""
 		}
 		ollama = append(ollama, m)
 	}
