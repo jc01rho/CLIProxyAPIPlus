@@ -113,6 +113,8 @@ cpa-usage-keeper/AGENTS.md
 
 ## RECENT CHANGES
 
+- **CLIProxyAPIPlus v7.1.17-1**: merge upstream/main (v7.1.17) - test cleanup, README updates, Redis timeout/subscription failover.
+- **CLIProxyAPIPlus v7.1.16-1**: merge upstream/main (v7.1.16) - Redis timeout handling, sponsor docs improvements.
 - **CLIProxyAPIPlus v7.1.15-3**: Fixed Ollama JSON parsing error — convert OpenAI array-based content to Ollama string format; improved error logging by masking message content instead of removing entire messages field.
 - **CLIProxyAPIPlus v7.1.15-2**: Fixed Ollama streaming — implemented ExecuteStream with NDJSON line-by-line reading, Ollama→OpenAI SSE chunk conversion, thinking/reasoning support, and usage tracking on done:true chunk.
 - **CLIProxyAPIPlus v7.1.15**: Merged upstream/main. Added Home CA fingerprint verification, OpenAI image model compatibility, xAI reasoning.effort support, upstream response header tracking, Antigravity Gemini thought signature fixes, and Gemini max output token cap. Conflicts resolved in usage_helpers.go (kept storeUsageDetailInContext), openai_compat_executor.go (merged image constants), openai_compat_executor_compact_test.go (kept both reasoning and image tests), and handlers.go (kept attachRouteFallback + routeModelBaseName).
