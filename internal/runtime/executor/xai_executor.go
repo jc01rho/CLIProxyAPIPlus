@@ -650,7 +650,12 @@ func xaiMetadataString(meta map[string]any, key string) string {
 
 func sanitizeXAIResponsesBody(body []byte, model string) []byte {
 	body = removeXAIEncryptedReasoningInclude(body)
-	if !xaiSupportsReasoningEffort(model) {
+	if xaiSupportsReasoningEffort(model) {
+		// xAI docs: "presencePenalty, frequencyPenalty, and stop cannot be used with reasoning models."
+		body, _ = sjson.DeleteBytes(body, "presence_penalty")
+		body, _ = sjson.DeleteBytes(body, "frequency_penalty")
+		body, _ = sjson.DeleteBytes(body, "stop")
+	} else {
 		body, _ = sjson.DeleteBytes(body, "reasoning")
 	}
 	return body
@@ -783,7 +788,7 @@ func normalizeXAIInputReasoningItems(body []byte) []byte {
 			updated = updatedBody
 		}
 		encryptedContentPath := fmt.Sprintf("input.%d.encrypted_content", i)
-		if encryptedContent := gjson.GetBytes(updated, encryptedContentPath); encryptedContent.Exists() && encryptedContent.Type == gjson.Null {
+		if encryptedContent := gjson.GetBytes(updated, encryptedContentPath); encryptedContent.Exists() {
 			updatedBody, errDel := sjson.DeleteBytes(updated, encryptedContentPath)
 			if errDel != nil {
 				return body
