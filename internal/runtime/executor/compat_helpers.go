@@ -168,10 +168,32 @@ func sanitizeDetailedAPIRequestBody(body []byte) []byte {
 	}
 	cleaned := make(map[string]any, len(payload))
 	for k, v := range payload {
-		if k == "messages" {
+		if k != "messages" {
+			cleaned[k] = v
 			continue
 		}
-		cleaned[k] = v
+		msgs, ok := v.([]any)
+		if !ok {
+			cleaned[k] = v
+			continue
+		}
+		masked := make([]any, len(msgs))
+		for i, msg := range msgs {
+			if msgMap, ok := msg.(map[string]any); ok {
+				maskedMsg := make(map[string]any, len(msgMap))
+				for mk, mv := range msgMap {
+					if mk == "content" {
+						maskedMsg[mk] = "[MASKED]"
+					} else {
+						maskedMsg[mk] = mv
+					}
+				}
+				masked[i] = maskedMsg
+			} else {
+				masked[i] = msg
+			}
+		}
+		cleaned[k] = masked
 	}
 	encoded, err := json.Marshal(cleaned)
 	if err != nil {

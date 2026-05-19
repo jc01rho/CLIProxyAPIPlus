@@ -172,8 +172,11 @@ func TestLogDetailedAPIErrorSummaryModeExtractsResponseMessage(t *testing.T) {
 func TestFormatDetailedAPILogBodyRequestSanitizationRemovesMessages(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"secret prompt"}],"max_tokens":128}`)
 	got := formatDetailedAPILogBody(&config.Config{SDKConfig: config.SDKConfig{DetailedAPIErrorBodyLogFormat: "full", DetailedAPIErrorBodyLogLimit: -1}}, "application/json", sanitizeDetailedAPIRequestBody(body))
-	if strings.Contains(got, `messages`) || strings.Contains(got, `secret prompt`) {
-		t.Fatalf("expected messages to be removed from request body log, got: %s", got)
+	if strings.Contains(got, `secret prompt`) {
+		t.Fatalf("expected message content to be masked in request body log, got: %s", got)
+	}
+	if !strings.Contains(got, `messages`) || !strings.Contains(got, `MASKED`) {
+		t.Fatalf("expected messages structure to remain with masked content, got: %s", got)
 	}
 	if !strings.Contains(got, `claude-sonnet-4-5`) || !strings.Contains(got, `max_tokens`) {
 		t.Fatalf("expected non-message fields to remain in sanitized request log, got: %s", got)
