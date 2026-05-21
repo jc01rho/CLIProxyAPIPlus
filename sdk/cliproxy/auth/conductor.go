@@ -3666,11 +3666,11 @@ func isRequestScopedNotFoundResultError(err *Error) bool {
 }
 
 // isRequestInvalidError returns true if the error represents a client request
-// error that should not be retried. Specifically, it treats 400 responses with
-// "invalid_request_error", request-scoped 404 item misses caused by `store=false`,
-// and all 422 responses as request-shape failures, where switching auths or
-// pooled upstream models will not help. Model-support errors are excluded so
-// routing can fall through to another auth or upstream.
+// error that should not be retried. Specifically, it treats request-scoped 404
+// item misses caused by `store=false`, and all 422 responses as request-shape
+// failures, where switching auths or pooled upstream models will not help.
+// Model-support errors are excluded so routing can fall through to another auth
+// or upstream. 400 errors are now allowed to trigger fallback chains.
 func isRequestInvalidError(err error) bool {
 	if err == nil {
 		return false
@@ -3681,10 +3681,8 @@ func isRequestInvalidError(err error) bool {
 	status := statusCodeFromError(err)
 	switch status {
 	case http.StatusBadRequest:
-		msg := err.Error()
-		return strings.Contains(msg, "invalid_request_error") ||
-			strings.Contains(msg, "INVALID_ARGUMENT") ||
-			strings.Contains(msg, "FAILED_PRECONDITION")
+		// Allow 400 errors to trigger fallback chains
+		return false
 	case http.StatusNotFound:
 		return isRequestScopedNotFoundMessage(err.Error())
 	case http.StatusUnprocessableEntity:
@@ -5607,12 +5605,13 @@ func (m *Manager) shouldAllowRouteModelFallback(err error) bool {
 	if err == nil {
 		return false
 	}
-	if isRequestInvalidError(err) {
-		return false
-	}
 	status := statusCodeFromError(err)
 	switch status {
-	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+	case http.StatusBadRequest:
+		// 400 errors should trigger fallback to allow model-level routing changes
+		// (e.g., unsupported parameters, invalid request shape for current model)
+		return true
+	case http.StatusUnprocessableEntity:
 		return isModelSupportError(err)
 	case http.StatusNotFound:
 		return false
