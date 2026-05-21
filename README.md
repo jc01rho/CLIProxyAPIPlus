@@ -5,7 +5,12 @@
 > **Key differences from upstream:**
 > - HTTP 400 errors trigger model fallback chains (not just 401/403/429/5xx)
 > - 429 rate-limit cooldown extended to 24 hours max
-> - Strips `interleaved` content blocks from NanoGPT/DeepSeek provider payloads
+> - Strips `interleaved` content blocks from DeepSeek-like provider payloads (DeepSeek.com, nano-gpt.com, deepseek-prefixed models, nanogpt compat providers)
+> - Filters empty assistant messages for Mistral to prevent 400 errors
+> - Strips `encrypted_content` from xAI reasoning input to prevent 400 decryption errors
+> - Enforces 200-tool cap for xAI regardless of namespace normalization
+> - Allows Xiaomi provider name prefix matching for multiple endpoints
+> - Backfills Xiaomi reasoning replay
 > - Added missing `/v0/management/request-log-success-body` route
 > - Comprehensive AGENTS.md project knowledge base with agent-native workflow support
 
