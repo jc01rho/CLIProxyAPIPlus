@@ -1,8 +1,8 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-05-19
-**Commit:** cc3f239c
-**Branch:** master
+**Generated:** 2026-05-21
+**Commit:** 266cfcf1
+**Branch:** main
 
 ## OVERVIEW
 
@@ -107,12 +107,11 @@ cpa-usage-keeper/AGENTS.md
 - Only propose a new base tag when the user explicitly wants a new release line or that repository's recent tag history clearly starts a new base series.
 - Upstream merges: always check `server.go` for duplicate route registration after merging.
 - Re-tagging: delete GitHub release assets first, then re-run goreleaser (otherwise `422 already_exists`).
-- Latest tags: `CLIProxyAPIPlus: v7.1.18-1`, `Cli-Proxy-API-Management-Center: v1.11.1-4`, `cpa-usage-keeper: v1.7.4`. Re-check before tagging.
+- Latest tags: `CLIProxyAPIPlus: v7.1.18-2`, `Cli-Proxy-API-Management-Center: v1.11.1-4`, `cpa-usage-keeper: v1.7.4`. Re-check before tagging.
 
 ## RECENT CHANGES
 
+- **CLIProxyAPIPlus v7.1.18-2**: fix missing `/v0/management/request-log-success-body` route.
 - **CLIProxyAPIPlus v7.1.18-1**: merged upstream/main v7.1.18 (reasoning effort metadata, Gemini 3.5 Flash, Redis enhancements). 3 handler conflicts resolved keeping maybeAttachEstimatedInputTokens.
 - **CLIProxyAPIPlus v7.1.17-3**: Ollama models fetch URL fix (double /api prefix). Merged upstream v7.1.16–v7.1.17.
 - **CLIProxyAPIPlus v7.1.15 series**: Full Ollama provider support — streaming (ExecuteStream), JSON content conversion, tool_calls stripping, models fetch. Merged upstream v7.1.15 with Home CA, image models, xAI reasoning.effort.
-- **CLIProxyAPIPlus v7.1.11-8**: 400 bad_request cooldown, (alias|name)/(alias|upstreamID) dedup keys, API key alias resolution.
-- **Management Center v1.11.1-4**: Merged upstream. Filter controls, OllamaSection, Antigravity Credits.
