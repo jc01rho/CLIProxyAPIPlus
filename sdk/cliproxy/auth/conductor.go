@@ -168,8 +168,8 @@ const (
 	// wasn't updated). Without this guard, the auto-refresh loop can tight-loop and
 	// burn CPU at idle.
 	refreshIneffectiveBackoff = 30 * time.Second
-	quotaBackoffBase          = 1 * time.Minute
-	quotaBackoffMax           = 1 * time.Hour
+	quotaBackoffBase          = 5 * time.Minute
+	quotaBackoffMax           = 24 * time.Hour
 )
 
 var quotaCooldownDisabled atomic.Bool
