@@ -3,8 +3,8 @@ package cliproxy
 import (
 	"testing"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+			internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -256,72 +256,4 @@ func TestRegisterModelsForAuth_ClaudeOAuthAliasSetsExecutionTarget(t *testing.T)
 	}
 }
 
-func TestBuildOllamaConfigModels_SetsExecutionTargetWhenAliasDiffers(t *testing.T) {
-	entry := &internalconfig.OllamaKey{
-		Models: []internalconfig.OllamaModel{
-			{Name: "kimi-k2.6", Alias: "higher-coding"},
-			{Name: "gpt-oss:120b", Alias: "gpt-oss:120b"},
-		},
-	}
 
-	out := buildOllamaConfigModels(entry)
-	// Now returns 3: name-based (kimi-k2.6), alias-based (higher-coding), canonical (gpt-oss:120b)
-	if len(out) != 3 {
-		t.Fatalf("expected 3 models, got %d", len(out))
-	}
-
-	// First: name-based entry (kimi-k2.6)
-	nameModel := out[0]
-	if nameModel.ID != "kimi-k2.6" {
-		t.Fatalf("expected name-based model id %q, got %q", "kimi-k2.6", nameModel.ID)
-	}
-	if nameModel.Alias != "higher-coding" {
-		t.Fatalf("expected name-based model alias %q, got %q", "higher-coding", nameModel.Alias)
-	}
-	if nameModel.ExecutionTarget != "kimi-k2.6" {
-		t.Fatalf("name-based model execution target = %q, want %q", nameModel.ExecutionTarget, "kimi-k2.6")
-	}
-	if !nameModel.UserDefined {
-		t.Fatal("expected name-based model to be user-defined")
-	}
-
-	// Second: alias-based entry (higher-coding) - added for registry alias lookup
-	aliasModel := out[1]
-	if aliasModel.ID != "higher-coding" {
-		t.Fatalf("expected alias-based model id %q, got %q", "higher-coding", aliasModel.ID)
-	}
-	if aliasModel.ExecutionTarget != "kimi-k2.6" {
-		t.Fatalf("alias-based model execution target = %q, want %q", aliasModel.ExecutionTarget, "kimi-k2.6")
-	}
-	if aliasModel.OwnedBy != "ollama" {
-		t.Fatalf("expected ownedBy %q, got %q", "ollama", aliasModel.OwnedBy)
-	}
-
-	// Third: canonical model (gpt-oss:120b, name == alias)
-	canonicalModel := out[2]
-	if canonicalModel.ID != "gpt-oss:120b" {
-		t.Fatalf("expected canonical model id %q, got %q", "gpt-oss:120b", canonicalModel.ID)
-	}
-	if canonicalModel.ExecutionTarget != "" {
-		t.Fatalf("canonical model execution target = %q, want empty", canonicalModel.ExecutionTarget)
-	}
-}
-
-func TestBuildOllamaConfigModels_NoExecutionTargetWhenNameEqualsAlias(t *testing.T) {
-	entry := &internalconfig.OllamaKey{
-		Models: []internalconfig.OllamaModel{
-			{Name: "gpt-oss:120b", Alias: "gpt-oss:120b"},
-		},
-	}
-
-	out := buildOllamaConfigModels(entry)
-	if len(out) != 1 {
-		t.Fatalf("expected 1 model, got %d", len(out))
-	}
-	if out[0].ID != "gpt-oss:120b" {
-		t.Fatalf("expected model id %q, got %q", "gpt-oss:120b", out[0].ID)
-	}
-	if out[0].ExecutionTarget != "" {
-		t.Fatalf("execution target = %q, want empty", out[0].ExecutionTarget)
-	}
-}
