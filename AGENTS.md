@@ -111,7 +111,6 @@ cpa-usage-keeper/AGENTS.md
 
 ## RECENT CHANGES
 
+- **CLIProxyAPIPlus**: Removed `ollama-api-key` from config.yaml. Ollama uses `openai-compatibility` now.
 - **CLIProxyAPIPlus v7.1.18-2**: fix missing `/v0/management/request-log-success-body` route.
 - **CLIProxyAPIPlus v7.1.18-1**: merged upstream/main v7.1.18 (reasoning effort metadata, Gemini 3.5 Flash, Redis enhancements). 3 handler conflicts resolved keeping maybeAttachEstimatedInputTokens.
-- **CLIProxyAPIPlus v7.1.17-3**: Ollama models fetch URL fix (double /api prefix). Merged upstream v7.1.16–v7.1.17.
-- **CLIProxyAPIPlus v7.1.15 series**: Full Ollama provider support — streaming (ExecuteStream), JSON content conversion, tool_calls stripping, models fetch. Merged upstream v7.1.15 with Home CA, image models, xAI reasoning.effort.
