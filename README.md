@@ -5,8 +5,7 @@
 > **Key differences from upstream:**
 > - HTTP 400 errors trigger model fallback chains (not just 401/403/429/5xx)
 > - 429 rate-limit cooldown extended to 24 hours max
-> - Strips `interleaved` and `thinking` content blocks from NanoGPT/DeepSeek provider payloads
-> - Thinking block deletion reverted for NanoGPT/DeepSeek providers
+> - Strips `interleaved` content blocks from NanoGPT/DeepSeek provider payloads
 > - Added missing `/v0/management/request-log-success-body` route
 > - Comprehensive AGENTS.md project knowledge base with agent-native workflow support
 
