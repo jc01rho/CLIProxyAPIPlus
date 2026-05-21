@@ -107,10 +107,10 @@ cpa-usage-keeper/AGENTS.md
 - Only propose a new base tag when the user explicitly wants a new release line or that repository's recent tag history clearly starts a new base series.
 - Upstream merges: always check `server.go` for duplicate route registration after merging.
 - Re-tagging: delete GitHub release assets first, then re-run goreleaser (otherwise `422 already_exists`).
-- Latest tags: `CLIProxyAPIPlus: v7.1.18-2`, `Cli-Proxy-API-Management-Center: v1.11.1-4`, `cpa-usage-keeper: v1.7.4`. Re-check before tagging.
+- Latest tags: `CLIProxyAPIPlus: v7.1.19-5`, `Cli-Proxy-API-Management-Center: v1.12.0-1`, `cpa-usage-keeper: v1.8.2-1`. Re-check before tagging.
 
 ## RECENT CHANGES
 
-- **CLIProxyAPIPlus**: Removed `ollama-api-key` from config.yaml. Ollama uses `openai-compatibility` now.
-- **CLIProxyAPIPlus v7.1.18-2**: fix missing `/v0/management/request-log-success-body` route.
-- **CLIProxyAPIPlus v7.1.18-1**: merged upstream/main v7.1.18 (reasoning effort metadata, Gemini 3.5 Flash, Redis enhancements). 3 handler conflicts resolved keeping maybeAttachEstimatedInputTokens.
+- **CLIProxyAPIPlus v7.1.19-5**: upstream merge v7.1.19 (import path fixes for registry/executor). Allow 400 errors to trigger fallback chains.
+- **Cli-Proxy-API-Management-Center v1.12.0-1**: upstream merge v1.12.0. Ollama provider UI section, dedicated provider sections for Mistral/Xiaomi.
+- **cpa-usage-keeper v1.8.2-1**: upstream merge (Back to CPA link, reasoning_effort migration, UsagePage UX polish, Redis queue fallback recovery).
