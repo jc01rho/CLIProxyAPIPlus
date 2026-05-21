@@ -208,6 +208,9 @@ waitForCallback:
 			log.Infof("antigravity: obtained project ID %s, tier %s", projectID, tierID)
 		}
 	}
+	if strings.TrimSpace(projectID) == "" {
+		return nil, fmt.Errorf("antigravity: project ID discovery returned empty project")
+	}
 
 	now := time.Now()
 	metadata := map[string]any{
@@ -236,7 +239,7 @@ waitForCallback:
 
 	fmt.Println("Antigravity authentication successful")
 	if projectID != "" {
-		fmt.Printf("Using GCP project: %s\n", projectID)
+		fmt.Printf("Using GCP project: %s\n", util.HideAPIKey(projectID))
 	}
 	return &coreauth.Auth{
 		ID:       fileName,
