@@ -43,6 +43,46 @@ So you can use local or multi-account CLI access with OpenAI(include Responses)/
 - OpenAI-compatible upstream providers via config (e.g., OpenRouter)
 - Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
 
+## Supported Providers
+
+This fork includes provider-specific fixes and enhancements for the following backends.
+
+### Standard `openai-compatibility` providers (DeepSeek-like, Mistral, Xiaomi)
+
+The following providers are configured via the standard `openai-compatibility` section in `config.yaml`. No special configuration is needed beyond the standard API key and base URL setup:
+
+- **DeepSeek-like** — Any provider with base URL `api.deepseek.com` / `nano-gpt.com`, or model name starting with `deepseek`. The proxy automatically strips unsupported fields (`interleaved`, `tools[].function.parameters.$schema`, etc.).
+- **Mistral** — Set `provider: mistral.ai` in your `openai-compatibility` entry. Empty assistant messages are filtered automatically to prevent 400 errors. `thinking` and `reasoning_effort` fields are stripped as Mistral does not support them.
+- **Xiaomi** — Set `provider: xiaomi` (or any name starting with `xiaomi`) in your `openai-compatibility` entry. Reasoning replay is backfilled automatically.
+
+**Example config for DeepSeek:**
+
+    openai-compatibility:
+      - name: deepseek
+        api-url: https://api.deepseek.com/v1/chat/completions
+        api-key: sk-xxxxx
+        models:
+          - name: deepseek-chat
+
+### xAI (Grok)
+
+xAI uses a **dedicated executor** (`XAIExecutor`), not the `openai-compatibility` path. Configure it via `xai-key` in `config.yaml` or use OAuth login (`xai-login` flag). Supports Grok Responses API, image generation, video creation, and automatic tool normalization (200-tool cap).
+
+**Example config for xAI:**
+
+    xai-key:
+      - api-key: xai-xxxxx
+        models:
+          - name: grok-3
+          - name: grok-3-mini
+
+### Generic usage flow
+
+All providers expose the standard OpenAI-compatible `/v1/chat/completions`, `/v1/chat/completions` (streaming), and `/v1/images/generations` endpoints. Point your client to:
+
+    http://localhost:8317/v1/chat/completions
+    Authorization: Bearer <your-api-key>
+
 ## Getting Started
 
 CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
