@@ -1174,10 +1174,6 @@ func apiKeyRegistryAliasKeys(cfg *internalconfig.Config, auth *Auth, targets ...
 		if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
 			return configModelAliasKeysMatchingUpstream(entry.Models, targets...)
 		}
-	case "ollama":
-		if entry := resolveOllamaAPIKeyConfig(cfg, auth); entry != nil {
-			return configModelAliasKeysMatchingUpstream(entry.Models, targets...)
-		}
 	default:
 		if entry := resolveOpenAICompatConfig(cfg, strings.TrimSpace(auth.Attributes["provider_key"]), strings.TrimSpace(auth.Attributes["compat_name"]), auth.Provider); entry != nil {
 			return configModelAliasKeysMatchingUpstream(entry.Models, targets...)
@@ -1518,10 +1514,6 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 			}
 		case "vertex":
 			if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
-				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
-			}
-		case "ollama":
-			if entry := resolveOllamaAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
 		default:
@@ -2683,8 +2675,6 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 		upstreamModel = resolveUpstreamModelForCodexAPIKey(cfg, auth, requestedModel)
 	case "vertex":
 		upstreamModel = resolveUpstreamModelForVertexAPIKey(cfg, auth, requestedModel)
-	case "ollama":
-		upstreamModel = resolveUpstreamModelForOllamaAPIKey(cfg, auth, requestedModel)
 	default:
 		upstreamModel = resolveUpstreamModelForOpenAICompatAPIKey(cfg, auth, requestedModel)
 	}
@@ -2767,21 +2757,6 @@ func resolveVertexAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internal
 		return nil
 	}
 	return resolveAPIKeyConfig(cfg.VertexCompatAPIKey, auth)
-}
-
-func resolveOllamaAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.OllamaKey {
-	if cfg == nil {
-		return nil
-	}
-	return resolveAPIKeyConfig(cfg.OllamaKey, auth)
-}
-
-func resolveUpstreamModelForOllamaAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
-	entry := resolveOllamaAPIKeyConfig(cfg, auth)
-	if entry == nil {
-		return ""
-	}
-	return resolveModelAliasFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
 }
 
 func resolveUpstreamModelForGeminiAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {

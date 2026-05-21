@@ -255,16 +255,6 @@ func (h *Handler) APICall(c *gin.Context) {
 		}
 	}
 
-	// Log all Ollama requests failures (ollama.com domain and self-hosted)
-	isOllamaRequest := strings.Contains(strings.ToLower(urlStr), "ollama")
-	if isOllamaRequest && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
-		log.WithFields(log.Fields{
-			"url":         urlStr,
-			"status_code": resp.StatusCode,
-			"response":    responseBodyText,
-		}).Error("Ollama request failed")
-	}
-
 	response := apiCallResponse{
 		StatusCode: resp.StatusCode,
 		Header:     resp.Header,
