@@ -910,7 +910,7 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 			}
 		}
 	}
-	if !isMistral {
+	if !isMistral && !isDeepSeekLike {
 		return payload
 	}
 	messages := gjson.GetBytes(payload, "messages")
