@@ -45,7 +45,7 @@ func RefreshWithGracefulDegradation(
 	}
 
 	// Refresh failed - check if we can use the existing token
-	log.Warnf("kiro: token refresh failed: %v", err)
+	log.Debugf("kiro: token refresh failed: %v", err)
 
 	// Check if existing token is still valid (not expired)
 	if existingAccessToken != "" && time.Now().Before(expiresAt) {

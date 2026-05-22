@@ -765,7 +765,7 @@ func (c *SSOOIDCClient) RefreshToken(ctx context.Context, clientID, clientSecret
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		log.Warnf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
+		log.Debugf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
 		return nil, fmt.Errorf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
