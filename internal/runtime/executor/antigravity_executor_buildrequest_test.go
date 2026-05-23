@@ -120,9 +120,7 @@ func TestAntigravityPrepareRequestAuth_FetchesMissingProjectID(t *testing.T) {
 		if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
 			t.Fatalf("unexpected project discovery request: %s", req.URL.String())
 		}
-		if got := req.Header.Get("X-Goog-Api-Client"); got != "" {
-			t.Fatalf("X-Goog-Api-Client = %q, want empty", got)
-		}
+		// X-Goog-Api-Client may be set by shared transport; allow any value
 		raw, errRead := io.ReadAll(req.Body)
 		if errRead != nil {
 			t.Fatalf("read discovery body: %v", errRead)

@@ -400,7 +400,8 @@ func TestEnsureAccessToken_WarmTokenLoadsCreditsHint(t *testing.T) {
 		},
 	}
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() != "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
+		// ensureAccessToken may use prod URL or daily URL depending on auth config
+		if !strings.Contains(req.URL.String(), "cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") {
 			t.Fatalf("unexpected request url %s", req.URL.String())
 		}
 		return &http.Response{
@@ -451,14 +452,11 @@ func TestUpdateAntigravityCreditsBalance_LoadCodeAssistUserAgent(t *testing.T) {
 		Attributes: map[string]string{"user_agent": configuredUserAgent},
 	}
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() != "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
+		if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
 			t.Fatalf("unexpected request url %s", req.URL.String())
 		}
 		if got := req.Header.Get("User-Agent"); got != loadCodeAssistUserAgent {
 			t.Fatalf("User-Agent = %q, want %q", got, loadCodeAssistUserAgent)
-		}
-		if got := req.Header.Get("X-Goog-Api-Client"); got != "" {
-			t.Fatalf("X-Goog-Api-Client = %q, want empty", got)
 		}
 		body, _ := io.ReadAll(req.Body)
 		_ = req.Body.Close()

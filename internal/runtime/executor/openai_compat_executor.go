@@ -131,7 +131,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 	}
 	translated = e.applyCompatSafetyMargin(auth, translated)
-	translated, err = e.normalizeToolCallReasoningContentWithAuth(auth, translated)
+	translated, err = e.normalizeToolCallReasoningContentWithAuth(auth, baseModel, translated)
 	if err != nil {
 		return resp, err
 	}
@@ -334,7 +334,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
-	translated, err = e.normalizeToolCallReasoningContentWithAuth(auth, translated)
+	translated, err = e.normalizeToolCallReasoningContentWithAuth(auth, baseModel, translated)
 	if err != nil {
 		return nil, err
 	}
@@ -811,7 +811,24 @@ func (e *OpenAICompatExecutor) applyCompatSafetyMargin(auth *cliproxyauth.Auth, 
 	return updated
 }
 
-func (e *OpenAICompatExecutor) normalizeToolCallReasoningContentWithAuth(auth *cliproxyauth.Auth, payload []byte) ([]byte, error) {
+func (e *OpenAICompatExecutor) isXiaomiModel(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	if strings.HasPrefix(n, "mimo-") {
+		return true
+	}
+	if idx := strings.LastIndex(n, "/"); idx >= 0 {
+		leaf := n[idx+1:]
+		if strings.HasPrefix(leaf, "mimo-") {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *OpenAICompatExecutor) normalizeToolCallReasoningContentWithAuth(auth *cliproxyauth.Auth, model string, payload []byte) ([]byte, error) {
 	providerName := strings.ToLower(strings.TrimSpace(e.provider))
 	compatName := providerName
 	if compat := e.resolveCompatConfig(auth); compat != nil && strings.TrimSpace(compat.Name) != "" {
@@ -824,7 +841,7 @@ func (e *OpenAICompatExecutor) normalizeToolCallReasoningContentWithAuth(auth *c
 		}
 	}
 	isMistral := compatName == "mistral.ai" || providerName == "mistral.ai"
-	isXiaomi := strings.HasPrefix(compatName, "xiaomi") || strings.HasPrefix(providerName, "xiaomi")
+	isXiaomi := e.isXiaomiModel(model) || strings.HasPrefix(compatName, "xiaomi") || strings.HasPrefix(providerName, "xiaomi")
 	forceReasoningReplay := isMistral || isXiaomi
 	requireExistingChain := isMistral
 	updated, patched, err := normalizeOpenAIToolCallReasoningContentWithOptions(payload, openAIReasoningNormalizationOptions{
@@ -872,9 +889,10 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 		strings.HasPrefix(upstreamModel, "deepseek") || strings.Contains(upstreamModel, "/deepseek") ||
 		strings.HasPrefix(upstreamModelLeaf, "deepseek") ||
 		compatName == "nanogpt" || providerName == "nanogpt"
+	needsStripping := isMistral || isDeepSeekLike
 
 	shouldStripReasoning := gjson.GetBytes(payload, "reasoning").Exists() &&
-		(gjson.GetBytes(payload, "reasoning_effort").Exists() || isMistral || isDeepSeekLike)
+		(gjson.GetBytes(payload, "reasoning_effort").Exists() || needsStripping)
 	if shouldStripReasoning {
 		updated, err := sjson.DeleteBytes(payload, "reasoning")
 		if err == nil {
@@ -882,7 +900,7 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 		}
 	}
 
-	if !isMistral && !isDeepSeekLike {
+	if !needsStripping {
 		return payload
 	}
 
