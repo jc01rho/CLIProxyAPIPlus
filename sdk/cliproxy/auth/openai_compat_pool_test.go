@@ -281,7 +281,7 @@ func TestManagerExecute_OpenAICompatAliasPoolRotatesWithinAuth(t *testing.T) {
 
 func TestManagerExecute_OpenAICompatAliasPoolStopsOnBadRequest(t *testing.T) {
 	alias := "claude-opus-4.66"
-	invalidErr := &Error{HTTPStatus: http.StatusBadRequest, Message: "invalid_request_error: malformed payload"}
+	invalidErr := &Error{HTTPStatus: http.StatusUnprocessableEntity, Message: "invalid_request_error: malformed payload"}
 	executor := &openAICompatPoolExecutor{
 		id:            "pool",
 		executeErrors: map[string]error{"deepseek-v3.1": invalidErr},
@@ -730,7 +730,7 @@ func TestManagerExecute_OpenAICompatAliasPoolBlockedAuthDoesNotConsumeRetryBudge
 
 func TestManagerExecuteStream_OpenAICompatAliasPoolStopsOnInvalidBootstrap(t *testing.T) {
 	alias := "claude-opus-4.66"
-	invalidErr := &Error{HTTPStatus: http.StatusBadRequest, Message: "invalid_request_error: malformed payload"}
+	invalidErr := &Error{HTTPStatus: http.StatusUnprocessableEntity, Message: "invalid_request_error: malformed payload"}
 	executor := &openAICompatPoolExecutor{
 		id:                "pool",
 		streamFirstErrors: map[string]error{"deepseek-v3.1": invalidErr},

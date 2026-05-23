@@ -88,8 +88,8 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 	if !gjson.GetBytes(gotBody, "stream").Bool() {
 		t.Fatalf("stream = false, want true; body=%s", string(gotBody))
 	}
-	if gjson.GetBytes(gotBody, "reasoning.effort").String() != "high" {
-		t.Fatalf("reasoning.effort = %q, want high; body=%s", gjson.GetBytes(gotBody, "reasoning.effort").String(), string(gotBody))
+	if gjson.GetBytes(gotBody, "reasoning.effort").String() != "medium" {
+		t.Fatalf("reasoning.effort = %q, want medium (grok-4.3 forced); body=%s", gjson.GetBytes(gotBody, "reasoning.effort").String(), string(gotBody))
 	}
 	if gjson.GetBytes(gotBody, "input.0.content").Exists() {
 		t.Fatalf("input.0.content exists, want removed; body=%s", string(gotBody))
@@ -233,8 +233,8 @@ func TestXAIExecutorAppliesThinkingSuffix(t *testing.T) {
 	if got := gjson.GetBytes(gotBody, "model").String(); got != "grok-4.3" {
 		t.Fatalf("model = %q, want grok-4.3; body=%s", got, string(gotBody))
 	}
-	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "low" {
-		t.Fatalf("reasoning.effort = %q, want low; body=%s", got, string(gotBody))
+	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "medium" {
+		t.Fatalf("reasoning.effort = %q, want medium (grok-4.3 forced); body=%s", got, string(gotBody))
 	}
 }
 
