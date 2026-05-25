@@ -1,9 +1,9 @@
 # CLIPROXYAPIPLUS KNOWLEDGE BASE
 
-**Generated:** 2026-05-21
-**Commit:** 266cfcf1
+**Generated:** 2026-05-24
+**Commit:** 3903d1b4
 **Branch:** main
-**Latest Tag:** v7.1.18-2
+**Latest Tag:** v7.1.19-8
 
 ## OVERVIEW
 
@@ -37,10 +37,9 @@ CLIProxyAPIPlus/
 
 ## RECENT CHANGES
 
-- **v7.1.18-2**: fix missing `/v0/management/request-log-success-body` route.
-- **v7.1.18-1**: merged upstream/main v7.1.18 (reasoning effort metadata, Gemini 3.5 Flash, Redis enhancements). 3 handler conflicts resolved keeping maybeAttachEstimatedInputTokens.
-- **v7.1.17-3**: Ollama models fetch URL fix (double /api prefix). Merged upstream v7.1.16–v7.1.17.
-- **v7.1.15 series**: Full Ollama provider support — streaming (ExecuteStream), JSON content conversion, tool_calls stripping, models fetch. Merged upstream v7.1.15 with Home CA, image models, xAI reasoning.effort.
+- **v7.1.19-8**: merged upstream v7.1.20 (Grok Build 0.1 model, Claude system→developer role fix, APIKEY.FUN sponsor, import path fixes for v7). README.md conflict resolved keeping sponsor section.
+- **cortexkit OAuth sync**: Anthropic Claude OAuth flow aligned with cortexkit/anthropic-auth (scope `org:create_api_key` 추가, `Accept: application/json, text/plain, */*` + `User-Agent: axios/1.13.6` 토큰 교환 헤더, `X-Client-Request-Id` + `X-Claude-Code-Session-Id` API 요청 헤더, `PlatformConsoleAuthURL` console 모드, config.example.yaml `oauth-endpoint-overrides` 예시, RefreshTokensWithRetry 지수 백오프 500ms×2^n).
+- **v7.1.19-5**: upstream merge v7.1.19 (import path fixes for registry/executor). Allow 400 errors to trigger fallback chains.
 
 ## COMMANDS
 

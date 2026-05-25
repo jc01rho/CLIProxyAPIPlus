@@ -426,3 +426,14 @@ nonstream-keepalive-interval: 0
 #       params: # JSON paths (gjson/sjson syntax) to remove from the payload
 #         - "generationConfig.thinkingConfig.thinkingBudget"
 #         - "generationConfig.responseJsonSchema"
+
+# OAuth endpoint overrides
+# Override OAuth endpoints per provider.
+# Supported providers: claude, gemini, codex, kimi, xai, copilot
+# oauth-endpoint-overrides:
+#   claude:
+#     api-base-url: "https://api.anthropic.com"
+#     authorize-url: "https://platform.claude.com/oauth/authorize"  # console mode (real key)
+#     # authorize-url: "https://claude.ai/oauth/authorize"           # incognito mode
+#     token-url: "https://api.anthropic.com/v1/oauth/token"
+#     refresh-url: "https://api.anthropic.com/v1/oauth/token"       # optional refresh endpoint

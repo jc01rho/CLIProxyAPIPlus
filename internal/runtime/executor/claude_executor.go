@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -1068,6 +1069,8 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Runtime", "node")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Lang", "js")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Timeout", hdrDefault(hd.Timeout, "600"))
+	r.Header.Set("X-Client-Request-Id", uuid.NewString())
+	r.Header.Set("X-Claude-Code-Session-Id", helps.CachedSessionID(apiKey))
 	r.Header.Set("Connection", "keep-alive")
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
