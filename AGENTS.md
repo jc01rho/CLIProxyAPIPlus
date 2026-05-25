@@ -1,9 +1,9 @@
 # CLIPROXYAPIPLUS KNOWLEDGE BASE
 
 **Generated:** 2026-05-25
-**Commit:** 9b1cdda9
+**Commit:** dbfc1d38
 **Branch:** main
-**Latest Tag:** v7.1.20-2
+**Latest Tag:** v7.1.20-3
 
 ## OVERVIEW
 
@@ -37,8 +37,7 @@ CLIProxyAPIPlus/
 
 ## RECENT CHANGES
 
-- **v7.1.19-8**: merged upstream v7.1.20 (Grok Build 0.1 model, Claude system→developer role fix, APIKEY.FUN sponsor, import path fixes for v7). README.md conflict resolved keeping sponsor section.
-- **cortexkit OAuth sync**: Anthropic Claude OAuth flow aligned with cortexkit/anthropic-auth (scope `org:create_api_key` 추가, `Accept: application/json, text/plain, */*` + `User-Agent: axios/1.13.6` 토큰 교환 헤더, `X-Client-Request-Id` + `X-Claude-Code-Session-Id` API 요청 헤더, `PlatformConsoleAuthURL` console 모드, config.example.yaml `oauth-endpoint-overrides` 예시, RefreshTokensWithRetry 지수 백오프 500ms×2^n).
+- **v7.1.20-3**: upstream merge v7.1.20+ (file-backed request logging, RequestID support, fetch_codex_models). Cortexkit OAuth sync (Stainless 0.94.0/v24.3.0, CCH cc_version 2.1.141).
 - **v7.1.19-5**: upstream merge v7.1.19 (import path fixes for registry/executor). Allow 400 errors to trigger fallback chains.
 
 ## COMMANDS

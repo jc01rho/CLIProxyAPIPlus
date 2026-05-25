@@ -1064,10 +1064,12 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	misc.EnsureHeader(r.Header, ginHeaders, "Anthropic-Version", "2023-06-01")
 	misc.EnsureHeader(r.Header, ginHeaders, "Anthropic-Dangerous-Direct-Browser-Access", "true")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-App", "cli")
-	// Values below match Claude Code 2.1.63 / @anthropic-ai/sdk 0.74.0 (updated 2026-02-28).
+	// Values below match Claude Code 2.1.141 / @anthropic-ai/sdk 0.94.0 (updated 2026-05-25).
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Retry-Count", "0")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Runtime", "node")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Lang", "js")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Package-Version", "0.94.0")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Runtime-Version", "v24.3.0")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Timeout", hdrDefault(hd.Timeout, "600"))
 	r.Header.Set("X-Client-Request-Id", uuid.NewString())
 	r.Header.Set("X-Claude-Code-Session-Id", helps.CachedSessionID(apiKey))
@@ -1677,7 +1679,7 @@ func generateBillingHeader(payload []byte) string {
 	_, _ = rand.Read(buildBytes)
 	buildHash := hex.EncodeToString(buildBytes)[:3]
 
-	return fmt.Sprintf("x-anthropic-billing-header: cc_version=2.1.63.%s; cc_entrypoint=cli; cch=%s;", buildHash, cch)
+	return fmt.Sprintf("x-anthropic-billing-header: cc_version=2.1.141.%s; cc_entrypoint=cli; cch=%s;", buildHash, cch)
 }
 
 // checkSystemInstructionsWithMode injects Claude Code-style system blocks.
