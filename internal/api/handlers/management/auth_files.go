@@ -3,9 +3,7 @@ package management
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,7 +12,6 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,29 +22,18 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
-	clineauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cline"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/copilot"
-	cursorauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor"
 	geminiAuth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/gemini"
-	gitlabauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/gitlab"
-	iflowauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/iflow"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kilo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
-	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
-	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"golang.org/x/oauth2"
@@ -60,11 +46,8 @@ const (
 	anthropicCallbackPort = 54545
 	geminiCallbackPort    = 8085
 	codexCallbackPort     = 1455
-	clineCallbackPort     = 1456
 	geminiCLIEndpoint     = "https://cloudcode-pa.googleapis.com"
 	geminiCLIVersion      = "v1internal"
-	gitLabLoginModeOAuth  = "oauth"
-	gitLabLoginModePAT    = "pat"
 )
 
 type callbackForwarder struct {
@@ -269,196 +252,12 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 			files = append(files, entry)
 		}
 	}
-	normalizeAntigravityPrimaryEntries(files)
 	sort.Slice(files, func(i, j int) bool {
 		nameI, _ := files[i]["name"].(string)
 		nameJ, _ := files[j]["name"].(string)
 		return strings.ToLower(nameI) < strings.ToLower(nameJ)
 	})
 	c.JSON(200, gin.H{"files": files})
-}
-
-func normalizeAntigravityPrimaryEntries(entries []gin.H) {
-	if len(entries) == 0 {
-		return
-	}
-
-	antigravityEntries := make([]gin.H, 0)
-	nextOrder := 1
-	for _, entry := range entries {
-		if !isAntigravityEntry(entry) {
-			continue
-		}
-		antigravityEntries = append(antigravityEntries, entry)
-		if orderValue, ok := antigravityEntryOrder(entry); ok && orderValue >= nextOrder {
-			nextOrder = orderValue + 1
-		}
-	}
-	if len(antigravityEntries) == 0 {
-		return
-	}
-
-	primaryEntry := selectAntigravityPrimaryEntry(antigravityEntries)
-	for _, entry := range antigravityEntries {
-		primaryInfo, _ := entry["primary_info"].(gin.H)
-		if primaryInfo == nil {
-			primaryInfo = gin.H{"order": nextOrder}
-			entry["primary_info"] = primaryInfo
-			nextOrder++
-		} else if orderValue, ok := antigravityEntryOrder(entry); !ok || orderValue <= 0 {
-			primaryInfo["order"] = nextOrder
-			nextOrder++
-		}
-		primaryInfo["is_primary"] = primaryEntry != nil && antigravityEntryIdentity(entry) == antigravityEntryIdentity(primaryEntry)
-	}
-}
-
-func selectAntigravityPrimaryEntry(entries []gin.H) gin.H {
-	var primaryEntry gin.H
-	for _, entry := range entries {
-		if isDisabledAntigravityEntry(entry) {
-			continue
-		}
-		if primaryEntry == nil {
-			primaryEntry = entry
-			continue
-		}
-		if compareAntigravityPrimaryEntry(entry, primaryEntry) < 0 {
-			primaryEntry = entry
-		}
-	}
-	return primaryEntry
-}
-
-func compareAntigravityPrimaryEntry(left, right gin.H) int {
-	leftOrder, leftHasOrder := antigravityEntryOrder(left)
-	rightOrder, rightHasOrder := antigravityEntryOrder(right)
-	if leftHasOrder && rightHasOrder && leftOrder != rightOrder {
-		return leftOrder - rightOrder
-	}
-	if leftHasOrder != rightHasOrder {
-		if leftHasOrder {
-			return -1
-		}
-		return 1
-	}
-
-	leftName := strings.ToLower(strings.TrimSpace(antigravityEntryString(left, "name")))
-	rightName := strings.ToLower(strings.TrimSpace(antigravityEntryString(right, "name")))
-	if leftName != rightName {
-		if leftName < rightName {
-			return -1
-		}
-		return 1
-	}
-
-	leftID := strings.ToLower(strings.TrimSpace(antigravityEntryIdentity(left)))
-	rightID := strings.ToLower(strings.TrimSpace(antigravityEntryIdentity(right)))
-	if leftID < rightID {
-		return -1
-	}
-	if leftID > rightID {
-		return 1
-	}
-	return 0
-}
-
-func antigravityEntryOrder(entry gin.H) (int, bool) {
-	if entry == nil {
-		return 0, false
-	}
-	primaryInfo, ok := entry["primary_info"].(gin.H)
-	if !ok || primaryInfo == nil {
-		return 0, false
-	}
-	switch value := primaryInfo["order"].(type) {
-	case int:
-		if value > 0 {
-			return value, true
-		}
-	case int32:
-		if value > 0 {
-			return int(value), true
-		}
-	case int64:
-		if value > 0 {
-			return int(value), true
-		}
-	case float64:
-		if value > 0 {
-			return int(value), true
-		}
-	}
-	return 0, false
-}
-
-func isAntigravityEntry(entry gin.H) bool {
-	return strings.EqualFold(strings.TrimSpace(antigravityEntryString(entry, "type")), "antigravity") ||
-		strings.EqualFold(strings.TrimSpace(antigravityEntryString(entry, "provider")), "antigravity")
-}
-
-func isDisabledAntigravityEntry(entry gin.H) bool {
-	if entry == nil {
-		return true
-	}
-	if disabled, ok := entry["disabled"].(bool); ok && disabled {
-		return true
-	}
-	status := strings.TrimSpace(antigravityEntryString(entry, "status"))
-	return strings.EqualFold(status, string(coreauth.StatusDisabled))
-}
-
-func antigravityEntryString(entry gin.H, key string) string {
-	if entry == nil {
-		return ""
-	}
-	if value, ok := entry[key].(string); ok {
-		return value
-	}
-	return ""
-}
-
-func antigravityEntryIdentity(entry gin.H) string {
-	if entry == nil {
-		return ""
-	}
-	if id := strings.TrimSpace(antigravityEntryString(entry, "id")); id != "" {
-		return id
-	}
-	if name := strings.TrimSpace(antigravityEntryString(entry, "name")); name != "" {
-		return name
-	}
-	return antigravityEntryString(entry, "path")
-}
-
-func hasExplicitAntigravityPrimary(auths []*coreauth.Auth) bool {
-	for _, auth := range auths {
-		if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
-			continue
-		}
-		if auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
-			return true
-		}
-	}
-	return false
-}
-
-func ensureAntigravityPrimaryInfoEntry(entry gin.H, auth *coreauth.Auth, fallbackOrder int, primaryAlreadyAssigned bool) gin.H {
-	if entry == nil || auth == nil {
-		return entry
-	}
-	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
-		return entry
-	}
-	if _, exists := entry["primary_info"]; exists {
-		return entry
-	}
-	isPrimary := !primaryAlreadyAssigned && !auth.Disabled && auth.Status != coreauth.StatusDisabled
-	entry["primary_info"] = gin.H{
-		"is_primary": isPrimary,
-		"order":      fallbackOrder,
-	}
-	return entry
 }
 
 // GetAuthFileModels returns the models supported by a specific auth file
@@ -471,13 +270,11 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 
 	// Try to find auth ID via authManager
 	var authID string
-	var matchedAuth *coreauth.Auth
 	if h.authManager != nil {
 		auths := h.authManager.List()
 		for _, auth := range auths {
-			if authMatchesModelsQuery(auth, name) {
+			if auth.FileName == name || auth.ID == name {
 				authID = auth.ID
-				matchedAuth = auth
 				break
 			}
 		}
@@ -490,20 +287,9 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	// Get models from registry
 	reg := registry.GetGlobalRegistry()
 	models := reg.GetModelsForClient(authID)
-	excluded := authFileExcludedModelSet(matchedAuth, h.cfg)
 
 	result := make([]gin.H, 0, len(models))
 	for _, m := range models {
-		if m == nil {
-			continue
-		}
-		modelID := strings.ToLower(strings.TrimSpace(m.ID))
-		if _, blocked := excluded[modelID]; blocked {
-			continue
-		}
-		if isGitHubCopilotModelList(matchedAuth, m) && !registry.IsAllowedGitHubCopilotModel(modelID) {
-			continue
-		}
 		entry := gin.H{
 			"id": m.ID,
 		}
@@ -520,56 +306,6 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{"models": result})
-}
-
-func isGitHubCopilotModelList(auth *coreauth.Auth, model *registry.ModelInfo) bool {
-	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "github-copilot") {
-		return true
-	}
-	return model != nil && strings.EqualFold(strings.TrimSpace(model.Type), "github-copilot")
-}
-
-func authMatchesModelsQuery(auth *coreauth.Auth, name string) bool {
-	if auth == nil {
-		return false
-	}
-	query := strings.TrimSpace(name)
-	if query == "" {
-		return false
-	}
-	if auth.ID == query || auth.FileName == query {
-		return true
-	}
-	return filepath.Base(auth.FileName) == query
-}
-
-func authFileExcludedModelSet(auth *coreauth.Auth, cfg *config.Config) map[string]struct{} {
-	seen := make(map[string]struct{})
-	addCSV := func(raw string) {
-		for _, part := range strings.Split(raw, ",") {
-			if trimmed := strings.ToLower(strings.TrimSpace(part)); trimmed != "" {
-				seen[trimmed] = struct{}{}
-			}
-		}
-	}
-	addList := func(models []string) {
-		for _, model := range models {
-			if trimmed := strings.ToLower(strings.TrimSpace(model)); trimmed != "" {
-				seen[trimmed] = struct{}{}
-			}
-		}
-	}
-
-	if auth != nil {
-		if auth.Attributes != nil {
-			addCSV(auth.Attributes["excluded_models"])
-		}
-		if cfg != nil && cfg.OAuthExcludedModels != nil {
-			providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
-			addList(cfg.OAuthExcludedModels[providerKey])
-		}
-	}
-	return seen
 }
 
 // List auth files from disk when the auth manager is unavailable.
@@ -594,22 +330,10 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 			// Read file to get type field
 			full := filepath.Join(h.cfg.AuthDir, name)
 			if data, errRead := os.ReadFile(full); errRead == nil {
-				typeValue := canonicalizeAuthProvider(gjson.GetBytes(data, "type").String())
+				typeValue := gjson.GetBytes(data, "type").String()
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
-				fileData["provider"] = typeValue
 				fileData["email"] = emailValue
-				if dv := gjson.GetBytes(data, "disabled"); dv.Exists() {
-					fileData["disabled"] = dv.Bool()
-				}
-				if strings.EqualFold(strings.TrimSpace(typeValue), "antigravity") {
-					if pv := gjson.GetBytes(data, "primary_info.is_primary"); pv.Exists() {
-						fileData["primary_info"] = gin.H{
-							"is_primary": pv.Bool(),
-							"order":      int(gjson.GetBytes(data, "primary_info.order").Int()),
-						}
-					}
-				}
 				if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
 					fileData["project_id"] = projectID
 				}
@@ -628,26 +352,36 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						fileData["note"] = trimmed
 					}
 				}
-				if bv := gjson.GetBytes(data, "billing_class"); bv.Exists() && bv.Type == gjson.String {
-					if normalized := normalizeBillingClassValue(bv.String()); normalized != "" {
-						fileData["billing_class"] = normalized
+					if wv := gjson.GetBytes(data, "websockets"); wv.Exists() {
+						switch wv.Type {
+						case gjson.True:
+							fileData["websockets"] = true
+						case gjson.False:
+							fileData["websockets"] = false
+						case gjson.String:
+							if parsed, errParse := strconv.ParseBool(strings.TrimSpace(wv.String())); errParse == nil {
+								fileData["websockets"] = parsed
+							}
+						}
 					}
-				} else if bv := gjson.GetBytes(data, "billing-class"); bv.Exists() && bv.Type == gjson.String {
-					if normalized := normalizeBillingClassValue(bv.String()); normalized != "" {
-						fileData["billing_class"] = normalized
+					if bv := gjson.GetBytes(data, "billing_class"); bv.Exists() && bv.Type == gjson.String {
+						if normalized := normalizeBillingClassValue(bv.String()); normalized != "" {
+							fileData["billing_class"] = normalized
+						}
+					} else if bv := gjson.GetBytes(data, "billing-class"); bv.Exists() && bv.Type == gjson.String {
+						if normalized := normalizeBillingClassValue(bv.String()); normalized != "" {
+							fileData["billing_class"] = normalized
+						}
+					}
+					if uv := gjson.GetBytes(data, "base_url"); uv.Exists() && uv.Type == gjson.String {
+						if trimmed := strings.TrimSpace(uv.String()); trimmed != "" {
+							fileData["base_url"] = trimmed
+						}
 					}
 				}
-				if uv := gjson.GetBytes(data, "base_url"); uv.Exists() && uv.Type == gjson.String {
-					if trimmed := strings.TrimSpace(uv.String()); trimmed != "" {
-						fileData["base_url"] = trimmed
-					}
-				}
-			}
-
 			files = append(files, fileData)
 		}
 	}
-	normalizeAntigravityPrimaryEntries(files)
 	c.JSON(200, gin.H{"files": files})
 }
 
@@ -668,13 +402,12 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if name == "" {
 		name = auth.ID
 	}
-	provider := canonicalizeAuthProvider(auth.Provider)
 	entry := gin.H{
 		"id":             auth.ID,
 		"auth_index":     auth.Index,
 		"name":           name,
-		"type":           provider,
-		"provider":       provider,
+		"type":           strings.TrimSpace(auth.Provider),
+		"provider":       strings.TrimSpace(auth.Provider),
 		"label":          auth.Label,
 		"status":         auth.Status,
 		"status_message": auth.StatusMessage,
@@ -764,6 +497,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			}
 		}
 	}
+	if websockets, ok := authWebsocketsValue(auth); ok {
+		entry["websockets"] = websockets
+	}
 	if billingClass := strings.TrimSpace(authAttribute(auth, "billing_class")); billingClass != "" {
 		entry["billing_class"] = billingClass
 	} else if auth.Metadata != nil {
@@ -795,30 +531,35 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	return entry
 }
 
-func extractPrimaryInfoFromMetadata(metadata map[string]any) *coreauth.PrimaryInfo {
-	if metadata == nil {
-		return nil
+func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {
+	if auth == nil {
+		return false, false
 	}
-	rawPrimaryInfo, ok := metadata["primary_info"]
-	if !ok {
-		return nil
+	if auth.Attributes != nil {
+		if raw := strings.TrimSpace(auth.Attributes["websockets"]); raw != "" {
+			parsed, errParse := strconv.ParseBool(raw)
+			if errParse == nil {
+				return parsed, true
+			}
+		}
 	}
-	primaryInfoMap, ok := rawPrimaryInfo.(map[string]any)
-	if !ok {
-		return nil
+	if auth.Metadata == nil {
+		return false, false
 	}
-	isPrimary, ok := primaryInfoMap["is_primary"].(bool)
-	if !ok {
-		return nil
+	raw, ok := auth.Metadata["websockets"]
+	if !ok || raw == nil {
+		return false, false
 	}
-	order := 0
-	switch value := primaryInfoMap["order"].(type) {
-	case float64:
-		order = int(value)
-	case int:
-		order = value
+	switch v := raw.(type) {
+	case bool:
+		return v, true
+	case string:
+		parsed, errParse := strconv.ParseBool(strings.TrimSpace(v))
+		if errParse == nil {
+			return parsed, true
+		}
 	}
-	return &coreauth.PrimaryInfo{IsPrimary: isPrimary, Order: order}
+	return false, false
 }
 
 func authProjectID(auth *coreauth.Auth) string {
@@ -1177,26 +918,11 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err != nil {
 		return err
 	}
-	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
-		h.initAntigravityPrimaryInfo(ctx, auth)
-		coreauth.SyncPrimaryInfoMetadata(auth)
-	}
-	dataToWrite := data
-	if auth.Metadata != nil {
-		marshaled, errMarshal := json.Marshal(auth.Metadata)
-		if errMarshal != nil {
-			return fmt.Errorf("failed to marshal auth metadata: %w", errMarshal)
-		}
-		dataToWrite = marshaled
-	}
-	if errWrite := os.WriteFile(dst, dataToWrite, 0o600); errWrite != nil {
+	if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}
 	if err := h.upsertAuthRecord(ctx, auth); err != nil {
 		return err
-	}
-	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") && auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
-		h.ensureSoleAntigravityPrimary(ctx, auth)
 	}
 	return nil
 }
@@ -1386,7 +1112,10 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("invalid auth file: %w", err)
 	}
-	provider := canonicalizeAuthProvider(valueAsString(metadata["type"]))
+	provider, _ := metadata["type"].(string)
+	if provider == "" {
+		provider = "unknown"
+	}
 	label := provider
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		label = email
@@ -1412,53 +1141,8 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
-	if disabled, ok := metadata["disabled"].(bool); ok && disabled {
-		auth.Disabled = true
-		auth.Status = coreauth.StatusDisabled
-	}
 	if hasLastRefresh {
 		auth.LastRefreshedAt = lastRefresh
-	}
-	if rawPriority, ok := metadata["priority"]; ok {
-		switch v := rawPriority.(type) {
-		case float64:
-			auth.Attributes["priority"] = strconv.Itoa(int(v))
-		case int:
-			auth.Attributes["priority"] = strconv.Itoa(v)
-		case string:
-			priority := strings.TrimSpace(v)
-			if _, errAtoi := strconv.Atoi(priority); errAtoi == nil {
-				auth.Attributes["priority"] = priority
-			}
-		}
-	}
-	if rawNote, ok := metadata["note"]; ok {
-		if note, isStr := rawNote.(string); isStr {
-			if trimmed := strings.TrimSpace(note); trimmed != "" {
-				auth.Attributes["note"] = trimmed
-			}
-		}
-	}
-	if rawBillingClass, ok := metadata["billing_class"]; ok {
-		if billingClass, isStr := rawBillingClass.(string); isStr {
-			if normalized := normalizeBillingClassValue(billingClass); normalized != "" {
-				auth.Attributes["billing_class"] = normalized
-			}
-		}
-	} else if rawBillingClass, ok := metadata["billing-class"]; ok {
-		if billingClass, isStr := rawBillingClass.(string); isStr {
-			if normalized := normalizeBillingClassValue(billingClass); normalized != "" {
-				auth.Attributes["billing_class"] = normalized
-			}
-		}
-	}
-	if rawBaseURL, ok := metadata["base_url"].(string); ok {
-		if trimmed := strings.TrimSpace(rawBaseURL); trimmed != "" {
-			auth.Attributes["base_url"] = trimmed
-		}
-	}
-	if primaryInfo := extractPrimaryInfoFromMetadata(metadata); primaryInfo != nil && strings.EqualFold(strings.TrimSpace(provider), "antigravity") {
-		auth.PrimaryInfo = primaryInfo
 	}
 	if h != nil && h.authManager != nil {
 		if existing, ok := h.authManager.GetByID(authID); ok {
@@ -1545,11 +1229,6 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	}
 	targetAuth.UpdatedAt = time.Now()
 
-	isAntigravity := strings.EqualFold(strings.TrimSpace(targetAuth.Provider), "antigravity")
-	if isAntigravity && !*req.Disabled && targetAuth.PrimaryInfo != nil {
-		h.ensureSoleAntigravityPrimary(ctx, targetAuth)
-	}
-
 	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
@@ -1558,33 +1237,37 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
 }
 
-// PatchAuthFileFields updates editable fields (prefix, proxy_url, headers, priority, note, billing_class) of an auth file.
+// PatchAuthFileFields updates arbitrary metadata fields of an auth file.
 func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
 	}
 
-	var req struct {
-		Name         string            `json:"name"`
-		Prefix       *string           `json:"prefix"`
-		ProxyURL     *string           `json:"proxy_url"`
-		BaseURL      *string           `json:"base_url"`
-		Headers      map[string]string `json:"headers"`
-		Priority     *int              `json:"priority"`
-		Note         *string           `json:"note"`
-		BillingClass *string           `json:"billing_class"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var req map[string]json.RawMessage
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.UseNumber()
+	if err := decoder.Decode(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
-	name := strings.TrimSpace(req.Name)
+	nameRaw, ok := req["name"]
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	var nameValue string
+	if err := json.Unmarshal(nameRaw, &nameValue); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	name := strings.TrimSpace(nameValue)
 	if name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
 	}
+	delete(req, "name")
 
 	ctx := c.Request.Context()
 
@@ -1608,165 +1291,35 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	changed := false
-	if req.Prefix != nil {
-		prefix := strings.TrimSpace(*req.Prefix)
-		targetAuth.Prefix = prefix
+	touchedRoots := make(map[string]struct{}, len(req))
+	for key, rawValue := range req {
+		fieldPath := strings.TrimSpace(key)
+		if fieldPath == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "field name is required"})
+			return
+		}
+		value, errDecode := decodeAuthFileFieldValue(rawValue)
+		if errDecode != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid field %s", fieldPath)})
+			return
+		}
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
 		}
-		if prefix == "" {
-			delete(targetAuth.Metadata, "prefix")
-		} else {
-			targetAuth.Metadata["prefix"] = prefix
+
+		if fieldPath == "headers" {
+			applyAuthFileHeadersPatch(targetAuth, value)
+		} else if errSet := setAuthFileMetadataValue(targetAuth.Metadata, fieldPath, value); errSet != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errSet.Error()})
+			return
+		}
+		if root := rootAuthFileField(fieldPath); root != "" {
+			touchedRoots[root] = struct{}{}
 		}
 		changed = true
 	}
-	if req.ProxyURL != nil {
-		proxyURL := strings.TrimSpace(*req.ProxyURL)
-		targetAuth.ProxyURL = proxyURL
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if proxyURL == "" {
-			delete(targetAuth.Metadata, "proxy_url")
-		} else {
-			targetAuth.Metadata["proxy_url"] = proxyURL
-		}
-		changed = true
-	}
-	if req.BaseURL != nil {
-		baseURL := strings.TrimSpace(*req.BaseURL)
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if targetAuth.Attributes == nil {
-			targetAuth.Attributes = make(map[string]string)
-		}
-		if baseURL == "" {
-			delete(targetAuth.Metadata, "base_url")
-			delete(targetAuth.Attributes, "base_url")
-		} else {
-			targetAuth.Metadata["base_url"] = baseURL
-			targetAuth.Attributes["base_url"] = baseURL
-		}
-		changed = true
-	}
-	if len(req.Headers) > 0 {
-		existingHeaders := coreauth.ExtractCustomHeadersFromMetadata(targetAuth.Metadata)
-		nextHeaders := make(map[string]string, len(existingHeaders))
-		for k, v := range existingHeaders {
-			nextHeaders[k] = v
-		}
-		headerChanged := false
-
-		for key, value := range req.Headers {
-			name := strings.TrimSpace(key)
-			if name == "" {
-				continue
-			}
-			val := strings.TrimSpace(value)
-			attrKey := "header:" + name
-			if val == "" {
-				if _, ok := nextHeaders[name]; ok {
-					delete(nextHeaders, name)
-					headerChanged = true
-				}
-				if targetAuth.Attributes != nil {
-					if _, ok := targetAuth.Attributes[attrKey]; ok {
-						headerChanged = true
-					}
-				}
-				continue
-			}
-			if prev, ok := nextHeaders[name]; !ok || prev != val {
-				headerChanged = true
-			}
-			nextHeaders[name] = val
-			if targetAuth.Attributes != nil {
-				if prev, ok := targetAuth.Attributes[attrKey]; !ok || prev != val {
-					headerChanged = true
-				}
-			} else {
-				headerChanged = true
-			}
-		}
-
-		if headerChanged {
-			if targetAuth.Metadata == nil {
-				targetAuth.Metadata = make(map[string]any)
-			}
-			if targetAuth.Attributes == nil {
-				targetAuth.Attributes = make(map[string]string)
-			}
-
-			for key, value := range req.Headers {
-				name := strings.TrimSpace(key)
-				if name == "" {
-					continue
-				}
-				val := strings.TrimSpace(value)
-				attrKey := "header:" + name
-				if val == "" {
-					delete(nextHeaders, name)
-					delete(targetAuth.Attributes, attrKey)
-					continue
-				}
-				nextHeaders[name] = val
-				targetAuth.Attributes[attrKey] = val
-			}
-
-			if len(nextHeaders) == 0 {
-				delete(targetAuth.Metadata, "headers")
-			} else {
-				metaHeaders := make(map[string]any, len(nextHeaders))
-				for k, v := range nextHeaders {
-					metaHeaders[k] = v
-				}
-				targetAuth.Metadata["headers"] = metaHeaders
-			}
-			changed = true
-		}
-	}
-	if req.Priority != nil || req.Note != nil || req.BillingClass != nil {
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if targetAuth.Attributes == nil {
-			targetAuth.Attributes = make(map[string]string)
-		}
-
-		if req.Priority != nil {
-			if *req.Priority == 0 {
-				delete(targetAuth.Metadata, "priority")
-				delete(targetAuth.Attributes, "priority")
-			} else {
-				targetAuth.Metadata["priority"] = *req.Priority
-				targetAuth.Attributes["priority"] = strconv.Itoa(*req.Priority)
-			}
-		}
-		if req.Note != nil {
-			trimmedNote := strings.TrimSpace(*req.Note)
-			if trimmedNote == "" {
-				delete(targetAuth.Metadata, "note")
-				delete(targetAuth.Attributes, "note")
-			} else {
-				targetAuth.Metadata["note"] = trimmedNote
-				targetAuth.Attributes["note"] = trimmedNote
-			}
-		}
-		if req.BillingClass != nil {
-			normalizedBillingClass := normalizeBillingClassValue(*req.BillingClass)
-			if normalizedBillingClass == "" {
-				delete(targetAuth.Metadata, "billing_class")
-				delete(targetAuth.Metadata, "billing-class")
-				delete(targetAuth.Attributes, "billing_class")
-			} else {
-				targetAuth.Metadata["billing_class"] = normalizedBillingClass
-				delete(targetAuth.Metadata, "billing-class")
-				targetAuth.Attributes["billing_class"] = normalizedBillingClass
-			}
-		}
-		changed = true
+	if changed {
+		syncAuthFileMetadataFields(targetAuth, touchedRoots)
 	}
 
 	if !changed {
@@ -1784,77 +1337,331 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-func (h *Handler) RefreshTier(c *gin.Context) {
-	if h == nil || h.authManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
-		return
+func decodeAuthFileFieldValue(raw json.RawMessage) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
 	}
+	return value, nil
+}
 
-	authID := strings.TrimSpace(c.Param("id"))
-	if authID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id is required"})
-		return
+func rootAuthFileField(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
 	}
+	if idx := strings.Index(path, "."); idx >= 0 {
+		return strings.TrimSpace(path[:idx])
+	}
+	return path
+}
 
-	auth, ok := h.authManager.GetByID(authID)
-	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
-		return
+func setAuthFileMetadataValue(metadata map[string]any, path string, value any) error {
+	if metadata == nil {
+		return fmt.Errorf("metadata is nil")
 	}
+	parts := strings.Split(path, ".")
+	current := metadata
+	for i, rawPart := range parts {
+		part := strings.TrimSpace(rawPart)
+		if part == "" {
+			return fmt.Errorf("invalid field path: %s", path)
+		}
+		if i == len(parts)-1 {
+			current[part] = value
+			return nil
+		}
+		next, ok := current[part].(map[string]any)
+		if !ok {
+			next = make(map[string]any)
+			current[part] = next
+		}
+		current = next
+	}
+	return nil
+}
+
+func applyAuthFileHeadersPatch(auth *coreauth.Auth, value any) {
 	if auth == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
 		return
 	}
-	if auth.Provider != "antigravity" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "tier refresh is only supported for antigravity auth files"})
-		return
-	}
-
-	ctx := c.Request.Context()
-	accessToken, err := h.refreshAntigravityOAuthAccessToken(ctx, auth)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to refresh antigravity token: %v", err)})
-		return
-	}
-	if strings.TrimSpace(accessToken) == "" {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "antigravity access token is unavailable"})
-		return
-	}
-
-	httpClient := &http.Client{
-		Timeout:   defaultAPICallTimeout,
-		Transport: h.apiCallTransport(auth),
-	}
-	projectInfo, err := sdkauth.FetchAntigravityProjectInfo(ctx, accessToken, httpClient)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch antigravity tier info: %v", err)})
-		return
-	}
-
 	if auth.Metadata == nil {
 		auth.Metadata = make(map[string]any)
 	}
-	if projectInfo.ProjectID != "" {
-		auth.Metadata["project_id"] = projectInfo.ProjectID
-	}
-	auth.Metadata["tier_id"] = projectInfo.TierID
-	auth.Metadata["tier_name"] = projectInfo.TierName
-	auth.Metadata["tier_is_paid"] = projectInfo.IsPaid
-	auth.LastRefreshedAt = time.Now()
-	auth.UpdatedAt = auth.LastRefreshedAt
-
-	if _, err := h.authManager.Update(ctx, auth); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+	headersPatch, ok := authFileHeadersStringMap(value)
+	if !ok {
+		auth.Metadata["headers"] = value
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"status":       "ok",
-		"project_id":   projectInfo.ProjectID,
-		"tier_id":      projectInfo.TierID,
-		"tier_name":    projectInfo.TierName,
-		"tier_is_paid": projectInfo.IsPaid,
-	})
+	existingHeaders := coreauth.ExtractCustomHeadersFromMetadata(auth.Metadata)
+	nextHeaders := make(map[string]string, len(existingHeaders))
+	for key, val := range existingHeaders {
+		nextHeaders[key] = val
+	}
+	for key, value := range headersPatch {
+		name := strings.TrimSpace(key)
+		if name == "" {
+			continue
+		}
+		val := strings.TrimSpace(value)
+		if val == "" {
+			delete(nextHeaders, name)
+			continue
+		}
+		nextHeaders[name] = val
+	}
+
+	if len(nextHeaders) == 0 {
+		delete(auth.Metadata, "headers")
+		return
+	}
+	metaHeaders := make(map[string]any, len(nextHeaders))
+	for key, value := range nextHeaders {
+		metaHeaders[key] = value
+	}
+	auth.Metadata["headers"] = metaHeaders
+}
+
+func authFileHeadersStringMap(value any) (map[string]string, bool) {
+	switch typed := value.(type) {
+	case map[string]string:
+		return typed, true
+	case map[string]any:
+		out := make(map[string]string, len(typed))
+		for key, rawValue := range typed {
+			value, ok := rawValue.(string)
+			if !ok {
+				return nil, false
+			}
+			out[key] = value
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]struct{}) {
+	if auth == nil || len(touchedRoots) == 0 {
+		return
+	}
+	if _, ok := touchedRoots["prefix"]; ok {
+		if prefix, okString := auth.Metadata["prefix"].(string); okString {
+			auth.Prefix = strings.TrimSpace(prefix)
+		}
+	}
+	if _, ok := touchedRoots["proxy_url"]; ok {
+		if proxyURL, okString := auth.Metadata["proxy_url"].(string); okString {
+			auth.ProxyURL = strings.TrimSpace(proxyURL)
+		}
+	}
+	if _, ok := touchedRoots["headers"]; ok {
+		syncAuthFileHeaderAttributes(auth)
+	}
+	if _, ok := touchedRoots["priority"]; ok {
+		syncAuthFilePriorityAttribute(auth)
+	}
+	if _, ok := touchedRoots["note"]; ok {
+		syncAuthFileNoteAttribute(auth)
+	}
+	if _, ok := touchedRoots["websockets"]; ok {
+		syncAuthFileWebsocketsAttribute(auth)
+	}
+	if _, ok := touchedRoots["billing_class"]; ok {
+		syncAuthFileBillingClassAttribute(auth)
+	}
+	if _, ok := touchedRoots["base_url"]; ok {
+		syncAuthFileBaseURLAttribute(auth)
+	}
+	if _, ok := touchedRoots["disabled"]; ok {
+		syncAuthFileDisabledState(auth)
+	}
+}
+
+func syncAuthFileHeaderAttributes(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	for key := range auth.Attributes {
+		if strings.HasPrefix(key, "header:") {
+			delete(auth.Attributes, key)
+		}
+	}
+	for name, value := range coreauth.ExtractCustomHeadersFromMetadata(auth.Metadata) {
+		auth.Attributes["header:"+name] = value
+	}
+}
+
+func syncAuthFilePriorityAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	priority, ok := authFileIntValue(auth.Metadata["priority"])
+	if !ok {
+		delete(auth.Attributes, "priority")
+		return
+	}
+	if priority == 0 {
+		delete(auth.Attributes, "priority")
+		return
+	}
+	auth.Attributes["priority"] = strconv.Itoa(priority)
+}
+
+func authFileIntValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case json.Number:
+		if i, err := typed.Int64(); err == nil {
+			return int(i), true
+		}
+	case string:
+		if i, err := strconv.Atoi(strings.TrimSpace(typed)); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func syncAuthFileNoteAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	note, ok := auth.Metadata["note"].(string)
+	if !ok {
+		delete(auth.Attributes, "note")
+		return
+	}
+	note = strings.TrimSpace(note)
+	if note == "" {
+		delete(auth.Attributes, "note")
+		return
+	}
+	auth.Attributes["note"] = note
+}
+
+func syncAuthFileWebsocketsAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	websockets, ok := authFileBoolValue(auth.Metadata["websockets"])
+	if !ok {
+		delete(auth.Attributes, "websockets")
+		return
+	}
+	auth.Attributes["websockets"] = strconv.FormatBool(websockets)
+}
+
+func syncAuthFileBillingClassAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	raw, ok := auth.Metadata["billing_class"]
+	if !ok {
+		raw, ok = auth.Metadata["billing-class"]
+	}
+	if !ok {
+		delete(auth.Attributes, "billing_class")
+		return
+	}
+	s, ok := raw.(string)
+	if !ok {
+		delete(auth.Attributes, "billing_class")
+		return
+	}
+	normalized := normalizeBillingClassValue(s)
+	if normalized == "" {
+		delete(auth.Attributes, "billing_class")
+		delete(auth.Metadata, "billing_class")
+		delete(auth.Metadata, "billing-class")
+		return
+	}
+	auth.Metadata["billing_class"] = normalized
+	delete(auth.Metadata, "billing-class")
+	auth.Attributes["billing_class"] = normalized
+}
+
+func syncAuthFileBaseURLAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	raw, ok := auth.Metadata["base_url"]
+	if !ok {
+		delete(auth.Attributes, "base_url")
+		return
+	}
+	s, ok := raw.(string)
+	if !ok {
+		delete(auth.Attributes, "base_url")
+		return
+	}
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		delete(auth.Attributes, "base_url")
+		delete(auth.Metadata, "base_url")
+		return
+	}
+	auth.Metadata["base_url"] = trimmed
+	auth.Attributes["base_url"] = trimmed
+}
+
+func authFileBoolValue(value any) (bool, bool) {
+	switch typed := value.(type) {
+	case bool:
+		return typed, true
+	case string:
+		parsed, errParse := strconv.ParseBool(strings.TrimSpace(typed))
+		if errParse == nil {
+			return parsed, true
+		}
+	}
+	return false, false
+}
+
+func syncAuthFileDisabledState(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	disabled, ok := authFileBoolValue(auth.Metadata["disabled"])
+	if !ok {
+		return
+	}
+	auth.Disabled = disabled
+	if disabled {
+		auth.Status = coreauth.StatusDisabled
+		if strings.TrimSpace(auth.StatusMessage) == "" {
+			auth.StatusMessage = "disabled via management API"
+		}
+		return
+	}
+	auth.Status = coreauth.StatusActive
+	auth.StatusMessage = ""
 }
 
 func (h *Handler) disableAuth(ctx context.Context, id string) {
@@ -1884,47 +1691,6 @@ func (h *Handler) disableAuth(ctx context.Context, id string) {
 		auth.UpdatedAt = time.Now()
 		_, _ = h.authManager.Update(ctx, auth)
 	}
-}
-
-func (h *Handler) ensureSoleAntigravityPrimary(ctx context.Context, primaryAuth *coreauth.Auth) {
-	if h.authManager == nil || primaryAuth == nil {
-		return
-	}
-	auths := h.authManager.List()
-	for _, auth := range auths {
-		if auth == nil || auth.ID == primaryAuth.ID {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
-			continue
-		}
-		shouldDemote := false
-		if auth.PrimaryInfo != nil {
-			shouldDemote = auth.PrimaryInfo.IsPrimary
-		} else if !auth.Disabled && auth.Status != coreauth.StatusDisabled {
-			shouldDemote = true
-		}
-		if shouldDemote {
-			auth.Disabled = true
-			auth.Status = coreauth.StatusDisabled
-			auth.StatusMessage = "demoted via primary handoff"
-			if auth.PrimaryInfo == nil {
-				auth.PrimaryInfo = &coreauth.PrimaryInfo{}
-			}
-			auth.PrimaryInfo.IsPrimary = false
-			auth.UpdatedAt = time.Now()
-			_, _ = h.authManager.Update(ctx, auth)
-		}
-	}
-	primaryAuth.Disabled = false
-	primaryAuth.Status = coreauth.StatusActive
-	primaryAuth.StatusMessage = ""
-	primaryAuth.Unavailable = false
-	if primaryAuth.PrimaryInfo != nil {
-		primaryAuth.PrimaryInfo.IsPrimary = true
-	}
-	primaryAuth.UpdatedAt = time.Now()
-	_, _ = h.authManager.Update(ctx, primaryAuth)
 }
 
 func (h *Handler) deleteTokenRecord(ctx context.Context, path string) error {
@@ -1963,231 +1729,12 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if store == nil {
 		return "", fmt.Errorf("token store unavailable")
 	}
-	h.initAntigravityPrimaryInfo(ctx, record)
 	if h.postAuthHook != nil {
 		if err := h.postAuthHook(ctx, record); err != nil {
 			return "", fmt.Errorf("post-auth hook failed: %w", err)
 		}
 	}
-	savedPath, err := store.Save(ctx, record)
-	if err != nil {
-		return "", err
-	}
-	if err := h.upsertAuthRecord(ctx, record); err != nil {
-		cleanupErr := store.Delete(ctx, record.ID)
-		if cleanupErr != nil {
-			return "", fmt.Errorf("upsert failed: %w (cleanup also failed: %w)", err, cleanupErr)
-		}
-		return "", fmt.Errorf("upsert failed: %w (cleanup succeeded)", err)
-	}
-	return savedPath, nil
-}
-
-func (h *Handler) initAntigravityPrimaryInfo(ctx context.Context, record *coreauth.Auth) {
-	if h == nil || h.cfg == nil {
-		return
-	}
-	if record == nil || !strings.EqualFold(strings.TrimSpace(record.Provider), "antigravity") {
-		return
-	}
-	existingPrimary := false
-	maxOrder := 0
-	if h.authManager != nil {
-		for _, auth := range h.authManager.List() {
-			if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
-				continue
-			}
-			if auth.ID == record.ID {
-				continue
-			}
-			if auth.PrimaryInfo != nil {
-				if auth.PrimaryInfo.Order > maxOrder {
-					maxOrder = auth.PrimaryInfo.Order
-				}
-				if auth.PrimaryInfo.IsPrimary {
-					existingPrimary = true
-				}
-				continue
-			}
-			if !auth.Disabled && auth.Status != coreauth.StatusDisabled {
-				existingPrimary = true
-			}
-		}
-	}
-	if existingPrimary {
-		record.PrimaryInfo = &coreauth.PrimaryInfo{
-			IsPrimary: false,
-			Order:     maxOrder + 1,
-		}
-		record.Disabled = true
-		record.Status = coreauth.StatusDisabled
-	} else {
-		record.PrimaryInfo = &coreauth.PrimaryInfo{
-			IsPrimary: true,
-			Order:     maxOrder + 1,
-		}
-		record.Disabled = false
-		record.Status = coreauth.StatusActive
-	}
-}
-
-func gitLabBaseURLFromRequest(c *gin.Context) string {
-	if c != nil {
-		if raw := strings.TrimSpace(c.Query("base_url")); raw != "" {
-			return gitlabauth.NormalizeBaseURL(raw)
-		}
-	}
-	if raw := strings.TrimSpace(os.Getenv("GITLAB_BASE_URL")); raw != "" {
-		return gitlabauth.NormalizeBaseURL(raw)
-	}
-	return gitlabauth.DefaultBaseURL
-}
-
-func buildGitLabAuthMetadata(baseURL, mode string, tokenResp *gitlabauth.TokenResponse, direct *gitlabauth.DirectAccessResponse) map[string]any {
-	metadata := map[string]any{
-		"type":                     "gitlab",
-		"auth_method":              strings.TrimSpace(mode),
-		"base_url":                 gitlabauth.NormalizeBaseURL(baseURL),
-		"last_refresh":             time.Now().UTC().Format(time.RFC3339),
-		"refresh_interval_seconds": 240,
-	}
-	if tokenResp != nil {
-		metadata["access_token"] = strings.TrimSpace(tokenResp.AccessToken)
-		if refreshToken := strings.TrimSpace(tokenResp.RefreshToken); refreshToken != "" {
-			metadata["refresh_token"] = refreshToken
-		}
-		if tokenType := strings.TrimSpace(tokenResp.TokenType); tokenType != "" {
-			metadata["token_type"] = tokenType
-		}
-		if scope := strings.TrimSpace(tokenResp.Scope); scope != "" {
-			metadata["scope"] = scope
-		}
-		if expiry := gitlabauth.TokenExpiry(time.Now(), tokenResp); !expiry.IsZero() {
-			metadata["oauth_expires_at"] = expiry.Format(time.RFC3339)
-		}
-	}
-	mergeGitLabDirectAccessMetadata(metadata, direct)
-	return metadata
-}
-
-func mergeGitLabDirectAccessMetadata(metadata map[string]any, direct *gitlabauth.DirectAccessResponse) {
-	if metadata == nil || direct == nil {
-		return
-	}
-	if base := strings.TrimSpace(direct.BaseURL); base != "" {
-		metadata["duo_gateway_base_url"] = base
-	}
-	if token := strings.TrimSpace(direct.Token); token != "" {
-		metadata["duo_gateway_token"] = token
-	}
-	if direct.ExpiresAt > 0 {
-		expiry := time.Unix(direct.ExpiresAt, 0).UTC()
-		metadata["duo_gateway_expires_at"] = expiry.Format(time.RFC3339)
-		now := time.Now().UTC()
-		if ttl := expiry.Sub(now); ttl > 0 {
-			interval := int(ttl.Seconds()) / 2
-			switch {
-			case interval < 60:
-				interval = 60
-			case interval > 240:
-				interval = 240
-			}
-			metadata["refresh_interval_seconds"] = interval
-		}
-	}
-	if len(direct.Headers) > 0 {
-		headers := make(map[string]string, len(direct.Headers))
-		for key, value := range direct.Headers {
-			key = strings.TrimSpace(key)
-			value = strings.TrimSpace(value)
-			if key == "" || value == "" {
-				continue
-			}
-			headers[key] = value
-		}
-		if len(headers) > 0 {
-			metadata["duo_gateway_headers"] = headers
-		}
-	}
-	if direct.ModelDetails != nil {
-		modelDetails := map[string]any{}
-		if provider := strings.TrimSpace(direct.ModelDetails.ModelProvider); provider != "" {
-			modelDetails["model_provider"] = provider
-			metadata["model_provider"] = provider
-		}
-		if model := strings.TrimSpace(direct.ModelDetails.ModelName); model != "" {
-			modelDetails["model_name"] = model
-			metadata["model_name"] = model
-		}
-		if len(modelDetails) > 0 {
-			metadata["model_details"] = modelDetails
-		}
-	}
-}
-
-func primaryGitLabEmail(user *gitlabauth.User) string {
-	if user == nil {
-		return ""
-	}
-	if value := strings.TrimSpace(user.Email); value != "" {
-		return value
-	}
-	return strings.TrimSpace(user.PublicEmail)
-}
-
-func gitLabAccountIdentifier(user *gitlabauth.User) string {
-	if user == nil {
-		return "user"
-	}
-	for _, value := range []string{user.Username, primaryGitLabEmail(user), user.Name} {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return "user"
-}
-
-func sanitizeGitLabFileName(value string) string {
-	value = strings.TrimSpace(strings.ToLower(value))
-	if value == "" {
-		return "user"
-	}
-	var builder strings.Builder
-	lastDash := false
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-			builder.WriteRune(r)
-			lastDash = false
-		case r >= '0' && r <= '9':
-			builder.WriteRune(r)
-			lastDash = false
-		case r == '-' || r == '_' || r == '.':
-			builder.WriteRune(r)
-			lastDash = false
-		default:
-			if !lastDash {
-				builder.WriteRune('-')
-				lastDash = true
-			}
-		}
-	}
-	result := strings.Trim(builder.String(), "-")
-	if result == "" {
-		return "user"
-	}
-	return result
-}
-
-func maskGitLabToken(token string) string {
-	trimmed := strings.TrimSpace(token)
-	if trimmed == "" {
-		return ""
-	}
-	if len(trimmed) <= 8 {
-		return trimmed
-	}
-	return trimmed[:4] + "..." + trimmed[len(trimmed)-4:]
+	return store.Save(ctx, record)
 }
 
 func (h *Handler) RequestAnthropicToken(c *gin.Context) {
@@ -2309,19 +1856,12 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 		// Create token storage
 		tokenStorage := anthropicAuth.CreateTokenStorage(bundle)
-		metadata := map[string]any{"email": tokenStorage.Email}
-		attributes := map[string]string{}
-		if baseURL := strings.TrimSpace(tokenStorage.BaseURL); baseURL != "" {
-			metadata["base_url"] = baseURL
-			attributes["base_url"] = baseURL
-		}
 		record := &coreauth.Auth{
-			ID:         fmt.Sprintf("claude-%s.json", tokenStorage.Email),
-			Provider:   "claude",
-			FileName:   fmt.Sprintf("claude-%s.json", tokenStorage.Email),
-			Storage:    tokenStorage,
-			Attributes: attributes,
-			Metadata:   metadata,
+			ID:       fmt.Sprintf("claude-%s.json", tokenStorage.Email),
+			Provider: "claude",
+			FileName: fmt.Sprintf("claude-%s.json", tokenStorage.Email),
+			Storage:  tokenStorage,
+			Metadata: map[string]any{"email": tokenStorage.Email},
 		}
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
@@ -2747,260 +2287,6 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
 }
 
-func (h *Handler) RequestGitLabToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
-
-	fmt.Println("Initializing GitLab Duo authentication...")
-
-	baseURL := gitLabBaseURLFromRequest(c)
-	clientID := strings.TrimSpace(c.Query("client_id"))
-	clientSecret := strings.TrimSpace(c.Query("client_secret"))
-	if clientID == "" {
-		clientID = strings.TrimSpace(os.Getenv("GITLAB_OAUTH_CLIENT_ID"))
-	}
-	if clientSecret == "" {
-		clientSecret = strings.TrimSpace(os.Getenv("GITLAB_OAUTH_CLIENT_SECRET"))
-	}
-	if clientID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "gitlab client_id is required"})
-		return
-	}
-
-	pkceCodes, err := gitlabauth.GeneratePKCECodes()
-	if err != nil {
-		log.Errorf("Failed to generate GitLab PKCE codes: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
-		return
-	}
-
-	state, err := misc.GenerateRandomState()
-	if err != nil {
-		log.Errorf("Failed to generate GitLab state parameter: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
-		return
-	}
-
-	redirectURI := gitlabauth.RedirectURL(gitlabauth.DefaultCallbackPort)
-	authClient := gitlabauth.NewAuthClient(h.cfg)
-	authURL, err := authClient.GenerateAuthURL(baseURL, clientID, redirectURI, state, pkceCodes)
-	if err != nil {
-		log.Errorf("Failed to generate GitLab authorization URL: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
-		return
-	}
-
-	RegisterOAuthSession(state, "gitlab")
-
-	isWebUI := isWebUIRequest(c)
-	var forwarder *callbackForwarder
-	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/gitlab/callback")
-		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute gitlab callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-			return
-		}
-		var errStart error
-		if forwarder, errStart = startCallbackForwarder(gitlabauth.DefaultCallbackPort, "gitlab", targetURL); errStart != nil {
-			log.WithError(errStart).Error("failed to start gitlab callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
-			return
-		}
-	}
-
-	go func() {
-		if isWebUI {
-			defer stopCallbackForwarderInstance(gitlabauth.DefaultCallbackPort, forwarder)
-		}
-
-		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-gitlab-%s.oauth", state))
-		deadline := time.Now().Add(5 * time.Minute)
-		var code string
-		for {
-			if !IsOAuthSessionPending(state, "gitlab") {
-				return
-			}
-			if time.Now().After(deadline) {
-				log.Error("gitlab oauth flow timed out")
-				SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
-				return
-			}
-			if data, errRead := os.ReadFile(waitFile); errRead == nil {
-				var payload map[string]string
-				_ = json.Unmarshal(data, &payload)
-				_ = os.Remove(waitFile)
-				if errStr := strings.TrimSpace(payload["error"]); errStr != "" {
-					SetOAuthSessionError(state, errStr)
-					return
-				}
-				if payloadState := strings.TrimSpace(payload["state"]); payloadState != state {
-					SetOAuthSessionError(state, "State code error")
-					return
-				}
-				code = strings.TrimSpace(payload["code"])
-				if code == "" {
-					SetOAuthSessionError(state, "Authorization code missing")
-					return
-				}
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-
-		tokenResp, errExchange := authClient.ExchangeCodeForTokens(ctx, baseURL, clientID, clientSecret, redirectURI, code, pkceCodes.CodeVerifier)
-		if errExchange != nil {
-			log.Errorf("Failed to exchange GitLab authorization code: %v", errExchange)
-			SetOAuthSessionError(state, "Failed to exchange authorization code for tokens")
-			return
-		}
-
-		user, errUser := authClient.GetCurrentUser(ctx, baseURL, tokenResp.AccessToken)
-		if errUser != nil {
-			log.Errorf("Failed to fetch GitLab user profile: %v", errUser)
-			SetOAuthSessionError(state, "Failed to fetch account profile")
-			return
-		}
-
-		direct, errDirect := authClient.FetchDirectAccess(ctx, baseURL, tokenResp.AccessToken)
-		if errDirect != nil {
-			log.Errorf("Failed to fetch GitLab direct access metadata: %v", errDirect)
-			SetOAuthSessionError(state, "Failed to fetch GitLab Duo access")
-			return
-		}
-
-		identifier := gitLabAccountIdentifier(user)
-		fileName := fmt.Sprintf("gitlab-%s.json", sanitizeGitLabFileName(identifier))
-		metadata := buildGitLabAuthMetadata(baseURL, gitLabLoginModeOAuth, tokenResp, direct)
-		metadata["auth_kind"] = "oauth"
-		metadata["oauth_client_id"] = clientID
-		metadata["username"] = strings.TrimSpace(user.Username)
-		if email := primaryGitLabEmail(user); email != "" {
-			metadata["email"] = email
-		}
-		metadata["name"] = strings.TrimSpace(user.Name)
-
-		record := &coreauth.Auth{
-			ID:       fileName,
-			Provider: "gitlab",
-			FileName: fileName,
-			Label:    identifier,
-			Metadata: metadata,
-		}
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
-		if errSave != nil {
-			log.Errorf("Failed to save GitLab auth record: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
-			return
-		}
-
-		fmt.Printf("GitLab Duo authentication successful. Token saved to %s\n", savedPath)
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("gitlab")
-	}()
-
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
-}
-
-func (h *Handler) RequestGitLabPATToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
-
-	var payload struct {
-		BaseURL             string `json:"base_url"`
-		PersonalAccessToken string `json:"personal_access_token"`
-		Token               string `json:"token"`
-	}
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid body"})
-		return
-	}
-
-	baseURL := gitlabauth.NormalizeBaseURL(strings.TrimSpace(payload.BaseURL))
-	if baseURL == "" {
-		baseURL = gitLabBaseURLFromRequest(nil)
-	}
-	pat := strings.TrimSpace(payload.PersonalAccessToken)
-	if pat == "" {
-		pat = strings.TrimSpace(payload.Token)
-	}
-	if pat == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "personal_access_token is required"})
-		return
-	}
-
-	authClient := gitlabauth.NewAuthClient(h.cfg)
-
-	user, err := authClient.GetCurrentUser(ctx, baseURL, pat)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
-		return
-	}
-	patSelf, err := authClient.GetPersonalAccessTokenSelf(ctx, baseURL, pat)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
-		return
-	}
-	direct, err := authClient.FetchDirectAccess(ctx, baseURL, pat)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
-		return
-	}
-
-	identifier := gitLabAccountIdentifier(user)
-	fileName := fmt.Sprintf("gitlab-%s-pat.json", sanitizeGitLabFileName(identifier))
-	metadata := buildGitLabAuthMetadata(baseURL, gitLabLoginModePAT, nil, direct)
-	metadata["auth_kind"] = "personal_access_token"
-	metadata["personal_access_token"] = pat
-	metadata["token_preview"] = maskGitLabToken(pat)
-	metadata["username"] = strings.TrimSpace(user.Username)
-	if email := primaryGitLabEmail(user); email != "" {
-		metadata["email"] = email
-	}
-	metadata["name"] = strings.TrimSpace(user.Name)
-	if patSelf != nil {
-		if name := strings.TrimSpace(patSelf.Name); name != "" {
-			metadata["pat_name"] = name
-		}
-		if len(patSelf.Scopes) > 0 {
-			metadata["pat_scopes"] = append([]string(nil), patSelf.Scopes...)
-		}
-	}
-
-	record := &coreauth.Auth{
-		ID:       fileName,
-		Provider: "gitlab",
-		FileName: fileName,
-		Label:    identifier + " (PAT)",
-		Metadata: metadata,
-	}
-
-	savedPath, err := h.saveTokenRecord(ctx, record)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to save authentication tokens"})
-		return
-	}
-
-	response := gin.H{
-		"status":      "ok",
-		"saved_path":  savedPath,
-		"username":    strings.TrimSpace(user.Username),
-		"email":       primaryGitLabEmail(user),
-		"token_label": identifier,
-	}
-	if direct != nil && direct.ModelDetails != nil {
-		if provider := strings.TrimSpace(direct.ModelDetails.ModelProvider); provider != "" {
-			response["model_provider"] = provider
-		}
-		if model := strings.TrimSpace(direct.ModelDetails.ModelName); model != "" {
-			response["model_name"] = model
-		}
-	}
-
-	fmt.Printf("GitLab Duo PAT authentication successful. Token saved to %s\n", savedPath)
-	c.JSON(http.StatusOK, response)
-}
-
 func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
@@ -3422,461 +2708,6 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
 }
 
-func (h *Handler) RequestIFlowToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
-
-	fmt.Println("Initializing iFlow authentication...")
-
-	state := fmt.Sprintf("ifl-%d", time.Now().UnixNano())
-	authSvc := iflowauth.NewIFlowAuth(h.cfg)
-	authURL, redirectURI := authSvc.AuthorizationURL(state, iflowauth.CallbackPort)
-
-	RegisterOAuthSession(state, "iflow")
-
-	isWebUI := isWebUIRequest(c)
-	var forwarder *callbackForwarder
-	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/iflow/callback")
-		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute iflow callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "callback server unavailable"})
-			return
-		}
-		var errStart error
-		if forwarder, errStart = startCallbackForwarder(iflowauth.CallbackPort, "iflow", targetURL); errStart != nil {
-			log.WithError(errStart).Error("failed to start iflow callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to start callback server"})
-			return
-		}
-	}
-
-	go func() {
-		if isWebUI {
-			defer stopCallbackForwarderInstance(iflowauth.CallbackPort, forwarder)
-		}
-		fmt.Println("Waiting for authentication...")
-
-		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-iflow-%s.oauth", state))
-		deadline := time.Now().Add(5 * time.Minute)
-		var resultMap map[string]string
-		for {
-			if !IsOAuthSessionPending(state, "iflow") {
-				return
-			}
-			if time.Now().After(deadline) {
-				SetOAuthSessionError(state, "Authentication failed")
-				fmt.Println("Authentication failed: timeout waiting for callback")
-				return
-			}
-			if data, errR := os.ReadFile(waitFile); errR == nil {
-				_ = os.Remove(waitFile)
-				_ = json.Unmarshal(data, &resultMap)
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-
-		if errStr := strings.TrimSpace(resultMap["error"]); errStr != "" {
-			SetOAuthSessionError(state, "Authentication failed")
-			fmt.Printf("Authentication failed: %s\n", errStr)
-			return
-		}
-		if resultState := strings.TrimSpace(resultMap["state"]); resultState != state {
-			SetOAuthSessionError(state, "Authentication failed")
-			fmt.Println("Authentication failed: state mismatch")
-			return
-		}
-
-		code := strings.TrimSpace(resultMap["code"])
-		if code == "" {
-			SetOAuthSessionError(state, "Authentication failed")
-			fmt.Println("Authentication failed: code missing")
-			return
-		}
-
-		tokenData, errExchange := authSvc.ExchangeCodeForTokens(ctx, code, redirectURI)
-		if errExchange != nil {
-			SetOAuthSessionError(state, "Authentication failed")
-			fmt.Printf("Authentication failed: %v\n", errExchange)
-			return
-		}
-
-		tokenStorage := authSvc.CreateTokenStorage(tokenData)
-		identifier := strings.TrimSpace(tokenStorage.Email)
-		if identifier == "" {
-			identifier = fmt.Sprintf("%d", time.Now().UnixMilli())
-			tokenStorage.Email = identifier
-		}
-		record := &coreauth.Auth{
-			ID:         fmt.Sprintf("iflow-%s.json", identifier),
-			Provider:   "iflow",
-			FileName:   fmt.Sprintf("iflow-%s.json", identifier),
-			Storage:    tokenStorage,
-			Metadata:   map[string]any{"email": identifier, "api_key": tokenStorage.APIKey},
-			Attributes: map[string]string{"api_key": tokenStorage.APIKey},
-		}
-
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
-		if errSave != nil {
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
-			log.Errorf("Failed to save authentication tokens: %v", errSave)
-			return
-		}
-
-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-		if tokenStorage.APIKey != "" {
-			fmt.Println("API key obtained and saved")
-		}
-		fmt.Println("You can now use iFlow services through this CLI")
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("iflow")
-	}()
-
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
-}
-
-func (h *Handler) RequestGitHubToken(c *gin.Context) {
-	ctx := context.Background()
-
-	fmt.Println("Initializing GitHub Copilot authentication...")
-
-	state := fmt.Sprintf("gh-%d", time.Now().UnixNano())
-
-	// Initialize Copilot auth service
-	deviceClient := copilot.NewDeviceFlowClient(h.cfg)
-
-	// Initiate device flow
-	deviceCode, err := deviceClient.RequestDeviceCode(ctx)
-	if err != nil {
-		log.Errorf("Failed to initiate device flow: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initiate device flow"})
-		return
-	}
-
-	authURL := deviceCode.VerificationURI
-	userCode := deviceCode.UserCode
-
-	RegisterOAuthSession(state, "github-copilot")
-
-	go func() {
-		fmt.Printf("Please visit %s and enter code: %s\n", authURL, userCode)
-
-		tokenData, errPoll := deviceClient.PollForToken(ctx, deviceCode)
-		if errPoll != nil {
-			SetOAuthSessionError(state, "Authentication failed")
-			fmt.Printf("Authentication failed: %v\n", errPoll)
-			return
-		}
-
-		userInfo, errUser := deviceClient.FetchUserInfo(ctx, tokenData.AccessToken)
-		if errUser != nil {
-			log.Warnf("Failed to fetch user info: %v", errUser)
-		}
-
-		username := userInfo.Login
-		if username == "" {
-			username = "github-user"
-		}
-
-		tokenStorage := &copilot.CopilotTokenStorage{
-			AccessToken: tokenData.AccessToken,
-			TokenType:   tokenData.TokenType,
-			Scope:       tokenData.Scope,
-			Username:    username,
-			Email:       userInfo.Email,
-			Name:        userInfo.Name,
-			Type:        "github-copilot",
-		}
-
-		fileName := fmt.Sprintf("github-copilot-%s.json", username)
-		label := userInfo.Email
-		if label == "" {
-			label = username
-		}
-		metadata, errMeta := copilotTokenMetadata(tokenStorage)
-		if errMeta != nil {
-			log.Errorf("Failed to build token metadata: %v", errMeta)
-			SetOAuthSessionError(state, "Failed to build token metadata")
-			return
-		}
-
-		record := &coreauth.Auth{
-			ID:       fileName,
-			Provider: "github-copilot",
-			Label:    label,
-			FileName: fileName,
-			Storage:  tokenStorage,
-			Metadata: metadata,
-		}
-
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
-		if errSave != nil {
-			log.Errorf("Failed to save authentication tokens: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
-			return
-		}
-
-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-		fmt.Println("You can now use GitHub Copilot services through this CLI")
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("github-copilot")
-	}()
-
-	c.JSON(200, gin.H{
-		"status":           "ok",
-		"url":              authURL,
-		"state":            state,
-		"user_code":        userCode,
-		"verification_uri": authURL,
-	})
-}
-
-func (h *Handler) RequestClineToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
-
-	state, err := misc.GenerateRandomState()
-	if err != nil {
-		log.Errorf("Failed to generate state parameter: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
-		return
-	}
-
-	callbackURL := fmt.Sprintf("http://localhost:%d/callback", clineCallbackPort)
-	authSvc := clineauth.NewClineAuth(h.cfg)
-	authURL := authSvc.GenerateAuthURL(state, callbackURL)
-
-	RegisterOAuthSession(state, "cline")
-
-	isWebUI := isWebUIRequest(c)
-	var forwarder *callbackForwarder
-	if isWebUI {
-		targetURL, errTarget := h.managementCallbackURL("/cline/callback")
-		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute cline callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-			return
-		}
-		var errStart error
-		if forwarder, errStart = startCallbackForwarder(clineCallbackPort, "cline", targetURL); errStart != nil {
-			log.WithError(errStart).Error("failed to start cline callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
-			return
-		}
-	}
-
-	go func() {
-		if isWebUI {
-			defer stopCallbackForwarderInstance(clineCallbackPort, forwarder)
-		}
-
-		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-cline-%s.oauth", state))
-		deadline := time.Now().Add(5 * time.Minute)
-		var authCode string
-		for {
-			if !IsOAuthSessionPending(state, "cline") {
-				return
-			}
-			if time.Now().After(deadline) {
-				log.Error("cline oauth flow timed out")
-				SetOAuthSessionError(state, "OAuth flow timed out")
-				return
-			}
-			if data, errReadFile := os.ReadFile(waitFile); errReadFile == nil {
-				var payload map[string]string
-				_ = json.Unmarshal(data, &payload)
-				_ = os.Remove(waitFile)
-				if errStr := strings.TrimSpace(payload["error"]); errStr != "" {
-					log.Errorf("Cline authentication failed: %s", errStr)
-					SetOAuthSessionError(state, "Authentication failed")
-					return
-				}
-				if payloadState := strings.TrimSpace(payload["state"]); payloadState != "" && payloadState != state {
-					log.Error("Cline authentication failed: state mismatch")
-					SetOAuthSessionError(state, "Authentication failed: state mismatch")
-					return
-				}
-				authCode = strings.TrimSpace(payload["code"])
-				if authCode == "" {
-					log.Error("Cline authentication failed: code not found")
-					SetOAuthSessionError(state, "Authentication failed: code not found")
-					return
-				}
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-
-		tokenResp, errToken := authSvc.ExchangeCode(ctx, authCode, callbackURL)
-		if errToken != nil {
-			log.Errorf("Failed to exchange Cline token: %v", errToken)
-			SetOAuthSessionError(state, "Failed to exchange token")
-			return
-		}
-
-		email := strings.TrimSpace(tokenResp.Email)
-		if email == "" {
-			log.Error("cline: token exchange returned empty email")
-			SetOAuthSessionError(state, "Failed to exchange token")
-			return
-		}
-
-		var expiresAtInt int64
-		if tokenResp.ExpiresAt != "" {
-			if ts, errParse := time.Parse(time.RFC3339Nano, tokenResp.ExpiresAt); errParse == nil {
-				expiresAtInt = ts.Unix()
-			} else if ts, errParse := time.Parse(time.RFC3339, tokenResp.ExpiresAt); errParse == nil {
-				expiresAtInt = ts.Unix()
-			}
-		}
-
-		tokenStorage := &clineauth.ClineTokenStorage{
-			AccessToken:  tokenResp.AccessToken,
-			RefreshToken: tokenResp.RefreshToken,
-			ExpiresAt:    expiresAtInt,
-			Email:        email,
-			Type:         "cline",
-		}
-
-		fileName := clineauth.CredentialFileName(email)
-		record := &coreauth.Auth{
-			ID:       fileName,
-			Provider: "cline",
-			Label:    email,
-			FileName: fileName,
-			Storage:  tokenStorage,
-			Metadata: map[string]any{
-				"email":      email,
-				"expires_at": expiresAtInt,
-			},
-		}
-
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
-		if errSave != nil {
-			log.Errorf("Failed to save Cline authentication tokens: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
-			return
-		}
-
-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("cline")
-	}()
-
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
-}
-
-func copilotTokenMetadata(storage *copilot.CopilotTokenStorage) (map[string]any, error) {
-	if storage == nil {
-		return nil, fmt.Errorf("token storage is nil")
-	}
-	payload, errMarshal := json.Marshal(storage)
-	if errMarshal != nil {
-		return nil, fmt.Errorf("marshal token storage: %w", errMarshal)
-	}
-	metadata := make(map[string]any)
-	if errUnmarshal := json.Unmarshal(payload, &metadata); errUnmarshal != nil {
-		return nil, fmt.Errorf("unmarshal token storage: %w", errUnmarshal)
-	}
-	return metadata, nil
-}
-
-func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
-	ctx := context.Background()
-
-	var payload struct {
-		Cookie string `json:"cookie"`
-	}
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "cookie is required"})
-		return
-	}
-
-	cookieValue := strings.TrimSpace(payload.Cookie)
-
-	if cookieValue == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "cookie is required"})
-		return
-	}
-
-	cookieValue, errNormalize := iflowauth.NormalizeCookie(cookieValue)
-	if errNormalize != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": errNormalize.Error()})
-		return
-	}
-
-	// Check for duplicate BXAuth before authentication
-	bxAuth := iflowauth.ExtractBXAuth(cookieValue)
-	if existingFile, err := iflowauth.CheckDuplicateBXAuth(h.cfg.AuthDir, bxAuth); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to check duplicate"})
-		return
-	} else if existingFile != "" {
-		existingFileName := filepath.Base(existingFile)
-		c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "duplicate BXAuth found", "existing_file": existingFileName})
-		return
-	}
-
-	authSvc := iflowauth.NewIFlowAuth(h.cfg)
-	tokenData, errAuth := authSvc.AuthenticateWithCookie(ctx, cookieValue)
-	if errAuth != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": errAuth.Error()})
-		return
-	}
-
-	tokenData.Cookie = cookieValue
-
-	tokenStorage := authSvc.CreateCookieTokenStorage(tokenData)
-	email := strings.TrimSpace(tokenStorage.Email)
-	if email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "failed to extract email from token"})
-		return
-	}
-
-	fileName := iflowauth.SanitizeIFlowFileName(email)
-	if fileName == "" {
-		fileName = fmt.Sprintf("iflow-%d", time.Now().UnixMilli())
-	} else {
-		fileName = fmt.Sprintf("iflow-%s", fileName)
-	}
-
-	tokenStorage.Email = email
-	timestamp := time.Now().Unix()
-
-	record := &coreauth.Auth{
-		ID:       fmt.Sprintf("%s-%d.json", fileName, timestamp),
-		Provider: "iflow",
-		FileName: fmt.Sprintf("%s-%d.json", fileName, timestamp),
-		Storage:  tokenStorage,
-		Metadata: map[string]any{
-			"email":        email,
-			"api_key":      tokenStorage.APIKey,
-			"expired":      tokenStorage.Expire,
-			"cookie":       tokenStorage.Cookie,
-			"type":         tokenStorage.Type,
-			"last_refresh": tokenStorage.LastRefresh,
-		},
-		Attributes: map[string]string{
-			"api_key": tokenStorage.APIKey,
-		},
-	}
-
-	savedPath, errSave := h.saveTokenRecord(ctx, record)
-	if errSave != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to save authentication tokens"})
-		return
-	}
-
-	fmt.Printf("iFlow cookie authentication successful. Token saved to %s\n", savedPath)
-	c.JSON(http.StatusOK, gin.H{
-		"status":     "ok",
-		"saved_path": savedPath,
-		"email":      email,
-		"expired":    tokenStorage.Expire,
-		"type":       tokenStorage.Type,
-	})
-}
-
 type projectSelectionRequiredError struct{}
 
 func (e *projectSelectionRequiredError) Error() string {
@@ -4271,25 +3102,6 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 		return
 	}
 	if status != "" {
-		if strings.HasPrefix(status, "device_code|") {
-			parts := strings.SplitN(status, "|", 3)
-			if len(parts) == 3 {
-				c.JSON(http.StatusOK, gin.H{
-					"status":           "device_code",
-					"verification_url": parts[1],
-					"user_code":        parts[2],
-				})
-				return
-			}
-		}
-		if strings.HasPrefix(status, "auth_url|") {
-			authURL := strings.TrimPrefix(status, "auth_url|")
-			c.JSON(http.StatusOK, gin.H{
-				"status": "auth_url",
-				"url":    authURL,
-			})
-			return
-		}
 		c.JSON(http.StatusOK, gin.H{"status": "error", "error": status})
 		return
 	}
@@ -4303,467 +3115,4 @@ func PopulateAuthContext(ctx context.Context, c *gin.Context) context.Context {
 		Headers: c.Request.Header,
 	}
 	return coreauth.WithRequestInfo(ctx, info)
-}
-
-const kiroCallbackPort = 9876
-
-func (h *Handler) RequestKiroToken(c *gin.Context) {
-	ctx := context.Background()
-
-	// Get the login method from query parameter (default: aws for device code flow)
-	method := strings.ToLower(strings.TrimSpace(c.Query("method")))
-	if method == "" {
-		method = "aws"
-	}
-
-	fmt.Println("Initializing Kiro authentication...")
-
-	state := fmt.Sprintf("kiro-%d", time.Now().UnixNano())
-
-	switch method {
-	case "aws", "builder-id":
-		RegisterOAuthSession(state, "kiro")
-
-		// AWS Builder ID uses device code flow (no callback needed)
-		go func() {
-			ssoClient := kiroauth.NewSSOOIDCClient(h.cfg)
-
-			// Step 1: Register client
-			fmt.Println("Registering client...")
-			regResp, errRegister := ssoClient.RegisterClient(ctx)
-			if errRegister != nil {
-				log.Errorf("Failed to register client: %v", errRegister)
-				SetOAuthSessionError(state, "Failed to register client")
-				return
-			}
-
-			// Step 2: Start device authorization
-			fmt.Println("Starting device authorization...")
-			authResp, errAuth := ssoClient.StartDeviceAuthorization(ctx, regResp.ClientID, regResp.ClientSecret)
-			if errAuth != nil {
-				log.Errorf("Failed to start device auth: %v", errAuth)
-				SetOAuthSessionError(state, "Failed to start device authorization")
-				return
-			}
-
-			// Store the verification URL for the frontend to display.
-			// Using "|" as separator because URLs contain ":".
-			SetOAuthSessionError(state, "device_code|"+authResp.VerificationURIComplete+"|"+authResp.UserCode)
-
-			// Step 3: Poll for token
-			fmt.Println("Waiting for authorization...")
-			interval := 5 * time.Second
-			if authResp.Interval > 0 {
-				interval = time.Duration(authResp.Interval) * time.Second
-			}
-			deadline := time.Now().Add(time.Duration(authResp.ExpiresIn) * time.Second)
-
-			for time.Now().Before(deadline) {
-				select {
-				case <-ctx.Done():
-					SetOAuthSessionError(state, "Authorization cancelled")
-					return
-				case <-time.After(interval):
-					tokenResp, errToken := ssoClient.CreateToken(ctx, regResp.ClientID, regResp.ClientSecret, authResp.DeviceCode)
-					if errToken != nil {
-						errStr := errToken.Error()
-						if strings.Contains(errStr, "authorization_pending") {
-							continue
-						}
-						if strings.Contains(errStr, "slow_down") {
-							interval += 5 * time.Second
-							continue
-						}
-						log.Errorf("Token creation failed: %v", errToken)
-						SetOAuthSessionError(state, "Token creation failed")
-						return
-					}
-
-					// Success! Save the token
-					expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-					email := kiroauth.ExtractEmailFromJWT(tokenResp.AccessToken)
-
-					idPart := kiroauth.SanitizeEmailForFilename(email)
-					if idPart == "" {
-						idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
-					}
-
-					now := time.Now()
-					fileName := fmt.Sprintf("kiro-aws-%s.json", idPart)
-
-					record := &coreauth.Auth{
-						ID:       fileName,
-						Provider: "kiro",
-						FileName: fileName,
-						Metadata: map[string]any{
-							"type":          "kiro",
-							"access_token":  tokenResp.AccessToken,
-							"refresh_token": tokenResp.RefreshToken,
-							"expires_at":    expiresAt.Format(time.RFC3339),
-							"auth_method":   "builder-id",
-							"provider":      "AWS",
-							"client_id":     regResp.ClientID,
-							"client_secret": regResp.ClientSecret,
-							"email":         email,
-							"last_refresh":  now.Format(time.RFC3339),
-						},
-					}
-
-					savedPath, errSave := h.saveTokenRecord(ctx, record)
-					if errSave != nil {
-						log.Errorf("Failed to save authentication tokens: %v", errSave)
-						SetOAuthSessionError(state, "Failed to save authentication tokens")
-						return
-					}
-
-					fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-					if email != "" {
-						fmt.Printf("Authenticated as: %s\n", email)
-					}
-					CompleteOAuthSession(state)
-					return
-				}
-			}
-
-			SetOAuthSessionError(state, "Authorization timed out")
-		}()
-
-		// Return immediately with the state for polling
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "state": state, "method": "device_code"})
-
-	case "google", "github":
-		RegisterOAuthSession(state, "kiro")
-
-		// Social auth uses protocol handler - for WEB UI we use a callback forwarder
-		provider := "Google"
-		if method == "github" {
-			provider = "Github"
-		}
-
-		isWebUI := isWebUIRequest(c)
-		var forwarder *callbackForwarder
-		if isWebUI {
-			targetURL, errTarget := h.managementCallbackURL("/kiro/callback")
-			if errTarget != nil {
-				log.WithError(errTarget).Error("failed to compute kiro callback target")
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-				return
-			}
-			var errStart error
-			if forwarder, errStart = startCallbackForwarder(kiroCallbackPort, "kiro", targetURL); errStart != nil {
-				log.WithError(errStart).Error("failed to start kiro callback forwarder")
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
-				return
-			}
-		}
-
-		go func() {
-			if isWebUI {
-				defer stopCallbackForwarderInstance(kiroCallbackPort, forwarder)
-			}
-
-			socialClient := kiroauth.NewSocialAuthClient(h.cfg)
-
-			// Generate PKCE codes
-			codeVerifier, codeChallenge, errPKCE := generateKiroPKCE()
-			if errPKCE != nil {
-				log.Errorf("Failed to generate PKCE: %v", errPKCE)
-				SetOAuthSessionError(state, "Failed to generate PKCE")
-				return
-			}
-
-			// Build login URL
-			authURL := fmt.Sprintf("%s/login?idp=%s&redirect_uri=%s&code_challenge=%s&code_challenge_method=S256&state=%s&prompt=select_account",
-				"https://prod.us-east-1.auth.desktop.kiro.dev",
-				provider,
-				url.QueryEscape(kiroauth.KiroRedirectURI),
-				codeChallenge,
-				state,
-			)
-
-			// Store auth URL for frontend.
-			// Using "|" as separator because URLs contain ":".
-			SetOAuthSessionError(state, "auth_url|"+authURL)
-
-			// Wait for callback file
-			waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-kiro-%s.oauth", state))
-			deadline := time.Now().Add(5 * time.Minute)
-
-			for {
-				if time.Now().After(deadline) {
-					log.Error("oauth flow timed out")
-					SetOAuthSessionError(state, "OAuth flow timed out")
-					return
-				}
-				if data, errRead := os.ReadFile(waitFile); errRead == nil {
-					var m map[string]string
-					_ = json.Unmarshal(data, &m)
-					_ = os.Remove(waitFile)
-					if errStr := m["error"]; errStr != "" {
-						log.Errorf("Authentication failed: %s", errStr)
-						SetOAuthSessionError(state, "Authentication failed")
-						return
-					}
-					if m["state"] != state {
-						log.Errorf("State mismatch")
-						SetOAuthSessionError(state, "State mismatch")
-						return
-					}
-					code := m["code"]
-					if code == "" {
-						log.Error("No authorization code received")
-						SetOAuthSessionError(state, "No authorization code received")
-						return
-					}
-
-					// Exchange code for tokens
-					tokenReq := &kiroauth.CreateTokenRequest{
-						Code:         code,
-						CodeVerifier: codeVerifier,
-						RedirectURI:  kiroauth.KiroRedirectURI,
-					}
-
-					tokenResp, errToken := socialClient.CreateToken(ctx, tokenReq)
-					if errToken != nil {
-						log.Errorf("Failed to exchange code for tokens: %v", errToken)
-						SetOAuthSessionError(state, "Failed to exchange code for tokens")
-						return
-					}
-
-					// Save the token
-					expiresIn := tokenResp.ExpiresIn
-					if expiresIn <= 0 {
-						expiresIn = 3600
-					}
-					expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
-					email := kiroauth.ExtractEmailFromJWT(tokenResp.AccessToken)
-
-					idPart := kiroauth.SanitizeEmailForFilename(email)
-					if idPart == "" {
-						idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
-					}
-
-					now := time.Now()
-					fileName := fmt.Sprintf("kiro-%s-%s.json", strings.ToLower(provider), idPart)
-
-					record := &coreauth.Auth{
-						ID:       fileName,
-						Provider: "kiro",
-						FileName: fileName,
-						Metadata: map[string]any{
-							"type":          "kiro",
-							"access_token":  tokenResp.AccessToken,
-							"refresh_token": tokenResp.RefreshToken,
-							"profile_arn":   tokenResp.ProfileArn,
-							"expires_at":    expiresAt.Format(time.RFC3339),
-							"auth_method":   "social",
-							"provider":      provider,
-							"email":         email,
-							"last_refresh":  now.Format(time.RFC3339),
-						},
-					}
-
-					savedPath, errSave := h.saveTokenRecord(ctx, record)
-					if errSave != nil {
-						log.Errorf("Failed to save authentication tokens: %v", errSave)
-						SetOAuthSessionError(state, "Failed to save authentication tokens")
-						return
-					}
-
-					fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-					if email != "" {
-						fmt.Printf("Authenticated as: %s\n", email)
-					}
-					CompleteOAuthSession(state)
-					return
-				}
-				time.Sleep(500 * time.Millisecond)
-			}
-		}()
-
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "state": state, "method": "social"})
-
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid method, use 'aws', 'google', or 'github'"})
-	}
-}
-
-// generateKiroPKCE generates PKCE code verifier and challenge for Kiro OAuth.
-func generateKiroPKCE() (verifier, challenge string, err error) {
-	b := make([]byte, 32)
-	if _, errRead := io.ReadFull(rand.Reader, b); errRead != nil {
-		return "", "", fmt.Errorf("failed to generate random bytes: %w", errRead)
-	}
-	verifier = base64.RawURLEncoding.EncodeToString(b)
-
-	h := sha256.Sum256([]byte(verifier))
-	challenge = base64.RawURLEncoding.EncodeToString(h[:])
-
-	return verifier, challenge, nil
-}
-
-func (h *Handler) RequestKiloToken(c *gin.Context) {
-	ctx := context.Background()
-
-	fmt.Println("Initializing Kilo authentication...")
-
-	state := fmt.Sprintf("kil-%d", time.Now().UnixNano())
-	kiloAuth := kilo.NewKiloAuth()
-
-	resp, err := kiloAuth.InitiateDeviceFlow(ctx)
-	if err != nil {
-		log.Errorf("Failed to initiate device flow: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initiate device flow"})
-		return
-	}
-
-	RegisterOAuthSession(state, "kilo")
-
-	go func() {
-		fmt.Printf("Please visit %s and enter code: %s\n", resp.VerificationURL, resp.Code)
-
-		status, err := kiloAuth.PollForToken(ctx, resp.Code)
-		if err != nil {
-			SetOAuthSessionError(state, "Authentication failed")
-			fmt.Printf("Authentication failed: %v\n", err)
-			return
-		}
-
-		profile, err := kiloAuth.GetProfile(ctx, status.Token)
-		if err != nil {
-			log.Warnf("Failed to fetch profile: %v", err)
-			profile = &kilo.Profile{Email: status.UserEmail}
-		}
-
-		var orgID string
-		if len(profile.Orgs) > 0 {
-			orgID = profile.Orgs[0].ID
-		}
-
-		defaults, err := kiloAuth.GetDefaults(ctx, status.Token, orgID)
-		if err != nil {
-			defaults = &kilo.Defaults{}
-		}
-
-		ts := &kilo.KiloTokenStorage{
-			Token:          status.Token,
-			OrganizationID: orgID,
-			Model:          defaults.Model,
-			Email:          status.UserEmail,
-			Type:           "kilo",
-		}
-
-		fileName := kilo.CredentialFileName(status.UserEmail)
-		record := &coreauth.Auth{
-			ID:       fileName,
-			Provider: "kilo",
-			FileName: fileName,
-			Storage:  ts,
-			Metadata: map[string]any{
-				"email":           status.UserEmail,
-				"organization_id": orgID,
-				"model":           defaults.Model,
-			},
-		}
-
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
-		if errSave != nil {
-			log.Errorf("Failed to save authentication tokens: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
-			return
-		}
-
-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("kilo")
-	}()
-
-	c.JSON(200, gin.H{
-		"status":           "ok",
-		"url":              resp.VerificationURL,
-		"state":            state,
-		"user_code":        resp.Code,
-		"verification_uri": resp.VerificationURL,
-	})
-}
-
-// RequestCursorToken initiates the Cursor PKCE authentication flow.
-// Supports multiple accounts via ?label=xxx query parameter.
-// The user opens the returned URL in a browser, logs in, and the server polls
-// until the authentication completes.
-func (h *Handler) RequestCursorToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
-
-	label := strings.TrimSpace(c.Query("label"))
-	log.Infof("Initializing Cursor authentication (label=%q)...", label)
-
-	authParams, err := cursorauth.GenerateAuthParams()
-	if err != nil {
-		log.Errorf("Failed to generate Cursor auth params: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate auth params"})
-		return
-	}
-
-	state := fmt.Sprintf("cur-%d", time.Now().UnixNano())
-	RegisterOAuthSession(state, "cursor")
-
-	go func() {
-		log.Info("Waiting for Cursor authentication...")
-		log.Infof("Open this URL in your browser: %s", authParams.LoginURL)
-
-		tokens, errPoll := cursorauth.PollForAuth(ctx, authParams.UUID, authParams.Verifier)
-		if errPoll != nil {
-			SetOAuthSessionError(state, "Authentication failed: "+errPoll.Error())
-			log.Errorf("Cursor authentication failed: %v", errPoll)
-			return
-		}
-
-		// Build metadata
-		metadata := map[string]any{
-			"type":          "cursor",
-			"access_token":  tokens.AccessToken,
-			"refresh_token": tokens.RefreshToken,
-			"timestamp":     time.Now().UnixMilli(),
-		}
-
-		// Extract expiry and account identity from JWT
-		expiry := cursorauth.GetTokenExpiry(tokens.AccessToken)
-		if !expiry.IsZero() {
-			metadata["expires_at"] = expiry.Format(time.RFC3339)
-		}
-
-		// Auto-identify account from JWT sub claim for multi-account support
-		sub := cursorauth.ParseJWTSub(tokens.AccessToken)
-		subHash := cursorauth.SubToShortHash(sub)
-		if sub != "" {
-			metadata["sub"] = sub
-		}
-
-		fileName := cursorauth.CredentialFileName(label, subHash)
-		displayLabel := cursorauth.DisplayLabel(label, subHash)
-		record := &coreauth.Auth{
-			ID:       fileName,
-			Provider: "cursor",
-			FileName: fileName,
-			Label:    displayLabel,
-			Metadata: metadata,
-		}
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
-		if errSave != nil {
-			log.Errorf("Failed to save Cursor tokens: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save tokens")
-			return
-		}
-
-		log.Infof("Cursor authentication successful! Token saved to %s", savedPath)
-		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("cursor")
-	}()
-
-	c.JSON(200, gin.H{
-		"status": "ok",
-		"url":    authParams.LoginURL,
-		"state":  state,
-	})
 }

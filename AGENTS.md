@@ -1,9 +1,9 @@
 # CLIPROXYAPIPLUS KNOWLEDGE BASE
 
 **Generated:** 2026-05-25
-**Commit:** dbfc1d38
+**Commit:** 704a78e5
 **Branch:** main
-**Latest Tag:** v7.1.20-3
+**Latest Tag:** v7.1.20-5
 
 ## OVERVIEW
 
@@ -37,6 +37,7 @@ CLIProxyAPIPlus/
 
 ## RECENT CHANGES
 
+- **v7.1.20-5**: upstream merge (websockets auth file support, generic PATCH `map[string]json.RawMessage`, project_id test). Retained billing_class/base_url/primary_info.
 - **v7.1.20-3**: upstream merge v7.1.20+ (file-backed request logging, RequestID support, fetch_codex_models). Cortexkit OAuth sync (Stainless 0.94.0/v24.3.0, CCH cc_version 2.1.141).
 - **v7.1.19-5**: upstream merge v7.1.19 (import path fixes for registry/executor). Allow 400 errors to trigger fallback chains.
 
