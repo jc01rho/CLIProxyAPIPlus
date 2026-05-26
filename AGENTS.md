@@ -40,6 +40,7 @@ CLIProxyAPIPlus/
 - **v7.1.20-5**: upstream merge (websockets auth file support, generic PATCH `map[string]json.RawMessage`, project_id test). Retained billing_class/base_url/primary_info.
 - **v7.1.20-3**: upstream merge v7.1.20+ (file-backed request logging, RequestID support, fetch_codex_models). Cortexkit OAuth sync (Stainless 0.94.0/v24.3.0, CCH cc_version 2.1.141).
 - **v7.1.19-5**: upstream merge v7.1.19 (import path fixes for registry/executor). Allow 400 errors to trigger fallback chains.
+- **CommandCode provider**: Custom `/alpha/generate` endpoint support. Tools conversion (OpenAI→CC format), message transformation, SSE streaming. Management UI section added.
 
 ## COMMANDS
 
