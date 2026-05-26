@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -434,6 +436,9 @@ func applyCommandCodeHeaders(req *http.Request, apiKey string) {
 	req.Header.Set("x-command-code-version", commandCodeVersion)
 	req.Header.Set("x-cli-environment", "production")
 	req.Header.Set("x-project-slug", commandCodeProject)
+	req.Header.Set("x-taste-learning", "false")
+	req.Header.Set("x-co-flag", "false")
+	req.Header.Set("x-session-id", generateCommandCodeSessionID())
 }
 
 // buildCommandCodePayload constructs the CommandCode envelope from an OpenAI-format payload.
@@ -533,7 +538,14 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 	return json.Marshal(envelope)
 }
 
-// commandCodeStreamChunk builds an OpenAI streaming chunk for a given delta and finish reason.
+// generateCommandCodeSessionID creates a random session ID for x-session-id header.
+func generateCommandCodeSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("cc-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
 func commandCodeStreamChunk(id, model string, delta map[string]any, finishReason string) map[string]any {
 	choice := map[string]any{
 		"index":         0,
