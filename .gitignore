@@ -1,12 +1,53 @@
-*.json
-.cli-proxy-api/
-*.cli-proxy-api/
+# Binaries
+cli-proxy-api
+*.exe
 
-trae-auth-flow.md
-.opencode/
-gh-cli-cache/
-node-compile-cache/
-.playwright-mcp/
-.sisyphus/
-.tldr/
-cpa-usage-keeper/
+# Configuration
+config.yaml
+.env
+
+# Generated content
+bin/*
+logs/*
+conv/*
+temp/*
+refs/*
+
+# Storage backends
+pgstore/*
+gitstore/*
+objectstore/*
+
+# Static assets
+static/*
+
+# Authentication data
+auths/*
+!auths/.gitkeep
+
+# Documentation
+docs/*
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+
+# Tooling metadata
+.vscode/*
+.worktrees/
+.codex/*
+.claude/*
+.gemini/*
+.serena/*
+.agent/*
+.agents/*
+.opencode/*
+.idea/*
+.beads/*
+.bmad/*
+_bmad/*
+_bmad-output/*
+
+# macOS
+.DS_Store
+._*
+.gocache/
