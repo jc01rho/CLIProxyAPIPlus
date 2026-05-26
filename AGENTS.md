@@ -109,11 +109,10 @@ cpa-usage-keeper/AGENTS.md
 - **Always verify upstream latest tags before tagging.** The repo AGENTS.md `Latest tags` line may be stale; run the fetch command above to get the actual latest.
 - Upstream merges: always check `server.go` for duplicate route registration after merging.
 - Re-tagging: delete GitHub release assets first, then re-run goreleaser (otherwise `422 already_exists`).
-- Latest tags: `CLIProxyAPIPlus: v7.1.23-1`, `Cli-Proxy-API-Management-Center: v1.14.0-1`, `cpa-usage-keeper: v1.8.4-1`. Re-check before tagging.
+- Latest tags: `CLIProxyAPIPlus: v7.1.23-1`, `Cli-Proxy-API-Management-Center: v1.14.0-2`, `cpa-usage-keeper: v1.8.5-1`. Re-check before tagging.
 
 ## RECENT CHANGES
 
-- **CLIProxyAPIPlus**: CommandCode provider with custom `/alpha/generate` endpoint, tools/message conversion, SSE streaming. Management UI section added.
-- **CLIProxyAPIPlus v7.1.19-5**: upstream merge v7.1.19 (import path fixes for registry/executor). Allow 400 errors to trigger fallback chains.
-- **Cli-Proxy-API-Management-Center v1.12.0-1**: upstream merge v1.12.0. Ollama provider UI section, dedicated provider sections for Mistral/Xiaomi.
-- **cpa-usage-keeper v1.8.2-1**: upstream merge (Back to CPA link, reasoning_effort migration, UsagePage UX polish, Redis queue fallback recovery).
+- **CLIProxyAPIPlus v7.1.23-1**: upstream merge v7.1.23. CommandCode provider fully integrated.
+- **Cli-Proxy-API-Management-Center v1.14.0-2**: upstream merge v1.14.0. CommandCode integrated into new ProvidersWorkbenchPage architecture. Provider edit pages restructured.
+- **cpa-usage-keeper v1.8.5-1**: upstream merge v1.8.5. Quota auto-refresh feature from upstream.
