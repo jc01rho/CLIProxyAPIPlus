@@ -111,6 +111,7 @@ cpa-usage-keeper/AGENTS.md
 
 ## RECENT CHANGES
 
+- **CLIProxyAPIPlus**: CommandCode provider with custom `/alpha/generate` endpoint, tools/message conversion, SSE streaming. Management UI section added.
 - **CLIProxyAPIPlus v7.1.19-5**: upstream merge v7.1.19 (import path fixes for registry/executor). Allow 400 errors to trigger fallback chains.
 - **Cli-Proxy-API-Management-Center v1.12.0-1**: upstream merge v1.12.0. Ollama provider UI section, dedicated provider sections for Mistral/Xiaomi.
 - **cpa-usage-keeper v1.8.2-1**: upstream merge (Back to CPA link, reasoning_effort migration, UsagePage UX polish, Redis queue fallback recovery).
