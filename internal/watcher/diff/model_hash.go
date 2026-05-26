@@ -11,8 +11,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
-// ComputeOpenAICompatModelsHash returns a stable hash for OpenAI-compat models.
-// Used to detect model list changes during hot reload.
 func ComputeOpenAICompatModelsHash(models []config.OpenAICompatibilityModel) string {
 	keys := normalizeModelPairs(func(out func(key string)) {
 		for _, model := range models {
@@ -27,7 +25,6 @@ func ComputeOpenAICompatModelsHash(models []config.OpenAICompatibilityModel) str
 	return hashJoined(keys)
 }
 
-// ComputeVertexCompatModelsHash returns a stable hash for Vertex-compatible models.
 func ComputeVertexCompatModelsHash(models []config.VertexCompatModel) string {
 	keys := normalizeModelPairs(func(out func(key string)) {
 		for _, model := range models {
@@ -42,7 +39,6 @@ func ComputeVertexCompatModelsHash(models []config.VertexCompatModel) string {
 	return hashJoined(keys)
 }
 
-// ComputeClaudeModelsHash returns a stable hash for Claude model aliases.
 func ComputeClaudeModelsHash(models []config.ClaudeModel) string {
 	keys := normalizeModelPairs(func(out func(key string)) {
 		for _, model := range models {
@@ -57,7 +53,20 @@ func ComputeClaudeModelsHash(models []config.ClaudeModel) string {
 	return hashJoined(keys)
 }
 
-// ComputeCodexModelsHash returns a stable hash for Codex model aliases.
+func ComputeCommandCodeModelsHash(models []config.CommandCodeModel) string {
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.GetName())
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
+}
+
 func ComputeCodexModelsHash(models []config.CodexModel) string {
 	keys := normalizeModelPairs(func(out func(key string)) {
 		for _, model := range models {
@@ -72,7 +81,6 @@ func ComputeCodexModelsHash(models []config.CodexModel) string {
 	return hashJoined(keys)
 }
 
-// ComputeGeminiModelsHash returns a stable hash for Gemini model aliases.
 func ComputeGeminiModelsHash(models []config.GeminiModel) string {
 	keys := normalizeModelPairs(func(out func(key string)) {
 		for _, model := range models {
@@ -87,7 +95,6 @@ func ComputeGeminiModelsHash(models []config.GeminiModel) string {
 	return hashJoined(keys)
 }
 
-// ComputeExcludedModelsHash returns a normalized hash for excluded model lists.
 func ComputeExcludedModelsHash(excluded []string) string {
 	if len(excluded) == 0 {
 		return ""
