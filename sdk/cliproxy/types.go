@@ -65,6 +65,9 @@ type APIKeyClientResult struct {
 
 	// OpenAICompatCount is the number of OpenAI compatibility API keys loaded
 	OpenAICompatCount int
+
+	// CommandCodeKeyCount is the number of CommandCode API keys loaded
+	CommandCodeKeyCount int
 }
 
 // WatcherFactory creates a watcher for configuration and token changes.

@@ -35,6 +35,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeCodexKeys(ctx)...)
 	// Kiro (AWS CodeWhisperer)
 	out = append(out, s.synthesizeKiroKeys(ctx)...)
+	// CommandCode API Keys
+	out = append(out, s.synthesizeCommandCodeKeys(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
@@ -205,6 +207,64 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 			ID:         id,
 			Provider:   "codex",
 			Label:      "codex-apikey",
+			Prefix:     prefix,
+			Status:     coreauth.StatusActive,
+			ProxyURL:   proxyURL,
+			Attributes: attrs,
+			Metadata:   metadata,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeCommandCodeKeys creates Auth entries for CommandCode API keys.
+func (s *ConfigSynthesizer) synthesizeCommandCodeKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.CommandCodeKey))
+	for i := range cfg.CommandCodeKey {
+		ck := cfg.CommandCodeKey[i]
+		key := strings.TrimSpace(ck.APIKey)
+		if key == "" {
+			continue
+		}
+		prefix := strings.TrimSpace(ck.Prefix)
+		id, token := idGen.Next("commandcode:apikey", key, ck.BaseURL)
+		attrs := map[string]string{
+			"source":  fmt.Sprintf("config:commandcode[%s]", token),
+			"api_key": key,
+		}
+		metadata := map[string]any{}
+		if ck.DisableCooling {
+			metadata["disable_cooling"] = true
+		}
+		if ck.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(ck.Priority)
+		}
+		if ck.BillingClass != "" {
+			attrs["billing_class"] = string(ck.BillingClass)
+		}
+		if ck.BaseURL != "" {
+			attrs["base_url"] = ck.BaseURL
+		}
+		if hash := diff.ComputeCommandCodeModelsHash(ck.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(ck.Headers, attrs)
+		proxyURL := strings.TrimSpace(ck.ProxyURL)
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   "commandcode",
+			Label:      "commandcode-apikey",
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
