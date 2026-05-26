@@ -102,12 +102,14 @@ cpa-usage-keeper/AGENTS.md
 - Root `git status` is the source of truth for nested project pointers; `.gitmodules` is absent.
 - Search tools may miss nested gitlink files from root. Re-run file discovery inside nested repos when editing subproject AGENTS.md.
 - Do not create release tags from the repository root. Create tags only inside the relevant subdirectory repository.
-- Before creating or recommending a tag, inspect the latest tags of the target subdirectory repository and continue that repository's own version line.
-- For follow-up releases on the same base version, prefer incrementing the suffix (`v<major>.<minor>.<patch>-<sequence>`) instead of inventing a root-level tag.
+- **Tag versioning workflow**: 1) `git fetch --tags upstream` to fetch upstream latest tags. 2) `git ls-remote --tags upstream | grep -E 'refs/tags/v[0-9]' | sed 's|.*refs/tags/||' | sort -V | tail -10` to identify the latest upstream base version. 3) Use that base version with a sequence suffix: `v<upstream_base>-<sequence>`. Sequence starts at 1 for each new base.
+- For follow-up releases on the same base version, increment the suffix (e.g., `v7.1.22-1` → `v7.1.22-2`).
+- When upstream releases a new base version (e.g., `v7.1.22`), create a new tag starting at suffix `-1` (e.g., `v7.1.22-1`) even if the previous base had higher suffixes.
 - Only propose a new base tag when the user explicitly wants a new release line or that repository's recent tag history clearly starts a new base series.
+- **Always verify upstream latest tags before tagging.** The repo AGENTS.md `Latest tags` line may be stale; run the fetch command above to get the actual latest.
 - Upstream merges: always check `server.go` for duplicate route registration after merging.
 - Re-tagging: delete GitHub release assets first, then re-run goreleaser (otherwise `422 already_exists`).
-- Latest tags: `CLIProxyAPIPlus: v7.1.19-5`, `Cli-Proxy-API-Management-Center: v1.12.0-1`, `cpa-usage-keeper: v1.8.2-1`. Re-check before tagging.
+- Latest tags: `CLIProxyAPIPlus: v7.1.22-1`, `Cli-Proxy-API-Management-Center: v1.14.0-1`, `cpa-usage-keeper: v1.8.4-1`. Re-check before tagging.
 
 ## RECENT CHANGES
 
