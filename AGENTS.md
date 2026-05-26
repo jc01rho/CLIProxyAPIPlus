@@ -109,7 +109,7 @@ cpa-usage-keeper/AGENTS.md
 - **Always verify upstream latest tags before tagging.** The repo AGENTS.md `Latest tags` line may be stale; run the fetch command above to get the actual latest.
 - Upstream merges: always check `server.go` for duplicate route registration after merging.
 - Re-tagging: delete GitHub release assets first, then re-run goreleaser (otherwise `422 already_exists`).
-- Latest tags: `CLIProxyAPIPlus: v7.1.22-1`, `Cli-Proxy-API-Management-Center: v1.14.0-1`, `cpa-usage-keeper: v1.8.4-1`. Re-check before tagging.
+- Latest tags: `CLIProxyAPIPlus: v7.1.23-1`, `Cli-Proxy-API-Management-Center: v1.14.0-1`, `cpa-usage-keeper: v1.8.4-1`. Re-check before tagging.
 
 ## RECENT CHANGES
 
