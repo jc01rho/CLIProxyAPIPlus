@@ -1,58 +1,119 @@
-# AGENTS.md
+# PROJECT KNOWLEDGE BASE
 
-Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with OAuth and round-robin load balancing.
+**Generated:** 2026-05-21
+**Commit:** 266cfcf1
+**Branch:** main
 
-## Repository
-- GitHub: https://github.com/router-for-me/CLIProxyAPI
+## OVERVIEW
 
-## Commands
-```bash
-gofmt -w . # Format (required after Go changes)
-go build -o cli-proxy-api ./cmd/server # Build
-go run ./cmd/server # Run dev server
-go test ./... # Run all tests
-go test -v -run TestName ./path/to/pkg # Run single test
-go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRED after changes)
+CLI Proxy monorepo: Go proxy server (`CLIProxyAPIPlus`), React Management Center (`Cli-Proxy-API-Management-Center`), and usage keeper (`cpa-usage-keeper`). Root tracks nested projects as gitlinks without `.gitmodules`. Dashboard (`CLIProxyAPI-Dashboard`) was intentionally removed from this hierarchy.
+
+## STRUCTURE
+
+```text
+cli-proxy/
+├── CLIProxyAPIPlus/                  # Go proxy, OAuth/auth, executors, translators, SDK
+├── Cli-Proxy-API-Management-Center/  # React 19 + Vite management UI; builds management.html
+└── cpa-usage-keeper/                 # Go usage tracking service
 ```
-- Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 
-## Config
-- Default config: `config.yaml` (template: `config.example.yaml`)
-- `.env` is auto-loaded from the working directory
-- Auth material defaults under `auths/`
-- Storage backends: file-based default; optional Postgres/git/object store (`PGSTORE_*`, `GITSTORE_*`, `OBJECTSTORE_*`)
+## WHERE TO LOOK
 
-## Architecture
-- `cmd/server/` — Server entrypoint
-- `internal/api/` — Gin HTTP API (routes, middleware, modules)
-- `internal/api/modules/amp/` — Amp integration (Amp-style routes + reverse proxy)
-- `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Do not break this "canonical representation → per-provider translation" architecture.
-- `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket)
-- `internal/translator/` — Provider protocol translators (and shared `common`)
-- `internal/registry/` — Model registry + remote updater (`StartModelsUpdater`); `--local-model` disables remote updates
-- `internal/store/` — Storage implementations and secret resolution
-- `internal/managementasset/` — Config snapshots and management assets
-- `internal/cache/` — Request signature caching
-- `internal/watcher/` — Config hot-reload and watchers
-- `internal/wsrelay/` — WebSocket relay sessions
-- `internal/usage/` — Usage and token accounting
-- `internal/tui/` — Bubbletea terminal UI (`--tui`, `--standalone`)
-- `sdk/cliproxy/` — Embeddable SDK entry (service/builder/watchers/pipeline)
-- `test/` — Cross-module integration tests
+| Task | Location | Notes |
+|------|----------|-------|
+| Proxy boot flags / server mode | `CLIProxyAPIPlus/cmd/server/main.go` | Single binary entry point. |
+| Provider auth/execution | `CLIProxyAPIPlus/internal/auth/`, `CLIProxyAPIPlus/internal/runtime/executor/` | Auth and executor responsibilities stay separate. |
+| Protocol conversion | `CLIProxyAPIPlus/internal/translator/` | Transform only; no network calls. |
+| Management API backend | `CLIProxyAPIPlus/internal/api/handlers/management/` | Frontend contract lives in Center `src/services/api/`. |
+| Management UI routes | `Cli-Proxy-API-Management-Center/src/router/MainRoutes.tsx`, `src/pages/` | HashRouter paths under `management.html#/*`. |
+| Management UI API calls | `Cli-Proxy-API-Management-Center/src/services/api/` | Browser components do not call endpoints directly. |
+| Usage tracking | `cpa-usage-keeper/internal/poller/`, `cpa-usage-keeper/internal/service/` | Redis queue polling + SQLite persistence. |
 
-## Code Conventions
-- Keep changes small and simple (KISS)
-- Comments in English only
-- If editing code that already contains non-English comments, translate them to English (don’t add new non-English comments)
-- For user-visible strings, keep the existing language used in that file/area
-- New Markdown docs should be in English unless the file is explicitly language-specific (e.g. `README_CN.md`)
-- As a rule, do not make standalone changes to `internal/translator/`. You may modify it only as part of broader changes elsewhere.
-- If a task requires changing only `internal/translator/`, run `gh repo view --json viewerPermission -q .viewerPermission` to confirm you have `WRITE`, `MAINTAIN`, or `ADMIN`. If you do, you may proceed; otherwise, file a GitHub issue including the goal, rationale, and the intended implementation code, then stop further work.
-- `internal/runtime/executor/` should contain executors and their unit tests only. Place any helper/supporting files under `internal/runtime/executor/helps/`.
-- Follow `gofmt`; keep imports goimports-style; wrap errors with context where helpful
-- Do not use `log.Fatal`/`log.Fatalf` (terminates the process); prefer returning errors and logging via logrus
-- Shadowed variables: use method suffix (`errStart := server.Start()`)
-- Wrap defer errors: `defer func() { if err := f.Close(); err != nil { log.Errorf(...) } }()`
-- Use logrus structured logging; avoid leaking secrets/tokens in logs
-- Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
-- Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
+## CODE MAP
+
+| Symbol / Entry | Type | Location | Role |
+|----------------|------|----------|------|
+| `main` | Go entry | `CLIProxyAPIPlus/cmd/server/main.go` | CLI flags, login flows, proxy service boot. |
+| `Service` | Go struct | `CLIProxyAPIPlus/sdk/cliproxy/service.go` | Runtime wiring: auth updates, executors, registry, server lifecycle. |
+| `AiProvidersPage` | React page | `Cli-Proxy-API-Management-Center/src/pages/AiProvidersPage.tsx` | Provider list and enable/delete orchestration. |
+| `MainRoutes` | React router | `Cli-Proxy-API-Management-Center/src/router/MainRoutes.tsx` | All management hash routes. |
+
+## CROSS-PROJECT CONVENTIONS
+
+- Backend logs must mask tokens, cookies, API keys, and auth headers; use existing masking utilities first.
+- Translators are pure format conversion. Do not add HTTP calls, credential selection, or upstream execution there.
+- Management UI state changes go through Zustand actions; components must not mutate store state directly.
+- Management UI HTTP calls go through `src/services/api/`; no raw component-level `/v0/management/*` calls.
+- `management.html` changes require rebuilding Center and copying the single-file bundle into `CLIProxyAPIPlus/management.html` when embedding locally.
+
+## ANTI-PATTERNS
+
+- Do not reintroduce Trae-specific provider flows; Trae support is intentionally removed.
+- Do not put private endpoints in user-visible placeholders, fixtures, bundles, or reachable git history.
+- Do not use `as any`, `@ts-ignore`, empty catch blocks, or test deletion to hide failures.
+- Do not commit root gitlinks before committing nested repo changes they point to.
+
+## COMMANDS
+
+```bash
+# CLIProxyAPIPlus
+cd CLIProxyAPIPlus
+go build ./cmd/server
+go test ./...
+
+# Management Center
+cd Cli-Proxy-API-Management-Center
+npm run type-check
+npm run build
+
+# Usage Keeper
+cd cpa-usage-keeper
+go build ./cmd/keeper
+go test ./...
+```
+
+## ACTIVE SUB-DOCUMENTS
+
+```text
+CLIProxyAPIPlus/AGENTS.md
+CLIProxyAPIPlus/internal/AGENTS.md
+CLIProxyAPIPlus/internal/api/AGENTS.md
+CLIProxyAPIPlus/internal/api/handlers/management/AGENTS.md
+CLIProxyAPIPlus/internal/auth/kiro/AGENTS.md
+CLIProxyAPIPlus/internal/config/AGENTS.md
+CLIProxyAPIPlus/internal/registry/AGENTS.md
+CLIProxyAPIPlus/internal/runtime/executor/AGENTS.md
+CLIProxyAPIPlus/internal/translator/AGENTS.md
+CLIProxyAPIPlus/internal/util/AGENTS.md
+CLIProxyAPIPlus/sdk/AGENTS.md
+CLIProxyAPIPlus/sdk/cliproxy/AGENTS.md
+CLIProxyAPIPlus/sdk/cliproxy/auth/AGENTS.md
+Cli-Proxy-API-Management-Center/AGENTS.md
+Cli-Proxy-API-Management-Center/src/components/providers/AGENTS.md
+Cli-Proxy-API-Management-Center/src/components/ui/AGENTS.md
+Cli-Proxy-API-Management-Center/src/pages/AGENTS.md
+Cli-Proxy-API-Management-Center/src/services/api/AGENTS.md
+Cli-Proxy-API-Management-Center/src/stores/AGENTS.md
+cpa-usage-keeper/AGENTS.md
+```
+
+## NOTES
+
+- Root `git status` is the source of truth for nested project pointers; `.gitmodules` is absent.
+- Search tools may miss nested gitlink files from root. Re-run file discovery inside nested repos when editing subproject AGENTS.md.
+- Do not create release tags from the repository root. Create tags only inside the relevant subdirectory repository.
+- **Tag versioning workflow**: 1) `git fetch --tags upstream` to fetch upstream latest tags. 2) `git ls-remote --tags upstream | grep -E 'refs/tags/v[0-9]' | sed 's|.*refs/tags/||' | sort -V | tail -10` to identify the latest upstream base version. 3) Use that base version with a sequence suffix: `v<upstream_base>-<sequence>`. Sequence starts at 1 for each new base.
+- For follow-up releases on the same base version, increment the suffix (e.g., `v7.1.22-1` → `v7.1.22-2`).
+- When upstream releases a new base version (e.g., `v7.1.22`), create a new tag starting at suffix `-1` (e.g., `v7.1.22-1`) even if the previous base had higher suffixes.
+- Only propose a new base tag when the user explicitly wants a new release line or that repository's recent tag history clearly starts a new base series.
+- **Always verify upstream latest tags before tagging.** The repo AGENTS.md `Latest tags` line may be stale; run the fetch command above to get the actual latest.
+- Upstream merges: always check `server.go` for duplicate route registration after merging.
+- Re-tagging: delete GitHub release assets first, then re-run goreleaser (otherwise `422 already_exists`).
+- Latest tags: `CLIProxyAPIPlus: v7.1.22-1`, `Cli-Proxy-API-Management-Center: v1.14.0-1`, `cpa-usage-keeper: v1.8.4-1`. Re-check before tagging.
+
+## RECENT CHANGES
+
+- **CLIProxyAPIPlus**: CommandCode provider with custom `/alpha/generate` endpoint, tools/message conversion, SSE streaming. Management UI section added.
+- **CLIProxyAPIPlus v7.1.19-5**: upstream merge v7.1.19 (import path fixes for registry/executor). Allow 400 errors to trigger fallback chains.
+- **Cli-Proxy-API-Management-Center v1.12.0-1**: upstream merge v1.12.0. Ollama provider UI section, dedicated provider sections for Mistral/Xiaomi.
+- **cpa-usage-keeper v1.8.2-1**: upstream merge (Back to CPA link, reasoning_effort migration, UsagePage UX polish, Redis queue fallback recovery).
