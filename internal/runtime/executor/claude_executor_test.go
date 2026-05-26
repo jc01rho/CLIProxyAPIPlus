@@ -570,7 +570,7 @@ func TestApplyClaudeHeaders_LegacyModeFallsBackToRuntimeOSArchWhenMissing(t *tes
 	})
 	applyClaudeHeaders(req, auth, "key-legacy-runtime-os-arch", false, nil, cfg)
 
-	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", helps.MapStainlessOS(), helps.MapStainlessArch())
+	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.94.0", "v24.3.0", helps.MapStainlessOS(), helps.MapStainlessArch())
 }
 
 func TestApplyClaudeHeaders_UnsetStabilizationAlsoUsesLegacyRuntimeOSArchFallback(t *testing.T) {
@@ -597,7 +597,7 @@ func TestApplyClaudeHeaders_UnsetStabilizationAlsoUsesLegacyRuntimeOSArchFallbac
 	})
 	applyClaudeHeaders(req, auth, "key-unset-runtime-os-arch", false, nil, cfg)
 
-	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", helps.MapStainlessOS(), helps.MapStainlessArch())
+	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.94.0", "v24.3.0", helps.MapStainlessOS(), helps.MapStainlessArch())
 }
 
 func TestClaudeDeviceProfileStabilizationEnabled_DefaultFalse(t *testing.T) {
