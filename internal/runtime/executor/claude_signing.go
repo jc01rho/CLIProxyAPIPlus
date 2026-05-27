@@ -40,6 +40,29 @@ func signAnthropicMessagesBody(body []byte) []byte {
 	return signedBody
 }
 
+func claudeCredsForAuthLookup(a *cliproxyauth.Auth) (apiKey, baseURL string) {
+	if a == nil {
+		return "", ""
+	}
+	if a.Attributes != nil {
+		apiKey = strings.TrimSpace(a.Attributes["api_key"])
+		baseURL = strings.TrimSpace(a.Attributes["base_url"])
+	}
+	if a.Metadata != nil {
+		if apiKey == "" {
+			if v, ok := a.Metadata["access_token"].(string); ok {
+				apiKey = strings.TrimSpace(v)
+			}
+		}
+		if baseURL == "" {
+			if v, ok := a.Metadata["base_url"].(string); ok {
+				baseURL = strings.TrimSpace(v)
+			}
+		}
+	}
+	return
+}
+
 func resolveClaudeKeyConfig(cfg *config.Config, auth *cliproxyauth.Auth) *config.ClaudeKey {
 	if cfg == nil || auth == nil {
 		return nil

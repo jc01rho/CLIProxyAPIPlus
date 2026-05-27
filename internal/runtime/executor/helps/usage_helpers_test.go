@@ -2,10 +2,12 @@ package helps
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -147,44 +149,38 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	}
 }
 
-func TestStoreUsageDetailInContext(t *testing.T) {
-	c := &gin.Context{}
-	ctx := context.WithValue(context.Background(), "gin", c)
+func TestUsageReporterTrackHTTPClientStartsTTFTBeforeRoundTrip(t *testing.T) {
+	delay := 40 * time.Millisecond
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	client := reporter.TrackHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			time.Sleep(delay)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Request:    req,
+			}, nil
+		}),
+	})
 
-	detail := usage.Detail{
-		InputTokens:     100,
-		OutputTokens:    200,
-		TotalTokens:     300,
-		CachedTokens:    50,
-		ReasoningTokens: 10,
+	req, errNewRequest := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.invalid/v1/chat/completions", strings.NewReader("{}"))
+	if errNewRequest != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", errNewRequest)
 	}
-
-	storeUsageDetailInContext(ctx, detail)
-
-	stored, exists := c.Get("usageDetail")
-	if !exists {
-		t.Fatal("usageDetail not stored in gin context")
+	resp, errDo := client.Do(req)
+	if errDo != nil {
+		t.Fatalf("Do() error = %v", errDo)
 	}
-
-	storedDetail, ok := stored.(usage.Detail)
-	if !ok {
-		t.Fatalf("stored value is not usage.Detail, got %T", stored)
+	if _, errRead := io.ReadAll(resp.Body); errRead != nil {
+		t.Fatalf("ReadAll() error = %v", errRead)
 	}
-
-	if storedDetail.InputTokens != 100 {
-		t.Fatalf("InputTokens = %d, want 100", storedDetail.InputTokens)
+	if errClose := resp.Body.Close(); errClose != nil {
+		t.Fatalf("response body close error = %v", errClose)
 	}
-	if storedDetail.OutputTokens != 200 {
-		t.Fatalf("OutputTokens = %d, want 200", storedDetail.OutputTokens)
-	}
-	if storedDetail.TotalTokens != 300 {
-		t.Fatalf("TotalTokens = %d, want 300", storedDetail.TotalTokens)
-	}
-	if storedDetail.CachedTokens != 50 {
-		t.Fatalf("CachedTokens = %d, want 50", storedDetail.CachedTokens)
-	}
-	if storedDetail.ReasoningTokens != 10 {
-		t.Fatalf("ReasoningTokens = %d, want 10", storedDetail.ReasoningTokens)
+	if got := reporter.ttftDuration(); got < delay {
+		t.Fatalf("ttft = %v, want >= %v", got, delay)
 	}
 }
 
@@ -227,4 +223,10 @@ func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{CachedTokens: 2}); !ok {
 		t.Fatalf("expected non-zero cached token usage to be recorded")
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
