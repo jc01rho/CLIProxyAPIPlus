@@ -463,7 +463,12 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 				}
 				continue
 			}
-			filteredMessages = append(filteredMessages, json.RawMessage(msg.Raw))
+			// Convert message to CommandCode format.
+			convertedMsg := convertCommandCodeMessage(msg, role)
+			if convertedMsg != nil {
+				b, _ := json.Marshal(convertedMsg)
+				filteredMessages = append(filteredMessages, json.RawMessage(b))
+			}
 		}
 	}
 	if filteredMessages == nil {
@@ -561,6 +566,70 @@ func resolveCommandCodeModelName(cfg *config.Config, auth *cliproxyauth.Auth, mo
 	return model
 }
 
+// convertCommandCodeMessage converts an OpenAI message to CommandCode format.
+// CommandCode expects role to be "user" or "assistant" and content to be an array of content blocks.
+func convertCommandCodeMessage(msg gjson.Result, role string) map[string]any {
+	// Map OpenAI roles to CommandCode roles.
+	ccRole := role
+	if role == "user" || role == "assistant" {
+		ccRole = role
+	} else if role == "tool" {
+		// Skip tool messages; they are handled separately.
+		return nil
+	} else {
+		// For other roles (function, etc.), default to user.
+		ccRole = "user"
+	}
+
+	// Convert content to CommandCode format (array of content blocks).
+	contentRaw := msg.Get("content").Raw
+	var contentBlocks []map[string]any
+	if contentRaw != "" && contentRaw != "null" {
+		// If content is a string, wrap it in a text block.
+		if strings.HasPrefix(contentRaw, `"`) {
+			contentStr := msg.Get("content").String()
+			if contentStr != "" {
+				contentBlocks = []map[string]any{
+					{"type": "text", "text": contentStr},
+				}
+			}
+		} else {
+			// If content is already an array, use it as-is.
+			var blocks []map[string]any
+			if err := json.Unmarshal([]byte(contentRaw), &blocks); err == nil {
+				contentBlocks = blocks
+			}
+		}
+	} else {
+		// Handle tool_call messages.
+		if toolCalls := msg.Get("tool_calls"); toolCalls.Exists() && toolCalls.IsArray() {
+			for _, tc := range toolCalls.Array() {
+				funcName := tc.Get("function.name").String()
+				funcArgs := tc.Get("function.arguments").Raw
+				if funcName != "" {
+					contentBlocks = append(contentBlocks, map[string]any{
+						"type": "tool_use",
+						"name": funcName,
+						"input": json.RawMessage(funcArgs),
+					})
+				}
+			}
+		}
+		// Handle tool_result messages.
+		if toolCallID := msg.Get("tool_call_id"); toolCallID.Exists() {
+			contentStr := msg.Get("content").String()
+			contentBlocks = []map[string]any{
+				{"type": "tool_result", "tool_use_id": toolCallID.String(), "content": []map[string]any{{"type": "text", "text": contentStr}}},
+			}
+		}
+	}
+
+	return map[string]any{
+		"role":    ccRole,
+		"content": contentBlocks,
+	}
+}
+
 // generateCommandCodeSessionID creates a random session ID for x-session-id header.
 func generateCommandCodeSessionID() string {
 	var b [16]byte
@@ -569,6 +638,7 @@ func generateCommandCodeSessionID() string {
 	}
 	return hex.EncodeToString(b[:])
 }
+
 func commandCodeStreamChunk(id, model string, delta map[string]any, finishReason string) map[string]any {
 	choice := map[string]any{
 		"index":         0,
