@@ -114,8 +114,8 @@ cpa-usage-keeper/AGENTS.md
 
 ## RECENT CHANGES
 
-- **CLIProxyAPIPlus v7.1.23-5**: CommandCode message format fix (role normalization, content array conversion).
-- **cpa-usage-keeper v1.8.5-2**: CommandCode provider metadata sync support added.
-- **CLIProxyAPIPlus v7.1.23-3**: CommandCode fully integrated into synthesizer, diff, SDK, and watcher.
-- **Cli-Proxy-API-Management-Center v1.14.0-3**: CommandCode provider name translation added.
-- **cpa-usage-keeper v1.8.5-1**: upstream merge v1.8.5. Quota auto-refresh feature from upstream.
+- **CLIProxyAPIPlus v7.1.23-5**: CommandCode message format fix.
+- **cpa-usage-keeper v1.8.5-2**: CommandCode provider metadata sync.
+- **CLIProxyAPIPlus v7.1.23-3**: CommandCode synthesizer/diff/SDK/watcher integration.
+- **Management Center v1.14.0-3**: CommandCode provider name translation.
+- Previous: upstream merges (Claude executor test fix, nano-gpt 400 investigation shelved), CommandCode management API handler, config API key, model registration, merge conflict fixes, CI marker cleanup. See git log for full history.
