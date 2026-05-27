@@ -624,6 +624,13 @@ func convertCommandCodeMessage(msg gjson.Result, role string) map[string]any {
 		}
 	}
 
+	// Ensure content is never nil — CommandCode API requires a string or array, not null.
+	if contentBlocks == nil {
+		contentBlocks = []map[string]any{
+			{"type": "text", "text": ""},
+		}
+	}
+
 	return map[string]any{
 		"role":    ccRole,
 		"content": contentBlocks,
