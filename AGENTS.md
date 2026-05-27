@@ -109,10 +109,13 @@ cpa-usage-keeper/AGENTS.md
 - **Always verify upstream latest tags before tagging.** The repo AGENTS.md `Latest tags` line may be stale; run the fetch command above to get the actual latest.
 - Upstream merges: always check `server.go` for duplicate route registration after merging.
 - Re-tagging: delete GitHub release assets first, then re-run goreleaser (otherwise `422 already_exists`).
-- Latest tags: `CLIProxyAPIPlus: v7.1.23-4`, `Cli-Proxy-API-Management-Center: v1.14.0-3`, `cpa-usage-keeper: v1.8.5-1`. Re-check before tagging.
+- **Every push requires a version bump.** When pushing code changes to any subdirectory repository, increment the tag suffix and create a new tag. No code should remain untagged on origin.
+- Latest tags: `CLIProxyAPIPlus: v7.1.23-5`, `Cli-Proxy-API-Management-Center: v1.14.0-3`, `cpa-usage-keeper: v1.8.5-2`. Re-check before tagging.
 
 ## RECENT CHANGES
 
+- **CLIProxyAPIPlus v7.1.23-5**: CommandCode message format fix (role normalization, content array conversion).
+- **cpa-usage-keeper v1.8.5-2**: CommandCode provider metadata sync support added.
 - **CLIProxyAPIPlus v7.1.23-3**: CommandCode fully integrated into synthesizer, diff, SDK, and watcher.
 - **Cli-Proxy-API-Management-Center v1.14.0-3**: CommandCode provider name translation added.
 - **cpa-usage-keeper v1.8.5-1**: upstream merge v1.8.5. Quota auto-refresh feature from upstream.
