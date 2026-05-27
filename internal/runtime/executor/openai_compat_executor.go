@@ -927,6 +927,10 @@ func (e *OpenAICompatExecutor) stripProviderUnsupportedFields(auth *cliproxyauth
 				}
 			}
 		}
+		// nano-gpt/DeepSeek may reject stream_options if not supported; strip it unconditionally.
+		if updated, errDel := sjson.DeleteBytes(payload, "stream_options"); errDel == nil {
+			payload = updated
+		}
 	}
 	if !isMistral && !isDeepSeekLike {
 		return payload
