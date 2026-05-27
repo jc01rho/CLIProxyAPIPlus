@@ -66,6 +66,7 @@ func (e *CommandCodeExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 // Execute handles non-streaming execution against the CommandCode API.
 func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel = resolveCommandCodeModelName(e.cfg, auth, baseModel)
 
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
@@ -205,6 +206,7 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 // ExecuteStream handles streaming execution against the CommandCode API.
 func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel = resolveCommandCodeModelName(e.cfg, auth, baseModel)
 
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
@@ -536,6 +538,27 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 		"params":         params,
 	}
 	return json.Marshal(envelope)
+}
+
+// resolveCommandCodeModelName resolves a model alias to the actual upstream model name
+// by looking up the CommandCodeKey configuration. If the model is not an alias, it returns
+// the model unchanged.
+func resolveCommandCodeModelName(cfg *config.Config, auth *cliproxyauth.Auth, model string) string {
+	if cfg == nil || auth == nil {
+		return model
+	}
+	apiKey := commandCodeAPIKey(auth)
+	for _, key := range cfg.CommandCodeKey {
+		if key.APIKey != apiKey {
+			continue
+		}
+		for _, m := range key.Models {
+			if m.Alias == model {
+				return m.Name
+			}
+		}
+	}
+	return model
 }
 
 // generateCommandCodeSessionID creates a random session ID for x-session-id header.
