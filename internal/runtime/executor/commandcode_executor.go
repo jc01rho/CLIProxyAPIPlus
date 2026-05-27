@@ -25,7 +25,7 @@ import (
 
 const (
 	commandCodeBaseURL = "https://api.commandcode.ai"
-	commandCodeVersion = "0.24.1"
+	commandCodeVersion = "0.26.20"
 	commandCodeProject = "cli-proxy"
 )
 
@@ -80,7 +80,7 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	to := sdktranslator.FromString("openai")
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), false)
 
-	payload, err := buildCommandCodePayload(translated, baseModel, false)
+	payload, err := buildCommandCodePayload(translated, baseModel, true)
 	if err != nil {
 		return resp, fmt.Errorf("commandcode: build payload: %w", err)
 	}
@@ -474,7 +474,7 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 
 	maxTokens := gjson.GetBytes(openAIPayload, "max_tokens").Int()
 	if maxTokens == 0 {
-		maxTokens = 4096
+		maxTokens = 16384
 	}
 
 	// Convert tools from OpenAI format to CommandCode format.
