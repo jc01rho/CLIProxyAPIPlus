@@ -116,7 +116,6 @@ cpa-usage-keeper/AGENTS.md
 
 - **CLIProxyAPIPlus v7.1.23-8**: CommandCode null content block fix (400 BAD_REQUEST on tool-heavy conversations).
 - **CLIProxyAPIPlus v7.1.23-7**: CommandCode alias resolution in round-robin model selection.
-- **CLIProxyAPIPlus v7.1.23-5**: CommandCode message format fix.
 - **cpa-usage-keeper v1.8.5-2**: CommandCode provider metadata sync.
 - **CLIProxyAPIPlus v7.1.23-3**: CommandCode synthesizer/diff/SDK/watcher integration.
 - **Management Center v1.14.0-3**: CommandCode provider name translation.
