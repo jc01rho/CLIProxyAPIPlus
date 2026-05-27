@@ -1,74 +1,121 @@
-# CLIPROXYAPIPLUS KNOWLEDGE BASE
+# PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-05-25
-**Commit:** 704a78e5
+**Generated:** 2026-05-21
+**Commit:** 266cfcf1
 **Branch:** main
-**Latest Tag:** v7.1.20-5
 
 ## OVERVIEW
 
-Go 1.26 AI proxy server. Combines CLI auth flows, OpenAI-compatible API serving, provider executors, protocol translators, runtime model registry, management API, and public SDK.
+CLI Proxy monorepo: Go proxy server (`CLIProxyAPIPlus`), React Management Center (`Cli-Proxy-API-Management-Center`), and usage keeper (`cpa-usage-keeper`). Root tracks nested projects as gitlinks without `.gitmodules`. Dashboard (`CLIProxyAPI-Dashboard`) was intentionally removed from this hierarchy.
 
 ## STRUCTURE
 
 ```text
-CLIProxyAPIPlus/
-├── cmd/server/main.go          # binary entry: flags, login flows, service boot
-├── internal/                   # private server implementation
-├── sdk/                        # embeddable public API
-├── auths/                      # default auth-file directory
-├── test/                       # cross-package integration/sentinel tests
-├── management.html             # embedded Management Center bundle
-└── config.example.yaml         # config surface reference
+cli-proxy/
+├── CLIProxyAPIPlus/                  # Go proxy, OAuth/auth, executors, translators, SDK
+├── Cli-Proxy-API-Management-Center/  # React 19 + Vite management UI; builds management.html
+└── cpa-usage-keeper/                 # Go usage tracking service
 ```
 
 ## WHERE TO LOOK
 
 | Task | Location | Notes |
 |------|----------|-------|
-| Server boot / flags | `cmd/server/main.go` | `--config`, `--tui`, login flags, local-model mode. |
-| Management routes | `internal/api/` | Gin server + `/v0/management/*`. Ollama and IP blacklist routes included. |
-| Provider auth | `internal/auth/` | OAuth/token storage per provider. |
-| Upstream execution | `internal/runtime/executor/` | HTTP/WebSocket calls after translation. 503 fallback handling. |
-| Protocol translation | `internal/translator/` | source/target registration and JSON/SSE transforms. |
-| Model catalog/routing | `internal/registry/` | static fallback, dynamic discovery, provider scoping. Ollama alias resolution. |
-| Config/auth synthesis | `internal/config/`, `internal/watcher/` | YAML fields, hot reload, config-backed auths. |
-| SDK embedding | `sdk/cliproxy/` | Builder and service lifecycle. |
+| Proxy boot flags / server mode | `CLIProxyAPIPlus/cmd/server/main.go` | Single binary entry point. |
+| Provider auth/execution | `CLIProxyAPIPlus/internal/auth/`, `CLIProxyAPIPlus/internal/runtime/executor/` | Auth and executor responsibilities stay separate. |
+| Protocol conversion | `CLIProxyAPIPlus/internal/translator/` | Transform only; no network calls. |
+| Management API backend | `CLIProxyAPIPlus/internal/api/handlers/management/` | Frontend contract lives in Center `src/services/api/`. |
+| Management UI routes | `Cli-Proxy-API-Management-Center/src/router/MainRoutes.tsx`, `src/pages/` | HashRouter paths under `management.html#/*`. |
+| Management UI API calls | `Cli-Proxy-API-Management-Center/src/services/api/` | Browser components do not call endpoints directly. |
+| Usage tracking | `cpa-usage-keeper/internal/poller/`, `cpa-usage-keeper/internal/service/` | Redis queue polling + SQLite persistence. |
 
-## RECENT CHANGES
+## CODE MAP
 
-- **v7.1.20-5**: upstream merge (websockets auth file support, generic PATCH `map[string]json.RawMessage`, project_id test). Retained billing_class/base_url/primary_info.
-- **v7.1.20-3**: upstream merge v7.1.20+ (file-backed request logging, RequestID support, fetch_codex_models). Cortexkit OAuth sync (Stainless 0.94.0/v24.3.0, CCH cc_version 2.1.141).
-- **v7.1.19-5**: upstream merge v7.1.19 (import path fixes for registry/executor). Allow 400 errors to trigger fallback chains.
-- **CommandCode provider**: Custom `/alpha/generate` endpoint with latest headers (x-taste-learning, x-co-flag, x-session-id). Tools/message conversion, SSE streaming. Model registration via `registerModelsForAuth`, config resolver, management API + UI.
+| Symbol / Entry | Type | Location | Role |
+|----------------|------|----------|------|
+| `main` | Go entry | `CLIProxyAPIPlus/cmd/server/main.go` | CLI flags, login flows, proxy service boot. |
+| `Service` | Go struct | `CLIProxyAPIPlus/sdk/cliproxy/service.go` | Runtime wiring: auth updates, executors, registry, server lifecycle. |
+| `AiProvidersPage` | React page | `Cli-Proxy-API-Management-Center/src/pages/AiProvidersPage.tsx` | Provider list and enable/delete orchestration. |
+| `MainRoutes` | React router | `Cli-Proxy-API-Management-Center/src/router/MainRoutes.tsx` | All management hash routes. |
+
+## CROSS-PROJECT CONVENTIONS
+
+- Backend logs must mask tokens, cookies, API keys, and auth headers; use existing masking utilities first.
+- Translators are pure format conversion. Do not add HTTP calls, credential selection, or upstream execution there.
+- Management UI state changes go through Zustand actions; components must not mutate store state directly.
+- Management UI HTTP calls go through `src/services/api/`; no raw component-level `/v0/management/*` calls.
+- `management.html` changes require rebuilding Center and copying the single-file bundle into `CLIProxyAPIPlus/management.html` when embedding locally.
+
+## ANTI-PATTERNS
+
+- Do not reintroduce Trae-specific provider flows; Trae support is intentionally removed.
+- Do not put private endpoints in user-visible placeholders, fixtures, bundles, or reachable git history.
+- Do not use `as any`, `@ts-ignore`, empty catch blocks, or test deletion to hide failures.
+- Do not commit root gitlinks before committing nested repo changes they point to.
 
 ## COMMANDS
 
 ```bash
+# CLIProxyAPIPlus
+cd CLIProxyAPIPlus
 go build ./cmd/server
-go run ./cmd/server --config config.yaml
 go test ./...
-goreleaser build --snapshot --clean
+
+# Management Center
+cd Cli-Proxy-API-Management-Center
+npm run type-check
+npm run build
+
+# Usage Keeper
+cd cpa-usage-keeper
+go build ./cmd/keeper
+go test ./...
 ```
 
-## CONVENTIONS
-
-- YAML keys are kebab-case; Go fields stay CamelCase.
-- Provider additions usually touch config, watcher/synthesizer, registry/model discovery, executor, management API, and Center UI.
-- Executor logs for upstream failures must include masked request and response context when diagnosing 4xx/5xx.
-- `management.html` is served by Plus; local UI edits need Center build output copied back.
-- Tag versioning: append `-2`, `-3`, ... to upstream base version (e.g., `v7.1.7-3` after `v7.1.7-2`).
-
-## ANTI-PATTERNS
-
-- Do not use `http.DefaultClient`; use configured clients/proxy-aware helpers.
-- Do not log Authorization, cookies, refresh tokens, API keys, or raw auth files.
-- Do not terminate handlers with `panic` or `log.Fatal`.
-- Do not scatter model allowlists in handlers/executors; centralize via registry/config paths.
-
-## SUB-DOCUMENTS
+## ACTIVE SUB-DOCUMENTS
 
 ```text
-internal/AGENTS.md
-sdk/AGENTS.md
+CLIProxyAPIPlus/AGENTS.md
+CLIProxyAPIPlus/internal/AGENTS.md
+CLIProxyAPIPlus/internal/api/AGENTS.md
+CLIProxyAPIPlus/internal/api/handlers/management/AGENTS.md
+CLIProxyAPIPlus/internal/auth/kiro/AGENTS.md
+CLIProxyAPIPlus/internal/config/AGENTS.md
+CLIProxyAPIPlus/internal/registry/AGENTS.md
+CLIProxyAPIPlus/internal/runtime/executor/AGENTS.md
+CLIProxyAPIPlus/internal/translator/AGENTS.md
+CLIProxyAPIPlus/internal/util/AGENTS.md
+CLIProxyAPIPlus/sdk/AGENTS.md
+CLIProxyAPIPlus/sdk/cliproxy/AGENTS.md
+CLIProxyAPIPlus/sdk/cliproxy/auth/AGENTS.md
+Cli-Proxy-API-Management-Center/AGENTS.md
+Cli-Proxy-API-Management-Center/src/components/providers/AGENTS.md
+Cli-Proxy-API-Management-Center/src/components/ui/AGENTS.md
+Cli-Proxy-API-Management-Center/src/pages/AGENTS.md
+Cli-Proxy-API-Management-Center/src/services/api/AGENTS.md
+Cli-Proxy-API-Management-Center/src/stores/AGENTS.md
+cpa-usage-keeper/AGENTS.md
 ```
+
+## NOTES
+
+- Root `git status` is the source of truth for nested project pointers; `.gitmodules` is absent.
+- Search tools may miss nested gitlink files from root. Re-run file discovery inside nested repos when editing subproject AGENTS.md.
+- Do not create release tags from the repository root. Create tags only inside the relevant subdirectory repository.
+- **Tag versioning workflow**: 1) `git fetch --tags upstream` to fetch upstream latest tags. 2) `git ls-remote --tags upstream | grep -E 'refs/tags/v[0-9]' | sed 's|.*refs/tags/||' | sort -V | tail -10` to identify the latest upstream base version. 3) Use that base version with a sequence suffix: `v<upstream_base>-<sequence>`. Sequence starts at 1 for each new base.
+- For follow-up releases on the same base version, increment the suffix (e.g., `v7.1.22-1` → `v7.1.22-2`).
+- When upstream releases a new base version (e.g., `v7.1.22`), create a new tag starting at suffix `-1` (e.g., `v7.1.22-1`) even if the previous base had higher suffixes.
+- Only propose a new base tag when the user explicitly wants a new release line or that repository's recent tag history clearly starts a new base series.
+- **Always verify upstream latest tags before tagging.** The repo AGENTS.md `Latest tags` line may be stale; run the fetch command above to get the actual latest.
+- Upstream merges: always check `server.go` for duplicate route registration after merging.
+- Re-tagging: delete GitHub release assets first, then re-run goreleaser (otherwise `422 already_exists`).
+- **Every push requires a version bump.** When pushing code changes to any subdirectory repository, increment the tag suffix and create a new tag. No code should remain untagged on origin.
+- Latest tags: `CLIProxyAPIPlus: v7.1.23-5`, `Cli-Proxy-API-Management-Center: v1.14.0-3`, `cpa-usage-keeper: v1.8.5-2`. Re-check before tagging.
+
+## RECENT CHANGES
+
+- **CLIProxyAPIPlus v7.1.23-5**: CommandCode message format fix.
+- **cpa-usage-keeper v1.8.5-2**: CommandCode provider metadata sync.
+- **CLIProxyAPIPlus v7.1.23-3**: CommandCode synthesizer/diff/SDK/watcher integration.
+- **Management Center v1.14.0-3**: CommandCode provider name translation.
+- Previous: upstream merges (Claude executor test fix, nano-gpt 400 investigation shelved), CommandCode management API handler, config API key, model registration, merge conflict fixes, CI marker cleanup. See git log for full history.
