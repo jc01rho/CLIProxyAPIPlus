@@ -110,10 +110,12 @@ cpa-usage-keeper/AGENTS.md
 - Upstream merges: always check `server.go` for duplicate route registration after merging.
 - Re-tagging: delete GitHub release assets first, then re-run goreleaser (otherwise `422 already_exists`).
 - **Every push requires a version bump.** When pushing code changes to any subdirectory repository, increment the tag suffix and create a new tag. No code should remain untagged on origin.
-- Latest tags: `CLIProxyAPIPlus: v7.1.23-5`, `Cli-Proxy-API-Management-Center: v1.14.0-3`, `cpa-usage-keeper: v1.8.5-2`. Re-check before tagging.
+- Latest tags: `CLIProxyAPIPlus: v7.1.23-8`, `Cli-Proxy-API-Management-Center: v1.14.0-3`, `cpa-usage-keeper: v1.8.5-2`. Re-check before tagging.
 
 ## RECENT CHANGES
 
+- **CLIProxyAPIPlus v7.1.23-8**: CommandCode null content block fix (400 BAD_REQUEST on tool-heavy conversations).
+- **CLIProxyAPIPlus v7.1.23-7**: CommandCode alias resolution in round-robin model selection.
 - **CLIProxyAPIPlus v7.1.23-5**: CommandCode message format fix.
 - **cpa-usage-keeper v1.8.5-2**: CommandCode provider metadata sync.
 - **CLIProxyAPIPlus v7.1.23-3**: CommandCode synthesizer/diff/SDK/watcher integration.
