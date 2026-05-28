@@ -154,6 +154,9 @@ type Config struct {
 	// CommandCodeKey defines a list of CommandCode API key configurations.
 	CommandCodeKey []CommandCodeKey `yaml:"commandcode-api-key" json:"commandcode-api-key"`
 
+	// MistralKey defines a list of Mistral API key configurations.
+	MistralKey []MistralKey `yaml:"mistral-api-key" json:"mistral-api-key"`
+
 	// AmpCode contains Amp CLI upstream configuration, management restrictions, and model mappings.
 	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
 
@@ -653,6 +656,55 @@ type CommandCodeModel struct {
 
 func (m CommandCodeModel) GetName() string  { return m.Name }
 func (m CommandCodeModel) GetAlias() string { return m.Alias }
+
+// MistralKey represents the configuration for a Mistral API key.
+type MistralKey struct {
+	// APIKey is the authentication key for accessing Mistral API services.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Priority controls selection preference when multiple credentials match.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the base URL for the Mistral API endpoint.
+	// If empty, the default Mistral API URL will be used.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// BillingClass classifies this credential for threshold-based routing policies.
+	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+
+	// Models defines upstream model names and aliases for request routing.
+	Models []MistralModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+}
+
+func (k MistralKey) GetAPIKey() string  { return k.APIKey }
+func (k MistralKey) GetBaseURL() string { return k.BaseURL }
+
+// MistralModel describes a mapping between an alias and the actual upstream model name.
+type MistralModel struct {
+	// Name is the upstream model identifier used when issuing requests.
+	Name string `yaml:"name" json:"name"`
+
+	// Alias is the client-facing model name that maps to Name.
+	Alias string `yaml:"alias" json:"alias"`
+}
+
+func (m MistralModel) GetName() string  { return m.Name }
+func (m MistralModel) GetAlias() string { return m.Alias }
 
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
@@ -1198,6 +1250,30 @@ func (cfg *Config) SanitizeCommandCodeKeys() {
 		out = append(out, e)
 	}
 	cfg.CommandCodeKey = out
+}
+
+// SanitizeMistralKeys trims whitespace from Mistral API key entries.
+// It preserves order for remaining entries.
+func (cfg *Config) SanitizeMistralKeys() {
+	if cfg == nil || len(cfg.MistralKey) == 0 {
+		return
+	}
+	out := make([]MistralKey, 0, len(cfg.MistralKey))
+	for i := range cfg.MistralKey {
+		e := cfg.MistralKey[i]
+		e.APIKey = strings.TrimSpace(e.APIKey)
+		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.ProxyURL = strings.TrimSpace(e.ProxyURL)
+		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.BillingClass = normalizeBillingClass(e.BillingClass)
+		e.Headers = NormalizeHeaders(e.Headers)
+		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
+		if e.APIKey == "" {
+			continue
+		}
+		out = append(out, e)
+	}
+	cfg.MistralKey = out
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.

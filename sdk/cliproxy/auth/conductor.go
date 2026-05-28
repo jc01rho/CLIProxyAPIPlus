@@ -1517,11 +1517,15 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
 		case "commandcode":
-			if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
-				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
-			}
-		default:
-			// OpenAI-compat uses config selection from auth.Attributes.
+		if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
+			compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+		}
+	case "mistral":
+		if entry := resolveMistralAPIKeyConfig(cfg, auth); entry != nil {
+			compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+		}
+	default:
+		// OpenAI-compat uses config selection from auth.Attributes.
 			providerKey := ""
 			compatName := ""
 			if auth.Attributes != nil {
@@ -2681,6 +2685,8 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 		upstreamModel = resolveUpstreamModelForVertexAPIKey(cfg, auth, requestedModel)
 	case "commandcode":
 		upstreamModel = resolveUpstreamModelForCommandCodeAPIKey(cfg, auth, requestedModel)
+	case "mistral":
+		upstreamModel = resolveUpstreamModelForMistralAPIKey(cfg, auth, requestedModel)
 	default:
 		upstreamModel = resolveUpstreamModelForOpenAICompatAPIKey(cfg, auth, requestedModel)
 	}
@@ -2774,6 +2780,21 @@ func resolveCommandCodeAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *int
 
 func resolveUpstreamModelForCommandCodeAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
 	entry := resolveCommandCodeAPIKeyConfig(cfg, auth)
+	if entry == nil {
+		return ""
+	}
+	return resolveModelAliasFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
+}
+
+func resolveMistralAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.MistralKey {
+	if cfg == nil {
+		return nil
+	}
+	return resolveAPIKeyConfig(cfg.MistralKey, auth)
+}
+
+func resolveUpstreamModelForMistralAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
+	entry := resolveMistralAPIKeyConfig(cfg, auth)
 	if entry == nil {
 		return ""
 	}

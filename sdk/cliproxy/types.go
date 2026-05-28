@@ -68,6 +68,9 @@ type APIKeyClientResult struct {
 
 	// CommandCodeKeyCount is the number of CommandCode API keys loaded
 	CommandCodeKeyCount int
+
+	// MistralKeyCount is the number of Mistral API keys loaded
+	MistralKeyCount int
 }
 
 // WatcherFactory creates a watcher for configuration and token changes.
