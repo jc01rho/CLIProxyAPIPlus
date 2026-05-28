@@ -1293,6 +1293,181 @@ func (h *Handler) DeleteCommandCodeKey(c *gin.Context) {
 	c.JSON(400, gin.H{"error": "missing api-key or index"})
 }
 
+// mistral-api-key: []MistralKey
+func (h *Handler) GetMistralKeys(c *gin.Context) {
+	c.JSON(200, gin.H{"mistral-api-key": h.mistralKeysWithAuthIndex()})
+}
+
+func (h *Handler) PutMistralKeys(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.MistralKey
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.MistralKey `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	filtered := make([]config.MistralKey, 0, len(arr))
+	for i := range arr {
+		entry := arr[i]
+		normalizeMistralKey(&entry)
+		if entry.BaseURL == "" {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.MistralKey = filtered
+	h.cfg.SanitizeMistralKeys()
+	h.persistLocked(c)
+}
+
+func (h *Handler) PatchMistralKey(c *gin.Context) {
+	type mistralKeyPatch struct {
+		APIKey         *string                   `json:"api-key"`
+		Priority       *int                      `json:"priority"`
+		Prefix         *string                   `json:"prefix"`
+		BaseURL        *string                   `json:"base-url"`
+		ProxyURL       *string                   `json:"proxy-url"`
+		Models         *[]config.MistralModel    `json:"models"`
+		Headers        *map[string]string        `json:"headers"`
+		ExcludedModels *[]string                 `json:"excluded-models"`
+		DisableCooling *bool                     `json:"disable-cooling"`
+	}
+	var body struct {
+		Index *int               `json:"index"`
+		Match *string            `json:"match"`
+		Value *mistralKeyPatch   `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	targetIndex := -1
+	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.MistralKey) {
+		targetIndex = *body.Index
+	}
+	if targetIndex == -1 && body.Match != nil {
+		match := strings.TrimSpace(*body.Match)
+		for i := range h.cfg.MistralKey {
+			if h.cfg.MistralKey[i].APIKey == match {
+				targetIndex = i
+				break
+			}
+		}
+	}
+	if targetIndex == -1 {
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+
+	entry := h.cfg.MistralKey[targetIndex]
+	if body.Value.APIKey != nil {
+		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
+	}
+	if body.Value.Prefix != nil {
+		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.BaseURL != nil {
+		trimmed := strings.TrimSpace(*body.Value.BaseURL)
+		if trimmed == "" {
+			h.cfg.MistralKey = append(h.cfg.MistralKey[:targetIndex], h.cfg.MistralKey[targetIndex+1:]...)
+			h.cfg.SanitizeMistralKeys()
+			h.persistLocked(c)
+			return
+		}
+		entry.BaseURL = trimmed
+	}
+	if body.Value.ProxyURL != nil {
+		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+	}
+	if body.Value.Models != nil {
+		entry.Models = append([]config.MistralModel(nil), (*body.Value.Models)...)
+	}
+	if body.Value.Headers != nil {
+		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+	}
+	if body.Value.ExcludedModels != nil {
+		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.DisableCooling != nil {
+		entry.DisableCooling = *body.Value.DisableCooling
+	}
+	normalizeMistralKey(&entry)
+	h.cfg.MistralKey[targetIndex] = entry
+	h.cfg.SanitizeMistralKeys()
+	h.persistLocked(c)
+}
+
+func (h *Handler) DeleteMistralKey(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
+			base := strings.TrimSpace(baseRaw)
+			out := make([]config.MistralKey, 0, len(h.cfg.MistralKey))
+			for _, v := range h.cfg.MistralKey {
+				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+					continue
+				}
+				out = append(out, v)
+			}
+			h.cfg.MistralKey = out
+			h.cfg.SanitizeMistralKeys()
+			h.persistLocked(c)
+			return
+		}
+
+		matchIndex := -1
+		matchCount := 0
+		for i := range h.cfg.MistralKey {
+			if strings.TrimSpace(h.cfg.MistralKey[i].APIKey) == val {
+				matchCount++
+			}
+		}
+		if matchCount == 1 {
+			for i := range h.cfg.MistralKey {
+				if strings.TrimSpace(h.cfg.MistralKey[i].APIKey) == val {
+					matchIndex = i
+					break
+				}
+			}
+		}
+		if matchIndex != -1 {
+			h.cfg.MistralKey = append(h.cfg.MistralKey[:matchIndex], h.cfg.MistralKey[matchIndex+1:]...)
+		}
+		h.cfg.SanitizeMistralKeys()
+		h.persistLocked(c)
+		return
+	}
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		_, err := fmt.Sscanf(idxStr, "%d", &idx)
+		if err == nil && idx >= 0 && idx < len(h.cfg.MistralKey) {
+			h.cfg.MistralKey = append(h.cfg.MistralKey[:idx], h.cfg.MistralKey[idx+1:]...)
+			h.cfg.SanitizeMistralKeys()
+			h.persistLocked(c)
+			return
+		}
+	}
+	c.JSON(400, gin.H{"error": "missing api-key or index"})
+}
+
 func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 	if entry == nil {
 		return
@@ -1395,6 +1570,33 @@ func normalizeCommandCodeKey(entry *config.CommandCodeKey) {
 		return
 	}
 	normalized := make([]config.CommandCodeModel, 0, len(entry.Models))
+	for i := range entry.Models {
+		model := entry.Models[i]
+		model.Name = strings.TrimSpace(model.Name)
+		model.Alias = strings.TrimSpace(model.Alias)
+		if model.Name == "" && model.Alias == "" {
+			continue
+		}
+		normalized = append(normalized, model)
+	}
+	entry.Models = normalized
+}
+
+func normalizeMistralKey(entry *config.MistralKey) {
+	if entry == nil {
+		return
+	}
+	entry.APIKey = strings.TrimSpace(entry.APIKey)
+	entry.Prefix = strings.TrimSpace(entry.Prefix)
+	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+	entry.BillingClass = config.BillingClass(normalizeBillingClassValue(string(entry.BillingClass)))
+	entry.Headers = config.NormalizeHeaders(entry.Headers)
+	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
+	if len(entry.Models) == 0 {
+		return
+	}
+	normalized := make([]config.MistralModel, 0, len(entry.Models))
 	for i := range entry.Models {
 		model := entry.Models[i]
 		model.Name = strings.TrimSpace(model.Name)
