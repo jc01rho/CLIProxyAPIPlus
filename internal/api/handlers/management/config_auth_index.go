@@ -28,6 +28,11 @@ type commandCodeKeyWithAuthIndex struct {
 	AuthIndex string `json:"auth-index,omitempty"`
 }
 
+type mistralKeyWithAuthIndex struct {
+	config.MistralKey
+	AuthIndex string `json:"auth-index,omitempty"`
+}
+
 type vertexCompatKeyWithAuthIndex struct {
 	config.VertexCompatKey
 	AuthIndex string `json:"auth-index,omitempty"`
@@ -193,6 +198,35 @@ func (h *Handler) commandCodeKeysWithAuthIndex() []commandCodeKeyWithAuthIndex {
 		out[i] = commandCodeKeyWithAuthIndex{
 			CommandCodeKey: entry,
 			AuthIndex:      authIndex,
+		}
+	}
+	return out
+}
+
+func (h *Handler) mistralKeysWithAuthIndex() []mistralKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveIndexByID := h.liveAuthIndexByID()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]mistralKeyWithAuthIndex, len(h.cfg.MistralKey))
+	for i := range h.cfg.MistralKey {
+		entry := h.cfg.MistralKey[i]
+		authIndex := ""
+		if key := strings.TrimSpace(entry.APIKey); key != "" {
+			id, _ := idGen.Next("mistral:apikey", key, entry.BaseURL)
+			authIndex = liveIndexByID[id]
+		}
+		out[i] = mistralKeyWithAuthIndex{
+			MistralKey: entry,
+			AuthIndex:  authIndex,
 		}
 	}
 	return out

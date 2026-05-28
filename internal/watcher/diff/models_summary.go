@@ -34,6 +34,11 @@ type CommandCodeModelsSummary struct {
 	count int
 }
 
+type MistralModelsSummary struct {
+	hash  string
+	count int
+}
+
 // SummarizeGeminiModels hashes Gemini model aliases for change detection.
 func SummarizeGeminiModels(models []config.GeminiModel) GeminiModelsSummary {
 	if len(models) == 0 {

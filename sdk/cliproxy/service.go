@@ -461,6 +461,8 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewGitLabExecutor(s.cfg))
 	case "commandcode":
 		s.coreManager.RegisterExecutor(executor.NewCommandCodeExecutor(s.cfg))
+	case "mistral":
+		s.coreManager.RegisterExecutor(executor.NewMistralExecutor(s.cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
@@ -1200,6 +1202,17 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case "mistral":
+		models = nil // Mistral models are entirely config-driven
+		if entry := s.resolveConfigMistralKey(a); entry != nil {
+			if len(entry.Models) > 0 {
+				models = buildMistralConfigModels(entry)
+			}
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
 	case "kimi":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
@@ -1787,6 +1800,39 @@ func buildCommandCodeConfigModels(entry *config.CommandCodeKey) []*ModelInfo {
 		return nil
 	}
 	return buildConfigModels(entry.Models, "commandcode", "commandcode")
+}
+
+func (s *Service) resolveConfigMistralKey(auth *coreauth.Auth) *config.MistralKey {
+	if auth == nil || s.cfg == nil {
+		return nil
+	}
+	var attrKey, attrBase string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	for i := range s.cfg.MistralKey {
+		entry := &s.cfg.MistralKey[i]
+		cfgKey := strings.TrimSpace(entry.APIKey)
+		cfgBase := strings.TrimSpace(entry.BaseURL)
+		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
+			if cfgBase == "" || strings.EqualFold(cfgBase, attrBase) {
+				return entry
+			}
+			continue
+		}
+		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
+			return entry
+		}
+	}
+	return nil
+}
+
+func buildMistralConfigModels(entry *config.MistralKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "mistral", "mistral")
 }
 
 func rewriteModelInfoName(name, oldID, newID string) string {
