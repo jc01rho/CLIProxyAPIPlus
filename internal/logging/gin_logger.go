@@ -347,9 +347,23 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 		// Append token usage if available
 		if isAIAPIPath(path) {
 			detail := getUsageDetailFromContext(c)
-			if detail != nil && (detail.InputTokens > 0 || detail.OutputTokens > 0) {
-				tokenSegment := fmt.Sprintf("tokens in=%d out=%d", detail.InputTokens, detail.OutputTokens)
-				logLine = logLine + " | " + tokenSegment
+			if detail == nil {
+				detail = extractUsageFromAPIResponse(c)
+			}
+			if detail != nil {
+				var parts []string
+				if detail.InputTokens > 0 {
+					parts = append(parts, fmt.Sprintf("in=%d", detail.InputTokens))
+				}
+				if detail.OutputTokens > 0 {
+					parts = append(parts, fmt.Sprintf("out=%d", detail.OutputTokens))
+				}
+				if detail.CachedTokens > 0 {
+					parts = append(parts, fmt.Sprintf("cached=%d", detail.CachedTokens))
+				}
+				if len(parts) > 0 {
+					logLine = logLine + " | tokens " + strings.Join(parts, " ")
+				}
 			}
 		}
 
@@ -468,4 +482,59 @@ func creditsUsed(c *gin.Context) bool {
 	}
 	flag, ok := val.(bool)
 	return ok && flag
+}
+
+// extractUsageFromAPIResponse parses usage information from the API_RESPONSE body
+// stored in gin context. Handles OpenAI and Claude response formats.
+func extractUsageFromAPIResponse(c *gin.Context) *usage.Detail {
+	if c == nil {
+		return nil
+	}
+
+	apiResp, exists := c.Get("API_RESPONSE")
+	if !exists {
+		return nil
+	}
+	bodyBytes, ok := apiResp.([]byte)
+	if !ok || len(bodyBytes) == 0 {
+		return nil
+	}
+
+	body := string(bodyBytes)
+	detail := &usage.Detail{}
+
+	// OpenAI format: {"usage": {"prompt_tokens": N, "completion_tokens": M, "total_tokens": T, "prompt_tokens_details": {"cached_tokens": C}}}
+	usageResult := gjson.Get(body, "usage")
+	if usageResult.Exists() && usageResult.IsObject() {
+		detail.InputTokens = usageResult.Get("prompt_tokens").Int()
+		detail.OutputTokens = usageResult.Get("completion_tokens").Int()
+		detail.TotalTokens = usageResult.Get("total_tokens").Int()
+		detail.CachedTokens = usageResult.Get("prompt_tokens_details.cached_tokens").Int()
+		detail.ReasoningTokens = usageResult.Get("completion_tokens_details.reasoning_tokens").Int()
+		return detail
+	}
+
+	// Claude format: {"usage": {"input_tokens": N, "output_tokens": M, "cache_creation_input_tokens": C1, "cache_read_input_tokens": C2}}
+	if detail.InputTokens == 0 && detail.OutputTokens == 0 {
+		detail.InputTokens = usageResult.Get("input_tokens").Int()
+		detail.OutputTokens = usageResult.Get("output_tokens").Int()
+		detail.CachedTokens = usageResult.Get("cache_read_input_tokens").Int()
+		if detail.InputTokens > 0 || detail.OutputTokens > 0 {
+			return detail
+		}
+	}
+
+	// Gemini format: {"usageMetadata": {"promptTokenCount": N, "candidatesTokenCount": M, "cachedContentTokenCount": C}}
+	geminiUsage := gjson.Get(body, "usageMetadata")
+	if geminiUsage.Exists() && geminiUsage.IsObject() {
+		detail.InputTokens = geminiUsage.Get("promptTokenCount").Int()
+		detail.OutputTokens = geminiUsage.Get("candidatesTokenCount").Int()
+		detail.CachedTokens = geminiUsage.Get("cachedContentTokenCount").Int()
+		if detail.InputTokens > 0 || detail.OutputTokens > 0 {
+			return detail
+		}
+	}
+
+	// No usage found
+	return nil
 }
