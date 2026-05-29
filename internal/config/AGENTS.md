@@ -14,6 +14,8 @@ config/
 ├── sdk_config.go
 ├── oauth_model_alias_defaults.go
 ├── vertex_compat.go
+├── commandcode_key.go     # CommandCode API key config (custom /alpha/generate endpoint)
+├── mistral_key.go         # Mistral API key config (standalone provider, reasoning_effort)
 └── *_test.go
 ```
 

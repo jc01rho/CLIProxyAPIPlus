@@ -23,7 +23,7 @@ registry/
 | Task | Location | Notes |
 |------|----------|-------|
 | Static model list | `model_definitions.go`, `models/models.json` | Provider-specific fallback. |
-| Runtime registration | `model_registry.go` | Client/provider/model availability. |
+| Runtime registration | `model_registry.go` | Client/provider/model availability. Mistral과 CommandCode도 여기에 등록됨. |
 | Remote refresh | `model_updater.go` | Interacts with `--local-model`. |
 | Provider normalization | `*_model_converter.go` | Keep conversion near provider. |
 

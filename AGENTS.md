@@ -1,7 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-05-21
-**Commit:** 266cfcf1
+**Generated:** 2026-05-29
+**Commit:** daf31abc
 **Branch:** main
 
 ## OVERVIEW
@@ -68,7 +68,7 @@ npm run build
 
 # Usage Keeper
 cd cpa-usage-keeper
-go build ./cmd/keeper
+go build ./cmd/server
 go test ./...
 ```
 
@@ -110,13 +110,14 @@ cpa-usage-keeper/AGENTS.md
 - Upstream merges: always check `server.go` for duplicate route registration after merging.
 - Re-tagging: delete GitHub release assets first, then re-run goreleaser (otherwise `422 already_exists`).
 - **Every push requires a version bump.** When pushing code changes to any subdirectory repository, increment the tag suffix and create a new tag. No code should remain untagged on origin.
-- Latest tags: `CLIProxyAPIPlus: v7.1.23-8`, `Cli-Proxy-API-Management-Center: v1.14.0-3`, `cpa-usage-keeper: v1.8.5-2`. Re-check before tagging.
+- Latest tags: `CLIProxyAPIPlus: v7.1.28-1`, `Cli-Proxy-API-Management-Center: v1.14.0-9`, `cpa-usage-keeper: v1.8.6-1`. Re-check before tagging.
 
 ## RECENT CHANGES
 
+- **CLIProxyAPIPlus v7.1.28-1**: Token usage logging, gpt-5.5 restore for codex free tier.
+- **CLIProxyAPIPlus v7.1.27-1**: Mistral base_url /v1 suffix stripping fix.
+- **CLIProxyAPIPlus v7.1.25-2**: Mistral standalone provider, management API key CRUD, TTFT tracking, service tier usage, cache token reporting.
 - **CLIProxyAPIPlus v7.1.23-8**: CommandCode null content block fix (400 BAD_REQUEST on tool-heavy conversations).
-- **CLIProxyAPIPlus v7.1.23-7**: CommandCode alias resolution in round-robin model selection.
-- **cpa-usage-keeper v1.8.5-2**: CommandCode provider metadata sync.
-- **CLIProxyAPIPlus v7.1.23-3**: CommandCode synthesizer/diff/SDK/watcher integration.
-- **Management Center v1.14.0-3**: CommandCode provider name translation.
-- Previous: upstream merges (Claude executor test fix, nano-gpt 400 investigation shelved), CommandCode management API handler, config API key, model registration, merge conflict fixes, CI marker cleanup. See git log for full history.
+- **Management Center v1.14.0-9**: UI updates through v1.14.0-4 (priority column, CommandCode provider integration).
+- **cpa-usage-keeper v1.8.6-1**: Usage keeper updates.
+- Previous: CommandCode synthesizer/diff/SDK/watcher integration, upstream merges (v7.1.24 TTFT, helps migration, claudeCredsForAuthLookup restoration), CommandCode management API handler, config API key, model registration. See git log for full history.
