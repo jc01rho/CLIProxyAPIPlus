@@ -272,7 +272,9 @@ func (e *MistralExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Au
 func (e *MistralExecutor) resolveBaseURL(auth *cliproxyauth.Auth) string {
 	if auth != nil && auth.Attributes != nil {
 		if baseURL := strings.TrimSpace(auth.Attributes["base_url"]); baseURL != "" {
-			return strings.TrimSuffix(baseURL, "/")
+			baseURL = strings.TrimSuffix(baseURL, "/")
+			baseURL = strings.TrimSuffix(baseURL, "/v1")
+			return baseURL
 		}
 	}
 	return mistralDefaultBaseURL
