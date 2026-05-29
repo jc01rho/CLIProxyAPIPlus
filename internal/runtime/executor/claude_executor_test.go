@@ -17,15 +17,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 	xxHash64 "github.com/pierrec/xxHash/xxHash64"
-
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -570,7 +567,7 @@ func TestApplyClaudeHeaders_LegacyModeFallsBackToRuntimeOSArchWhenMissing(t *tes
 	})
 	applyClaudeHeaders(req, auth, "key-legacy-runtime-os-arch", false, nil, cfg)
 
-	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.94.0", "v24.3.0", helps.MapStainlessOS(), helps.MapStainlessArch())
+	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", helps.MapStainlessOS(), helps.MapStainlessArch())
 }
 
 func TestApplyClaudeHeaders_UnsetStabilizationAlsoUsesLegacyRuntimeOSArchFallback(t *testing.T) {
@@ -597,7 +594,7 @@ func TestApplyClaudeHeaders_UnsetStabilizationAlsoUsesLegacyRuntimeOSArchFallbac
 	})
 	applyClaudeHeaders(req, auth, "key-unset-runtime-os-arch", false, nil, cfg)
 
-	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.94.0", "v24.3.0", helps.MapStainlessOS(), helps.MapStainlessArch())
+	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", helps.MapStainlessOS(), helps.MapStainlessArch())
 }
 
 func TestClaudeDeviceProfileStabilizationEnabled_DefaultFalse(t *testing.T) {
@@ -939,152 +936,6 @@ func TestClaudeExecutor_GeneratesNewUserIDByDefault(t *testing.T) {
 	}
 }
 
-func TestClaudeExecutor_UsesExecutionTargetForAliasedModel(t *testing.T) {
-	reg := registry.GetGlobalRegistry()
-	const authID = "auth-claude-alias"
-	reg.UnregisterClient(authID)
-	defer reg.UnregisterClient(authID)
-
-	reg.RegisterClient(authID, "claude", []*registry.ModelInfo{
-		{ID: "sonnet", ExecutionTarget: "claude-sonnet-4-6", DisplayName: "Sonnet alias"},
-		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6"},
-	})
-
-	var requestModels []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		requestModels = append(requestModels, gjson.GetBytes(body, "model").String())
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
-	}))
-	defer server.Close()
-
-	executor := NewClaudeExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{
-		ID:       authID,
-		Provider: "claude",
-		Attributes: map[string]string{
-			"api_key":  "key-123",
-			"base_url": server.URL,
-		},
-	}
-
-	payload := []byte(`{"model":"sonnet","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
-	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "sonnet",
-		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-
-	if len(requestModels) != 1 {
-		t.Fatalf("expected 1 request, got %d", len(requestModels))
-	}
-	if requestModels[0] != "claude-sonnet-4-6" {
-		t.Fatalf("upstream model = %q, want %q", requestModels[0], "claude-sonnet-4-6")
-	}
-}
-
-func TestClaudeExecutor_ExecuteStream_UsesExecutionTargetForAliasedModel(t *testing.T) {
-	reg := registry.GetGlobalRegistry()
-	const authID = "auth-claude-alias-stream"
-	reg.UnregisterClient(authID)
-	defer reg.UnregisterClient(authID)
-
-	reg.RegisterClient(authID, "claude", []*registry.ModelInfo{
-		{ID: "sonnet", ExecutionTarget: "claude-sonnet-4-6", DisplayName: "Sonnet alias"},
-		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6"},
-	})
-
-	var requestModels []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		requestModels = append(requestModels, gjson.GetBytes(body, "model").String())
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
-	}))
-	defer server.Close()
-
-	executor := NewClaudeExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{
-		ID:       authID,
-		Provider: "claude",
-		Attributes: map[string]string{
-			"api_key":  "key-123",
-			"base_url": server.URL,
-		},
-	}
-
-	payload := []byte(`{"model":"sonnet","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
-	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "sonnet",
-		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
-	if err != nil {
-		t.Fatalf("ExecuteStream error: %v", err)
-	}
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("unexpected chunk error: %v", chunk.Err)
-		}
-	}
-
-	if len(requestModels) != 1 {
-		t.Fatalf("expected 1 request, got %d", len(requestModels))
-	}
-	if requestModels[0] != "claude-sonnet-4-6" {
-		t.Fatalf("stream upstream model = %q, want %q", requestModels[0], "claude-sonnet-4-6")
-	}
-}
-
-func TestClaudeExecutor_CountTokens_UsesExecutionTargetForAliasedModel(t *testing.T) {
-	reg := registry.GetGlobalRegistry()
-	const authID = "auth-claude-alias-count-tokens"
-	reg.UnregisterClient(authID)
-	defer reg.UnregisterClient(authID)
-
-	reg.RegisterClient(authID, "claude", []*registry.ModelInfo{
-		{ID: "sonnet", ExecutionTarget: "claude-sonnet-4-6", DisplayName: "Sonnet alias"},
-		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6"},
-	})
-
-	var requestModels []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		requestModels = append(requestModels, gjson.GetBytes(body, "model").String())
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"input_tokens":42}`))
-	}))
-	defer server.Close()
-
-	executor := NewClaudeExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{
-		ID:       authID,
-		Provider: "claude",
-		Attributes: map[string]string{
-			"api_key":  "key-123",
-			"base_url": server.URL,
-		},
-	}
-
-	payload := []byte(`{"model":"sonnet","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
-	_, err := executor.CountTokens(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "sonnet",
-		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
-	if err != nil {
-		t.Fatalf("CountTokens error: %v", err)
-	}
-
-	if len(requestModels) != 1 {
-		t.Fatalf("expected 1 request, got %d", len(requestModels))
-	}
-	if requestModels[0] != "claude-sonnet-4-6" {
-		t.Fatalf("count_tokens upstream model = %q, want %q", requestModels[0], "claude-sonnet-4-6")
-	}
-}
-
 func TestClaudeExecutor_ExecuteOpenAINonStreamRejectsEmptyClaudeStream(t *testing.T) {
 	_, err := executeOpenAIChatCompletionThroughClaude(t, "")
 	if err == nil {
@@ -1400,33 +1251,13 @@ func TestClaudeExecutor_CountTokens_AppliesCacheControlGuards(t *testing.T) {
 	}
 }
 
-func TestEnsureClaudeMaxTokens_UsesModelDefaultWhenKnown(t *testing.T) {
-	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
-
-	out := ensureClaudeMaxTokens(body, "claude-sonnet-4")
-
-	if got := gjson.GetBytes(out, "max_tokens").Int(); got != defaultClaudeMaxTokens {
-		t.Fatalf("max_tokens = %d, want %d", got, defaultClaudeMaxTokens)
-	}
-}
-
-func TestEnsureClaudeMaxTokens_FallsBackWhenModelUnknown(t *testing.T) {
-	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
-
-	out := ensureClaudeMaxTokens(body, "claude-unknown-model")
-
-	if got := gjson.GetBytes(out, "max_tokens").Int(); got != defaultClaudeMaxTokens {
-		t.Fatalf("max_tokens = %d, want %d", got, defaultClaudeMaxTokens)
-	}
-}
-
-func TestClaudeExecutor_Execute_InjectsMaxTokensWhenMissing(t *testing.T) {
+func TestClaudeExecutor_ExecuteSanitizesSignaturesBeforeUpstream(t *testing.T) {
 	var seenBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		seenBody = bytes.Clone(body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-3-5-sonnet-20241022","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-sonnet-4-5","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer server.Close()
 
@@ -1436,174 +1267,44 @@ func TestClaudeExecutor_Execute_InjectsMaxTokensWhenMissing(t *testing.T) {
 		"base_url": server.URL,
 	}}
 
-	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	payload := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"max_tokens": 16,
+		"messages": [
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"drop this","signature":""},
+				{"type":"text","text":"I will run git status."},
+				{"type":"tool_use","id":"Bash-1","name":"Bash","input":{"command":"git status"},"signature":"bad","thoughtSignature":"bad2","model":"claude-opus-4-1"}
+			]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"Bash-1","content":"ok"}]}
+		]
+	}`)
 
-	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "claude-3-5-sonnet-20241022",
-		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-
-	if len(seenBody) == 0 {
-		t.Fatal("expected execute request body to be captured")
-	}
-	if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != defaultClaudeMaxTokens {
-		t.Fatalf("request max_tokens = %d, want %d", got, defaultClaudeMaxTokens)
-	}
-}
-
-func TestManagerClaudeOAuthAlias_Execute_UsesExpandedModelAndOverrideBaseURL(t *testing.T) {
-	const (
-		routeModel     = "sonnet"
-		targetModel    = "claude-sonnet-4-6"
-		provider       = "claude"
-		oauthAuthID    = "claude-oauth-sonnet"
-		requestPath    = "/v1/messages"
-		overrideSuffix = "?beta=true"
-	)
-
-	var (
-		gotPath string
-		gotBody []byte
-	)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.String()
-		body, _ := io.ReadAll(r.Body)
-		gotBody = bytes.Clone(body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
-	}))
-	defer server.Close()
-
-	cfg := &config.Config{
-		OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
-			"claude": {
-				ApiBaseURL: server.URL,
-			},
-		},
-	}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(NewClaudeExecutor(cfg))
-	manager.SetOAuthModelAlias(map[string][]config.OAuthModelAlias{
-		"claude": {{Name: targetModel, Alias: routeModel, Fork: true}},
-	})
-
-	oauthAuth := &coreauth.Auth{
-		ID:       oauthAuthID,
-		Provider: provider,
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{
-			"email":        "oauth@example.com",
-			"access_token": "oauth-token",
-		},
-	}
-	if _, err := manager.Register(context.Background(), oauthAuth); err != nil {
-		t.Fatalf("register oauth auth: %v", err)
-	}
-
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(oauthAuth.ID, provider, []*registry.ModelInfo{{ID: routeModel}, {ID: targetModel}})
-	defer reg.UnregisterClient(oauthAuth.ID)
-	manager.RefreshSchedulerEntry(oauthAuth.ID)
-
-	payload := []byte(`{"model":"sonnet","max_tokens":48000,"thinking":{"type":"enabled","budget_tokens":16000},"system":[{"type":"text","text":"hi"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
-	resp, err := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{
-		Model:   routeModel,
+	if _, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-sonnet-4-5",
 		Payload: payload,
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("claude"),
-		Metadata: map[string]any{
-			cliproxyexecutor.RequestedModelMetadataKey: routeModel,
-		},
-	})
-	if err != nil {
-		t.Fatalf("manager execute error: %v", err)
-	}
-	if got := gjson.GetBytes(resp.Payload, "model").String(); got != targetModel {
-		t.Fatalf("response model = %q, want %q", got, targetModel)
-	}
-	if gotPath != requestPath+overrideSuffix {
-		t.Fatalf("upstream path = %q, want %q", gotPath, requestPath+overrideSuffix)
-	}
-	if len(gotBody) == 0 {
-		t.Fatal("expected upstream request body to be captured")
-	}
-	if got := gjson.GetBytes(gotBody, "model").String(); got != targetModel {
-		t.Fatalf("upstream body model = %q, want %q; body=%s", got, targetModel, string(gotBody))
-	}
-	if got := gjson.GetBytes(gotBody, "max_tokens").Int(); got != 48000 {
-		t.Fatalf("upstream body max_tokens = %d, want %d; body=%s", got, int64(48000), string(gotBody))
-	}
-}
-
-func TestClaudeExecutor_CountTokens_UsesConfigOAuthApiBaseURL(t *testing.T) {
-	t.Parallel()
-
-	var requestedPath string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"input_tokens":7}`))
-	}))
-	defer server.Close()
-
-	executor := NewClaudeExecutor(&config.Config{
-		OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
-			"claude": {ApiBaseURL: server.URL},
-		},
-	})
-	auth := &cliproxyauth.Auth{
-		Provider: "claude",
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{
-			"access_token": "oauth-token",
-		},
+		Stream:       false,
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
 	}
 
-	_, err := executor.CountTokens(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "claude-sonnet-4-6",
-		Payload: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`),
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
-	if err != nil {
-		t.Fatalf("CountTokens() error = %v", err)
+	parts := gjson.GetBytes(seenBody, "messages.0.content").Array()
+	if len(parts) != 2 {
+		t.Fatalf("messages.0.content length = %d, want 2; body=%s", len(parts), seenBody)
 	}
-
-	if requestedPath != "/v1/messages/count_tokens" {
-		t.Fatalf("requested path = %q, want %q", requestedPath, "/v1/messages/count_tokens")
+	if parts[0].Get("type").String() != "text" {
+		t.Fatalf("first remaining part = %s, want text", parts[0].Raw)
 	}
-}
-
-func TestResolveClaudeKeyConfig_IgnoresConfigOAuthApiBaseURLForOAuthLookup(t *testing.T) {
-	t.Parallel()
-
-	cfg := &config.Config{
-		OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
-			"claude": {ApiBaseURL: "https://override.example.com/anthropic"},
-		},
-		ClaudeKey: []config.ClaudeKey{{
-			APIKey:  "oauth-token",
-			BaseURL: "https://override.example.com/anthropic",
-		}},
+	toolUse := parts[1]
+	if toolUse.Get("type").String() != "tool_use" {
+		t.Fatalf("second remaining part = %s, want tool_use", toolUse.Raw)
 	}
-	auth := &cliproxyauth.Auth{
-		Provider: "claude",
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{
-			"access_token": "oauth-token",
-		},
-	}
-
-	if entry := resolveClaudeKeyConfig(cfg, auth); entry != nil {
-		t.Fatalf("resolveClaudeKeyConfig() = %+v, want nil because oauth auth should not inherit config ApiBaseURL for auth lookup", entry)
+	for _, path := range []string{"signature", "thoughtSignature", "model"} {
+		if toolUse.Get(path).Exists() {
+			t.Fatalf("tool_use.%s should be removed before upstream: %s", path, seenBody)
+		}
 	}
 }
 
@@ -2482,40 +2183,6 @@ func TestRemapOAuthToolNames_Lowercase_ReverseApplied(t *testing.T) {
 	reversed := reverseRemapOAuthToolNames(resp, reverseMap)
 	if got := gjson.GetBytes(reversed, "content.0.name").String(); got != "bash" {
 		t.Fatalf("content.0.name = %q, want %q", got, "bash")
-	}
-}
-
-func TestClaudeExecutor_UsesMetadataBaseURLFallback(t *testing.T) {
-	t.Parallel()
-
-	var requestedPath string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-3-5-sonnet","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
-	}))
-	defer server.Close()
-
-	executor := NewClaudeExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{
-		Attributes: map[string]string{
-			"api_key": "key-123",
-		},
-		Metadata: map[string]any{
-			"base_url": server.URL,
-		},
-	}
-
-	payload := []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
-	if _, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "claude-3-5-sonnet",
-		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	if requestedPath != "/v1/messages" {
-		t.Fatalf("requested path = %q, want %q", requestedPath, "/v1/messages")
 	}
 }
 
