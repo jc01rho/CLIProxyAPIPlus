@@ -360,6 +360,10 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 				}
 				if detail.CachedTokens > 0 {
 					parts = append(parts, fmt.Sprintf("cached=%d", detail.CachedTokens))
+					freshTokens := detail.InputTokens - detail.CachedTokens
+					if freshTokens > 0 {
+						parts = append(parts, fmt.Sprintf("fresh=%d", freshTokens))
+					}
 				}
 				if len(parts) > 0 {
 					logLine = logLine + " | tokens " + strings.Join(parts, " ")
