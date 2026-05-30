@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -216,10 +217,23 @@ func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) 
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
 	usage.PublishRecord(ctx, record)
 
-	// Store usage detail in gin context so that the gin request logger
-	// (gin_logger.go) can display input/output/cached token counts.
 	if ginCtx := ginContextFrom(ctx); ginCtx != nil && hasNonZeroTokenUsage(record.Detail) {
 		ginCtx.Set("usageDetail", &record.Detail)
+
+		// If gin_logger already emitted a log with usage (non-streaming path),
+		// no extra completion log is needed.
+		if _, alreadyLogged := ginCtx.Get("__usage_logged__"); alreadyLogged {
+			return
+		}
+
+		// Streaming path: gin_logger already logged without usage.
+		// Emit a completion log with the same request_id for correlation.
+		requestID := internallogging.GetRequestID(ctx)
+		if requestID != "" {
+			log.WithField("request_id", requestID).
+				Infof("[stream-complete] tokens in=%d out=%d cached=%d",
+					record.Detail.InputTokens, record.Detail.OutputTokens, record.Detail.CachedTokens)
+		}
 	}
 }
 
