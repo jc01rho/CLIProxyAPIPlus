@@ -363,6 +363,9 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 				}
 				if len(parts) > 0 {
 					logLine = logLine + " | tokens " + strings.Join(parts, " ")
+					// Mark that gin_logger already included usage in this log line
+					// so that publishRecord doesn't emit a duplicate completion log.
+					c.Set("__usage_logged__", true)
 				}
 			}
 		}
