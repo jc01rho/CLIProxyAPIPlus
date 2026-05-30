@@ -215,6 +215,12 @@ func (r *UsageReporter) EnsurePublished(ctx context.Context) {
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
 	usage.PublishRecord(ctx, record)
+
+	// Store usage detail in gin context so that the gin request logger
+	// (gin_logger.go) can display input/output/cached token counts.
+	if ginCtx := ginContextFrom(ctx); ginCtx != nil && hasNonZeroTokenUsage(record.Detail) {
+		ginCtx.Set("usageDetail", &record.Detail)
+	}
 }
 
 func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failures ...usage.Failure) usage.Record {
