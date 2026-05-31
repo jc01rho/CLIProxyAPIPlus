@@ -1453,3 +1453,126 @@ func TestSessionAffinitySelector_Concurrent(t *testing.T) {
 	default:
 	}
 }
+
+// --- WeightedRobinSelector tests ---
+
+func TestWeightedRobinSelector_DistributesByPriority(t *testing.T) {
+	t.Parallel()
+
+	selector := &WeightedRobinSelector{}
+	// Priority 1 = weight 1, Priority 2 = weight 2, Priority 3 = weight 3
+	// Total weight = 6, so over 12 picks: p1: 2, p2: 4, p3: 6
+	auths := []*Auth{
+		{ID: "p1", Attributes: map[string]string{"priority": "1"}},
+		{ID: "p2", Attributes: map[string]string{"priority": "2"}},
+		{ID: "p3", Attributes: map[string]string{"priority": "3"}},
+	}
+
+	counts := map[string]int{}
+	for i := 0; i < 12; i++ {
+		got, err := selector.Pick(context.Background(), "test", "", cliproxyexecutor.Options{}, auths)
+		if err != nil {
+			t.Fatalf("Pick() #%d error = %v", i, err)
+		}
+		counts[got.ID]++
+	}
+
+	if counts["p1"] != 2 {
+		t.Errorf("p1 count = %d, want 2", counts["p1"])
+	}
+	if counts["p2"] != 4 {
+		t.Errorf("p2 count = %d, want 4", counts["p2"])
+	}
+	if counts["p3"] != 6 {
+		t.Errorf("p3 count = %d, want 6", counts["p3"])
+	}
+}
+
+func TestWeightedRobinSelector_DefaultPriorityAsWeight1(t *testing.T) {
+	t.Parallel()
+
+	selector := &WeightedRobinSelector{}
+	auths := []*Auth{
+		{ID: "a"},
+		{ID: "b"},
+		{ID: "c"},
+	}
+
+	counts := map[string]int{}
+	for i := 0; i < 6; i++ {
+		got, err := selector.Pick(context.Background(), "test", "", cliproxyexecutor.Options{}, auths)
+		if err != nil {
+			t.Fatalf("Pick() #%d error = %v", i, err)
+		}
+		counts[got.ID]++
+	}
+
+	if counts["a"] != 2 {
+		t.Errorf("a count = %d, want 2", counts["a"])
+	}
+	if counts["b"] != 2 {
+		t.Errorf("b count = %d, want 2", counts["b"])
+	}
+	if counts["c"] != 2 {
+		t.Errorf("c count = %d, want 2", counts["c"])
+	}
+}
+
+func TestWeightedRobinSelector_SingleAuth(t *testing.T) {
+	t.Parallel()
+
+	selector := &WeightedRobinSelector{}
+	auths := []*Auth{{ID: "only", Attributes: map[string]string{"priority": "5"}}}
+
+	got, err := selector.Pick(context.Background(), "test", "", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("Pick() error = %v", err)
+	}
+	if got.ID != "only" {
+		t.Errorf("Pick() ID = %q, want %q", got.ID, "only")
+	}
+}
+
+func TestWeightedRobinSelector_Concurrent(t *testing.T) {
+	t.Parallel()
+
+	selector := &WeightedRobinSelector{}
+	auths := []*Auth{
+		{ID: "a", Attributes: map[string]string{"priority": "1"}},
+		{ID: "b", Attributes: map[string]string{"priority": "2"}},
+	}
+
+	const goroutines = 10
+	const iterations = 100
+	errCh := make(chan error, 1)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < iterations; j++ {
+				_, err := selector.Pick(context.Background(), "concurrent", "", cliproxyexecutor.Options{}, auths)
+				if err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("concurrent Pick() error = %v", err)
+	default:
+	}
+}
+

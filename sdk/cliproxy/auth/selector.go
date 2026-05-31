@@ -36,6 +36,22 @@ type RoundRobinSelector struct {
 // rolling-window subscription caps (e.g. chat message limits).
 type FillFirstSelector struct{}
 
+// WeightedRobinSelector provides weighted round-robin selection.
+// Priority values are interpreted as weights: higher priority auths receive
+// proportionally more traffic. Auths with priority 0 (or no priority) are
+// treated as weight 1. Uses smooth weighted round-robin (Nginx-style) for
+// even distribution.
+type WeightedRobinSelector struct {
+	mu      sync.Mutex
+	weights map[string][]weightedEntry // provider:model -> entries
+}
+
+type weightedEntry struct {
+	authID         string
+	effectiveWeight int
+	currentWeight   int
+}
+
 type blockReason int
 
 const (
@@ -259,6 +275,60 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 	return available, nil
 }
 
+// getAllAvailableAuthsWeighted returns all non-blocked auths across all priorities.
+// Used by WeightedRobinSelector to apply weight-based distribution.
+func getAllAvailableAuthsWeighted(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
+	if len(auths) == 0 {
+		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
+	}
+
+	availableByPriority, cooldownCount, earliest := collectAvailableByPriority(auths, model, now)
+	if len(availableByPriority) == 0 {
+		if cooldownCount == len(auths) && !earliest.IsZero() {
+			providerForError := provider
+			if providerForError == "mixed" {
+				providerForError = ""
+			}
+			resetIn := earliest.Sub(now)
+			if resetIn < 0 {
+				resetIn = 0
+			}
+			return nil, newModelCooldownError(model, providerForError, resetIn)
+		}
+		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
+	}
+
+	// Flatten all priority buckets into a single slice
+	var result []*Auth
+	for _, bucket := range availableByPriority {
+		result = append(result, bucket...)
+	}
+	return result, nil
+}
+
+// getAllAvailableAuths returns all non-blocked auths regardless of priority.
+// Used by WeightedRobinSelector to distribute across all priorities by weight.
+func getAllAvailableAuths(auths []*Auth, model string, now time.Time) []*Auth {
+	var available []*Auth
+	for _, a := range auths {
+		if a == nil {
+			continue
+		}
+		if a.Disabled || a.Status == StatusDisabled {
+			continue
+		}
+		blocked, reason, _ := isAuthBlockedForModel(a, model, now)
+		if blocked && (reason == blockReasonCooldown || reason == blockReasonDisabled) {
+			continue
+		}
+		available = append(available, a)
+	}
+	if len(available) > 1 {
+		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
+	}
+	return available
+}
+
 // Pick selects the next available auth for the provider in a round-robin manner.
 // For gemini-cli virtual auths (identified by the gemini_virtual_parent attribute),
 // a two-level round-robin is used: first cycling across credential groups (parent
@@ -370,6 +440,104 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	return available[0], nil
+}
+
+// Pick selects auths using weighted round-robin where priority values are
+// interpreted as weights (default 0 → weight 1). Uses smooth weighted
+// round-robin (Nginx-style) for even distribution proportional to weights.
+func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	_ = opts
+	now := time.Now()
+	available := getAllAvailableAuths(auths, model, now)
+	if len(available) == 0 {
+		// Check if all are on cooldown for a proper error
+		cooldownCount := 0
+		earliest := time.Time{}
+		for _, a := range auths {
+			if a != nil {
+				blocked, reason, next := isAuthBlockedForModel(a, model, now)
+				if blocked && reason == blockReasonCooldown {
+					cooldownCount++
+					if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
+						earliest = next
+					}
+				}
+			}
+		}
+		if cooldownCount == len(auths) && !earliest.IsZero() {
+			return nil, newModelCooldownError(model, provider, earliest.Sub(now))
+		}
+		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
+	}
+	available = preferCodexWebsocketAuths(ctx, provider, available)
+
+	key := provider + ":" + canonicalModelKey(model)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.weights == nil {
+		s.weights = make(map[string][]weightedEntry)
+	}
+
+	// Build or update weight entries for available auths.
+	// We preserve currentWeight across calls for smooth distribution.
+	existing := s.weights[key]
+	existingMap := make(map[string]*weightedEntry, len(existing))
+	for i := range existing {
+		e := &existing[i]
+		existingMap[e.authID] = e
+	}
+
+	var entries []weightedEntry
+	for _, a := range available {
+		eff := authPriority(a)
+		if eff <= 0 {
+			eff = 1 // default 0 treated as weight 1
+		}
+		if prev, ok := existingMap[a.ID]; ok {
+			// Preserve accumulated currentWeight for smooth distribution.
+			// If effective weight changed, keep the ratio.
+			entry := *prev
+			entry.effectiveWeight = eff
+			entries = append(entries, entry)
+		} else {
+			entries = append(entries, weightedEntry{
+				authID:          a.ID,
+				effectiveWeight: eff,
+				currentWeight:   0,
+			})
+		}
+	}
+
+	// Remove entries for auths no longer available
+	s.weights[key] = entries
+
+	// Smooth weighted round-robin (Nginx algorithm):
+	// 1. Add effectiveWeight to currentWeight for each entry
+	// 2. Select entry with highest currentWeight
+	// 3. Subtract totalWeight from selected entry's currentWeight
+	totalWeight := 0
+	for i := range entries {
+		entries[i].currentWeight += entries[i].effectiveWeight
+		totalWeight += entries[i].effectiveWeight
+	}
+
+	bestIdx := 0
+	for i := 1; i < len(entries); i++ {
+		if entries[i].currentWeight > entries[bestIdx].currentWeight {
+			bestIdx = i
+		}
+	}
+	entries[bestIdx].currentWeight -= totalWeight
+	s.weights[key] = entries
+
+	// Find the selected auth
+	for _, a := range available {
+		if a.ID == entries[bestIdx].authID {
+			return a, nil
+		}
+	}
 	return available[0], nil
 }
 
