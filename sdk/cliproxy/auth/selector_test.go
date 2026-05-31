@@ -1461,7 +1461,7 @@ func TestWeightedRobinSelector_DistributesByPriority(t *testing.T) {
 
 	selector := &WeightedRobinSelector{}
 	// Priority 1 = weight 1, Priority 2 = weight 2, Priority 3 = weight 3
-	// Total weight = 6, so over 12 picks: p1: 2, p2: 4, p3: 6
+	// Total weight = 6, expected: p1 ~16.7%, p2 ~33.3%, p3 ~50%
 	auths := []*Auth{
 		{ID: "p1", Attributes: map[string]string{"priority": "1"}},
 		{ID: "p2", Attributes: map[string]string{"priority": "2"}},
@@ -1469,7 +1469,7 @@ func TestWeightedRobinSelector_DistributesByPriority(t *testing.T) {
 	}
 
 	counts := map[string]int{}
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 600; i++ {
 		got, err := selector.Pick(context.Background(), "test", "", cliproxyexecutor.Options{}, auths)
 		if err != nil {
 			t.Fatalf("Pick() #%d error = %v", i, err)
@@ -1477,14 +1477,15 @@ func TestWeightedRobinSelector_DistributesByPriority(t *testing.T) {
 		counts[got.ID]++
 	}
 
-	if counts["p1"] != 2 {
-		t.Errorf("p1 count = %d, want 2", counts["p1"])
+	// Weighted random: p1 ~16.7%, p2 ~33.3%, p3 ~50% (±8% margin)
+	if counts["p1"] < 50 || counts["p1"] > 150 {
+		t.Errorf("p1 count = %d, want 50-150 (~16.7%%)", counts["p1"])
 	}
-	if counts["p2"] != 4 {
-		t.Errorf("p2 count = %d, want 4", counts["p2"])
+	if counts["p2"] < 150 || counts["p2"] > 250 {
+		t.Errorf("p2 count = %d, want 150-250 (~33.3%%)", counts["p2"])
 	}
-	if counts["p3"] != 6 {
-		t.Errorf("p3 count = %d, want 6", counts["p3"])
+	if counts["p3"] < 250 || counts["p3"] > 350 {
+		t.Errorf("p3 count = %d, want 250-350 (~50%%)", counts["p3"])
 	}
 }
 
@@ -1492,6 +1493,7 @@ func TestWeightedRobinSelector_DefaultPriorityAsWeight1(t *testing.T) {
 	t.Parallel()
 
 	selector := &WeightedRobinSelector{}
+	// All have default priority (0) → weight 1, equal 33.3% each
 	auths := []*Auth{
 		{ID: "a"},
 		{ID: "b"},
@@ -1499,7 +1501,7 @@ func TestWeightedRobinSelector_DefaultPriorityAsWeight1(t *testing.T) {
 	}
 
 	counts := map[string]int{}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 600; i++ {
 		got, err := selector.Pick(context.Background(), "test", "", cliproxyexecutor.Options{}, auths)
 		if err != nil {
 			t.Fatalf("Pick() #%d error = %v", i, err)
@@ -1507,14 +1509,11 @@ func TestWeightedRobinSelector_DefaultPriorityAsWeight1(t *testing.T) {
 		counts[got.ID]++
 	}
 
-	if counts["a"] != 2 {
-		t.Errorf("a count = %d, want 2", counts["a"])
-	}
-	if counts["b"] != 2 {
-		t.Errorf("b count = %d, want 2", counts["b"])
-	}
-	if counts["c"] != 2 {
-		t.Errorf("c count = %d, want 2", counts["c"])
+	// Equal weight random: ~33.3% each (±8% margin)
+	for _, id := range []string{"a", "b", "c"} {
+		if counts[id] < 150 || counts[id] > 250 {
+			t.Errorf("%s count = %d, want 150-250 (~33.3%%)", id, counts[id])
+		}
 	}
 }
 
