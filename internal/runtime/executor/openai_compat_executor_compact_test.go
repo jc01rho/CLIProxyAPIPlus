@@ -246,9 +246,9 @@ func TestOpenAICompatExecutorForcesReasoningReplayForXiaomiProvider(t *testing.T
 		"base_url": server.URL + "/v1",
 		"api_key":  "test",
 	}}
-	payload := []byte(`{"model":"mi-thinking","messages":[{"role":"assistant","content":"previous","reasoning_content":"chain reasoning"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`)
+	payload := []byte(`{"model":"mimo-v2.5-pro","messages":[{"role":"assistant","content":"previous","reasoning_content":"chain reasoning"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`)
 	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "mi-thinking",
+		Model:   "mimo-v2.5-pro",
 		Payload: payload,
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
 	if err != nil {
@@ -275,9 +275,9 @@ func TestOpenAICompatExecutorBackfillsReasoningReplayForXiaomiProviderWithoutExi
 		"base_url": server.URL + "/v1",
 		"api_key":  "test",
 	}}
-	payload := []byte(`{"model":"mi-thinking","thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":"Need to call tool","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`)
+	payload := []byte(`{"model":"mimo-v2.5","thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":"Need to call tool","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`)
 	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "mi-thinking",
+		Model:   "mimo-v2.5",
 		Payload: payload,
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
 	if err != nil {
