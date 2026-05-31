@@ -536,6 +536,8 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 		switch strategy {
 		case "fill-first", "fillfirst", "ff":
 			return "fill-first"
+		case "weight-robin", "weightrobin", "wr":
+			return "weight-robin"
 		default:
 			return "round-robin"
 		}
@@ -555,6 +557,8 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 		switch nextStrategy {
 		case "fill-first":
 			selector = &coreauth.FillFirstSelector{}
+		case "weight-robin":
+			selector = &coreauth.WeightedRobinSelector{}
 		default:
 			selector = &coreauth.RoundRobinSelector{}
 		}
