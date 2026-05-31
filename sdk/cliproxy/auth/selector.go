@@ -469,6 +469,7 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 	// Calculate cumulative weights
 	totalWeight := 0
 	weights := make([]int, len(available))
+	var weightsDetail []string
 	for i, a := range available {
 		w := authPriority(a)
 		if w <= 0 {
@@ -476,15 +477,24 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		}
 		totalWeight += w
 		weights[i] = totalWeight
+		weightsDetail = append(weightsDetail, fmt.Sprintf("%s(w=%d)", a.ID, w))
 	}
 
 	// Weighted random pick
 	r := rand.IntN(totalWeight)
+
+	var selectedIdx int
 	for i, cumWeight := range weights {
 		if r < cumWeight {
-			return available[i], nil
+			selectedIdx = i
+			break
 		}
 	}
+
+	log.Debugf("weight-robin: provider=%s model=%q candidates=[%s] totalWeight=%d roll=%d selected=%s",
+		provider, model, strings.Join(weightsDetail, ", "), totalWeight, r, available[selectedIdx].ID)
+
+	return available[selectedIdx], nil
 	return available[len(available)-1], nil
 }
 
