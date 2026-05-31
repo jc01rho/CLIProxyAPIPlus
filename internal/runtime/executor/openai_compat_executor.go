@@ -123,11 +123,25 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 	// Provider-specific request transformations
+	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
+	translated = resolveReasoningEffortConflict(translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
 	}
+	// Apply reasoning normalization for all providers when reasoning signals are present
+	if !isMistralProvider(e.provider) {
+		if normalized, _, errNorm := normalizeOpenAIToolCallReasoningContentWithOptions(translated, openAIReasoningNormalizationOptions{
+			requireReasoningSignal: true,
+		}); errNorm == nil {
+			translated = normalized
+		}
+	}
 	if isMistralProvider(e.provider) {
 		translated = stripMistralUnsupportedFields(translated)
+	}
+	// Strip unsupported top-level fields for DeepSeek models
+	if isDeepSeekModel(baseModel) {
+		translated = stripDeepSeekUnsupportedFields(translated)
 	}
 	if compatCfg := e.resolveCompatConfig(auth); needsToolCallIDNormalization(baseModel, compatCfg) {
 		if normalized, patched, errNorm := normalizeNVIDIAToolCallIDs(translated); patched > 0 && errNorm == nil {
@@ -338,11 +352,25 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 	// Provider-specific request transformations
+	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
+	translated = resolveReasoningEffortConflict(translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
 	}
+	// Apply reasoning normalization for all providers when reasoning signals are present
+	if !isMistralProvider(e.provider) {
+		if normalized, _, errNorm := normalizeOpenAIToolCallReasoningContentWithOptions(translated, openAIReasoningNormalizationOptions{
+			requireReasoningSignal: true,
+		}); errNorm == nil {
+			translated = normalized
+		}
+	}
 	if isMistralProvider(e.provider) {
 		translated = stripMistralUnsupportedFields(translated)
+	}
+	// Strip unsupported top-level fields for DeepSeek models
+	if isDeepSeekModel(baseModel) {
+		translated = stripDeepSeekUnsupportedFields(translated)
 	}
 	if compatCfg := e.resolveCompatConfig(auth); needsToolCallIDNormalization(baseModel, compatCfg) {
 		if normalized, patched, errNorm := normalizeNVIDIAToolCallIDs(translated); patched > 0 && errNorm == nil {
@@ -817,10 +845,54 @@ func isMiMoModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "mimo-v")
 }
 
+// isDeepSeekModel reports whether the model name refers to a DeepSeek model.
+func isDeepSeekModel(model string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "deepseek")
+}
+
+// stripDeepSeekUnsupportedFields removes DeepSeek-specific top-level fields that are
+// not supported by generic OpenAI-compatible providers.
+// Fields removed: reasoning, reasoningSummary, include, verbosity, interleaved, reasoning_effort
+// The "thinking" field is preserved as it's used by the thinking system.
+func stripDeepSeekUnsupportedFields(body []byte) []byte {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	fields := []string{"reasoning", "reasoningSummary", "include", "verbosity", "interleaved", "reasoning_effort"}
+	out := body
+	for _, field := range fields {
+		if gjson.GetBytes(out, field).Exists() {
+			updated, err := sjson.DeleteBytes(out, field)
+			if err == nil {
+				out = updated
+			}
+		}
+	}
+	return out
+}
+
 // isMistralProvider reports whether the provider identifier corresponds to Mistral.
 func isMistralProvider(provider string) bool {
 	p := strings.ToLower(strings.TrimSpace(provider))
 	return p == "mistral" || p == "mistral.ai"
+}
+
+// resolveReasoningEffortConflict resolves conflicts between the "reasoning" object
+// and the "reasoning_effort" string field. When both exist, "reasoning" is removed
+// to avoid sending conflicting signals to the upstream provider.
+func resolveReasoningEffortConflict(body []byte) []byte {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	hasReasoning := gjson.GetBytes(body, "reasoning").Exists()
+	hasReasoningEffort := gjson.GetBytes(body, "reasoning_effort").Exists()
+	if hasReasoning && hasReasoningEffort {
+		updated, err := sjson.DeleteBytes(body, "reasoning")
+		if err == nil {
+			return updated
+		}
+	}
+	return body
 }
 
 // needsToolCallIDNormalization reports whether the model requires 9-char alphanumeric

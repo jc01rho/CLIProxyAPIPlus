@@ -728,7 +728,7 @@ func gitLabGatewayHeaders(auth *cliproxyauth.Auth, targetProvider string) map[st
 	if _, ok := out["User-Agent"]; !ok {
 		out["User-Agent"] = gitLabNativeUserAgent
 	}
-	if strings.EqualFold(strings.TrimSpace(targetProvider), "openai") {
+	if strings.EqualFold(strings.TrimSpace(targetProvider), "openai") || strings.EqualFold(strings.TrimSpace(targetProvider), "anthropic") {
 		if _, ok := out["anthropic-beta"]; !ok {
 			out["anthropic-beta"] = gitLabContext1MBeta
 		}
