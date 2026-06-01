@@ -1575,3 +1575,70 @@ func TestWeightedRobinSelector_Concurrent(t *testing.T) {
 	}
 }
 
+func TestWeightedRobinSelector_CycleGuarantee(t *testing.T) {
+	t.Parallel()
+
+	selector := &WeightedRobinSelector{}
+	auths := []*Auth{
+		{ID: "hi", Attributes: map[string]string{"priority": "3"}},
+		{ID: "lo", Attributes: map[string]string{"priority": "1"}},
+	}
+
+	// totalWeight = 3 + 1 = 4
+	// Within each cycle of 4 picks, 'hi' must appear exactly 3 times and 'lo' exactly 1 time.
+	for cycle := 0; cycle < 200; cycle++ {
+		counts := map[string]int{}
+		for i := 0; i < 4; i++ {
+			got, err := selector.Pick(context.Background(), "test", "", cliproxyexecutor.Options{}, auths)
+			if err != nil {
+				t.Fatalf("cycle %d Pick() #%d error = %v", cycle, i, err)
+			}
+			counts[got.ID]++
+		}
+		if counts["hi"] != 3 {
+			t.Errorf("cycle %d: hi count = %d, want 3", cycle, counts["hi"])
+		}
+		if counts["lo"] != 1 {
+			t.Errorf("cycle %d: lo count = %d, want 1", cycle, counts["lo"])
+		}
+	}
+}
+
+func TestWeightedRobinSelector_CycleRebuildOnWeightChange(t *testing.T) {
+	t.Parallel()
+
+	selector := &WeightedRobinSelector{}
+	auths := []*Auth{
+		{ID: "a", Attributes: map[string]string{"priority": "3"}},
+		{ID: "b", Attributes: map[string]string{"priority": "1"}},
+	}
+
+	// Consume half a cycle (2 of 4)
+	for i := 0; i < 2; i++ {
+		_, err := selector.Pick(context.Background(), "test", "", cliproxyexecutor.Options{}, auths)
+		if err != nil {
+			t.Fatalf("initial Pick() #%d error = %v", i, err)
+		}
+	}
+
+	// Change weight: a 3→1, b 1→3
+	auths[0].Attributes["priority"] = "1"
+	auths[1].Attributes["priority"] = "3"
+
+	// New cycle should be 1+3=4, rebuild detected
+	counts := map[string]int{}
+	for i := 0; i < 4; i++ {
+		got, err := selector.Pick(context.Background(), "test", "", cliproxyexecutor.Options{}, auths)
+		if err != nil {
+			t.Fatalf("new Pick() #%d error = %v", i, err)
+		}
+		counts[got.ID]++
+	}
+	if counts["a"] != 1 {
+		t.Errorf("after weight change: a count = %d, want 1", counts["a"])
+	}
+	if counts["b"] != 3 {
+		t.Errorf("after weight change: b count = %d, want 3", counts["b"])
+	}
+}
+

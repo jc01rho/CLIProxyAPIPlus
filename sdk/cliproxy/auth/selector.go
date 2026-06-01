@@ -36,12 +36,21 @@ type RoundRobinSelector struct {
 // rolling-window subscription caps (e.g. chat message limits).
 type FillFirstSelector struct{}
 
-// WeightedRobinSelector provides weighted random selection.
+// WeightedRobinSelector provides weighted random selection via shuffled cycles.
 // Priority values are interpreted as weights: higher priority auths receive
 // proportionally more traffic. Auths with priority 0 (or no priority) are
-// treated as weight 1. Each pick is random but probability is proportional
-// to weight, so the distribution ratio converges over time.
-type WeightedRobinSelector struct{}
+// treated as weight 1.
+//
+// Each Pick() advances through a shuffled cycle of length equal to totalWeight.
+// Within one cycle every auth appears exactly its weight number of times —
+// guaranteeing execution even for low-weight keys in small sample sizes.
+type WeightedRobinSelector struct {
+	mu          sync.Mutex
+	cycle       []*Auth // shuffled cycle, length = normalized totalWeight
+	idx         int     // current position in cycle
+	totalWeight int     // total weight when cycle was built
+	weightHash  uint64  // FNV hash of auth IDs × weights when cycle was built
+}
 
 type blockReason int
 
@@ -266,37 +275,6 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 	return available, nil
 }
 
-// getAllAvailableAuthsWeighted returns all non-blocked auths across all priorities.
-// Used by WeightedRobinSelector to apply weight-based distribution.
-func getAllAvailableAuthsWeighted(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
-	if len(auths) == 0 {
-		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
-	}
-
-	availableByPriority, cooldownCount, earliest := collectAvailableByPriority(auths, model, now)
-	if len(availableByPriority) == 0 {
-		if cooldownCount == len(auths) && !earliest.IsZero() {
-			providerForError := provider
-			if providerForError == "mixed" {
-				providerForError = ""
-			}
-			resetIn := earliest.Sub(now)
-			if resetIn < 0 {
-				resetIn = 0
-			}
-			return nil, newModelCooldownError(model, providerForError, resetIn)
-		}
-		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
-	}
-
-	// Flatten all priority buckets into a single slice
-	var result []*Auth
-	for _, bucket := range availableByPriority {
-		result = append(result, bucket...)
-	}
-	return result, nil
-}
-
 // getAllAvailableAuths returns all non-blocked auths regardless of priority.
 // Used by WeightedRobinSelector to distribute across all priorities by weight.
 func getAllAvailableAuths(auths []*Auth, model string, now time.Time) []*Auth {
@@ -466,36 +444,77 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		return available[0], nil
 	}
 
-	// Calculate cumulative weights
-	totalWeight := 0
-	weights := make([]int, len(available))
-	var weightsDetail []string
-	for i, a := range available {
-		w := authPriority(a)
-		if w <= 0 {
-			w = 1
-		}
-		totalWeight += w
-		weights[i] = totalWeight
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	currentTotal := calculateTotalWeight(available)
+	currentHash := calculateWeightHash(available)
+	if s.totalWeight != currentTotal || s.weightHash != currentHash {
+		s.rebuildCycle(available)
+	}
+
+	selected := s.cycle[s.idx]
+	s.idx++
+	if s.idx >= len(s.cycle) {
+		s.idx = 0
+	}
+
+	weightsDetail := make([]string, 0, len(available))
+	for _, a := range available {
+		w := authWeight(a)
 		weightsDetail = append(weightsDetail, fmt.Sprintf("%s(w=%d)", a.ID, w))
 	}
+	log.Debugf("weight-robin: provider=%s model=%q candidates=[%s] totalWeight=%d cycleIdx=%d selected=%s",
+		provider, model, strings.Join(weightsDetail, ", "), currentTotal, s.idx-1, selected.ID)
 
-	// Weighted random pick
-	r := rand.IntN(totalWeight)
+	return selected, nil
+}
 
-	var selectedIdx int
-	for i, cumWeight := range weights {
-		if r < cumWeight {
-			selectedIdx = i
-			break
+func authWeight(a *Auth) int {
+	w := authPriority(a)
+	if w <= 0 {
+		return 1
+	}
+	if w > 100 {
+		return 100
+	}
+	return w
+}
+
+func calculateTotalWeight(auths []*Auth) int {
+	total := 0
+	for _, a := range auths {
+		total += authWeight(a)
+	}
+	return total
+}
+
+func calculateWeightHash(auths []*Auth) uint64 {
+	h := fnv.New64()
+	for _, a := range auths {
+		w := authWeight(a)
+		h.Write([]byte(a.ID))
+		h.Write([]byte{byte(w), byte(w >> 8), byte(w >> 16), byte(w >> 24)})
+	}
+	return h.Sum64()
+}
+
+func (s *WeightedRobinSelector) rebuildCycle(auths []*Auth) {
+	total := calculateTotalWeight(auths)
+	cycle := make([]*Auth, 0, total)
+	for _, a := range auths {
+		w := authWeight(a)
+		for j := 0; j < w; j++ {
+			cycle = append(cycle, a)
 		}
 	}
-
-	log.Debugf("weight-robin: provider=%s model=%q candidates=[%s] totalWeight=%d roll=%d selected=%s",
-		provider, model, strings.Join(weightsDetail, ", "), totalWeight, r, available[selectedIdx].ID)
-
-	return available[selectedIdx], nil
-	return available[len(available)-1], nil
+	rand.Shuffle(len(cycle), func(i, j int) {
+		cycle[i], cycle[j] = cycle[j], cycle[i]
+	})
+	s.cycle = cycle
+	s.totalWeight = total
+	s.weightHash = calculateWeightHash(auths)
+	s.idx = 0
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
