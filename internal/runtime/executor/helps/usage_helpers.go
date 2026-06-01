@@ -231,7 +231,7 @@ func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) 
 		requestID := internallogging.GetRequestID(ctx)
 		if requestID != "" {
 			log.WithField("request_id", requestID).
-				Infof("[stream-complete] tokens in=%d out=%d cached=%d",
+				Debugf("[stream-complete] tokens in=%d out=%d cached=%d",
 					record.Detail.InputTokens, record.Detail.OutputTokens, record.Detail.CachedTokens)
 		}
 	}
