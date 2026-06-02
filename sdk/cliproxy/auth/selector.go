@@ -44,12 +44,81 @@ type FillFirstSelector struct{}
 // Each Pick() advances through a shuffled cycle of length equal to totalWeight.
 // Within one cycle every auth appears exactly its weight number of times —
 // guaranteeing execution even for low-weight keys in small sample sizes.
+//
+// To prevent unbounded memory growth across thousands of configured models/
+// aliases, the selector evicts auths that have not been picked within
+// `lruEvictWindow` from the cycle. The eviction is a soft filter: if it
+// would empty the cycle entirely, the full set is used as a fallback so
+// that traffic is never starved.
 type WeightedRobinSelector struct {
-	mu          sync.Mutex
-	cycle       []*Auth // shuffled cycle, length = normalized totalWeight
-	idx         int     // current position in cycle
-	totalWeight int     // total weight when cycle was built
-	weightHash  uint64  // FNV hash of auth IDs × weights when cycle was built
+	mu             sync.Mutex
+	cycle          []*Auth            // shuffled cycle, length = normalized totalWeight
+	idx            int                // current position in cycle
+	totalWeight    int                // total weight when cycle was built
+	weightHash     uint64             // FNV hash of auth IDs × weights when cycle was built
+	lastUsed       map[string]time.Time // LRU: last time each auth was picked (by ID)
+	lruEvictWindow time.Duration      // 0 disables eviction; default 24h
+}
+
+const defaultLRUEvictWindow = 24 * time.Hour
+
+func (s *WeightedRobinSelector) now() time.Time {
+	return time.Now()
+}
+
+func (s *WeightedRobinSelector) shouldEvict(auth *Auth, now time.Time) bool {
+	if s.lruEvictWindow <= 0 || auth == nil {
+		return false
+	}
+	last, ok := s.lastUsed[auth.ID]
+	if !ok {
+		// Never picked: keep it (otherwise newly added auths would never
+		// enter the cycle).
+		return false
+	}
+	return now.Sub(last) > s.lruEvictWindow
+}
+
+// evictUnusedAuths returns the subset of `auths` that have been used
+// within the LRU window, or the full set if the filtered set would be
+// empty. This prevents the cycle from being starved when many auths are
+// stale.
+func (s *WeightedRobinSelector) evictUnusedAuths(auths []*Auth) []*Auth {
+	if s.lruEvictWindow <= 0 || len(auths) == 0 {
+		return auths
+	}
+	now := s.now()
+	kept := make([]*Auth, 0, len(auths))
+	for _, a := range auths {
+		if a == nil {
+			continue
+		}
+		if !s.shouldEvict(a, now) {
+			kept = append(kept, a)
+		}
+	}
+	if len(kept) == 0 {
+		// Fallback: keep at least one auth (prefer the one most recently
+		// used) so the selector never returns "no auth available" simply
+		// because every auth happens to be stale.
+		var newest *Auth
+		var newestAt time.Time
+		for _, a := range auths {
+			if a == nil {
+				continue
+			}
+			if last, ok := s.lastUsed[a.ID]; ok && (newest == nil || last.After(newestAt)) {
+				newest = a
+				newestAt = last
+			}
+		}
+		if newest != nil {
+			kept = append(kept, newest)
+		} else {
+			kept = append(kept, auths[0])
+		}
+	}
+	return kept
 }
 
 type blockReason int
@@ -441,16 +510,34 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 
 	if len(available) == 1 {
+		s.mu.Lock()
+		if s.lastUsed == nil {
+			s.lastUsed = make(map[string]time.Time)
+		}
+		s.lastUsed[available[0].ID] = now
+		s.mu.Unlock()
 		return available[0], nil
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	currentTotal := calculateTotalWeight(available)
-	currentHash := calculateWeightHash(available)
+	if s.lastUsed == nil {
+		s.lastUsed = make(map[string]time.Time)
+	}
+	if s.lruEvictWindow == 0 {
+		s.lruEvictWindow = defaultLRUEvictWindow
+	}
+
+	// Apply LRU eviction before building the cycle so stale auths do not
+	// consume cycle positions. The eviction is best-effort: if it would
+	// empty the set, the full available list is used as a fallback.
+	cycleAuths := s.evictUnusedAuths(available)
+
+	currentTotal := calculateTotalWeight(cycleAuths)
+	currentHash := calculateWeightHash(cycleAuths)
 	if s.totalWeight != currentTotal || s.weightHash != currentHash {
-		s.rebuildCycle(available)
+		s.rebuildCycle(cycleAuths)
 	}
 
 	selected := s.cycle[s.idx]
@@ -458,9 +545,10 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 	if s.idx >= len(s.cycle) {
 		s.idx = 0
 	}
+	s.lastUsed[selected.ID] = now
 
-	weightsDetail := make([]string, 0, len(available))
-	for _, a := range available {
+	weightsDetail := make([]string, 0, len(cycleAuths))
+	for _, a := range cycleAuths {
 		w := authWeight(a)
 		weightsDetail = append(weightsDetail, fmt.Sprintf("%s(w=%d)", a.ID, w))
 	}
