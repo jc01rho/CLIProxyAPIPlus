@@ -1452,8 +1452,12 @@ func AuthMiddleware(manager *sdkaccess.Manager, apiKeyIPBlacklist ...*management
 			return
 		}
 		statusCode := err.HTTPStatusCode()
-		if blacklist != nil && statusCode == http.StatusUnauthorized && sdkaccess.IsAuthErrorCode(err, sdkaccess.AuthErrorCodeInvalidCredential) && strings.EqualFold(strings.TrimSpace(err.ProviderType), sdkaccess.AccessProviderTypeConfigAPIKey) {
-			blacklist.RecordFailure(c.ClientIP())
+		if blacklist != nil && statusCode == http.StatusUnauthorized && strings.EqualFold(strings.TrimSpace(err.ProviderType), sdkaccess.AccessProviderTypeConfigAPIKey) {
+			// Record failure for both invalid credentials and missing credentials
+			// to protect against repeated unauthorized access attempts
+			if sdkaccess.IsAuthErrorCode(err, sdkaccess.AuthErrorCodeInvalidCredential) || sdkaccess.IsAuthErrorCode(err, sdkaccess.AuthErrorCodeNoCredentials) {
+				blacklist.RecordFailure(c.ClientIP())
+			}
 		}
 		if statusCode >= http.StatusInternalServerError {
 			log.Errorf("authentication middleware error: %v", err)

@@ -3696,6 +3696,8 @@ func isModelSupportErrorMessage(message string) bool {
 		"model unavailable",
 		"not available for your plan",
 		"not available for your account",
+		"no endpoints found",
+		"does not support",
 	}
 	for _, pattern := range patterns {
 		if strings.Contains(lower, pattern) {
@@ -5693,7 +5695,9 @@ func (m *Manager) shouldAllowRouteModelFallback(err error) bool {
 	case http.StatusUnprocessableEntity:
 		return isModelSupportError(err)
 	case http.StatusNotFound:
-		return false
+		// 404 with model support error messages (e.g., "No endpoints found that support image input")
+		// should trigger fallback to try alternative models
+		return isModelSupportErrorMessage(err.Error())
 	default:
 		return true
 	}
