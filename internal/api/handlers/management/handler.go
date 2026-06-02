@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -224,6 +225,13 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 
 		allowed, statusCode, errMsg := h.AuthenticateManagementKey(clientIP, localClient, provided)
 		if !allowed {
+			var secretHash, envSecret string
+			if h.cfg != nil {
+				secretHash = h.cfg.RemoteManagement.SecretKey
+			}
+			envSecret = h.envSecret
+			log.Debugf("management auth rejected: clientIP=%s localClient=%t allowRemote=%t secretHashSet=%t envSecretSet=%t providedLen=%d status=%d err=%q",
+				clientIP, localClient, h.cfg != nil && h.cfg.RemoteManagement.AllowRemote, secretHash != "", envSecret != "", len(provided), statusCode, errMsg)
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
 			return
 		}
