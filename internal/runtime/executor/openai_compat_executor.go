@@ -910,20 +910,18 @@ func isOpenCodeZenProvider(baseURL string) bool {
 	return strings.Contains(lower, "opencode.ai/zen/")
 }
 
-// isOpenCodeZenMiniMaxModel reports whether the model name targets a MiniMax
-// upstream behind the opencode.ai/zen/ gateway. MiniMax only allows
-// thinking.type "adaptive" or "disabled" and rejects "enabled".
+// isOpenCodeZenMiniMaxModel reports whether the model name targets the
+// MiniMax-M3 upstream behind the opencode.ai/zen/ gateway. MiniMax-M3
+// only allows thinking.type "adaptive" or "disabled" and rejects "enabled".
+// Other providers behind the gateway (e.g. Claude, GPT) accept "enabled"
+// and must not be remapped.
 func isOpenCodeZenMiniMaxModel(model string) bool {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	if lower == "" {
 		return false
 	}
-	if !strings.Contains(lower, "minimax") {
-		return false
-	}
-	// Exclude any minimax-named model that is not actually served by the
-	// opencode.ai/zen/ MiniMax backend.
-	return true
+	// Match the specific MiniMax-M3 model name (case-insensitive).
+	return strings.Contains(lower, "minimax-m3")
 }
 
 // normalizeOpenCodeZenThinkingType rewrites thinking.type from "enabled"
