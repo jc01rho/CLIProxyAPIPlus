@@ -29,6 +29,10 @@ const (
 	apiResponseKey          = "API_RESPONSE"
 	apiWebsocketTimelineKey = "API_WEBSOCKET_TIMELINE"
 	creditsUsedKey          = "__antigravity_credits_used__"
+
+	// maxErrorOnlyUpstreamBodyBytes caps the upstream request body stored when cfg.RequestLog is false,
+	// so that error-only captures don't spike memory for large request payloads.
+	maxErrorOnlyUpstreamBodyBytes = 1 << 20 // 1 MiB
 )
 
 type UpstreamRequestSummary struct {
@@ -64,6 +68,9 @@ type upstreamAttempt struct {
 }
 
 // RecordAPIRequest stores the upstream request metadata in Gin context for request logging.
+// The attempt entry is always created so that response recording functions can find it.
+// When cfg.RequestLog is false, a minimal log is built (URL, method, body up to 1 MiB, no
+// headers/auth) so that error-only captures remain useful without excessive memory usage.
 func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
@@ -73,10 +80,8 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 		"url":   strings.TrimSpace(info.URL),
 		"model": strings.TrimSpace(gjson.GetBytes(info.Body, "model").String()),
 	})
-	if cfg == nil || !cfg.RequestLog {
-		return
-	}
 
+	fullLog := cfg != nil && cfg.RequestLog
 	attempts := getAttempts(ginCtx)
 	index := len(attempts) + 1
 
@@ -91,14 +96,20 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 	if info.Method != "" {
 		builder.WriteString(fmt.Sprintf("HTTP Method: %s\n", info.Method))
 	}
-	if auth := formatAuthInfo(info); auth != "" {
-		builder.WriteString(fmt.Sprintf("Auth: %s\n", auth))
+	if fullLog {
+		if auth := formatAuthInfo(info); auth != "" {
+			builder.WriteString(fmt.Sprintf("Auth: %s\n", auth))
+		}
+		builder.WriteString("\nHeaders:\n")
+		writeHeaders(builder, info.Headers)
 	}
-	builder.WriteString("\nHeaders:\n")
-	writeHeaders(builder, info.Headers)
 	builder.WriteString("\nBody:\n")
-	if len(info.Body) > 0 {
-		builder.WriteString(string(bytes.Clone(info.Body)))
+	body := info.Body
+	if !fullLog && len(body) > maxErrorOnlyUpstreamBodyBytes {
+		body = body[:maxErrorOnlyUpstreamBodyBytes]
+	}
+	if len(body) > 0 {
+		builder.WriteString(string(bytes.Clone(body)))
 	} else {
 		builder.WriteString("<empty>")
 	}
@@ -115,9 +126,12 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 }
 
 // RecordAPIResponseMetadata captures upstream response status/header information for the latest attempt.
+// When cfg.RequestLog is false, metadata is still captured for error responses (status >= 400) so
+// that gin_logger.go and file-based error logging can include the upstream response details.
 func RecordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
 	logging.SetResponseHeaders(ctx, headers)
-	if cfg == nil || !cfg.RequestLog {
+	isError := status >= http.StatusBadRequest
+	if cfg == nil || (!cfg.RequestLog && !isError) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -142,8 +156,10 @@ func RecordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status i
 }
 
 // RecordAPIResponseError adds an error entry for the latest attempt when no HTTP response is available.
+// Errors are always captured regardless of cfg.RequestLog so that failed requests can be diagnosed
+// even when detailed request logging is disabled.
 func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) {
-	if cfg == nil || !cfg.RequestLog || err == nil {
+	if err == nil {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -167,10 +183,10 @@ func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 }
 
 // AppendAPIResponseChunk appends an upstream response chunk to Gin context for request logging.
+// When cfg.RequestLog is false, chunks are still captured if the current attempt has an error
+// status recorded (set by RecordAPIResponseMetadata), enabling full error response body logging.
 func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byte) {
-	if cfg == nil || !cfg.RequestLog {
-		return
-	}
+	fullLog := cfg != nil && cfg.RequestLog
 	data := bytes.TrimSpace(bytes.Clone(chunk))
 	if len(data) == 0 {
 		return
@@ -178,6 +194,13 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
 		return
+	}
+	if !fullLog {
+		// Only capture chunks when an error status has been recorded for the current attempt.
+		existingAttempts := getAttempts(ginCtx)
+		if len(existingAttempts) == 0 || !existingAttempts[len(existingAttempts)-1].statusWritten {
+			return
+		}
 	}
 	attempts, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(attempt)
