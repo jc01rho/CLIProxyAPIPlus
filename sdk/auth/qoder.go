@@ -179,3 +179,51 @@ func RefreshQoderToken(ctx context.Context, cfg *config.Config, storage *qoder.Q
 
 	return nil
 }
+
+// ImportFromCredentialFile reads a Qoder CLI credential file and converts
+// it to a coreauth.Auth suitable for registration in the auth manager.
+// The loader tries the well-known default paths (~/.qoder/.auth/user,
+// ~/.qoderwork/.auth/user) and picks the first one that exists.
+func (a QoderAuthenticator) ImportFromCredentialFile() (*coreauth.Auth, error) {
+	storage, path, err := qoder.LoadCredentialFromAnyDefault()
+	if err != nil {
+		return nil, fmt.Errorf("qoder: credential file import failed: %w", err)
+	}
+
+	label := storage.UserName
+	if label == "" {
+		label = storage.UserID
+	}
+	if label == "" {
+		label = "qoder-user"
+	}
+
+	now := time.Now()
+	fileName := fmt.Sprintf("qoder-imported-%s.json", sanitizeFileName(label))
+
+	metadata := map[string]any{
+		"type":          "qoder",
+		"user_id":       storage.UserID,
+		"user_name":     storage.UserName,
+		"access_token":  storage.AccessToken,
+		"refresh_token": storage.RefreshToken,
+		"timestamp":     now.UnixMilli(),
+	}
+	if storage.ExpiresAt != "" {
+		metadata["expires_at"] = storage.ExpiresAt
+	}
+
+	fmt.Printf("Imported Qoder credentials from %s (user: %s)\n", path, label)
+
+	return &coreauth.Auth{
+		ID:        fileName,
+		Provider:  a.Provider(),
+		FileName:  fileName,
+		Label:     label,
+		Storage:   storage,
+		Metadata:  metadata,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil
+}
+

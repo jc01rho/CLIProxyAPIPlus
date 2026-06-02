@@ -8,8 +8,18 @@ const (
 	defaultCenterURL  = "https://center.qoder.sh"
 	defaultOpenapiURL = "https://openapi.qoder.sh"
 
-	// API endpoint for chat completions.
-	qoderAPIEndpoint = "https://api2-v2.qoder.sh/model/v1/chat/completions"
+	// BaseURL is the production API base (the host serving the chat
+	// completions endpoint). It is exported so the executor can build a
+	// full request URL without depending on an unexported constant.
+	BaseURL = "https://api2-v2.qoder.sh"
+
+	// ChatCompletionsPath is appended to BaseURL to form the chat
+	// completions request URL. The path mirrors the @ali/qoder-agent-sdk.
+	ChatCompletionsPath = "/model/v1/chat/completions"
+
+	// UserAgent is sent on every Qoder API request. The version suffix is
+	// kept in lockstep with the Qoder CLI releases.
+	UserAgent = "qoder/1.0.0"
 
 	// qoderVersion is the version string sent in User-Agent.
 	qoderVersion = "1.0.0"
