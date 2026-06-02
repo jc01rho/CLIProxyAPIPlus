@@ -101,6 +101,9 @@ func main() {
 	var githubCopilotLogin bool
 	var clineLogin bool
 	var codeBuddyLogin bool
+	var qoderLogin bool
+	var qoderImport bool
+	var qoderPAT string
 	var projectID string
 	var vertexImport string
 	var vertexImportPrefix string
@@ -144,6 +147,9 @@ func main() {
 	flag.BoolVar(&githubCopilotLogin, "github-copilot-login", false, "Login to GitHub Copilot using device flow")
 	flag.BoolVar(&clineLogin, "cline-login", false, "Login to Cline using OAuth")
 	flag.BoolVar(&codeBuddyLogin, "codebuddy-login", false, "Login to CodeBuddy using browser OAuth flow")
+	flag.BoolVar(&qoderLogin, "qoder-login", false, "Login to Qoder using OAuth device flow + PKCE")
+	flag.BoolVar(&qoderImport, "qoder-import", false, "Import Qoder credentials from ~/.qoder/.auth/user (or ~/.qoderwork/.auth/user)")
+	flag.StringVar(&qoderPAT, "qoder-pat", "", "Authenticate to Qoder with a personal access token (skips device flow)")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
@@ -658,6 +664,13 @@ func main() {
 		setKiroIncognitoMode(cfg, useIncognito, noIncognito)
 		kiro.InitFingerprintConfig(cfg)
 		cmd.DoKiroIDCLogin(cfg, options, kiroIDCStartURL, kiroIDCRegion, kiroIDCFlow)
+	} else if qoderLogin {
+		if qoderPAT != "" {
+			options.PersonalToken = qoderPAT
+		}
+		cmd.DoQoderLogin(cfg, options)
+	} else if qoderImport {
+		cmd.DoQoderImport(cfg, options)
 	} else {
 		// In cloud deploy mode without config file, just wait for shutdown signals
 		if isCloudDeploy && !configFileExists {

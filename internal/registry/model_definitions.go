@@ -91,6 +91,149 @@ func GetXAIModels() []*ModelInfo {
 }
 
 
+// GetQoderModels returns the available models for the Qoder OAuth provider.
+// The Qoder API accepts short model IDs (lite, auto, efficient, …) over an
+// OpenAI-compatible endpoint; the registry stores the prefixed "qoder-*"
+// variant so the IDs do not collide with other providers.
+func GetQoderModels() []*ModelInfo {
+	now := int64(1748044800) // 2025-05-24
+	return []*ModelInfo{
+		{
+			ID:                  "qoder-lite",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder Lite",
+			Description:         "Qoder Lite (free tier)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "qoder-auto",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder Auto",
+			Description:         "Automatic model selection by Qoder",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "qoder-efficient",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder Efficient",
+			Description:         "Qoder Efficient (0.3x credit)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "qoder-performance",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder Performance",
+			Description:         "Qoder Performance (1.1x credit)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "qoder-ultimate",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder Ultimate",
+			Description:         "Qoder Ultimate (1.6x credit)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "qoder-q35model_preview",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder Qwen3.6 Plus Preview",
+			Description:         "Qwen3.6 Plus Preview via Qoder",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "qoder-qmodel",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder Qwen Coder 1.0",
+			Description:         "Qwen-Coder-Qoder 1.0 via Qoder (0.2x credit)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "qoder-q35model",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder Qwen3.5 Plus",
+			Description:         "Qwen3.5 Plus via Qoder (0.2x credit)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "qoder-gmodel",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder GLM-5",
+			Description:         "GLM-5 via Qoder (0.5x credit)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "qoder-kmodel",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder Kimi K2.5",
+			Description:         "Kimi K2.5 via Qoder (0.3x credit)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "qoder-mmodel",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "qoder",
+			Type:                "qoder",
+			DisplayName:         "Qoder MiniMax M2.7",
+			Description:         "MiniMax M2.7 via Qoder (0.2x credit)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+	}
+}
+
+
 // GetCodeBuddyModels returns the available models for CodeBuddy (Tencent).
 // These models are served through the copilot.tencent.com API.
 func GetCodeBuddyModels() []*ModelInfo {
@@ -429,6 +572,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAntigravityModels()
 	case "codebuddy":
 		return GetCodeBuddyModels()
+	case "qoder":
+		return GetQoderModels()
 	case "cursor":
 		return GetCursorModels()
 	case "xai", "x-ai", "grok":
@@ -472,6 +617,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetKiloModels(),
 		GetAmazonQModels(),
 		GetCodeBuddyModels(),
+		GetQoderModels(),
 		GetCursorModels(),
 		data.XAI,
 	}
