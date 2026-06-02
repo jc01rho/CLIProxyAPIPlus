@@ -671,3 +671,100 @@ func TestPrepareExecutionModels_AuthSpecificRealFirstAliasSecond(t *testing.T) {
 		t.Fatalf("prepareExecutionModels(authB) = %v, want [%q]", modelsB, "gpt-5.2")
 	}
 }
+
+func TestPrepareExecutionModels_FallbackModelsDoNotReverseResolveAliases(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil, nil, nil)
+	m.SetFallbackModels(map[string]string{
+		"gpt-5.5": "higher-coding",
+	})
+
+	auth := &Auth{
+		ID:       "codex-auth-fallback-does-not-reverse-alias",
+		Provider: "codex",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+	}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{
+		{ID: "higher-coding"},
+		{ID: "gpt-5.5"},
+	})
+	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+
+	models := m.prepareExecutionModels(auth, "higher-coding")
+	if len(models) != 1 || models[0] != "higher-coding" {
+		t.Fatalf("prepareExecutionModels(higher-coding) = %v, want [%q]", models, "higher-coding")
+	}
+}
+
+func TestPrepareExecutionModels_HigherCodingDoesNotResolveToGpt55ViaOpenAICompatAlias(t *testing.T) {
+	t.Parallel()
+
+	// Scenario: OpenAI-compat config has name: "gpt-5.5" with alias: "higher-coding".
+	// Requesting "higher-coding" should resolve to "gpt-5.5" through the alias pool,
+	// but only for the auth that owns this OpenAI-compat entry.
+	// A different auth without this mapping should NOT resolve "higher-coding" → "gpt-5.5".
+	cfg := &internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
+			Name: "pool",
+			Models: []internalconfig.OpenAICompatibilityModel{
+				{Name: "gpt-5.5", Alias: "higher-coding"},
+			},
+		}},
+	}
+	m := NewManager(nil, nil, nil)
+	m.SetConfig(cfg)
+
+	// Auth WITH OpenAI-compat mapping
+	authWithMapping := &Auth{
+		ID:       "auth-with-compat-mapping",
+		Provider: "pool",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"api_key":      "test-key",
+			"compat_name":  "pool",
+			"provider_key": "pool",
+		},
+	}
+	if _, err := m.Register(context.Background(), authWithMapping); err != nil {
+		t.Fatalf("register authWithMapping: %v", err)
+	}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(authWithMapping.ID, "pool", []*registry.ModelInfo{{ID: "higher-coding"}})
+	t.Cleanup(func() { reg.UnregisterClient(authWithMapping.ID) })
+
+	// Auth WITHOUT OpenAI-compat mapping
+	authWithoutMapping := &Auth{
+		ID:       "auth-without-compat-mapping",
+		Provider: "claude",
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+	}
+	if _, err := m.Register(context.Background(), authWithoutMapping); err != nil {
+		t.Fatalf("register authWithoutMapping: %v", err)
+	}
+	reg.RegisterClient(authWithoutMapping.ID, "claude", []*registry.ModelInfo{{ID: "higher-coding"}})
+	t.Cleanup(func() { reg.UnregisterClient(authWithoutMapping.ID) })
+
+	// Auth WITH mapping: should resolve higher-coding → gpt-5.5 via OpenAI-compat alias
+	modelsWithMapping := m.prepareExecutionModels(authWithMapping, "higher-coding")
+	if len(modelsWithMapping) != 1 || modelsWithMapping[0] != "gpt-5.5" {
+		t.Fatalf("prepareExecutionModels(authWithMapping, higher-coding) = %v, want [%q]", modelsWithMapping, "gpt-5.5")
+	}
+
+	// Auth WITHOUT mapping: should keep higher-coding as-is
+	modelsWithoutMapping := m.prepareExecutionModels(authWithoutMapping, "higher-coding")
+	if len(modelsWithoutMapping) != 1 || modelsWithoutMapping[0] != "higher-coding" {
+		t.Fatalf("prepareExecutionModels(authWithoutMapping, higher-coding) = %v, want [%q]", modelsWithoutMapping, "higher-coding")
+	}
+}

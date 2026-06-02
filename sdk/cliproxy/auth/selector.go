@@ -418,7 +418,7 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = opts
 	now := time.Now()
-	available := getAllAvailableAuths(auths, model, now)
+	available := getAllAvailableAuths(auths, "", now)
 	if len(available) == 0 {
 		cooldownCount := 0
 		earliest := time.Time{}
