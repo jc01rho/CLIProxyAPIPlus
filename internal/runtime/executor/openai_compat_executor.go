@@ -125,6 +125,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	// Provider-specific request transformations
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
+	// Opencode.ai/zen/ gateway upstream providers (e.g. MiniMax) only accept
+	// "adaptive" or "disabled" for thinking.type. Rewrite "enabled" → "adaptive".
+	translated = normalizeOpenCodeZenThinkingType(baseURL, translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
 	}
@@ -354,6 +357,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Provider-specific request transformations
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
+	// Opencode.ai/zen/ gateway upstream providers (e.g. MiniMax) only accept
+	// "adaptive" or "disabled" for thinking.type. Rewrite "enabled" → "adaptive".
+	translated = normalizeOpenCodeZenThinkingType(baseURL, translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
 	}
@@ -893,6 +899,35 @@ func resolveReasoningEffortConflict(body []byte) []byte {
 		}
 	}
 	return body
+}
+
+// isOpenCodeZenProvider reports whether the base URL points to the
+// opencode.ai/zen/ gateway. The Zen gateway routes to upstream providers
+// (e.g. MiniMax) that only accept "adaptive" or "disabled" for thinking.type
+// and reject "enabled".
+func isOpenCodeZenProvider(baseURL string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseURL))
+	return strings.Contains(lower, "opencode.ai/zen/")
+}
+
+// normalizeOpenCodeZenThinkingType rewrites thinking.type from "enabled"
+// to "adaptive" for the opencode.ai/zen/ gateway, since its upstream
+// providers (notably MiniMax) reject "enabled" and only allow "adaptive"
+// or "disabled". If thinking.type is "disabled" or "adaptive", it is left
+// untouched.
+func normalizeOpenCodeZenThinkingType(baseURL string, body []byte) []byte {
+	if !isOpenCodeZenProvider(baseURL) || len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
+	if thinkingType == "" || thinkingType == "disabled" || thinkingType == "adaptive" {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, "thinking.type", "adaptive")
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 // needsToolCallIDNormalization reports whether the model requires 9-char alphanumeric
