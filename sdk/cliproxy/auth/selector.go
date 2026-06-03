@@ -648,7 +648,12 @@ type CycleEntry struct {
 }
 
 // QueueState returns a snapshot of the current queue state for API exposure.
-func (s *WeightedRobinSelector) QueueState(model string) QueueStateSnapshot {
+// allAuths should contain every registered auth (typically coreManager.List())
+// so the snapshot reflects the full set of providers, not just auths that have
+// been routed through Pick() at least once. Auths only seen in Pick() (knownAuths)
+// contribute lastPicked and recent-pick metadata, but the entry list itself is
+// derived from allAuths.
+func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) QueueStateSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -671,17 +676,17 @@ func (s *WeightedRobinSelector) QueueState(model string) QueueStateSnapshot {
 	}
 
 	entryMap := make(map[string]*QueueStateEntry)
-	for id, a := range s.knownAuths {
-		if a == nil {
+	for _, a := range allAuths {
+		if a == nil || strings.TrimSpace(a.ID) == "" {
 			continue
 		}
 		blocked, _, _ := isAuthBlockedForModel(a, model, now)
-		pos, inCycle := cycleIndex[id]
+		pos, inCycle := cycleIndex[a.ID]
 		if !inCycle {
 			pos = -1
 		}
-		entryMap[id] = &QueueStateEntry{
-			AuthID:    id,
+		entryMap[a.ID] = &QueueStateEntry{
+			AuthID:    a.ID,
 			Name:      a.Label,
 			Provider:  a.Provider,
 			Weight:    authWeight(a),
@@ -697,7 +702,10 @@ func (s *WeightedRobinSelector) QueueState(model string) QueueStateSnapshot {
 		entries = append(entries, *e)
 	}
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Weight > entries[j].Weight
+		if entries[i].Weight != entries[j].Weight {
+			return entries[i].Weight > entries[j].Weight
+		}
+		return entries[i].AuthID < entries[j].AuthID
 	})
 	snapshot.Entries = entries
 
