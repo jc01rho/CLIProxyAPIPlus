@@ -664,7 +664,7 @@ func main() {
 		setKiroIncognitoMode(cfg, useIncognito, noIncognito)
 		kiro.InitFingerprintConfig(cfg)
 		cmd.DoKiroIDCLogin(cfg, options, kiroIDCStartURL, kiroIDCRegion, kiroIDCFlow)
-	} else if qoderLogin {
+	} else if qoderLogin || qoderPAT != "" {
 		if qoderPAT != "" {
 			options.PersonalToken = qoderPAT
 		}
