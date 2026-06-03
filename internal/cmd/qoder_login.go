@@ -3,10 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
-	log "github.com/sirupsen/logrus"
 )
 
 // DoQoderLogin runs the Qoder OAuth device flow + PKCE login and saves the
@@ -27,8 +27,8 @@ func DoQoderLogin(cfg *config.Config, options *LoginOptions) {
 
 	record, savedPath, err := manager.Login(context.Background(), "qoder", cfg, authOpts)
 	if err != nil {
-		log.Errorf("Qoder authentication failed: %v", err)
-		return
+		fmt.Fprintf(os.Stderr, "Qoder authentication failed: %v\n", err)
+		os.Exit(1)
 	}
 
 	if savedPath != "" {
@@ -53,18 +53,18 @@ func DoQoderImport(cfg *config.Config, options *LoginOptions) {
 	authenticator := sdkAuth.NewQoderAuthenticator()
 	record, err := authenticator.(*sdkAuth.QoderAuthenticator).ImportFromCredentialFile()
 	if err != nil {
-		log.Errorf("Qoder credential import failed: %v", err)
-		fmt.Println("\nTroubleshooting:")
-		fmt.Println("1. Install and log in to the Qoder CLI (qoder CLI)")
-		fmt.Println("2. Make sure ~/.qoder/.auth/user (or ~/.qoderwork/.auth/user) exists")
-		fmt.Println("3. Re-run this command")
-		return
+		fmt.Fprintf(os.Stderr, "Qoder credential import failed: %v\n", err)
+		fmt.Fprintln(os.Stderr, "\nTroubleshooting:")
+		fmt.Fprintln(os.Stderr, "1. Install and log in to the Qoder CLI (qoder CLI)")
+		fmt.Fprintln(os.Stderr, "2. Make sure ~/.qoder/.auth/user (or ~/.qoderwork/.auth/user) exists")
+		fmt.Fprintln(os.Stderr, "3. Re-run this command")
+		os.Exit(1)
 	}
 
 	savedPath, err := manager.SaveAuth(record, cfg)
 	if err != nil {
-		log.Errorf("Failed to save imported auth: %v", err)
-		return
+		fmt.Fprintf(os.Stderr, "Failed to save imported auth: %v\n", err)
+		os.Exit(1)
 	}
 	if savedPath != "" {
 		fmt.Printf("Authentication saved to %s\n", savedPath)
