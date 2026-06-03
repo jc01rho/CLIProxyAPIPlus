@@ -569,6 +569,18 @@ func authWeight(a *Auth) int {
 	return w
 }
 
+func collectAuthModelKeys(a *Auth) []string {
+	if a == nil || len(a.ModelStates) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(a.ModelStates))
+	for k := range a.ModelStates {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func calculateTotalWeight(auths []*Auth) int {
 	total := 0
 	for _, a := range auths {
@@ -589,12 +601,13 @@ func calculateWeightHash(auths []*Auth) uint64 {
 
 // QueueStateEntry represents a single entry in the weight-robin queue state.
 type QueueStateEntry struct {
-	AuthID    string `json:"authId"`
-	Name      string `json:"name"`
-	Provider  string `json:"provider"`
-	Weight    int    `json:"weight"`
-	Position  int    `json:"position"` // Position in cycle (-1 if not in cycle)
-	Available bool   `json:"available"`
+	AuthID    string   `json:"authId"`
+	Name      string   `json:"name"`
+	Provider  string   `json:"provider"`
+	Weight    int      `json:"weight"`
+	Position  int      `json:"position"` // Position in cycle (-1 if not in cycle)
+	Available bool     `json:"available"`
+	Models    []string `json:"models,omitempty"` // Models/aliases this auth supports (existing only)
 }
 
 // QueueStateSnapshot represents the current state of the weight-robin queue.
@@ -644,6 +657,7 @@ func (s *WeightedRobinSelector) QueueState(model string) QueueStateSnapshot {
 				Weight:    authWeight(a),
 				Position:  i,
 				Available: !blocked,
+				Models:    collectAuthModelKeys(a),
 			}
 		}
 	}
