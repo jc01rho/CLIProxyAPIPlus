@@ -26,7 +26,7 @@ type LoginOptions struct {
 	Prompt func(prompt string) (string, error)
 
 	// PersonalToken lets providers that support a long-lived access token
-	// (e.g. Qoder PAT) bypass the OAuth device flow and exchange the token
+	// bypass the OAuth device flow and exchange the token
 	// directly for an auth record.
 	PersonalToken string
 }

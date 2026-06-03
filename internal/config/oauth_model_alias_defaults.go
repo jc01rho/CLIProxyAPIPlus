@@ -38,25 +38,6 @@ func defaultGitHubCopilotAliases() []OAuthModelAlias {
 	}
 }
 
-// defaultQoderAliases returns default oauth-model-alias entries for Qoder.
-// Qoder exposes short model IDs (lite, auto, …) over an OpenAI-compatible
-// API.  The aliases allow clients to use the short form while the registry
-// stores the prefixed "qoder-*" variant.
-func defaultQoderAliases() []OAuthModelAlias {
-	return []OAuthModelAlias{
-		{Name: "qoder-lite", Alias: "lite", Fork: true},
-		{Name: "qoder-auto", Alias: "auto", Fork: true},
-		{Name: "qoder-efficient", Alias: "efficient", Fork: true},
-		{Name: "qoder-performance", Alias: "performance", Fork: true},
-		{Name: "qoder-ultimate", Alias: "ultimate", Fork: true},
-		{Name: "qoder-q35model_preview", Alias: "q35model_preview", Fork: true},
-		{Name: "qoder-qmodel", Alias: "qmodel", Fork: true},
-		{Name: "qoder-q35model", Alias: "q35model", Fork: true},
-		{Name: "qoder-gmodel", Alias: "gmodel", Fork: true},
-		{Name: "qoder-kmodel", Alias: "kmodel", Fork: true},
-		{Name: "qoder-mmodel", Alias: "mmodel", Fork: true},
-	}
-}
 
 // GitHubCopilotAliasesFromModels generates oauth-model-alias entries from a dynamic
 // list of model IDs fetched from the Copilot API. It auto-creates aliases for
