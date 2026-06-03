@@ -478,9 +478,35 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 	}
 	if len(models) == 0 {
 		GlobalModelRegistry().UnregisterClient(a.ID)
+		if a.ModelStates != nil {
+			for k := range a.ModelStates {
+				delete(a.ModelStates, k)
+			}
+		}
 		return
 	}
 	GlobalModelRegistry().RegisterClient(a.ID, providerKey, models)
+
+	if a.ModelStates == nil {
+		a.ModelStates = make(map[string]*coreauth.ModelState, len(models)*2)
+	}
+	seed := func(key string) {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return
+		}
+		if _, ok := a.ModelStates[key]; ok {
+			return
+		}
+		a.ModelStates[key] = &coreauth.ModelState{Status: coreauth.StatusActive}
+	}
+	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		seed(m.ID)
+		seed(m.Alias)
+	}
 }
 
 // rebindExecutors refreshes provider executors so they observe the latest configuration.
