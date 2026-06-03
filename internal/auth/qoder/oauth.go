@@ -3,14 +3,15 @@ package qoder
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	crand "crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/denisbrodbeck/machineid"
@@ -301,7 +302,10 @@ func (c *DeviceFlowClient) RefreshToken(ctx context.Context, refreshToken string
 }
 
 // ExchangePAT exchanges a personal access token for a session token.
+// The personal token is sanitized: newlines and whitespace are stripped
+// so that tokens pasted across multiple terminal lines still work.
 func (c *DeviceFlowClient) ExchangePAT(ctx context.Context, personalToken string) (*QoderTokenData, error) {
+	personalToken = sanitizePATTok(personalToken)
 	if personalToken == "" {
 		return nil, NewAuthenticationError(ErrPATExchangeFailed, fmt.Errorf("personal token is empty"))
 	}
@@ -366,4 +370,15 @@ func normalizeTokenResponse(r *QoderTokenResponse) *QoderTokenData {
 		ExpiresAt:             expiresAt,
 		RefreshTokenExpiresAt: r.RefreshTokenExpiresAt,
 	}
+}
+
+// sanitizePATTok strips all whitespace, newlines, and carriage returns
+// from a personal access token string so that tokens pasted across
+// multiple terminal lines (common on SSH sessions) are accepted.
+func sanitizePATTok(tok string) string {
+	tok = strings.ReplaceAll(tok, "\r", "")
+	tok = strings.ReplaceAll(tok, "\n", "")
+	tok = strings.ReplaceAll(tok, "\t", "")
+	tok = strings.ReplaceAll(tok, " ", "")
+	return tok
 }
