@@ -58,6 +58,7 @@ type WeightedRobinSelector struct {
 	weightHash     uint64             // FNV hash of auth IDs × weights when cycle was built
 	lastUsed       map[string]time.Time // LRU: last time each auth was picked (by ID)
 	lruEvictWindow time.Duration      // 0 disables eviction; default 24h
+	knownAuths     map[string]*Auth   // all auths ever observed via Pick, for QueueState display
 }
 
 const defaultLRUEvictWindow = 24 * time.Hour
@@ -487,6 +488,18 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = opts
 	now := time.Now()
+
+	s.mu.Lock()
+	if s.knownAuths == nil {
+		s.knownAuths = make(map[string]*Auth, len(auths))
+	}
+	for _, a := range auths {
+		if a != nil {
+			s.knownAuths[a.ID] = a
+		}
+	}
+	s.mu.Unlock()
+
 	available := getAllAvailableAuths(auths, "", now)
 	if len(available) == 0 {
 		cooldownCount := 0
@@ -570,7 +583,13 @@ func authWeight(a *Auth) int {
 }
 
 func collectAuthModelKeys(a *Auth) []string {
-	if a == nil || len(a.ModelStates) == 0 {
+	if a == nil {
+		return nil
+	}
+	if len(a.ModelStates) == 0 {
+		if p := strings.TrimSpace(a.Provider); p != "" {
+			return []string{p}
+		}
 		return nil
 	}
 	keys := make([]string, 0, len(a.ModelStates))
@@ -605,7 +624,8 @@ type QueueStateEntry struct {
 	Name      string   `json:"name"`
 	Provider  string   `json:"provider"`
 	Weight    int      `json:"weight"`
-	Position  int      `json:"position"` // Position in cycle (-1 if not in cycle)
+	Position  int      `json:"position"`  // Position in cycle (-1 if not in cycle)
+	InCycle   bool     `json:"inCycle"`   // Whether this auth is currently in the active cycle
 	Available bool     `json:"available"`
 	Models    []string `json:"models,omitempty"` // Models/aliases this auth supports (existing only)
 }
@@ -643,22 +663,32 @@ func (s *WeightedRobinSelector) QueueState(model string) QueueStateSnapshot {
 		snapshot.LastPicked = s.cycle[s.idx-1].ID
 	}
 
-	entryMap := make(map[string]*QueueStateEntry)
+	cycleIndex := make(map[string]int, len(s.cycle))
 	for i, a := range s.cycle {
+		if a != nil {
+			cycleIndex[a.ID] = i
+		}
+	}
+
+	entryMap := make(map[string]*QueueStateEntry)
+	for id, a := range s.knownAuths {
 		if a == nil {
 			continue
 		}
-		if _, ok := entryMap[a.ID]; !ok {
-			blocked, _, _ := isAuthBlockedForModel(a, model, now)
-			entryMap[a.ID] = &QueueStateEntry{
-				AuthID:    a.ID,
-				Name:      a.Label,
-				Provider:  a.Provider,
-				Weight:    authWeight(a),
-				Position:  i,
-				Available: !blocked,
-				Models:    collectAuthModelKeys(a),
-			}
+		blocked, _, _ := isAuthBlockedForModel(a, model, now)
+		pos, inCycle := cycleIndex[id]
+		if !inCycle {
+			pos = -1
+		}
+		entryMap[id] = &QueueStateEntry{
+			AuthID:    id,
+			Name:      a.Label,
+			Provider:  a.Provider,
+			Weight:    authWeight(a),
+			Position:  pos,
+			Available: !blocked,
+			InCycle:   inCycle,
+			Models:    collectAuthModelKeys(a),
 		}
 	}
 
