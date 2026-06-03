@@ -376,7 +376,11 @@ func (m *Manager) RefreshSchedulerEntry(authID string) {
 // Supported models are reset to a clean state because re-registration already
 // cleared the registry-side cooldown/suspension snapshot. ModelStates for
 // models that are no longer present in the registry are pruned entirely so
-// renamed/removed models cannot keep auth-level status stale.
+// renamed/removed models cannot keep auth-level status stale. When the stored
+// auth has no ModelStates at all, seed entries are inserted for every model
+// the registry currently advertises (both canonical ID and alias) so
+// downstream consumers (e.g. weight-robin QueueState) can group by
+// alias/model from the first request instead of falling back to provider.
 func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID string) {
 	if m == nil || authID == "" {
 		return
@@ -400,32 +404,54 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 
 	m.mu.Lock()
 	auth, ok := m.auths[authID]
-	if ok && auth != nil && len(auth.ModelStates) > 0 {
+	if ok && auth != nil {
 		changed := false
-		for modelKey, state := range auth.ModelStates {
-			baseModel := canonicalModelKey(modelKey)
-			if baseModel == "" {
-				baseModel = strings.TrimSpace(modelKey)
-			}
-			if _, supportedModel := supported[baseModel]; !supportedModel {
-				// Drop state for models that disappeared from the current registry
-				// snapshot. Keeping them around leaks stale errors into auth-level
-				// status, management output, and websocket fallback checks.
-				delete(auth.ModelStates, modelKey)
+		if len(auth.ModelStates) > 0 {
+			for modelKey, state := range auth.ModelStates {
+				baseModel := canonicalModelKey(modelKey)
+				if baseModel == "" {
+					baseModel = strings.TrimSpace(modelKey)
+				}
+				if _, supportedModel := supported[baseModel]; !supportedModel {
+					// Drop state for models that disappeared from the current registry
+					// snapshot. Keeping them around leaks stale errors into auth-level
+					// status, management output, and websocket fallback checks.
+					delete(auth.ModelStates, modelKey)
+					changed = true
+					continue
+				}
+				if state == nil {
+					continue
+				}
+				if modelStateIsClean(state) {
+					continue
+				}
+				resetModelState(state, now)
 				changed = true
-				continue
 			}
-			if state == nil {
-				continue
+			if len(auth.ModelStates) == 0 {
+				auth.ModelStates = nil
 			}
-			if modelStateIsClean(state) {
-				continue
-			}
-			resetModelState(state, now)
-			changed = true
 		}
-		if len(auth.ModelStates) == 0 {
-			auth.ModelStates = nil
+		// Seed ModelStates for every supported model so management UIs can
+		// group by alias/model from the first request. ensureModelState
+		// returns the existing entry when present, so runtime state
+		// (cooldown/quota/availability) will overlay on top of these seeds
+		// without losing them. Only insert when the key is missing so a
+		// pre-existing runtime entry (e.g. a cooldown captured at runtime)
+		// is not overwritten.
+		if auth.ModelStates == nil && len(supportedModels) > 0 {
+			auth.ModelStates = make(map[string]*ModelState, len(supportedModels)*2)
+		}
+		for _, model := range supportedModels {
+			if model == nil {
+				continue
+			}
+			seedModelStateKey(auth.ModelStates, model.ID, now)
+			seedModelStateKey(auth.ModelStates, model.Alias, now)
+			if len(supportedModels) > 0 {
+				changed = true
+			}
 		}
 		if changed {
 			updateAggregatedAvailability(auth, now)
@@ -446,6 +472,21 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
 	}
+}
+
+// seedModelStateKey inserts a clean StatusActive ModelState under the given
+// key when it is non-empty and not already present. Used to pre-populate
+// alias/model support so QueueState can group entries by alias/model from
+// the first request instead of falling back to the provider name.
+func seedModelStateKey(states map[string]*ModelState, key string, now time.Time) {
+	key = strings.TrimSpace(key)
+	if key == "" || states == nil {
+		return
+	}
+	if _, ok := states[key]; ok {
+		return
+	}
+	states[key] = &ModelState{Status: StatusActive, UpdatedAt: now}
 }
 
 func (m *Manager) SetSelector(selector Selector) {
