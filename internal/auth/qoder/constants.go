@@ -2,7 +2,8 @@ package qoder
 
 const (
 	// qoderClientID is the default Qoder OAuth client ID for CLI tools.
-	qoderClientID = "cli-proxy-api"
+	// This matches the client ID used by the official qodercli binary.
+	qoderClientID = "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb"
 
 	// Default production (global) endpoints.
 	defaultCenterURL  = "https://center.qoder.sh"
