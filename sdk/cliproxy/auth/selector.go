@@ -587,6 +587,87 @@ func calculateWeightHash(auths []*Auth) uint64 {
 	return h.Sum64()
 }
 
+// QueueStateEntry represents a single entry in the weight-robin queue state.
+type QueueStateEntry struct {
+	AuthID    string `json:"authId"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Weight    int    `json:"weight"`
+	Position  int    `json:"position"` // Position in cycle (-1 if not in cycle)
+	Available bool   `json:"available"`
+}
+
+// QueueStateSnapshot represents the current state of the weight-robin queue.
+type QueueStateSnapshot struct {
+	Entries     []QueueStateEntry `json:"entries"`
+	Cycle       []CycleEntry      `json:"cycle"`
+	CurrentIdx  int               `json:"currentIdx"`
+	TotalWeight int               `json:"totalWeight"`
+	CycleLength int               `json:"cycleLength"`
+	LastPicked  string            `json:"lastPicked,omitempty"`
+}
+
+// CycleEntry represents a single position in the shuffled cycle.
+type CycleEntry struct {
+	AuthID   string `json:"authId"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+}
+
+// QueueState returns a snapshot of the current queue state for API exposure.
+func (s *WeightedRobinSelector) QueueState(model string) QueueStateSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	snapshot := QueueStateSnapshot{
+		CurrentIdx:  s.idx,
+		TotalWeight: s.totalWeight,
+		CycleLength: len(s.cycle),
+	}
+
+	if s.idx > 0 && s.idx <= len(s.cycle) {
+		snapshot.LastPicked = s.cycle[s.idx-1].ID
+	}
+
+	entryMap := make(map[string]*QueueStateEntry)
+	for i, a := range s.cycle {
+		if a == nil {
+			continue
+		}
+		if _, ok := entryMap[a.ID]; !ok {
+			blocked, _, _ := isAuthBlockedForModel(a, model, now)
+			entryMap[a.ID] = &QueueStateEntry{
+				AuthID:    a.ID,
+				Name:      a.Label,
+				Provider:  a.Provider,
+				Weight:    authWeight(a),
+				Position:  i,
+				Available: !blocked,
+			}
+		}
+	}
+
+	entries := make([]QueueStateEntry, 0, len(entryMap))
+	for _, e := range entryMap {
+		entries = append(entries, *e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Weight > entries[j].Weight
+	})
+	snapshot.Entries = entries
+
+	cycleEntries := make([]CycleEntry, len(s.cycle))
+	for i, a := range s.cycle {
+		if a != nil {
+			cycleEntries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider}
+		}
+	}
+	snapshot.Cycle = cycleEntries
+
+	return snapshot
+}
+
 func (s *WeightedRobinSelector) rebuildCycle(auths []*Auth) {
 	total := calculateTotalWeight(auths)
 	cycle := make([]*Auth, 0, total)

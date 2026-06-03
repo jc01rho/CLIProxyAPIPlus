@@ -464,6 +464,16 @@ func (m *Manager) SetSelector(selector Selector) {
 	}
 }
 
+// GetSelector returns the current selector instance.
+func (m *Manager) GetSelector() Selector {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.selector
+}
+
 // SetStore swaps the underlying persistence store.
 func (m *Manager) SetStore(store Store) {
 	m.mu.Lock()
@@ -4209,7 +4219,21 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, errAvailable := m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
+	var available []*Auth
+	var errAvailable error
+	if _, isWeightedRobin := m.selector.(*WeightedRobinSelector); isWeightedRobin {
+		now := time.Now()
+		checkModel := modelKey
+		if checkModel == "" {
+			checkModel = model
+		}
+		available = getAllAvailableAuths(candidates, checkModel, now)
+		if len(available) == 0 {
+			errAvailable = &Error{Code: "auth_unavailable", Message: "no auth available for weight-robin"}
+		}
+	} else {
+		available, errAvailable = m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
+	}
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		return nil, nil, errAvailable
@@ -4372,7 +4396,23 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	var available []*Auth
+	var errAvailable error
+	if _, isWeightedRobin := m.selector.(*WeightedRobinSelector); isWeightedRobin {
+		// Weight-robin distributes across ALL priorities by weight.
+		// Skip priority-based filtering; the selector handles weight distribution internally.
+		now := time.Now()
+		checkModel := modelKey
+		if checkModel == "" {
+			checkModel = model
+		}
+		available = getAllAvailableAuths(candidates, checkModel, now)
+		if len(available) == 0 {
+			errAvailable = &Error{Code: "auth_unavailable", Message: "no auth available for weight-robin"}
+		}
+	} else {
+		available, errAvailable = m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	}
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		return nil, nil, "", errAvailable
