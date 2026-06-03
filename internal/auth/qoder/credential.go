@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -151,7 +152,20 @@ func LoadCredentialFile(path string) (*QoderTokenStorage, error) {
 
 	storage, err := parseCredentialJSON(raw, modTime)
 	if err != nil {
-		return nil, err
+		// The Qoder CLI on some platforms (notably Windows builds older
+		// than 6.6.x) stores its credential file as a `key=value` line
+		// stream rather than a JSON object. Fall back to that format
+		// when JSON parsing fails so users on those builds can still
+		// reuse their existing login.
+		storage, kvErr := parseCredentialKeyValue(raw, modTime)
+		if kvErr != nil {
+			return nil, err
+		}
+		if storage.AccessToken == "" {
+			return nil, err
+		}
+		storage.Type = "qoder"
+		return storage, nil
 	}
 
 	if storage.AccessToken == "" {
@@ -206,6 +220,65 @@ func parseCredentialJSON(raw []byte, modTime time.Time) (*QoderTokenStorage, err
 		return nil, fmt.Errorf("qoder: credential file is missing access_token/token/security_oauth_token")
 	}
 	return storage, nil
+}
+
+// parseCredentialKeyValue parses a `key=value` line-based credential file.
+// This is used by some Qoder CLI builds (notably Windows 6.6.x and older)
+// where the credential file is a simple text file with one key=value pair
+// per line, optionally including [section] headers that are ignored.
+func parseCredentialKeyValue(raw []byte, modTime time.Time) (*QoderTokenStorage, error) {
+	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+	fields := make(map[string]string, 16)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "[") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		if key != "" {
+			// Later lines override earlier ones for the same key.
+			fields[strings.ToLower(key)] = val
+		}
+	}
+
+	storage := &QoderTokenStorage{
+		UserID:                firstNonEmpty(fields["user_id"], fields["userid"], fields["user"]),
+		UserName:              firstNonEmpty(fields["user_name"], fields["username"], fields["name"], fields["email"]),
+		AccessToken:           firstNonEmpty(fields["access_token"], fields["token"], fields["security_oauth_token"]),
+		RefreshToken:          fields["refresh_token"],
+		RefreshTokenExpiresAt: fields["refresh_token_expires_at"],
+	}
+
+	if v := strings.TrimSpace(fields["expires_at"]); v != "" {
+		storage.ExpiresAt = v
+	} else if v := strings.TrimSpace(fields["expire_time"]); v != "" {
+		if epoch, convErr := strconv.ParseInt(v, 10, 64); convErr == nil && epoch > 0 {
+			storage.ExpiresAt = time.Unix(epoch, 0).UTC().Format(time.RFC3339)
+		}
+	} else if v := strings.TrimSpace(fields["expires_in"]); v != "" {
+		if secs, convErr := strconv.ParseInt(v, 10, 64); convErr == nil && secs > 0 && !modTime.IsZero() {
+			storage.ExpiresAt = modTime.Add(time.Duration(secs) * time.Second).UTC().Format(time.RFC3339)
+		}
+	}
+
+	if storage.AccessToken == "" {
+		return nil, fmt.Errorf("qoder: credential file (key=value format) is missing access_token/token/security_oauth_token")
+	}
+	return storage, nil
+}
+
+func firstNonEmpty(ss ...string) string {
+	for _, s := range ss {
+		if v := strings.TrimSpace(s); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // expandHome resolves a leading "~" or "~/" in path against the current

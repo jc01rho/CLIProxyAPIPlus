@@ -113,6 +113,9 @@ func GetUserFriendlyMessage(err error) string {
 		case "refresh_failed":
 			return "Failed to refresh your Qoder session. Please log in again."
 		case "pat_exchange_failed":
+			if authErr.Cause != nil {
+				return fmt.Sprintf("Failed to exchange personal access token: %v", authErr.Cause)
+			}
 			return "Failed to exchange personal access token. Please check the token and try again."
 		default:
 			return "Authentication failed. Please try again."
