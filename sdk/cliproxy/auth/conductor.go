@@ -5807,7 +5807,7 @@ func logRouteModelFallbackResult(ctx context.Context, originalModel, fallbackMod
 			fields["fallback_result_status"] = status
 		}
 		fields["fallback_result_error"] = resultErr.Error()
-		logEntryWithRequestID(ctx).WithFields(fields).Warn("fallback model request finished")
+		logEntryWithRequestID(ctx).WithFields(fields).Debug("fallback model request finished")
 		return
 	}
 	fields["outcome"] = "success"
