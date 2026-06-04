@@ -582,6 +582,31 @@ func authWeight(a *Auth) int {
 	return w
 }
 
+// calculateWeightGCD returns the greatest common divisor of the positive weights
+// across the provided auths. If any weight is 0 (the authPriority default of 1
+// is enforced upstream so this is rare), the GCD falls back to 1 to keep the
+// denominator safe.
+func calculateWeightGCD(auths []*Auth) int {
+	g := 0
+	for _, a := range auths {
+		w := authWeight(a)
+		if w <= 0 {
+			continue
+		}
+		if g == 0 {
+			g = w
+			continue
+		}
+		for w != 0 {
+			g, w = w, g%w
+		}
+	}
+	if g <= 0 {
+		return 1
+	}
+	return g
+}
+
 func collectAuthModelKeys(a *Auth) []string {
 	if a == nil {
 		return nil
@@ -721,10 +746,11 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 }
 
 func (s *WeightedRobinSelector) rebuildCycle(auths []*Auth) {
-	total := calculateTotalWeight(auths)
+	gcd := calculateWeightGCD(auths)
+	total := calculateTotalWeight(auths) / gcd
 	cycle := make([]*Auth, 0, total)
 	for _, a := range auths {
-		w := authWeight(a)
+		w := authWeight(a) / gcd
 		for j := 0; j < w; j++ {
 			cycle = append(cycle, a)
 		}
