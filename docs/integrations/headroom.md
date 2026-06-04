@@ -27,45 +27,49 @@ Headroom sits **in front of** CLIProxyAPIPlus. This is the optimal placement bec
 3. **CCR** (Compress-Cache-Retrieve) stores originals locally — the client can retrieve full data via `headroom_retrieve`
 4. CLIProxyAPIPlus receives a smaller request and processes it normally — **zero code changes required**
 
-## Quick Start
+## Quick Start (CLIProxyAPIPlus as a host process)
 
-### 1. Install Headroom
+This guide assumes you run CLIProxyAPIPlus directly on the host (binary, `go run`, systemd, etc.) and run Headroom as a Docker container.
 
-```bash
-pip install "headroom-ai[proxy]"
-# or
-docker pull ghcr.io/chopratejas/headroom:latest
-```
-
-### 2. Run Headroom in proxy mode
+### 1. Run CLIProxyAPIPlus on the host
 
 ```bash
-# Point headroom at CLIProxyAPIPlus
-headroom proxy --port 8787 --target http://localhost:8317
+./server --port 8317   # or: go run ./cmd/server --port 8317
 ```
+
+### 2. Start the Headroom sidecar
+
+```bash
+docker compose -f docker-compose.headroom.yml up -d
+```
+
+The compose file uses `host.docker.internal:host-gateway` so the container can reach the host's `127.0.0.1:8317`. This works on Docker Desktop out of the box, and on Linux via the `extra_hosts` mapping.
 
 ### 3. Point your client at Headroom
 
 ```bash
-# Before: client → CLIProxyAPIPlus:8317
-# After:  client → headroom:8787 → CLIProxyAPIPlus:8317
-
 export OPENAI_BASE_URL=http://localhost:8787/v1
+# or for Anthropic-compatible clients
+export ANTHROPIC_BASE_URL=http://localhost:8787
 ```
 
-CLIProxyAPIPlus sees the compressed request and routes it as usual. The LLM provider receives fewer tokens. The response passes through unchanged.
+CLIProxyAPIPlus sees a smaller (compressed) request and routes it as usual. The LLM provider receives fewer tokens; the response is returned unchanged.
 
 ## Docker Compose
 
-See [`docker-compose.headroom.yml`](../../docker-compose.headroom.yml) for a ready-to-use setup:
+See [`docker-compose.headroom.yml`](../../docker-compose.headroom.yml):
 
-```bash
-docker compose -f docker-compose.headroom.yml up
+```yaml
+services:
+  headroom:
+    image: ghcr.io/chopratejas/headroom:latest
+    command: ["proxy", "--port", "8787", "--target", "http://host.docker.internal:8317"]
+    ports: ["8787:8787"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 ```
 
-This starts:
-- `headroom` on port **8787** (client-facing)
-- `cli-proxy-api-plus` on port **8317** (internal, headroom → cliproxy)
+This starts Headroom on port **8787** (client-facing) which forwards compressed requests to `127.0.0.1:8317` on the host (CLIProxyAPIPlus).
 
 ## What gets compressed
 
