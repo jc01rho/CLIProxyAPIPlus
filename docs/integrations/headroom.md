@@ -63,7 +63,7 @@ See [`docker-compose.headroom.yml`](../../docker-compose.headroom.yml):
 services:
   headroom:
     image: ghcr.io/chopratejas/headroom:latest
-    command: ["proxy", "--port", "8787", "--target", "http://host.docker.internal:8317"]
+    command: ["proxy", "--host", "0.0.0.0", "--port", "8787", "--openai-api-url", "http://host.docker.internal:8317"]
     ports: ["8787:8787"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
