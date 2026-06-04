@@ -344,6 +344,10 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 			logLine = logLine + " | upstream=" + upstreamURL
 		}
 
+		if isAIAPIPath(path) && len(requestBody) > 0 && gjson.GetBytes(requestBody, "stream").Bool() {
+			logLine = logLine + " | (streamed)"
+		}
+
 		// Append token usage if available
 		if isAIAPIPath(path) {
 			detail := getUsageDetailFromContext(c)
