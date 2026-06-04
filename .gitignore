@@ -31,6 +31,7 @@ auths/*
 
 # Documentation
 docs/*
+!docs/integrations/
 AGENTS.md
 CLAUDE.md
 GEMINI.md

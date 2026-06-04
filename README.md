@@ -132,6 +132,11 @@ These routes help you select the protocol surface, but they do not by themselves
 - Watcher: [docs/sdk-watcher.md](docs/sdk-watcher.md)
 - Custom Provider Example: `examples/custom-provider`
 
+## Integrations
+
+- **GitLab Duo provider**: [docs/gitlab-duo.md](docs/gitlab-duo.md) — use GitLab Duo as a first-class provider
+- **Headroom compression layer**: [docs/integrations/headroom.md](docs/integrations/headroom.md) — run [Headroom](https://github.com/chopratejas/headroom) in front of the proxy to compress 60-95% of request tokens (`docker-compose.headroom.yml`)
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
