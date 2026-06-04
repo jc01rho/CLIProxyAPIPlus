@@ -1,0 +1,49 @@
+# Headroom + CLIProxyAPIPlus stack
+#
+# Architecture:
+#   Client (8317) → Headroom (8787) → CLIProxyAPIPlus (8317 internal)
+#
+# Usage:
+#   docker compose -f docker-compose.headroom.yml up
+#
+# Point your client at http://localhost:8787 instead of http://localhost:8317
+
+services:
+  headroom:
+    image: ghcr.io/chopratejas/headroom:latest
+    container_name: cliproxy-headroom
+    command: ["proxy", "--port", "8787", "--target", "http://cli-proxy-api-plus:8317"]
+    environment:
+      HEADROOM_LOG_LEVEL: ${HEADROOM_LOG_LEVEL:-info}
+      HEADROOM_MIN_TOKENS: ${HEADROOM_MIN_TOKENS:-200}
+      HEADROOM_COMPRESSION_STRATEGY: ${HEADROOM_COMPRESSION_STRATEGY:-auto}
+    ports:
+      - "8787:8787"
+    depends_on:
+      - cli-proxy-api-plus
+    restart: unless-stopped
+
+  cli-proxy-api-plus:
+    image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api-plus:latest}
+    pull_policy: always
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-none}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    container_name: cli-proxy-api-plus
+    environment:
+      DEPLOY: ${DEPLOY:-}
+    # Note: port 8317 is exposed to headroom on the docker network,
+      # not directly to the host. Clients should connect to headroom:8787.
+    expose:
+      - "8317"
+      - "8085"
+      - "1455"
+    volumes:
+      - ./auths:/home/appuser/auths
+      - ./logs:/home/appuser/logs
+      - ./config.yaml:/home/appuser/config.yaml
+    restart: unless-stopped
