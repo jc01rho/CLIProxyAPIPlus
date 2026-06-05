@@ -12,12 +12,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -25,20 +22,10 @@ import (
 const (
 	apiAttemptsKey          = "API_UPSTREAM_ATTEMPTS"
 	apiRequestKey           = "API_REQUEST"
-	apiRequestSummaryKey    = "API_REQUEST_SUMMARY"
 	apiResponseKey          = "API_RESPONSE"
 	apiWebsocketTimelineKey = "API_WEBSOCKET_TIMELINE"
 	creditsUsedKey          = "__antigravity_credits_used__"
-
-	// maxErrorOnlyUpstreamBodyBytes caps the upstream request body stored when cfg.RequestLog is false,
-	// so that error-only captures don't spike memory for large request payloads.
-	maxErrorOnlyUpstreamBodyBytes = 1 << 20 // 1 MiB
 )
-
-type UpstreamRequestSummary struct {
-	URL   string
-	Model string
-}
 
 // UpstreamRequestLog captures the outbound upstream request details for logging.
 type UpstreamRequestLog struct {
@@ -51,13 +38,13 @@ type UpstreamRequestLog struct {
 	AuthLabel string
 	AuthType  string
 	AuthValue string
-	Tier      string
 }
 
 type upstreamAttempt struct {
 	index                int
 	request              string
 	response             *strings.Builder
+	responseSource       *logging.FileBodySource
 	responseIntroWritten bool
 	statusWritten        bool
 	headersWritten       bool
@@ -67,21 +54,20 @@ type upstreamAttempt struct {
 	errorWritten         bool
 }
 
+func requestLogCaptureEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.RequestLog && !cfg.CommercialMode
+}
+
 // RecordAPIRequest stores the upstream request metadata in Gin context for request logging.
-// The attempt entry is always created so that response recording functions can find it.
-// When cfg.RequestLog is false, a minimal log is built (URL, method, body up to 1 MiB, no
-// headers/auth) so that error-only captures remain useful without excessive memory usage.
 func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
+	if !requestLogCaptureEnabled(cfg) {
+		return
+	}
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
 		return
 	}
-	ginCtx.Set(apiRequestSummaryKey, map[string]string{
-		"url":   strings.TrimSpace(info.URL),
-		"model": strings.TrimSpace(gjson.GetBytes(info.Body, "model").String()),
-	})
 
-	fullLog := cfg != nil && cfg.RequestLog
 	attempts := getAttempts(ginCtx)
 	index := len(attempts) + 1
 
@@ -96,42 +82,63 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 	if info.Method != "" {
 		builder.WriteString(fmt.Sprintf("HTTP Method: %s\n", info.Method))
 	}
-	if fullLog {
-		if auth := formatAuthInfo(info); auth != "" {
-			builder.WriteString(fmt.Sprintf("Auth: %s\n", auth))
-		}
-		builder.WriteString("\nHeaders:\n")
-		writeHeaders(builder, info.Headers)
+	if auth := formatAuthInfo(info); auth != "" {
+		builder.WriteString(fmt.Sprintf("Auth: %s\n", auth))
 	}
+	builder.WriteString("\nHeaders:\n")
+	writeHeaders(builder, info.Headers)
 	builder.WriteString("\nBody:\n")
-	body := info.Body
-	if !fullLog && len(body) > maxErrorOnlyUpstreamBodyBytes {
-		body = body[:maxErrorOnlyUpstreamBodyBytes]
-	}
-	if len(body) > 0 {
-		builder.WriteString(string(bytes.Clone(body)))
+
+	requestText := ""
+	if source, ok := apiRequestSource(ginCtx); ok {
+		if errWrite := source.AppendBytes([]byte(builder.String())); errWrite == nil {
+			if len(info.Body) > 0 {
+				if errBody := source.AppendBytes(info.Body); errBody != nil {
+					log.WithError(errBody).Warn("failed to append api request body log part")
+				}
+			} else if errEmpty := source.AppendBytes([]byte("<empty>")); errEmpty != nil {
+				log.WithError(errEmpty).Warn("failed to append empty api request log part")
+			}
+			if errEnd := source.AppendBytes([]byte("\n\n")); errEnd != nil {
+				log.WithError(errEnd).Warn("failed to append api request log terminator")
+			}
+		} else {
+			log.WithError(errWrite).Warn("failed to append api request log part")
+			if len(info.Body) > 0 {
+				builder.WriteString(string(info.Body))
+			} else {
+				builder.WriteString("<empty>")
+			}
+			builder.WriteString("\n\n")
+			requestText = builder.String()
+		}
 	} else {
-		builder.WriteString("<empty>")
+		if len(info.Body) > 0 {
+			builder.WriteString(string(info.Body))
+		} else {
+			builder.WriteString("<empty>")
+		}
+		builder.WriteString("\n\n")
+		requestText = builder.String()
 	}
-	builder.WriteString("\n\n")
 
 	attempt := &upstreamAttempt{
-		index:    index,
-		request:  builder.String(),
-		response: &strings.Builder{},
+		index:          index,
+		request:        requestText,
+		response:       &strings.Builder{},
+		responseSource: apiResponseSourceOrNil(ginCtx),
 	}
 	attempts = append(attempts, attempt)
 	ginCtx.Set(apiAttemptsKey, attempts)
-	updateAggregatedRequest(ginCtx, attempts)
+	if requestText != "" {
+		updateAggregatedRequest(ginCtx, attempts)
+	}
 }
 
 // RecordAPIResponseMetadata captures upstream response status/header information for the latest attempt.
-// When cfg.RequestLog is false, metadata is still captured for error responses (status >= 400) so
-// that gin_logger.go and file-based error logging can include the upstream response details.
 func RecordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
 	logging.SetResponseHeaders(ctx, headers)
-	isError := status >= http.StatusBadRequest
-	if cfg == nil || (!cfg.RequestLog && !isError) {
+	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -139,27 +146,27 @@ func RecordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status i
 		return
 	}
 	attempts, attempt := ensureAttempt(ginCtx)
-	ensureResponseIntro(attempt)
+	ensureResponseIntro(ginCtx, attempt)
 
 	if status > 0 && !attempt.statusWritten {
-		attempt.response.WriteString(fmt.Sprintf("Status: %d\n", status))
+		writeAttemptResponse(ginCtx, attempt, []byte(fmt.Sprintf("Status: %d\n", status)))
 		attempt.statusWritten = true
 	}
 	if !attempt.headersWritten {
-		attempt.response.WriteString("Headers:\n")
-		writeHeaders(attempt.response, headers)
+		builder := &strings.Builder{}
+		builder.WriteString("Headers:\n")
+		writeHeaders(builder, headers)
+		writeAttemptResponse(ginCtx, attempt, []byte(builder.String()))
 		attempt.headersWritten = true
-		attempt.response.WriteString("\n")
+		writeAttemptResponse(ginCtx, attempt, []byte("\n"))
 	}
 
-	updateAggregatedResponse(ginCtx, attempts)
+	updateAggregatedResponseIfMemoryBacked(ginCtx, attempts)
 }
 
 // RecordAPIResponseError adds an error entry for the latest attempt when no HTTP response is available.
-// Errors are always captured regardless of cfg.RequestLog so that failed requests can be diagnosed
-// even when detailed request logging is disabled.
 func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) {
-	if err == nil {
+	if !requestLogCaptureEnabled(cfg) || err == nil {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -167,27 +174,27 @@ func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 		return
 	}
 	attempts, attempt := ensureAttempt(ginCtx)
-	ensureResponseIntro(attempt)
+	ensureResponseIntro(ginCtx, attempt)
 
 	if attempt.bodyStarted && !attempt.bodyHasContent {
 		// Ensure body does not stay empty marker if error arrives first.
 		attempt.bodyStarted = false
 	}
 	if attempt.errorWritten {
-		attempt.response.WriteString("\n")
+		writeAttemptResponse(ginCtx, attempt, []byte("\n"))
 	}
-	attempt.response.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
+	writeAttemptResponse(ginCtx, attempt, []byte(fmt.Sprintf("Error: %s\n", err.Error())))
 	attempt.errorWritten = true
 
-	updateAggregatedResponse(ginCtx, attempts)
+	updateAggregatedResponseIfMemoryBacked(ginCtx, attempts)
 }
 
 // AppendAPIResponseChunk appends an upstream response chunk to Gin context for request logging.
-// When cfg.RequestLog is false, chunks are still captured if the current attempt has an error
-// status recorded (set by RecordAPIResponseMetadata), enabling full error response body logging.
 func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byte) {
-	fullLog := cfg != nil && cfg.RequestLog
-	data := bytes.TrimSpace(bytes.Clone(chunk))
+	if !requestLogCaptureEnabled(cfg) {
+		return
+	}
+	data := bytes.TrimSpace(chunk)
 	if len(data) == 0 {
 		return
 	}
@@ -195,24 +202,19 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	if ginCtx == nil {
 		return
 	}
-	if !fullLog {
-		// Only capture chunks when an error status has been recorded for the current attempt.
-		existingAttempts := getAttempts(ginCtx)
-		if len(existingAttempts) == 0 || !existingAttempts[len(existingAttempts)-1].statusWritten {
-			return
-		}
-	}
 	attempts, attempt := ensureAttempt(ginCtx)
-	ensureResponseIntro(attempt)
+	ensureResponseIntro(ginCtx, attempt)
 
 	if !attempt.headersWritten {
-		attempt.response.WriteString("Headers:\n")
-		writeHeaders(attempt.response, nil)
+		builder := &strings.Builder{}
+		builder.WriteString("Headers:\n")
+		writeHeaders(builder, nil)
+		writeAttemptResponse(ginCtx, attempt, []byte(builder.String()))
 		attempt.headersWritten = true
-		attempt.response.WriteString("\n")
+		writeAttemptResponse(ginCtx, attempt, []byte("\n"))
 	}
 	if !attempt.bodyStarted {
-		attempt.response.WriteString("Body:\n")
+		writeAttemptResponse(ginCtx, attempt, []byte("Body:\n"))
 		attempt.bodyStarted = true
 	}
 	currentChunkIsSSEEvent := bytes.HasPrefix(data, []byte("event:"))
@@ -222,18 +224,18 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 		if attempt.prevWasSSEEvent && currentChunkIsSSEData {
 			separator = "\n"
 		}
-		attempt.response.WriteString(separator)
+		writeAttemptResponse(ginCtx, attempt, []byte(separator))
 	}
-	attempt.response.WriteString(string(data))
+	writeAttemptResponse(ginCtx, attempt, data)
 	attempt.bodyHasContent = true
 	attempt.prevWasSSEEvent = currentChunkIsSSEEvent
 
-	updateAggregatedResponse(ginCtx, attempts)
+	updateAggregatedResponseIfMemoryBacked(ginCtx, attempts)
 }
 
 // RecordAPIWebsocketRequest stores an upstream websocket request event in Gin context.
 func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
-	if cfg == nil || !cfg.RequestLog {
+	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -266,7 +268,7 @@ func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info Ups
 // RecordAPIWebsocketHandshake stores the upstream websocket handshake response metadata.
 func RecordAPIWebsocketHandshake(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
 	logging.SetResponseHeaders(ctx, headers)
-	if cfg == nil || !cfg.RequestLog {
+	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -290,7 +292,7 @@ func RecordAPIWebsocketHandshake(ctx context.Context, cfg *config.Config, status
 // RecordAPIWebsocketUpgradeRejection stores a rejected websocket upgrade as an HTTP attempt.
 func RecordAPIWebsocketUpgradeRejection(ctx context.Context, cfg *config.Config, info UpstreamRequestLog, status int, headers http.Header, body []byte) {
 	logging.SetResponseHeaders(ctx, headers)
-	if cfg == nil || !cfg.RequestLog {
+	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -324,7 +326,7 @@ func WebsocketUpgradeRequestURL(rawURL string) string {
 
 // AppendAPIWebsocketResponse stores an upstream websocket response frame in Gin context.
 func AppendAPIWebsocketResponse(ctx context.Context, cfg *config.Config, payload []byte) {
-	if cfg == nil || !cfg.RequestLog {
+	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
 	data := bytes.TrimSpace(payload)
@@ -348,7 +350,7 @@ func AppendAPIWebsocketResponse(ctx context.Context, cfg *config.Config, payload
 
 // RecordAPIWebsocketError stores an upstream websocket error event in Gin context.
 func RecordAPIWebsocketError(ctx context.Context, cfg *config.Config, stage string, err error) {
-	if cfg == nil || !cfg.RequestLog || err == nil {
+	if !requestLogCaptureEnabled(cfg) || err == nil {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -389,25 +391,59 @@ func ensureAttempt(ginCtx *gin.Context) ([]*upstreamAttempt, *upstreamAttempt) {
 	attempts := getAttempts(ginCtx)
 	if len(attempts) == 0 {
 		attempt := &upstreamAttempt{
-			index:    1,
-			request:  "=== API REQUEST 1 ===\n<missing>\n\n",
-			response: &strings.Builder{},
+			index:          1,
+			response:       &strings.Builder{},
+			responseSource: apiResponseSourceOrNil(ginCtx),
+		}
+		if source, ok := apiRequestSource(ginCtx); ok {
+			if errWrite := source.AppendBytes([]byte("=== API REQUEST 1 ===\n<missing>\n\n")); errWrite != nil {
+				log.WithError(errWrite).Warn("failed to append missing api request log part")
+				attempt.request = "=== API REQUEST 1 ===\n<missing>\n\n"
+			}
+		} else {
+			attempt.request = "=== API REQUEST 1 ===\n<missing>\n\n"
 		}
 		attempts = []*upstreamAttempt{attempt}
 		ginCtx.Set(apiAttemptsKey, attempts)
-		updateAggregatedRequest(ginCtx, attempts)
+		if attempt.request != "" {
+			updateAggregatedRequest(ginCtx, attempts)
+		}
 	}
 	return attempts, attempts[len(attempts)-1]
 }
 
-func ensureResponseIntro(attempt *upstreamAttempt) {
+func ensureResponseIntro(ginCtx *gin.Context, attempt *upstreamAttempt) {
 	if attempt == nil || attempt.response == nil || attempt.responseIntroWritten {
 		return
 	}
-	attempt.response.WriteString(fmt.Sprintf("=== API RESPONSE %d ===\n", attempt.index))
-	attempt.response.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
-	attempt.response.WriteString("\n")
+	writeAttemptResponse(ginCtx, attempt, []byte(fmt.Sprintf("=== API RESPONSE %d ===\n", attempt.index)))
+	writeAttemptResponse(ginCtx, attempt, []byte(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano))))
+	writeAttemptResponse(ginCtx, attempt, []byte("\n"))
 	attempt.responseIntroWritten = true
+}
+
+func writeAttemptResponse(ginCtx *gin.Context, attempt *upstreamAttempt, payload []byte) {
+	if attempt == nil || len(payload) == 0 {
+		return
+	}
+	if attempt.responseSource == nil {
+		attempt.responseSource = apiResponseSourceOrNil(ginCtx)
+	}
+	if attempt.responseSource != nil {
+		if errWrite := attempt.responseSource.AppendBytes(payload); errWrite == nil {
+			if ginCtx != nil {
+				ginCtx.Set(logging.APIResponseCapturedContextKey, true)
+			}
+			return
+		} else {
+			log.WithError(errWrite).Warn("failed to append api response log part")
+			attempt.responseSource = nil
+		}
+	}
+	if attempt.response == nil {
+		attempt.response = &strings.Builder{}
+	}
+	attempt.response.Write(payload)
 }
 
 func updateAggregatedRequest(ginCtx *gin.Context, attempts []*upstreamAttempt) {
@@ -419,6 +455,13 @@ func updateAggregatedRequest(ginCtx *gin.Context, attempts []*upstreamAttempt) {
 		builder.WriteString(attempt.request)
 	}
 	ginCtx.Set(apiRequestKey, []byte(builder.String()))
+}
+
+func updateAggregatedResponseIfMemoryBacked(ginCtx *gin.Context, attempts []*upstreamAttempt) {
+	if apiResponseSourceOrNil(ginCtx) != nil {
+		return
+	}
+	updateAggregatedResponse(ginCtx, attempts)
 }
 
 func updateAggregatedResponse(ginCtx *gin.Context, attempts []*upstreamAttempt) {
@@ -443,6 +486,18 @@ func updateAggregatedResponse(ginCtx *gin.Context, attempts []*upstreamAttempt) 
 		}
 	}
 	ginCtx.Set(apiResponseKey, []byte(builder.String()))
+}
+
+func apiRequestSource(ginCtx *gin.Context) (*logging.FileBodySource, bool) {
+	return fileBodySourceFromGin(ginCtx, logging.APIRequestSourceContextKey)
+}
+
+func apiResponseSourceOrNil(ginCtx *gin.Context) *logging.FileBodySource {
+	source, ok := fileBodySourceFromGin(ginCtx, logging.APIResponseSourceContextKey)
+	if !ok {
+		return nil
+	}
+	return source
 }
 
 func appendAPIWebsocketTimeline(ginCtx *gin.Context, chunk []byte) {
@@ -477,10 +532,14 @@ func appendAPIWebsocketTimeline(ginCtx *gin.Context, chunk []byte) {
 }
 
 func apiWebsocketTimelineSource(ginCtx *gin.Context) (*logging.FileBodySource, bool) {
+	return fileBodySourceFromGin(ginCtx, logging.APIWebsocketTimelineSourceContextKey)
+}
+
+func fileBodySourceFromGin(ginCtx *gin.Context, key string) (*logging.FileBodySource, bool) {
 	if ginCtx == nil {
 		return nil, false
 	}
-	value, exists := ginCtx.Get(logging.APIWebsocketTimelineSourceContextKey)
+	value, exists := ginCtx.Get(key)
 	if !exists {
 		return nil, false
 	}
@@ -534,9 +593,6 @@ func formatAuthInfo(info UpstreamRequestLog) string {
 	}
 	if trimmed := strings.TrimSpace(info.AuthLabel); trimmed != "" {
 		parts = append(parts, fmt.Sprintf("label=%s", trimmed))
-	}
-	if trimmed := strings.TrimSpace(info.Tier); trimmed != "" {
-		parts = append(parts, fmt.Sprintf("tier=%s", trimmed))
 	}
 
 	authType := strings.ToLower(strings.TrimSpace(info.AuthType))
@@ -630,46 +686,6 @@ func LogWithRequestID(ctx context.Context) *log.Entry {
 		return log.NewEntry(log.StandardLogger())
 	}
 	return log.WithField("request_id", requestID)
-}
-
-// logDetailedAPIError logs detailed error information for API errors at Warn/Error level.
-// This function logs the full error body, URL, status code, and provider information.
-// 4xx errors are logged at Warn level, 5xx errors at Error level.
-func logDetailedAPIError(ctx context.Context, provider string, model string, url string, statusCode int, contentType string, body []byte) {
-	entry := LogWithRequestID(ctx)
-
-	// 4xx는 Warn, 5xx는 Error
-	logFn := entry.Warnf
-	if statusCode >= 500 {
-		logFn = entry.Errorf
-	}
-
-	// 전체 에러 바디 로깅 (단, 너무 길면 잘라냄)
-	bodyStr := string(body)
-	if len(bodyStr) > 4096 {
-		bodyStr = bodyStr[:4096] + "...[truncated]"
-	}
-
-	// Extract auth info from context for logging
-	providerDisplay := provider
-	if ctxProvider, _, authLabel := cliproxyauth.GetProviderAuthFromContext(ctx); ctxProvider != "" {
-		displayAuth := authLabel
-		if displayAuth == "" {
-			if _, authID, _ := cliproxyauth.GetProviderAuthFromContext(ctx); authID != "" {
-				displayAuth = authID
-			}
-		}
-		if displayAuth != "" {
-			providerDisplay = fmt.Sprintf("%s:%s", provider, displayAuth)
-		}
-	}
-	model = strings.TrimSpace(model)
-	if model != "" {
-		providerDisplay = fmt.Sprintf("%s model=%s", providerDisplay, model)
-	}
-
-	logFn("[%s] API error - URL: %s, Status: %d, Content-Type: %s, Response: %s",
-		providerDisplay, url, statusCode, contentType, bodyStr)
 }
 
 // MarkCreditsUsed flags the request as having used AI credits for billing.
