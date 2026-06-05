@@ -54,7 +54,8 @@ type WeightedRobinSelector struct {
 	mu             sync.Mutex
 	cycle          []*Auth            // shuffled cycle, length = normalized totalWeight
 	idx            int                // current position in cycle
-	totalWeight    int                // total weight when cycle was built
+	totalWeight    int                // total weight when cycle was built (GCD-normalized)
+	gcd            int                // GCD used to normalize totalWeight; 0 if cycle is empty
 	weightHash     uint64             // FNV hash of auth IDs × weights when cycle was built
 	lastUsed       map[string]time.Time // LRU: last time each auth was picked (by ID)
 	lruEvictWindow time.Duration      // 0 disables eviction; default 24h
@@ -660,7 +661,8 @@ type QueueStateSnapshot struct {
 	Entries     []QueueStateEntry `json:"entries"`
 	Cycle       []CycleEntry      `json:"cycle"`
 	CurrentIdx  int               `json:"currentIdx"`
-	TotalWeight int               `json:"totalWeight"`
+	TotalWeight int               `json:"totalWeight"`     // sum(weight / GCD) of the active cycle
+	GCD         int               `json:"gcd"`              // GCD used to normalize TotalWeight; 0 if cycle is empty
 	CycleLength int               `json:"cycleLength"`
 	LastPicked  string            `json:"lastPicked,omitempty"`
 }
@@ -686,6 +688,7 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 	snapshot := QueueStateSnapshot{
 		CurrentIdx:  s.idx,
 		TotalWeight: s.totalWeight,
+		GCD:         s.gcd,
 		CycleLength: len(s.cycle),
 	}
 
@@ -760,6 +763,7 @@ func (s *WeightedRobinSelector) rebuildCycle(auths []*Auth) {
 	})
 	s.cycle = cycle
 	s.totalWeight = total
+	s.gcd = gcd
 	s.weightHash = calculateWeightHash(auths)
 	s.idx = 0
 }
