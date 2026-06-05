@@ -4217,8 +4217,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
 
 	m.mu.RLock()
+	_, isWeightedRobin := m.selector.(*WeightedRobinSelector)
 	executor, okExecutor := m.executors[provider]
-	if !okExecutor {
+	if !okExecutor && !isWeightedRobin {
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
@@ -4236,7 +4237,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if candidate.Disabled {
 			continue
 		}
-		if effectiveProviderKey(candidate) != provider {
+		// WeightedRobinSelector uses a global cycle across all providers;
+		// other selectors remain per-provider scoped.
+		if !isWeightedRobin && effectiveProviderKey(candidate) != provider {
 			continue
 		}
 		if !m.authMatchesThresholdRule(candidate, model, opts) {
@@ -4289,6 +4292,14 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	if isWeightedRobin {
+		if pickedExecutor, ok := m.Executor(effectiveProviderKey(selected)); ok {
+			executor = pickedExecutor
+		} else if executor == nil {
+			m.mu.RUnlock()
+			return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered for selected auth's provider"}
+		}
+	}
 	m.annotateThresholdDecisionSelected(ctx, model, opts, provider, selected)
 	authCopy := selected.Clone()
 	m.mu.RUnlock()
@@ -4313,6 +4324,11 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	if m.thresholdRoutingRequired(model, opts) {
+		return m.pickNextLegacy(ctx, provider, model, opts, tried)
+	}
+	// WeightedRobinSelector uses a global cycle across all providers; bypass
+	// the per-provider scheduler fast path so the cycle is honored.
+	if _, isWeightedRobin := m.selector.(*WeightedRobinSelector); isWeightedRobin {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	if strings.TrimSpace(model) != "" {
@@ -4497,6 +4513,11 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 	if m.thresholdRoutingRequired(model, opts) {
+		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
+	}
+	// WeightedRobinSelector uses a global cycle across all providers; bypass
+	// the per-provider scheduler fast path so the cycle is honored.
+	if _, isWeightedRobin := m.selector.(*WeightedRobinSelector); isWeightedRobin {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 
