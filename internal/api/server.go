@@ -671,6 +671,33 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/routing/strategy", s.mgmt.PutRoutingStrategy)
 		mgmt.PATCH("/routing/strategy", s.mgmt.PutRoutingStrategy)
 
+		mgmt.GET("/routing/mode", s.mgmt.GetRoutingMode)
+		mgmt.PUT("/routing/mode", s.mgmt.PutRoutingMode)
+
+		mgmt.GET("/routing/fallback-models", s.mgmt.GetFallbackModels)
+		mgmt.PUT("/routing/fallback-models", s.mgmt.PutFallbackModels)
+
+		mgmt.GET("/routing/fallback-chain", s.mgmt.GetFallbackChain)
+		mgmt.PUT("/routing/fallback-chain", s.mgmt.PutFallbackChain)
+
+		mgmt.GET("/routing/token-threshold-rules", s.mgmt.GetTokenThresholdRules)
+		mgmt.PUT("/routing/token-threshold-rules", s.mgmt.PutTokenThresholdRules)
+
+		mgmt.GET("/request-log-success-body", s.mgmt.GetRequestLogSuccessBody)
+		mgmt.PUT("/request-log-success-body", s.mgmt.PutRequestLogSuccessBody)
+
+		mgmt.GET("/detailed-api-error-body-log-format", s.mgmt.GetDetailedAPIErrorBodyLogFormat)
+		mgmt.PUT("/detailed-api-error-body-log-format", s.mgmt.PutDetailedAPIErrorBodyLogFormat)
+
+		mgmt.GET("/detailed-api-error-body-log-limit", s.mgmt.GetDetailedAPIErrorBodyLogLimit)
+		mgmt.PUT("/detailed-api-error-body-log-limit", s.mgmt.PutDetailedAPIErrorBodyLogLimit)
+
+		mgmt.GET("/api-key-ip-blacklist", s.mgmt.GetAPIKeyIPBlacklist)
+		mgmt.POST("/api-key-ip-blacklist", s.mgmt.PostAPIKeyIPBlacklist)
+		mgmt.DELETE("/api-key-ip-blacklist", s.mgmt.DeleteAPIKeyIPBlacklist)
+
+		mgmt.GET("/copilot-quota", s.mgmt.GetCopilotQuota)
+
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)
