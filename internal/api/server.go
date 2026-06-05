@@ -681,6 +681,16 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/codex-api-key", s.mgmt.PatchCodexKey)
 		mgmt.DELETE("/codex-api-key", s.mgmt.DeleteCodexKey)
 
+		mgmt.GET("/commandcode-api-key", s.mgmt.GetCommandCodeKeys)
+		mgmt.PUT("/commandcode-api-key", s.mgmt.PutCommandCodeKeys)
+		mgmt.PATCH("/commandcode-api-key", s.mgmt.PatchCommandCodeKey)
+		mgmt.DELETE("/commandcode-api-key", s.mgmt.DeleteCommandCodeKey)
+
+		mgmt.GET("/mistral-api-key", s.mgmt.GetMistralKeys)
+		mgmt.PUT("/mistral-api-key", s.mgmt.PutMistralKeys)
+		mgmt.PATCH("/mistral-api-key", s.mgmt.PatchMistralKey)
+		mgmt.DELETE("/mistral-api-key", s.mgmt.DeleteMistralKey)
+
 		mgmt.GET("/openai-compatibility", s.mgmt.GetOpenAICompat)
 		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)
 		mgmt.PATCH("/openai-compatibility", s.mgmt.PatchOpenAICompat)
