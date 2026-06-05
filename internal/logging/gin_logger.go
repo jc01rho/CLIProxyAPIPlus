@@ -344,9 +344,13 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 			logLine = logLine + " | upstream=" + upstreamURL
 		}
 
-		if isAIAPIPath(path) && len(requestBody) > 0 && gjson.GetBytes(requestBody, "stream").Bool() {
-			logLine = logLine + " | (streamed)"
-		}
+		// tokensLogged tracks whether we successfully appended a tokens segment
+		// in this iteration. When streaming requests cannot extract usage from
+		// the response body, we still want to flag the request as streamed so
+		// operators can tell why tokens are missing. The flag is computed before
+		// the (streamed) segment so we only emit "(streamed)" when no token
+		// detail is available.
+		tokensLogged := false
 
 		// Append token usage if available
 		if isAIAPIPath(path) {
@@ -374,8 +378,13 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 					// Mark that gin_logger already included usage in this log line
 					// so that publishRecord doesn't emit a duplicate completion log.
 					c.Set("__usage_logged__", true)
+					tokensLogged = true
 				}
 			}
+		}
+
+		if isAIAPIPath(path) && len(requestBody) > 0 && gjson.GetBytes(requestBody, "stream").Bool() && !tokensLogged {
+			logLine = logLine + " | (streamed)"
 		}
 
 		if creditsUsed(c) {
