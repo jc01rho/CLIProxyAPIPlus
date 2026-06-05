@@ -38,6 +38,7 @@ type UpstreamRequestLog struct {
 	AuthLabel string
 	AuthType  string
 	AuthValue string
+	Tier      string
 }
 
 type upstreamAttempt struct {
