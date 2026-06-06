@@ -727,6 +727,37 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 	snapshot := QueueStateSnapshot{
 		TotalPicks: s.totalPicks,
 	}
+
+	if !hasState && len(allAuths) > 0 {
+		eligible := make([]*Auth, 0, len(allAuths))
+		for _, a := range allAuths {
+			if a == nil {
+				continue
+			}
+			if blocked, _, _ := isAuthBlockedForModel(a, model, now); blocked {
+				continue
+			}
+			eligible = append(eligible, a)
+		}
+		if len(eligible) == 0 {
+			eligible = make([]*Auth, 0, len(allAuths))
+			for _, a := range allAuths {
+				if a != nil {
+					eligible = append(eligible, a)
+				}
+			}
+		}
+		if len(eligible) > 0 {
+			if s.cycles == nil {
+				s.cycles = make(map[string]*aliasCycle)
+			}
+			state = &aliasCycle{}
+			s.rebuildCycle(eligible, state)
+			s.cycles[cycleKey] = state
+			hasState = true
+		}
+	}
+
 	if hasState {
 		snapshot.CurrentIdx = state.idx
 		snapshot.TotalWeight = state.totalWeight
