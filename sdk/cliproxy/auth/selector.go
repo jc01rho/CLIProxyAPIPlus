@@ -60,6 +60,9 @@ type WeightedRobinSelector struct {
 	lastUsed       map[string]time.Time // LRU: last time each auth was picked (by ID)
 	lruEvictWindow time.Duration      // 0 disables eviction; default 24h
 	knownAuths     map[string]*Auth   // all auths ever observed via Pick, for QueueState display
+	pickedCounts   map[string]uint64  // per-auth total pick count since process start (by ID)
+	totalPicks     uint64             // total Pick() selections served by this selector
+	lastPickedAt   time.Time          // timestamp of the most recent successful Pick()
 }
 
 const defaultLRUEvictWindow = 24 * time.Hour
@@ -528,7 +531,13 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		if s.lastUsed == nil {
 			s.lastUsed = make(map[string]time.Time)
 		}
+		if s.pickedCounts == nil {
+			s.pickedCounts = make(map[string]uint64)
+		}
 		s.lastUsed[available[0].ID] = now
+		s.pickedCounts[available[0].ID]++
+		s.totalPicks++
+		s.lastPickedAt = now
 		s.mu.Unlock()
 		return available[0], nil
 	}
@@ -560,6 +569,12 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		s.idx = 0
 	}
 	s.lastUsed[selected.ID] = now
+	if s.pickedCounts == nil {
+		s.pickedCounts = make(map[string]uint64, len(cycleAuths))
+	}
+	s.pickedCounts[selected.ID]++
+	s.totalPicks++
+	s.lastPickedAt = now
 
 	weightsDetail := make([]string, 0, len(cycleAuths))
 	for _, a := range cycleAuths {
@@ -646,25 +661,28 @@ func calculateWeightHash(auths []*Auth) uint64 {
 
 // QueueStateEntry represents a single entry in the weight-robin queue state.
 type QueueStateEntry struct {
-	AuthID    string   `json:"authId"`
-	Name      string   `json:"name"`
-	Provider  string   `json:"provider"`
-	Weight    int      `json:"weight"`
-	Position  int      `json:"position"`  // Position in cycle (-1 if not in cycle)
-	InCycle   bool     `json:"inCycle"`   // Whether this auth is currently in the active cycle
-	Available bool     `json:"available"`
-	Models    []string `json:"models,omitempty"` // Models/aliases this auth supports (existing only)
+	AuthID      string   `json:"authId"`
+	Name        string   `json:"name"`
+	Provider    string   `json:"provider"`
+	Weight      int      `json:"weight"`
+	Position    int      `json:"position"`  // Position in cycle (-1 if not in cycle)
+	InCycle     bool     `json:"inCycle"`   // Whether this auth is currently in the active cycle
+	Available   bool     `json:"available"`
+	PickedCount uint64   `json:"pickedCount"`            // total picks served by this auth since process start
+	Models      []string `json:"models,omitempty"` // Models/aliases this auth supports (existing only)
 }
 
 // QueueStateSnapshot represents the current state of the weight-robin queue.
 type QueueStateSnapshot struct {
-	Entries     []QueueStateEntry `json:"entries"`
-	Cycle       []CycleEntry      `json:"cycle"`
-	CurrentIdx  int               `json:"currentIdx"`
-	TotalWeight int               `json:"totalWeight"`     // sum(weight / GCD) of the active cycle
-	GCD         int               `json:"gcd"`              // GCD used to normalize TotalWeight; 0 if cycle is empty
-	CycleLength int               `json:"cycleLength"`
-	LastPicked  string            `json:"lastPicked,omitempty"`
+	Entries          []QueueStateEntry `json:"entries"`
+	Cycle            []CycleEntry      `json:"cycle"`
+	CurrentIdx       int               `json:"currentIdx"`
+	TotalWeight      int               `json:"totalWeight"`     // sum(weight / GCD) of the active cycle
+	GCD              int               `json:"gcd"`              // GCD used to normalize TotalWeight; 0 if cycle is empty
+	CycleLength      int               `json:"cycleLength"`
+	LastPicked       string            `json:"lastPicked,omitempty"`
+	LastPickedAt     *time.Time        `json:"lastPickedAt,omitempty"` // timestamp of the most recent successful Pick()
+	TotalPicks       uint64            `json:"totalPicks"`             // total Pick() selections served by this selector
 }
 
 // CycleEntry represents a single position in the shuffled cycle.
@@ -690,6 +708,11 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 		TotalWeight: s.totalWeight,
 		GCD:         s.gcd,
 		CycleLength: len(s.cycle),
+		TotalPicks:  s.totalPicks,
+	}
+	if !s.lastPickedAt.IsZero() {
+		ts := s.lastPickedAt
+		snapshot.LastPickedAt = &ts
 	}
 
 	if s.idx > 0 && s.idx <= len(s.cycle) {
@@ -714,14 +737,15 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 			pos = -1
 		}
 		entryMap[a.ID] = &QueueStateEntry{
-			AuthID:    a.ID,
-			Name:      a.Label,
-			Provider:  a.Provider,
-			Weight:    authWeight(a),
-			Position:  pos,
-			Available: !blocked,
-			InCycle:   inCycle,
-			Models:    collectAuthModelKeys(a),
+			AuthID:      a.ID,
+			Name:        a.Label,
+			Provider:    a.Provider,
+			Weight:      authWeight(a),
+			Position:    pos,
+			Available:   !blocked,
+			InCycle:     inCycle,
+			PickedCount: s.pickedCounts[a.ID],
+			Models:      collectAuthModelKeys(a),
 		}
 	}
 
@@ -766,6 +790,9 @@ func (s *WeightedRobinSelector) rebuildCycle(auths []*Auth) {
 	s.gcd = gcd
 	s.weightHash = calculateWeightHash(auths)
 	s.idx = 0
+	s.pickedCounts = make(map[string]uint64, len(auths))
+	s.totalPicks = 0
+	s.lastPickedAt = time.Time{}
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
