@@ -688,15 +688,16 @@ type QueueStateEntry struct {
 
 // QueueStateSnapshot represents the current state of the weight-robin queue.
 type QueueStateSnapshot struct {
-	Entries          []QueueStateEntry `json:"entries"`
-	Cycle            []CycleEntry      `json:"cycle"`
-	CurrentIdx       int               `json:"currentIdx"`
-	TotalWeight      int               `json:"totalWeight"`     // sum(weight / GCD) of the active cycle
-	GCD              int               `json:"gcd"`              // GCD used to normalize TotalWeight; 0 if cycle is empty
-	CycleLength      int               `json:"cycleLength"`
-	LastPicked       string            `json:"lastPicked,omitempty"`
-	LastPickedAt     *time.Time        `json:"lastPickedAt,omitempty"` // timestamp of the most recent successful Pick()
-	TotalPicks       uint64            `json:"totalPicks"`             // total Pick() selections served by this selector
+	Entries          []QueueStateEntry      `json:"entries"`
+	Cycle            []CycleEntry           `json:"cycle"`
+	AliasCycles      map[string][]CycleEntry `json:"aliasCycles,omitempty"` // per-alias/model independent cycles
+	CurrentIdx       int                    `json:"currentIdx"`
+	TotalWeight      int                    `json:"totalWeight"`     // sum(weight / GCD) of the active cycle
+	GCD              int                    `json:"gcd"`              // GCD used to normalize TotalWeight; 0 if cycle is empty
+	CycleLength      int                    `json:"cycleLength"`
+	LastPicked       string                 `json:"lastPicked,omitempty"`
+	LastPickedAt     *time.Time             `json:"lastPickedAt,omitempty"` // timestamp of the most recent successful Pick()
+	TotalPicks       uint64                 `json:"totalPicks"`             // total Pick() selections served by this selector
 }
 
 // CycleEntry represents a single position in the shuffled cycle.
@@ -825,6 +826,23 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 			}
 		}
 		snapshot.Cycle = cycleEntries
+	}
+
+	// Per-alias cycles — each model/alias has an independent cycle + cursor in s.cycles.
+	if len(s.cycles) > 0 {
+		snapshot.AliasCycles = make(map[string][]CycleEntry, len(s.cycles))
+		for aliasKey, ac := range s.cycles {
+			if ac == nil || len(ac.cycle) == 0 {
+				continue
+			}
+			entries := make([]CycleEntry, len(ac.cycle))
+			for i, a := range ac.cycle {
+				if a != nil {
+					entries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider}
+				}
+			}
+			snapshot.AliasCycles[aliasKey] = entries
+		}
 	}
 
 	return snapshot
