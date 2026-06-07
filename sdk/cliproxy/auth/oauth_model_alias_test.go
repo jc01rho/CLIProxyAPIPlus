@@ -218,6 +218,16 @@ func TestOAuthModelAliasChannel_Kiro(t *testing.T) {
 
 	if got := OAuthModelAliasChannel("kiro", ""); got != "kiro" {
 		t.Fatalf("OAuthModelAliasChannel() = %q, want %q", got, "kiro")
+
+func TestOAuthModelAliasChannel_PluginProvider(t *testing.T) {
+	t.Parallel()
+
+	if got := OAuthModelAliasChannel(" Qoder ", "oauth"); got != "qoder" {
+		t.Fatalf("OAuthModelAliasChannel() = %q, want %q", got, "qoder")
+	}
+	if got := OAuthModelAliasChannel("qoder", "api_key"); got != "" {
+		t.Fatalf("OAuthModelAliasChannel() = %q, want empty channel for API key", got)
+
 	}
 }
 
@@ -766,5 +776,42 @@ func TestPrepareExecutionModels_HigherCodingDoesNotResolveToGpt55ViaOpenAICompat
 	modelsWithoutMapping := m.prepareExecutionModels(authWithoutMapping, "higher-coding")
 	if len(modelsWithoutMapping) != 1 || modelsWithoutMapping[0] != "higher-coding" {
 		t.Fatalf("prepareExecutionModels(authWithoutMapping, higher-coding) = %v, want [%q]", modelsWithoutMapping, "higher-coding")
+
+func TestApplyOAuthModelAlias_PluginProvider(t *testing.T) {
+	t.Parallel()
+
+	aliases := map[string][]internalconfig.OAuthModelAlias{
+		"qoder": {{Name: "qmodel_latest", Alias: "qlatest"}},
+	}
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+	mgr.SetOAuthModelAlias(aliases)
+
+	auth := &Auth{ID: "qoder-auth", Provider: "qoder", Attributes: map[string]string{"auth_kind": "oauth"}}
+
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "qlatest")
+	if resolvedModel != "qmodel_latest" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "qmodel_latest")
+	}
+}
+
+func TestApplyOAuthModelAlias_PluginProviderSkipsAPIKey(t *testing.T) {
+	t.Parallel()
+
+	aliases := map[string][]internalconfig.OAuthModelAlias{
+		"qoder": {{Name: "qmodel_latest", Alias: "qlatest"}},
+	}
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+	mgr.SetOAuthModelAlias(aliases)
+
+	auth := &Auth{ID: "qoder-auth", Provider: "qoder", Attributes: map[string]string{"auth_kind": "api_key"}}
+
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "qlatest")
+	if resolvedModel != "qlatest" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "qlatest")
+
 	}
 }
