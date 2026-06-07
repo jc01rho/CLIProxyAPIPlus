@@ -310,16 +310,6 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ env.VERSION }}
-          COMMIT: ${{ env.COMMIT }}
-          BUILD_DATE: ${{ env.BUILD_DATE }}
-      - name: Discord Notification
-        if: success()
-        run: |
-          curl -X POST ${{ secrets.DISCORD_WEBHOOK_URL }} \
-            -H "Content-Type: application/json" \
-            -d '{"content": "✅ **CLIProxyAPIPlus** Build Complete!\n\n**Version:** '${{ env.VERSION }}'\n**Commit:** '${{ env.COMMIT }}'\n**Build Date:** '${{ env.BUILD_DATE }}'\n\n🔗 [Release](https://github.com/'${{ github.repository }}'/releases/tag/'${{ env.VERSION }}')"}'
-      - name: Upload release assets
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -330,6 +320,16 @@ jobs:
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+      - name: Discord Notification
+        if: success()
+        env:
+          DISCORD_VERSION: ${{ env.RELEASE_VERSION }}
+          DISCORD_COMMIT: ${{ env.COMMIT }}
+          DISCORD_BUILD_DATE: ${{ env.BUILD_DATE }}
+        run: |
+          curl -X POST ${{ secrets.DISCORD_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d '{"content": "✅ **CLIProxyAPIPlus** Build Complete!\n\n**Version:** '"$DISCORD_VERSION"'\n**Commit:** '"$DISCORD_COMMIT"'\n**Build Date:** '"$DISCORD_BUILD_DATE"'\n\n🔗 [Release](https://github.com/'${{ github.repository }}'/releases/tag/v'"$DISCORD_VERSION"')"}'
       - name: Refresh release checksums
         continue-on-error: true
         shell: bash
