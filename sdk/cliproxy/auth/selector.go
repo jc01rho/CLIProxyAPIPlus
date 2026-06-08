@@ -564,7 +564,7 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 
 	cycleAuths := s.evictUnusedAuths(available)
 
-	cycleKey := canonicalModelKey(model)
+	cycleKey := canonicalModelKey(model) + "::" + provider
 	if s.cycles == nil {
 		s.cycles = make(map[string]*aliasCycle)
 	}
@@ -785,7 +785,8 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 	}
 
 	if !hasState && len(allAuths) > 0 {
-		eligible := make([]*Auth, 0, len(allAuths))
+		// Group eligible auths by provider to maintain independent cycles per provider
+		eligibleByProvider := make(map[string][]*Auth)
 		for _, a := range allAuths {
 			if a == nil {
 				continue
@@ -793,24 +794,49 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 			if blocked, _, _ := isAuthBlockedForModel(a, model, now); blocked {
 				continue
 			}
-			eligible = append(eligible, a)
+			provider := a.Provider
+			if provider == "" {
+				provider = "unknown"
+			}
+			eligibleByProvider[provider] = append(eligibleByProvider[provider], a)
 		}
-		if len(eligible) == 0 {
-			eligible = make([]*Auth, 0, len(allAuths))
+
+		// If no eligible auths (all blocked), fall back to all auths grouped by provider
+		if len(eligibleByProvider) == 0 {
 			for _, a := range allAuths {
-				if a != nil {
-					eligible = append(eligible, a)
+				if a == nil {
+					continue
 				}
+				provider := a.Provider
+				if provider == "" {
+					provider = "unknown"
+				}
+				eligibleByProvider[provider] = append(eligibleByProvider[provider], a)
 			}
 		}
-		if len(eligible) > 0 {
+
+		if len(eligibleByProvider) > 0 {
 			if s.cycles == nil {
 				s.cycles = make(map[string]*aliasCycle)
 			}
-			state = &aliasCycle{}
-			s.rebuildCycle(eligible, state)
-			s.cycles[cycleKey] = state
-			hasState = true
+			// Build a cycle for each provider
+			for provider, eligible := range eligibleByProvider {
+				if len(eligible) == 0 {
+					continue
+				}
+				providerCycleKey := cycleKey + "::" + provider
+				state = &aliasCycle{}
+				s.rebuildCycle(eligible, state)
+				s.cycles[providerCycleKey] = state
+			}
+			// Also set the main cycleKey to the first provider's state for backward compatibility
+			for _, state := range s.cycles {
+				if state != nil && len(state.cycle) > 0 {
+					s.cycles[cycleKey] = state
+					hasState = true
+					break
+				}
+			}
 		}
 	}
 
