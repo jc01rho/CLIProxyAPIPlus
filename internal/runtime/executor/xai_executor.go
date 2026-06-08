@@ -505,7 +505,7 @@ func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, req cliproxye
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
-	body = normalizeXAITools(body)
+	body = NormalizeXAITools(body)
 	body = normalizeXAIToolChoiceForTools(body)
 	body = normalizeXAIInputReasoningItems(body)
 	body = normalizeCodexInstructions(body)
@@ -675,7 +675,7 @@ func sanitizeXAIResponsesBody(body []byte, model string) []byte {
 	return body
 }
 
-func normalizeXAITools(body []byte) []byte {
+func NormalizeXAITools(body []byte) []byte {
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.Exists() || !tools.IsArray() {
 		return body
@@ -745,7 +745,7 @@ func normalizeXAITools(body []byte) []byte {
 }
 
 // normalizeXAIToolChoiceForTools drops tool_choice and parallel_tool_calls
-// when tools are absent or empty (including after normalizeXAITools filtering).
+// when tools are absent or empty (including after NormalizeXAITools filtering).
 // xAI rejects payloads that include tool_choice without any tools defined.
 // Existence checks avoid unnecessary sjson parse/copy passes.
 func normalizeXAIToolChoiceForTools(body []byte) []byte {
