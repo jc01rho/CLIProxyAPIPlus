@@ -562,8 +562,6 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cycleAuths := s.evictUnusedAuths(available)
-
 	cycleKey := canonicalModelKey(model) + "::" + provider
 	if s.cycles == nil {
 		s.cycles = make(map[string]*aliasCycle)
@@ -574,32 +572,30 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		s.cycles[cycleKey] = state
 	}
 
-	currentTotal := calculateTotalWeight(cycleAuths)
-	currentHash := calculateWeightHash(cycleAuths)
-	if state.totalWeight != currentTotal || state.weightHash != currentHash {
-		s.rebuildCycle(cycleAuths, state)
+	if state.cycle == nil || len(state.cycle) == 0 {
+		s.rebuildCycle(available, state)
 	}
 
-	selected := state.cycle[state.head]
-	state.head++
-	if state.head >= len(state.cycle) {
-		state.head = 0
-		s.rebuildCycle(cycleAuths, state)
-	}
-	s.lastUsed[selected.ID] = now
-	s.pickedCounts[selected.ID]++
-	s.totalPicks++
-	s.lastPickedAt = now
+	for {
+		if state.head >= len(state.cycle) {
+			state.head = 0
+			s.rebuildCycle(available, state)
+		}
+		selected := state.cycle[state.head]
+		state.head++
 
-	weightsDetail := make([]string, 0, len(cycleAuths))
-	for _, a := range cycleAuths {
-		w := authWeight(a)
-		weightsDetail = append(weightsDetail, fmt.Sprintf("%s(w=%d)", a.ID, w))
-	}
-	log.Debugf("weight-robin: provider=%s model=%q cycleKey=%q candidates=[%s] totalWeight=%d head=%d selected=%s",
-		provider, model, cycleKey, strings.Join(weightsDetail, ", "), currentTotal, state.head-1, selected.ID)
+		if s.shouldEvict(selected, now) {
+			continue
+		}
 
-	return selected, nil
+		s.lastUsed[selected.ID] = now
+		s.pickedCounts[selected.ID]++
+		s.totalPicks++
+		s.lastPickedAt = now
+		return selected, nil
+	}
+
+	return nil, &Error{Code: "no_auth_available", Message: "no valid auth found in cycle"}
 }
 
 func authWeight(a *Auth) int {
