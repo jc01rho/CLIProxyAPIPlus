@@ -527,7 +527,7 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 	}
 	s.mu.Unlock()
 
-	available := getAllAvailableAuths(auths, "", now)
+	available := getAllAvailableAuths(auths, model, now)
 	if len(available) == 0 {
 		cooldownCount := 0
 		earliest := time.Time{}
