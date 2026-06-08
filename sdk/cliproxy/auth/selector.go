@@ -603,9 +603,6 @@ func authWeight(a *Auth) int {
 	if w <= 0 {
 		return 1
 	}
-	if w > 100 {
-		return 100
-	}
 	return w
 }
 
