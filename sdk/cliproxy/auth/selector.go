@@ -722,6 +722,61 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 	defer s.mu.Unlock()
 
 	cycleKey := canonicalModelKey(model)
+
+	// If model is empty, don't create a meaningless cycle.
+	// Return entries only (no cycle) so frontend shows available auths without fake cycle.
+	if cycleKey == "" {
+		now := time.Now()
+		snapshot := QueueStateSnapshot{
+			TotalPicks: s.totalPicks,
+		}
+		entryMap := make(map[string]*QueueStateEntry)
+		for _, a := range allAuths {
+			if a == nil || strings.TrimSpace(a.ID) == "" {
+				continue
+			}
+			blocked, _, _ := isAuthBlockedForModel(a, model, now)
+			entryMap[a.ID] = &QueueStateEntry{
+				AuthID:      a.ID,
+				Name:        a.Label,
+				Provider:    a.Provider,
+				Weight:      authWeight(a),
+				Position:    -1,
+				Available:   !blocked,
+				InCycle:     false,
+				PickedCount: s.pickedCounts[a.ID],
+				Models:      collectAuthModelKeys(a),
+			}
+		}
+		entries := make([]QueueStateEntry, 0, len(entryMap))
+		for _, e := range entryMap {
+			entries = append(entries, *e)
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].Weight != entries[j].Weight {
+				return entries[i].Weight > entries[j].Weight
+			}
+			return entries[i].AuthID < entries[j].AuthID
+		})
+		snapshot.Entries = entries
+		if len(s.cycles) > 0 {
+			snapshot.AliasCycles = make(map[string][]CycleEntry, len(s.cycles))
+			for aliasKey, ac := range s.cycles {
+				if ac == nil || len(ac.cycle) == 0 {
+					continue
+				}
+				cycleEntries := make([]CycleEntry, len(ac.cycle))
+				for i, a := range ac.cycle {
+					if a != nil {
+						cycleEntries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider}
+					}
+				}
+				snapshot.AliasCycles[aliasKey] = cycleEntries
+			}
+		}
+		return snapshot
+	}
+
 	state, hasState := s.cycles[cycleKey]
 
 	now := time.Now()
