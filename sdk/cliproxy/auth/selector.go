@@ -704,6 +704,7 @@ type CycleEntry struct {
 	AuthID   string `json:"authId"`
 	Name     string `json:"name"`
 	Provider string `json:"provider"`
+	Model    string `json:"model,omitempty"` // primary model/alias for this cycle position
 }
 
 // QueueState returns a snapshot of the current queue state for the cycle
@@ -771,7 +772,12 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 				cycleEntries := make([]CycleEntry, len(remaining))
 				for i, a := range remaining {
 					if a != nil {
-						cycleEntries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider}
+						models := collectAuthModelKeys(a)
+						model := ""
+						if len(models) > 0 {
+							model = models[0]
+						}
+						cycleEntries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider, Model: model}
 					}
 				}
 				snapshot.AliasCycles[aliasKey] = cycleEntries
@@ -854,7 +860,12 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 		cycleEntries := make([]CycleEntry, len(remaining))
 		for i, a := range remaining {
 			if a != nil {
-				cycleEntries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider}
+				models := collectAuthModelKeys(a)
+				model := ""
+				if len(models) > 0 {
+					model = models[0]
+				}
+				cycleEntries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider, Model: model}
 			}
 		}
 		snapshot.Cycle = cycleEntries
@@ -873,7 +884,12 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 			entries := make([]CycleEntry, len(remaining))
 			for i, a := range remaining {
 				if a != nil {
-					entries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider}
+					models := collectAuthModelKeys(a)
+					model := ""
+					if len(models) > 0 {
+						model = models[0]
+					}
+					entries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider, Model: model}
 				}
 			}
 			snapshot.AliasCycles[aliasKey] = entries
