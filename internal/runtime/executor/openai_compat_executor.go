@@ -162,6 +162,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	}
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
+	// xAI provider: enforce 200 tools cap (https://docs.x.ai/docs/guides/function-calling)
+	// Defensive: applies if xAI auth routes through OpenAICompatExecutor (e.g., compat_name set)
+	if e.provider == "xai" {
+		translated = NormalizeXAITools(translated)
+	}
+
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
@@ -391,6 +397,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// are captured even when the upstream is an OpenAI-compatible provider.
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
+
+	// xAI provider: enforce 200 tools cap (https://docs.x.ai/docs/guides/function-calling)
+	// Defensive: applies if xAI auth routes through OpenAICompatExecutor (e.g., compat_name set)
+	if e.provider == "xai" {
+		translated = NormalizeXAITools(translated)
+	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
