@@ -69,7 +69,7 @@ type WeightedRobinSelector struct {
 // trigger cycle rebuilds when other aliases are picked.
 type aliasCycle struct {
 	cycle       []*Auth // shuffled cycle, length = normalized totalWeight
-	idx         int     // current position in cycle
+	head        int     // pop position (front of queue)
 	totalWeight int     // total weight when cycle was built (GCD-normalized)
 	gcd         int     // GCD used to normalize totalWeight; 0 if cycle is empty
 	weightHash  uint64  // FNV hash of auth IDs × weights when cycle was built
@@ -580,10 +580,10 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		s.rebuildCycle(cycleAuths, state)
 	}
 
-	selected := state.cycle[state.idx]
-	state.idx++
-	if state.idx >= len(state.cycle) {
-		state.idx = 0
+	selected := state.cycle[state.head]
+	state.head++
+	if state.head >= len(state.cycle) {
+		state.head = 0
 		s.rebuildCycle(cycleAuths, state)
 	}
 	s.lastUsed[selected.ID] = now
@@ -596,8 +596,8 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		w := authWeight(a)
 		weightsDetail = append(weightsDetail, fmt.Sprintf("%s(w=%d)", a.ID, w))
 	}
-	log.Debugf("weight-robin: provider=%s model=%q cycleKey=%q candidates=[%s] totalWeight=%d cycleIdx=%d selected=%s",
-		provider, model, cycleKey, strings.Join(weightsDetail, ", "), currentTotal, state.idx-1, selected.ID)
+	log.Debugf("weight-robin: provider=%s model=%q cycleKey=%q candidates=[%s] totalWeight=%d head=%d selected=%s",
+		provider, model, cycleKey, strings.Join(weightsDetail, ", "), currentTotal, state.head-1, selected.ID)
 
 	return selected, nil
 }
@@ -786,12 +786,12 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 	}
 
 	if hasState {
-		snapshot.CurrentIdx = state.idx
+		snapshot.CurrentIdx = state.head
 		snapshot.TotalWeight = state.totalWeight
 		snapshot.GCD = state.gcd
 		snapshot.CycleLength = len(state.cycle)
-		if state.idx > 0 && state.idx <= len(state.cycle) {
-			snapshot.LastPicked = state.cycle[state.idx-1].ID
+		if state.head > 0 && state.head <= len(state.cycle) {
+			snapshot.LastPicked = state.cycle[state.head-1].ID
 		}
 	}
 	if !s.lastPickedAt.IsZero() {
@@ -802,7 +802,7 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 	cycleIndex := make(map[string]int)
 	if hasState {
 		cycleIndex = make(map[string]int, len(state.cycle))
-		for i, a := range state.cycle {
+		for i, a := range state.cycle[state.head:] {
 			if a != nil {
 				cycleIndex[a.ID] = i
 			}
@@ -845,8 +845,12 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 	snapshot.Entries = entries
 
 	if hasState {
-		cycleEntries := make([]CycleEntry, len(state.cycle))
-		for i, a := range state.cycle {
+		remaining := state.cycle[state.head:]
+		if len(remaining) > 20 {
+			remaining = remaining[:20]
+		}
+		cycleEntries := make([]CycleEntry, len(remaining))
+		for i, a := range remaining {
 			if a != nil {
 				cycleEntries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider}
 			}
@@ -854,15 +858,18 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 		snapshot.Cycle = cycleEntries
 	}
 
-	// Per-alias cycles — each model/alias has an independent cycle + cursor in s.cycles.
 	if len(s.cycles) > 0 {
 		snapshot.AliasCycles = make(map[string][]CycleEntry, len(s.cycles))
 		for aliasKey, ac := range s.cycles {
 			if ac == nil || len(ac.cycle) == 0 {
 				continue
 			}
-			entries := make([]CycleEntry, len(ac.cycle))
-			for i, a := range ac.cycle {
+			remaining := ac.cycle[ac.head:]
+			if len(remaining) > 20 {
+				remaining = remaining[:20]
+			}
+			entries := make([]CycleEntry, len(remaining))
+			for i, a := range remaining {
 				if a != nil {
 					entries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider}
 				}
@@ -891,7 +898,7 @@ func (s *WeightedRobinSelector) rebuildCycle(auths []*Auth, state *aliasCycle) {
 	state.totalWeight = total
 	state.gcd = gcd
 	state.weightHash = calculateWeightHash(auths)
-	state.idx = 0
+	state.head = 0
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
