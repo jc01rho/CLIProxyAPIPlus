@@ -665,8 +665,13 @@ func calculateTotalWeight(auths []*Auth) int {
 }
 
 func calculateWeightHash(auths []*Auth) uint64 {
+	sorted := make([]*Auth, len(auths))
+	copy(sorted, auths)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].ID < sorted[j].ID
+	})
 	h := fnv.New64()
-	for _, a := range auths {
+	for _, a := range sorted {
 		w := authWeight(a)
 		h.Write([]byte(a.ID))
 		h.Write([]byte{byte(w), byte(w >> 8), byte(w >> 16), byte(w >> 24)})
