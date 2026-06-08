@@ -62,29 +62,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: darwin-amd64
-            runner: macos-15-intel
-            goos: darwin
-            goarch: amd64
-            asset_arch: amd64
-            archive_format: tar.gz
-          - target: darwin-arm64
-            runner: macos-15
-            goos: darwin
-            goarch: arm64
-            asset_arch: aarch64
-            archive_format: tar.gz
           - target: windows-amd64
             runner: windows-latest
             goos: windows
             goarch: amd64
             asset_arch: amd64
-            archive_format: zip
-          - target: windows-arm64
-            runner: windows-11-arm
-            goos: windows
-            goarch: arm64
-            asset_arch: aarch64
             archive_format: zip
     steps:
       - uses: actions/checkout@v6
@@ -211,11 +193,6 @@ jobs:
             goarch: amd64
             asset_arch: amd64
             manylinux_image: quay.io/pypa/manylinux2014_x86_64
-          - target: linux-arm64
-            runner: ubuntu-24.04-arm
-            goarch: arm64
-            asset_arch: aarch64
-            manylinux_image: quay.io/pypa/manylinux2014_aarch64
     steps:
       - uses: actions/checkout@v6
         with:
@@ -344,9 +321,6 @@ jobs:
           - target: linux-amd64-no-plugin
             goarch: amd64
             asset_arch: amd64
-          - target: linux-arm64-no-plugin
-            goarch: arm64
-            asset_arch: aarch64
     steps:
       - uses: actions/checkout@v6
         with:
@@ -606,7 +580,6 @@ jobs:
       - build-hosted
       - build-linux-glibc
       - build-linux-no-plugin
-      - build-freebsd
     steps:
       - uses: actions/download-artifact@v4
         with:
