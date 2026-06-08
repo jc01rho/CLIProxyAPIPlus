@@ -766,8 +766,12 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 				if ac == nil || len(ac.cycle) == 0 {
 					continue
 				}
-				cycleEntries := make([]CycleEntry, len(ac.cycle))
-				for i, a := range ac.cycle {
+				remaining := ac.cycle[ac.head:]
+				if len(remaining) > 20 {
+					remaining = remaining[:20]
+				}
+				cycleEntries := make([]CycleEntry, len(remaining))
+				for i, a := range remaining {
 					if a != nil {
 						cycleEntries[i] = CycleEntry{AuthID: a.ID, Name: a.Label, Provider: a.Provider}
 					}
