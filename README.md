@@ -22,7 +22,6 @@ It now also supports OpenAI Codex (GPT models) and Claude Code via OAuth.
 
 So you can use local or multi-account CLI access with OpenAI(include Responses)/Gemini/Claude-compatible clients and SDKs.
 
-
 ## Overview
 
 - OpenAI/Gemini/Claude/Grok compatible API endpoints for CLI models
