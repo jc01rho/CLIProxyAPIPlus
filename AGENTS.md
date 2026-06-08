@@ -103,6 +103,7 @@ cpa-usage-keeper/AGENTS.md
 - Search tools may miss nested gitlink files from root. Re-run file discovery inside nested repos when editing subproject AGENTS.md.
 - Do not create release tags from the repository root. Create tags only inside the relevant subdirectory repository.
 - **Tag versioning workflow**: 1) `git fetch --tags upstream` to fetch upstream latest tags. 2) `git ls-remote --tags upstream | grep -E 'refs/tags/v[0-9]' | sed 's|.*refs/tags/||' | sort -V | tail -10` to identify the latest upstream base version. 3) Use that base version with a sequence suffix: `v<upstream_base>-<sequence>`. Sequence starts at 1 for each new base.
+- **Post-merge README.md cleanup (MANDATORY)**: After every `git merge upstream/main`, remove the upstream Sponsor section from `README.md`, `README_CN.md`, and `README_JA.md`. The upstream's `## Sponsor` block (PackyCode, AICodeMirror, BmoPlus, VisionCoder, APIKEY.FUN, RunAPI) must NOT appear in the fork. Keep only the `## Overview` and other content. Verify with: `grep -n "## Sponsor" README.md README_CN.md README_JA.md` should return nothing.
 - For follow-up releases on the same base version, increment the suffix (e.g., `v7.1.22-1` → `v7.1.22-2`).
 - When upstream releases a new base version (e.g., `v7.1.22`), create a new tag starting at suffix `-1` (e.g., `v7.1.22-1`) even if the previous base had higher suffixes.
 - Only propose a new base tag when the user explicitly wants a new release line or that repository's recent tag history clearly starts a new base series.
