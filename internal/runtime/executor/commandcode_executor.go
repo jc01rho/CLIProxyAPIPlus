@@ -566,6 +566,47 @@ func resolveCommandCodeModelName(cfg *config.Config, auth *cliproxyauth.Auth, mo
 	return model
 }
 
+// normalizeCommandCodeContentBlocks converts OpenAI-style content blocks to CommandCode/Anthropic-style.
+// OpenAI Chat Completions uses: {"type":"text","text":"..."} or {"type":"image_url","image_url":{"url":"..."}}
+// CommandCode (Anthropic) uses: {"type":"text","text":"..."} or {"type":"image","source":{"type":"base64","media_type":"...","data":"..."}}
+func normalizeCommandCodeContentBlocks(blocks []map[string]any) []map[string]any {
+	if len(blocks) == 0 {
+		return blocks
+	}
+	var normalized []map[string]any
+	for _, block := range blocks {
+		blockType, ok := block["type"].(string)
+		if !ok {
+			continue
+		}
+		switch blockType {
+		case "text":
+			// OpenAI: {"type":"text","text":"..."} -> CommandCode: {"type":"text","text":"..."} (same)
+			normalized = append(normalized, map[string]any{"type": "text", "text": block["text"]})
+		case "image_url":
+			// OpenAI: {"type":"image_url","image_url":{"url":"..."}} -> CommandCode: {"type":"image","source":{"type":"base64","media_type":"image/...","data":"..."}}
+			// For now, skip image conversion as it requires base64 encoding
+			// CommandCode doesn't support URL-based images in the same way
+		case "output_text":
+			// Already Anthropic-style, pass through
+			normalized = append(normalized, block)
+		case "tool_use":
+			// Already Anthropic-style, pass through
+			normalized = append(normalized, block)
+		case "tool_result":
+			// Already Anthropic-style, pass through
+			normalized = append(normalized, block)
+		default:
+			// Unknown type, pass through as-is
+			normalized = append(normalized, block)
+		}
+	}
+	if len(normalized) == 0 {
+		return blocks // fallback to original
+	}
+	return normalized
+}
+
 // convertCommandCodeMessage converts an OpenAI message to CommandCode format.
 // CommandCode expects role to be "user" or "assistant" and content to be an array of content blocks.
 func convertCommandCodeMessage(msg gjson.Result, role string) map[string]any {
@@ -593,24 +634,34 @@ func convertCommandCodeMessage(msg gjson.Result, role string) map[string]any {
 					{"type": "text", "text": contentStr},
 				}
 			}
-		} else {
-			// If content is already an array, use it as-is.
-			var blocks []map[string]any
-			if err := json.Unmarshal([]byte(contentRaw), &blocks); err == nil {
-				contentBlocks = blocks
-			}
+	} else {
+		var blocks []map[string]any
+		if err := json.Unmarshal([]byte(contentRaw), &blocks); err == nil {
+			contentBlocks = normalizeCommandCodeContentBlocks(blocks)
 		}
+	}
 	} else {
 		// Handle tool_call messages.
 		if toolCalls := msg.Get("tool_calls"); toolCalls.Exists() && toolCalls.IsArray() {
 			for _, tc := range toolCalls.Array() {
 				funcName := tc.Get("function.name").String()
-				funcArgs := tc.Get("function.arguments").Raw
+				funcArgsRaw := tc.Get("function.arguments").Raw
 				if funcName != "" {
+					var funcArgs json.RawMessage
+					if strings.HasPrefix(strings.TrimSpace(funcArgsRaw), "{") {
+						funcArgs = json.RawMessage(funcArgsRaw)
+					} else {
+						var parsed string
+						if err := json.Unmarshal([]byte(funcArgsRaw), &parsed); err == nil && strings.HasPrefix(strings.TrimSpace(parsed), "{") {
+							funcArgs = json.RawMessage(parsed)
+						} else {
+							funcArgs = json.RawMessage("{}")
+						}
+					}
 					contentBlocks = append(contentBlocks, map[string]any{
-						"type": "tool_use",
-						"name": funcName,
-						"input": json.RawMessage(funcArgs),
+						"type":  "tool_use",
+						"name":  funcName,
+						"input": funcArgs,
 					})
 				}
 			}
