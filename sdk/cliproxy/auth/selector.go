@@ -637,6 +637,14 @@ func collectAuthModelKeys(a *Auth) []string {
 	}
 	if len(a.ModelStates) == 0 {
 		if p := strings.TrimSpace(a.Provider); p != "" {
+			if a.Attributes != nil {
+				if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
+					return []string{v}
+				}
+				if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
+					return []string{v}
+				}
+			}
 			return []string{p}
 		}
 		return nil
