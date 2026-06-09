@@ -635,26 +635,18 @@ func collectAuthModelKeys(a *Auth) []string {
 	if a == nil {
 		return nil
 	}
-	if len(a.ModelStates) == 0 {
-		if p := strings.TrimSpace(a.Provider); p != "" {
-			if a.Attributes != nil {
-				if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
-					return []string{v}
-				}
-				if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
-					return []string{v}
-				}
+	if p := strings.TrimSpace(a.Provider); p != "" {
+		if a.Attributes != nil {
+			if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
+				return []string{v}
 			}
-			return []string{p}
+			if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
+				return []string{v}
+			}
 		}
-		return nil
+		return []string{p}
 	}
-	keys := make([]string, 0, len(a.ModelStates))
-	for k := range a.ModelStates {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return nil
 }
 
 func calculateTotalWeight(auths []*Auth) int {
