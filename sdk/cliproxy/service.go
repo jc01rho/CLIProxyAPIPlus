@@ -2631,7 +2631,7 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 	// Attempt to fetch dynamic models
 	apiModels, err := kAuth.ListAvailableModels(ctx, tokenData)
 	if err != nil {
-		log.Warnf("kiro: failed to fetch dynamic models: %v, using static models", err)
+		log.Debugf("kiro: failed to fetch dynamic models: %v, using static models", err)
 		return registry.GetKiroModels()
 	}
 
