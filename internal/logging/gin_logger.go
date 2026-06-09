@@ -299,8 +299,7 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 
 		if isAIAPIPath(path) && (modelName != "" || providerInfo != "" || authKeyName != "") {
 			displayModelName := modelName
-			requestedMatchesBody := requestedModel != "" && modelName != "" && requestedModel == modelName
-			if requestedMatchesBody && actualModel != "" && requestedModel != actualModel {
+			if requestedModel != "" && actualModel != "" && requestedModel != actualModel {
 				displayModelName = fmt.Sprintf("%s → %s", requestedModel, actualModel)
 				if upstreamModel != "" && actualModel != upstreamModel && modelName != upstreamModel {
 					displayModelName = fmt.Sprintf("%s → %s", displayModelName, upstreamModel)
