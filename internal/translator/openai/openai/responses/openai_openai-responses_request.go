@@ -185,7 +185,11 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				}
 
 				if arguments := item.Get("arguments"); arguments.Exists() {
-					toolCall, _ = sjson.SetBytes(toolCall, "function.arguments", arguments.String())
+					if arguments.IsObject() {
+						toolCall, _ = sjson.SetRawBytes(toolCall, "function.arguments", []byte(arguments.Raw))
+					} else {
+						toolCall, _ = sjson.SetBytes(toolCall, "function.arguments", arguments.String())
+					}
 				}
 				pendingToolCalls = append(pendingToolCalls, gjson.ParseBytes(toolCall).Value())
 				if callID := strings.TrimSpace(item.Get("call_id").String()); callID != "" {
