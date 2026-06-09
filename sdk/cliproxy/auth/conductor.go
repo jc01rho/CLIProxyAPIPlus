@@ -6072,17 +6072,18 @@ func logRouteModelFallbackResult(ctx context.Context, originalModel, fallbackMod
 	if trimmed := strings.TrimSpace(authLabel); trimmed != "" {
 		fields["selected_auth_label"] = trimmed
 	}
+	fallbackLabel := fmt.Sprintf("%s → %s (%s)", originalModel, fallbackModel, source)
 	if resultErr != nil {
 		fields["outcome"] = "error"
 		if status := statusCodeFromError(resultErr); status > 0 {
 			fields["fallback_result_status"] = status
 		}
 		fields["fallback_result_error"] = resultErr.Error()
-		logEntryWithRequestID(ctx).WithFields(fields).Debug("fallback model request finished")
+		logEntryWithRequestID(ctx).WithFields(fields).Debugf("fallback model %s finished", fallbackLabel)
 		return
 	}
 	fields["outcome"] = "success"
-	logEntryWithRequestID(ctx).WithFields(fields).Info("fallback model request finished")
+	logEntryWithRequestID(ctx).WithFields(fields).Infof("fallback model %s finished", fallbackLabel)
 }
 
 func (m *Manager) executeWithRouteFallback(
