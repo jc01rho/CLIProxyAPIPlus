@@ -557,6 +557,21 @@ func (m *Manager) SetSelector(selector Selector) {
 	}
 }
 
+func (m *Manager) ResetSelectorCycles() {
+	if m == nil {
+		return
+	}
+	m.mu.RLock()
+	sel := m.selector
+	m.mu.RUnlock()
+	if sa, ok := sel.(*SessionAffinitySelector); ok {
+		sel = sa.fallback
+	}
+	if wrs, ok := sel.(*WeightedRobinSelector); ok {
+		wrs.ResetCycles()
+	}
+}
+
 // GetSelector returns the current selector instance.
 func (m *Manager) GetSelector() Selector {
 	if m == nil {

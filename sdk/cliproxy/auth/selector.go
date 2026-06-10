@@ -899,6 +899,19 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 	return snapshot
 }
 
+// ResetCycles clears all cached cycle state so that subsequent Pick calls
+// rebuild cycles from the current auth set. This is called after config
+// reloads or auth set changes to ensure stale auths are evicted.
+func (s *WeightedRobinSelector) ResetCycles() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cycles = make(map[string]*aliasCycle)
+	s.lastUsed = make(map[string]time.Time)
+}
+
 func (s *WeightedRobinSelector) rebuildCycle(auths []*Auth, state *aliasCycle) {
 	gcd := calculateWeightGCD(auths)
 	total := calculateTotalWeight(auths) / gcd
