@@ -1154,6 +1154,9 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 		s.registerHomeExecutors()
 	}
 	s.rebindExecutors()
+	if s.coreManager != nil {
+		s.coreManager.ResetSelectorCycles()
+	}
 	ctx := context.Background()
 	s.registerConfigAPIKeyAuths(ctx, newCfg)
 	s.syncPluginRuntime(ctx)
