@@ -619,6 +619,21 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 	c.Set("API_RESPONSE", bytes.Clone(data))
 }
 
+func isNotFoundError(err error) bool {
+	se, ok := err.(interface{ StatusCode() int })
+	return ok && se != nil && se.StatusCode() == http.StatusNotFound
+}
+
+// resolveFallbackProvidersForRuntime404 resolves fallback providers when the original model
+// returns 404 (model not found/unavailable). This is the runtime fallback path — distinct from
+// the route-resolution fallback which fires when no provider is found at all.
+func (h *BaseAPIHandler) resolveFallbackProvidersForRuntime404(originalModel string) ([]string, string) {
+	if h.AuthManager == nil {
+		return nil, ""
+	}
+	return h.AuthManager.ResolveProvidersForFallback(originalModel)
+}
+
 // ExecuteWithAuthManager executes a non-streaming request via the core auth manager.
 // This path is the only supported execution route.
 func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
@@ -655,6 +670,19 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, modelName, req, opts)
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
+	if err != nil && isNotFoundError(err) {
+		fbProviders, fbModel := h.resolveFallbackProvidersForRuntime404(normalizedModel)
+		if len(fbProviders) > 0 {
+			log.WithFields(log.Fields{
+				"original_model": normalizedModel,
+				"fallback_model": fbModel,
+			}).Info("runtime model fallback: 404 not found, trying fallback model")
+			attachRouteFallbackToGinContext(ctx, modelName, fbModel)
+			fbReq := req
+			fbReq.Model = fbModel
+			resp, err = h.AuthManager.Execute(ctx, fbProviders, fbReq, opts)
+		}
+	}
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		status := http.StatusInternalServerError
@@ -712,6 +740,19 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, modelName, req, opts)
 	resp, err := h.AuthManager.ExecuteCount(ctx, providers, req, opts)
+	if err != nil && isNotFoundError(err) {
+		fbProviders, fbModel := h.resolveFallbackProvidersForRuntime404(normalizedModel)
+		if len(fbProviders) > 0 {
+			log.WithFields(log.Fields{
+				"original_model": normalizedModel,
+				"fallback_model": fbModel,
+			}).Info("runtime model fallback: 404 not found, trying fallback model (count)")
+			attachRouteFallbackToGinContext(ctx, modelName, fbModel)
+			fbReq := req
+			fbReq.Model = fbModel
+			resp, err = h.AuthManager.ExecuteCount(ctx, fbProviders, fbReq, opts)
+		}
+	}
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		status := http.StatusInternalServerError
@@ -782,6 +823,19 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, modelName, req, opts)
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+	if err != nil && isNotFoundError(err) {
+		fbProviders, fbModel := h.resolveFallbackProvidersForRuntime404(normalizedModel)
+		if len(fbProviders) > 0 {
+			log.WithFields(log.Fields{
+				"original_model": normalizedModel,
+				"fallback_model": fbModel,
+			}).Info("runtime model fallback: 404 not found, trying fallback model (stream)")
+			attachRouteFallbackToGinContext(ctx, modelName, fbModel)
+			fbReq := req
+			fbReq.Model = fbModel
+			streamResult, err = h.AuthManager.ExecuteStream(ctx, fbProviders, fbReq, opts)
+		}
+	}
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
