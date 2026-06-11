@@ -635,6 +635,18 @@ func collectAuthModelKeys(a *Auth) []string {
 	if a == nil {
 		return nil
 	}
+	if len(a.ModelStates) > 0 {
+		keys := make([]string, 0, len(a.ModelStates))
+		for k := range a.ModelStates {
+			if k = strings.TrimSpace(k); k != "" {
+				keys = append(keys, k)
+			}
+		}
+		if len(keys) > 0 {
+			sort.Strings(keys)
+			return keys
+		}
+	}
 	if p := strings.TrimSpace(a.Provider); p != "" {
 		if a.Attributes != nil {
 			if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
