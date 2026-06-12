@@ -163,6 +163,8 @@ type Config struct {
 	// MistralKey defines a list of Mistral API key configurations.
 	MistralKey []MistralKey `yaml:"mistral-api-key" json:"mistral-api-key"`
 
+	MiMoCodeKey []MiMoCodeKey `yaml:"mimo-code-api-key" json:"mimo-code-api-key"`
+
 	// AmpCode contains Amp CLI upstream configuration, management restrictions, and model mappings.
 	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
 
@@ -797,6 +799,35 @@ type MistralModel struct {
 
 func (m MistralModel) GetName() string  { return m.Name }
 func (m MistralModel) GetAlias() string { return m.Alias }
+
+// MiMoCodeKey represents the configuration for a MiMo Code API key.
+// MiMo Code uses JWT-based authentication obtained via a bootstrap endpoint.
+type MiMoCodeKey struct {
+	ClientID string `yaml:"client-id" json:"client-id"`
+
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	Models []MiMoCodeModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+}
+
+// MiMoCodeModel describes a mapping between an alias and the actual upstream model name.
+type MiMoCodeModel struct {
+	Name  string `yaml:"name" json:"name"`
+	Alias string `yaml:"alias" json:"alias"`
+}
+
+func (m MiMoCodeModel) GetName() string  { return m.Name }
+func (m MiMoCodeModel) GetAlias() string { return m.Alias }
 
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.

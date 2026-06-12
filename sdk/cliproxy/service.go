@@ -880,6 +880,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"antigravity",
 		"kimi",
 		"xai",
+		"mimo-code",
 		"openai-compatibility",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
@@ -978,6 +979,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewCommandCodeExecutor(s.cfg))
 	case "mistral":
 		s.coreManager.RegisterExecutor(executor.NewMistralExecutor(s.cfg))
+	case "mimo-code":
+		s.coreManager.RegisterExecutor(executor.NewMiMoCodeExecutor(s.cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {

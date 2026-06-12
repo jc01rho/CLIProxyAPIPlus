@@ -37,6 +37,9 @@ const (
 	// CommandCode represents the Command Code provider identifier.
 	CommandCode = "commandcode"
 
+	// MiMoCode represents the MiMo Code provider identifier.
+	MiMoCode = "mimo-code"
+
 	// Mistral represents the Mistral AI provider identifier.
 	Mistral = "mistral"
 )
