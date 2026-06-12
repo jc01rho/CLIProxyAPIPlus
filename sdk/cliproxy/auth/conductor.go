@@ -885,14 +885,19 @@ func (m *Manager) ProvidersForRouteModel(routeModel string) []string {
 		providers = append(providers, providerKey)
 	}
 	if len(providers) == 0 {
+		executorKeys := make([]string, 0, len(m.executors))
+		for k := range m.executors {
+			executorKeys = append(executorKeys, k)
+		}
 		log.WithFields(log.Fields{
-			"route_model":        routeModel,
-			"total_auths":        len(auths),
-			"skipped_disabled":   skippedDisabled,
-			"skipped_no_support": skippedNoSupport,
+			"route_model":         routeModel,
+			"total_auths":         len(auths),
+			"skipped_disabled":    skippedDisabled,
+			"skipped_no_support":  skippedNoSupport,
 			"skipped_no_provider": skippedNoProvider,
-			"skipped_duplicate":  skippedDuplicate,
-		}).Warn("ProvidersForRouteModel returned empty: no auth supports this route model")
+			"skipped_duplicate":   skippedDuplicate,
+			"registered_executors": executorKeys,
+		}).Warnf("ProvidersForRouteModel returned empty: no auth supports route model %q (checked %d auths)", routeModel, len(auths))
 	}
 	return providers
 }
