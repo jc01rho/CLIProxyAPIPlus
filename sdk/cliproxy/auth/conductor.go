@@ -857,22 +857,42 @@ func (m *Manager) ProvidersForRouteModel(routeModel string) []string {
 	}
 	providers := make([]string, 0, len(auths))
 	seen := make(map[string]struct{}, len(auths))
+	var (
+		skippedDisabled   int
+		skippedNoSupport  int
+		skippedNoProvider int
+		skippedDuplicate  int
+	)
 	for _, auth := range auths {
 		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+			skippedDisabled++
 			continue
 		}
 		if !m.AuthSupportsRouteModel(auth, routeModel) {
+			skippedNoSupport++
 			continue
 		}
 		providerKey := effectiveProviderKey(auth)
 		if providerKey == "" {
+			skippedNoProvider++
 			continue
 		}
 		if _, exists := seen[providerKey]; exists {
+			skippedDuplicate++
 			continue
 		}
 		seen[providerKey] = struct{}{}
 		providers = append(providers, providerKey)
+	}
+	if len(providers) == 0 {
+		log.WithFields(log.Fields{
+			"route_model":        routeModel,
+			"total_auths":        len(auths),
+			"skipped_disabled":   skippedDisabled,
+			"skipped_no_support": skippedNoSupport,
+			"skipped_no_provider": skippedNoProvider,
+			"skipped_duplicate":  skippedDuplicate,
+		}).Warn("ProvidersForRouteModel returned empty: no auth supports this route model")
 	}
 	return providers
 }
@@ -1403,17 +1423,42 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 	if selectionKey != "" && selectionKey != routeKey && registryRef.ClientSupportsModel(auth.ID, selectionKey) {
 		return true
 	}
-	for _, aliasKey := range m.aliasRegistryModelKeysForAuth(auth, routeModel, routeKey, selectionKey) {
+	aliasKeys := m.aliasRegistryModelKeysForAuth(auth, routeModel, routeKey, selectionKey)
+	matchedAlias := ""
+	for _, aliasKey := range aliasKeys {
 		if aliasKey == "" || aliasKey == routeKey || aliasKey == selectionKey {
 			continue
 		}
 		if registryRef.ClientSupportsModel(auth.ID, aliasKey) {
-			return true
+			matchedAlias = aliasKey
+			break
 		}
 	}
-	if m.authSupportsExplicitOAuthAliasWithoutRegistry(registryRef, auth, routeModel) {
+	if matchedAlias != "" {
 		return true
 	}
+	oauthSupported := m.authSupportsExplicitOAuthAliasWithoutRegistry(registryRef, auth, routeModel)
+	if oauthSupported {
+		return true
+	}
+	// Log only when this auth would have been a candidate provider for the route
+	// model — helps debug why a known-good alias is not being recognized.
+	authKind, _ := auth.AccountInfo()
+	providerKey := effectiveProviderKey(auth)
+	log.WithFields(log.Fields{
+		"auth_id":          auth.ID,
+		"auth_kind":        authKind,
+		"provider_key":     providerKey,
+		"route_model":      routeModel,
+		"route_key":        routeKey,
+		"selection_key":    selectionKey,
+		"alias_keys":       aliasKeys,
+		"matched_alias":    matchedAlias,
+		"oauth_supported":  oauthSupported,
+		"registry_models":  len(registryRef.GetModelsForClient(auth.ID)),
+		"auth_disabled":    auth.Disabled,
+		"auth_status":      auth.Status,
+	}).Debug("authSupportsRouteModel: no matching resolution path")
 	return false
 }
 
@@ -1991,6 +2036,27 @@ func (m *Manager) getFallbackChain() []string {
 		return nil
 	}
 	return chain
+}
+
+// FallbackChain returns the current fallback chain for logging/diagnostics.
+func (m *Manager) FallbackChain() []string {
+	return m.getFallbackChain()
+}
+
+// FallbackModels returns the current fallback-models map for logging/diagnostics.
+func (m *Manager) FallbackModels() map[string]string {
+	if m == nil {
+		return nil
+	}
+	models, ok := m.fallbackModels.Load().(map[string]string)
+	if !ok || models == nil {
+		return nil
+	}
+	out := make(map[string]string, len(models))
+	for k, v := range models {
+		out[k] = v
+	}
+	return out
 }
 
 func (m *Manager) getFallbackMaxDepth() int {

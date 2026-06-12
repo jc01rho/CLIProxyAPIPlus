@@ -1173,6 +1173,16 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	}
 
 	providers = util.GetProviderName(baseModel)
+	if len(providers) > 0 {
+		log.WithFields(log.Fields{
+			"requested_model": modelName,
+			"base_model":      baseModel,
+			"resolved_model":  resolvedModelName,
+			"source":          "util.GetProviderName(baseModel)",
+			"providers":       strings.Join(providers, ","),
+		}).Debug("route model provider resolved")
+	}
+
 	// Fallback: if baseModel has no provider but differs from resolvedModelName,
 	// try using the full model name. This handles edge cases where custom models
 	// may be registered with their full suffixed name (e.g., "my-model(8192)").
@@ -1180,18 +1190,80 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// custom model registrations that include thinking suffixes.
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
+		if len(providers) > 0 {
+			log.WithFields(log.Fields{
+				"requested_model": modelName,
+				"base_model":      baseModel,
+				"resolved_model":  resolvedModelName,
+				"source":          "util.GetProviderName(resolvedModelName)",
+				"providers":       strings.Join(providers, ","),
+			}).Debug("route model provider resolved via resolvedModelName")
+		}
 	}
 	if len(providers) == 0 && h != nil && h.AuthManager != nil {
 		providers = h.AuthManager.ProvidersForRouteModel(resolvedModelName)
+		if len(providers) > 0 {
+			log.WithFields(log.Fields{
+				"requested_model": modelName,
+				"base_model":      baseModel,
+				"resolved_model":  resolvedModelName,
+				"source":          "ProvidersForRouteModel(resolvedModelName)",
+				"providers":       strings.Join(providers, ","),
+			}).Debug("route model provider resolved")
+		}
 		if len(providers) == 0 && baseModel != resolvedModelName {
 			providers = h.AuthManager.ProvidersForRouteModel(baseModel)
+			if len(providers) > 0 {
+				log.WithFields(log.Fields{
+					"requested_model": modelName,
+					"base_model":      baseModel,
+					"resolved_model":  resolvedModelName,
+					"source":          "ProvidersForRouteModel(baseModel)",
+					"providers":       strings.Join(providers, ","),
+				}).Debug("route model provider resolved via baseModel")
+			}
 		}
 		if len(providers) == 0 {
 			providers = h.AuthManager.ProvidersForOAuthAliasWithoutRegisteredModels(resolvedModelName)
+			if len(providers) > 0 {
+				log.WithFields(log.Fields{
+					"requested_model": modelName,
+					"base_model":      baseModel,
+					"resolved_model":  resolvedModelName,
+					"source":          "ProvidersForOAuthAliasWithoutRegisteredModels(resolvedModelName)",
+					"providers":       strings.Join(providers, ","),
+				}).Debug("route model provider resolved")
+			}
 			if len(providers) == 0 && baseModel != resolvedModelName {
 				providers = h.AuthManager.ProvidersForOAuthAliasWithoutRegisteredModels(baseModel)
+				if len(providers) > 0 {
+					log.WithFields(log.Fields{
+						"requested_model": modelName,
+						"base_model":      baseModel,
+						"resolved_model":  resolvedModelName,
+						"source":          "ProvidersForOAuthAliasWithoutRegisteredModels(baseModel)",
+						"providers":       strings.Join(providers, ","),
+					}).Debug("route model provider resolved via baseModel")
+				}
 			}
 		}
+	}
+
+	// Log when all resolution paths fail before attempting fallback
+	if len(providers) == 0 {
+		log.WithFields(log.Fields{
+			"requested_model": modelName,
+			"base_model":      baseModel,
+			"resolved_model":  resolvedModelName,
+			"tried_sources": []string{
+				"util.GetProviderName(baseModel)",
+				"util.GetProviderName(resolvedModelName)",
+				"ProvidersForRouteModel(resolvedModelName)",
+				"ProvidersForRouteModel(baseModel)",
+				"ProvidersForOAuthAliasWithoutRegisteredModels(resolvedModelName)",
+				"ProvidersForOAuthAliasWithoutRegisteredModels(baseModel)",
+			},
+		}).Warn("all route model resolution paths exhausted, attempting fallback")
 	}
 
 	if len(providers) == 0 && h != nil && h.AuthManager != nil {
@@ -1199,11 +1271,20 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 			log.WithFields(log.Fields{
 				"requested_model":         modelName,
 				"base_model":              baseModel,
+				"resolved_model":          resolvedModelName,
 				"selected_fallback_model": fbModel,
-				"providers":               strings.Join(fbProviders, ","),
+				"fallback_providers":      strings.Join(fbProviders, ","),
+				"fallback_chain_step":     0,
 			}).Infof("resolved request model through route fallback: requested=%s selected=%s", modelName, fbModel)
 			return fbProviders, fbModel, nil
 		}
+		log.WithFields(log.Fields{
+			"requested_model":    modelName,
+			"base_model":         baseModel,
+			"resolved_model":     resolvedModelName,
+			"fallback_chain":     h.AuthManager.FallbackChain(),
+			"fallback_models":    h.AuthManager.FallbackModels(),
+		}).Warn("route fallback attempted but no providers found for any fallback model")
 	}
 
 	if len(providers) == 0 {
