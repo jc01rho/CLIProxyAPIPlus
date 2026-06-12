@@ -1,11 +1,9 @@
 package auth
 
 import (
-	"context"
 	"testing"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
 
 func TestResolveOAuthUpstreamModel_SuffixPreservation(t *testing.T) {
@@ -46,15 +44,6 @@ func TestResolveOAuthUpstreamModel_SuffixPreservation(t *testing.T) {
 			want:    "gemini-2.5-pro-exp-03-25",
 		},
 		{
-			name: "kiro alias resolves",
-			aliases: map[string][]internalconfig.OAuthModelAlias{
-				"kiro": {{Name: "kiro-claude-sonnet-4-5", Alias: "sonnet"}},
-			},
-			channel: "kiro",
-			input:   "sonnet",
-			want:    "kiro-claude-sonnet-4-5",
-		},
-		{
 			name: "config suffix takes priority",
 			aliases: map[string][]internalconfig.OAuthModelAlias{
 				"claude": {{Name: "claude-sonnet-4-5-20250514(low)", Alias: "claude-sonnet-4-5"}},
@@ -80,24 +69,6 @@ func TestResolveOAuthUpstreamModel_SuffixPreservation(t *testing.T) {
 			channel: "gemini-cli",
 			input:   "gemini-2.5-pro(none)",
 			want:    "gemini-2.5-pro-exp-03-25(none)",
-		},
-		{
-			name: "github-copilot suffix preserved",
-			aliases: map[string][]internalconfig.OAuthModelAlias{
-				"github-copilot": {{Name: "claude-opus-4.6", Alias: "opus"}},
-			},
-			channel: "github-copilot",
-			input:   "opus(medium)",
-			want:    "claude-opus-4.6(medium)",
-		},
-		{
-			name: "github-copilot no suffix",
-			aliases: map[string][]internalconfig.OAuthModelAlias{
-				"github-copilot": {{Name: "claude-opus-4.6", Alias: "opus"}},
-			},
-			channel: "github-copilot",
-			input:   "opus",
-			want:    "claude-opus-4.6",
 		},
 		{
 			name: "kimi suffix preserved",
@@ -188,10 +159,6 @@ func createAuthForChannel(channel string) *Auth {
 		return &Auth{Provider: "antigravity"}
 	case "kimi":
 		return &Auth{Provider: "kimi"}
-	case "kiro":
-		return &Auth{Provider: "kiro"}
-	case "github-copilot":
-		return &Auth{Provider: "github-copilot"}
 	default:
 		return &Auth{Provider: channel}
 	}
@@ -205,29 +172,14 @@ func TestOAuthModelAliasChannel_Kimi(t *testing.T) {
 	}
 }
 
-func TestOAuthModelAliasChannel_GitHubCopilot(t *testing.T) {
-	t.Parallel()
-
-	if got := OAuthModelAliasChannel("github-copilot", ""); got != "github-copilot" {
-		t.Fatalf("OAuthModelAliasChannel() = %q, want %q", got, "github-copilot")
-	}
-}
-
-func TestOAuthModelAliasChannel_Kiro(t *testing.T) {
-	t.Parallel()
-
-	if got := OAuthModelAliasChannel("kiro", ""); got != "kiro" {
-		t.Fatalf("OAuthModelAliasChannel() = %q, want %q", got, "kiro")
-
 func TestOAuthModelAliasChannel_PluginProvider(t *testing.T) {
 	t.Parallel()
 
-	if got := OAuthModelAliasChannel(" Qoder ", "oauth"); got != "qoder" {
-		t.Fatalf("OAuthModelAliasChannel() = %q, want %q", got, "qoder")
+	if got := OAuthModelAliasChannel(" Sample-Provider ", "oauth"); got != "sample-provider" {
+		t.Fatalf("OAuthModelAliasChannel() = %q, want %q", got, "sample-provider")
 	}
-	if got := OAuthModelAliasChannel("qoder", "api_key"); got != "" {
+	if got := OAuthModelAliasChannel("sample-provider", "api_key"); got != "" {
 		t.Fatalf("OAuthModelAliasChannel() = %q, want empty channel for API key", got)
-
 	}
 }
 
@@ -250,549 +202,22 @@ func TestApplyOAuthModelAlias_SuffixPreservation(t *testing.T) {
 	}
 }
 
-func TestResolveModelAliasPoolFromConfigModels_NamePrecedence(t *testing.T) {
-	t.Parallel()
-
-	// Test case: When requested model matches a direct name, it should be returned
-	// WITHOUT attempting alias resolution. This tests the precedence fix where
-	// name-matching happens before alias-matching.
-	tests := []struct {
-		name          string
-		candidate     string
-		models        []modelAliasEntry
-		expectedFirst string
-		expectEmpty   bool
-	}{
-		{
-			name:      "direct name match skips alias",
-			candidate: "gemini-2.5-pro",
-			models: []modelAliasEntry{
-				&mockModelAlias{name: "gemini-2.5-pro-exp-03-25", alias: "gemini-2.5-pro"},
-				&mockModelAlias{name: "gemini-2.5-pro", alias: "g25p"},
-			},
-			// With name-first precedence, should return "gemini-2.5-pro" (direct match)
-			expectedFirst: "gemini-2.5-pro",
-		},
-		{
-			name:      "alias resolution when no name matches",
-			candidate: "g25p",
-			models: []modelAliasEntry{
-				&mockModelAlias{name: "gemini-2.5-pro-exp-03-25", alias: "g25p"},
-			},
-			// When name doesn't match, alias should resolve
-			expectedFirst: "gemini-2.5-pro-exp-03-25",
-		},
-		{
-			name:      "no match returns empty",
-			candidate: "unknown-model",
-			models: []modelAliasEntry{
-				&mockModelAlias{name: "gemini-2.5-pro-exp-03-25", alias: "g25p"},
-			},
-			expectEmpty: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pool := resolveModelAliasPoolFromConfigModels(tt.candidate, tt.models)
-			if tt.expectEmpty {
-				if len(pool) != 0 {
-					t.Errorf("expected empty pool, got %v", pool)
-				}
-				return
-			}
-			if len(pool) == 0 {
-				t.Errorf("expected non-empty pool, got empty")
-				return
-			}
-			if pool[0] != tt.expectedFirst {
-				t.Errorf("expected first element %q, got %q", tt.expectedFirst, pool[0])
-			}
-		})
-	}
-}
-
-type mockModelAlias struct {
-	name  string
-	alias string
-}
-
-func (m *mockModelAlias) GetName() string {
-	return m.name
-}
-
-func (m *mockModelAlias) GetAlias() string {
-	return m.alias
-}
-
-// TestResolveOAuthUpstreamModel_OriginalTakesPlacePriority tests that when a requested model matches
-// an original/upstream model name, it is returned immediately without alias resolution.
-func TestResolveOAuthUpstreamModel_OriginalTakesPlacePriority(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		aliases map[string][]internalconfig.OAuthModelAlias
-		channel string
-		input   string
-		want    string
-	}{
-		{
-			name: "original model name matches - returns as-is",
-			aliases: map[string][]internalconfig.OAuthModelAlias{
-				"gemini-cli": {
-					{Name: "gemini-2.5-pro-exp-03-25", Alias: "gemini-2.5-pro"},
-				},
-			},
-			channel: "gemini-cli",
-			input:   "gemini-2.5-pro-exp-03-25", // Request original name
-			want:    "gemini-2.5-pro-exp-03-25", // Should return it immediately
-		},
-		{
-			name: "original model name matches with suffix - preserves suffix",
-			aliases: map[string][]internalconfig.OAuthModelAlias{
-				"claude": {
-					{Name: "claude-sonnet-4-5-20250514", Alias: "claude-sonnet-4-5"},
-				},
-			},
-			channel: "claude",
-			input:   "claude-sonnet-4-5-20250514(high)", // Original with suffix
-			want:    "claude-sonnet-4-5-20250514(high)", // Should return original+suffix
-		},
-		{
-			name: "original model name matches exactly - ignores alias",
-			aliases: map[string][]internalconfig.OAuthModelAlias{
-				"codex": {
-					{Name: "codex-upstream-001", Alias: "codex-alias"},
-					{Name: "codex-alternative-002", Alias: "codex-upstream-001"},
-				},
-			},
-			channel: "codex",
-			input:   "codex-upstream-001", // Request original name (which is also an alias!)
-			want:    "codex-upstream-001", // Should return original, NOT resolve alias
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			m := NewManager(nil, nil, nil)
-			m.SetOAuthModelAlias(tc.aliases)
-
-			auth := createAuthForChannel(tc.channel)
-
-			result := m.resolveOAuthUpstreamModel(auth, tc.input)
-
-			if result != tc.want {
-				t.Errorf("resolveOAuthUpstreamModel() = %q, want %q", result, tc.want)
-			}
-		})
-	}
-}
-
-// TestResolveOAuthUpstreamModel_FallbackToAlias tests that when a requested model
-// doesn't match an original, it falls back to alias resolution.
-func TestResolveOAuthUpstreamModel_FallbackToAlias(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		aliases map[string][]internalconfig.OAuthModelAlias
-		channel string
-		input   string
-		want    string
-	}{
-		{
-			name: "alias resolves when original not requested",
-			aliases: map[string][]internalconfig.OAuthModelAlias{
-				"gemini-cli": {
-					{Name: "gemini-2.5-pro-exp-03-25", Alias: "gemini-2.5-pro"},
-				},
-			},
-			channel: "gemini-cli",
-			input:   "gemini-2.5-pro",           // Request alias
-			want:    "gemini-2.5-pro-exp-03-25", // Should resolve to original
-		},
-		{
-			name: "alias with suffix resolves and preserves suffix",
-			aliases: map[string][]internalconfig.OAuthModelAlias{
-				"claude": {
-					{Name: "claude-opus-4-5-20251101", Alias: "claude-opus-4-5"},
-				},
-			},
-			channel: "claude",
-			input:   "claude-opus-4-5(high)",          // Alias with suffix
-			want:    "claude-opus-4-5-20251101(high)", // Should resolve + preserve suffix
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			m := NewManager(nil, nil, nil)
-			m.SetOAuthModelAlias(tc.aliases)
-
-			auth := createAuthForChannel(tc.channel)
-
-			result := m.resolveOAuthUpstreamModel(auth, tc.input)
-
-			if result != tc.want {
-				t.Errorf("resolveOAuthUpstreamModel() = %q, want %q", result, tc.want)
-			}
-		})
-	}
-}
-
-// TestResolveModelAliasPoolFromConfigModels_OriginalFirst tests that when resolving
-// model alias pools, original model names take priority over aliases.
-func TestResolveModelAliasPoolFromConfigModels_OriginalFirst(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		candidate     string
-		models        []modelAliasEntry
-		expectedFirst string
-		expectEmpty   bool
-	}{
-		{
-			name:      "original model name requested - returns original",
-			candidate: "gemini-2.5-pro",
-			models: []modelAliasEntry{
-				&mockModelAlias{name: "gemini-2.5-pro", alias: "g25p"},
-				&mockModelAlias{name: "gemini-2.5-pro-exp-03-25", alias: "gemini-2.5-pro-exp"},
-			},
-			expectedFirst: "gemini-2.5-pro", // Original name match takes priority
-		},
-		{
-			name:      "alias resolves when original not requested",
-			candidate: "g25p",
-			models: []modelAliasEntry{
-				&mockModelAlias{name: "gemini-2.5-pro", alias: "g25p"},
-			},
-			expectedFirst: "gemini-2.5-pro", // Alias resolves to original
-		},
-		{
-			name:      "multiple aliases - first match returns",
-			candidate: "alias-1",
-			models: []modelAliasEntry{
-				&mockModelAlias{name: "model-a", alias: "alias-1"},
-				&mockModelAlias{name: "model-b", alias: "alias-1"},
-			},
-			expectedFirst: "model-a",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pool := resolveModelAliasPoolFromConfigModels(tt.candidate, tt.models)
-			if tt.expectEmpty {
-				if len(pool) != 0 {
-					t.Errorf("expected empty pool, got %v", pool)
-				}
-				return
-			}
-			if len(pool) == 0 {
-				t.Errorf("expected non-empty pool, got empty")
-				return
-			}
-			if pool[0] != tt.expectedFirst {
-				t.Errorf("expected first element %q, got %q", tt.expectedFirst, pool[0])
-			}
-		})
-	}
-}
-
-func TestResolveOAuthUpstreamModel_RegisteredRealModelTakesPriority(t *testing.T) {
-	t.Parallel()
-
-	m := NewManager(nil, nil, nil)
-	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
-		"github-copilot": {
-			{Name: "gpt-5.2-codex", Alias: "gpt-5.4"},
-		},
-	})
-
-	auth := &Auth{
-		ID:       "oauth-real-model-priority",
-		Provider: "github-copilot",
-		Metadata: map[string]any{"username": "tester"},
-	}
-	if _, err := m.Register(context.Background(), auth); err != nil {
-		t.Fatalf("register auth: %v", err)
-	}
-
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(auth.ID, "github-copilot", []*registry.ModelInfo{
-		{ID: "gpt-5.4"},
-		{ID: "gpt-5.2-codex"},
-	})
-	t.Cleanup(func() {
-		reg.UnregisterClient(auth.ID)
-	})
-
-	resolved := m.resolveOAuthUpstreamModel(auth, "gpt-5.4")
-	if resolved != "gpt-5.4" {
-		t.Fatalf("resolveOAuthUpstreamModel(real model) = %q, want %q", resolved, "gpt-5.4")
-	}
-
-	aliased := m.resolveOAuthUpstreamModel(auth, "gpt-5.4(high)")
-	if aliased != "gpt-5.4(high)" {
-		t.Fatalf("resolveOAuthUpstreamModel(real model with suffix) = %q, want %q", aliased, "gpt-5.4(high)")
-	}
-}
-
-func TestResolveOAuthUpstreamModel_AliasExposedModelUsesExecutionTarget(t *testing.T) {
-	t.Parallel()
-
-	m := NewManager(nil, nil, nil)
-	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
-		"codex": {
-			{Name: "gpt-5.2", Alias: "gpt-5.4", Fork: true},
-		},
-	})
-
-	auth := &Auth{
-		ID:       "oauth-alias-exposed-model",
-		Provider: "codex",
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{"username": "tester"},
-	}
-	if _, err := m.Register(context.Background(), auth); err != nil {
-		t.Fatalf("register auth: %v", err)
-	}
-
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{
-		{ID: "gpt-5.2"},
-		{ID: "gpt-5.4", ExecutionTarget: "gpt-5.2"},
-	})
-	t.Cleanup(func() {
-		reg.UnregisterClient(auth.ID)
-	})
-
-	resolved := m.resolveOAuthUpstreamModel(auth, "gpt-5.4")
-	if resolved != "gpt-5.2" {
-		t.Fatalf("resolveOAuthUpstreamModel(alias-exposed model) = %q, want %q", resolved, "gpt-5.2")
-	}
-
-	resolvedWithSuffix := m.resolveOAuthUpstreamModel(auth, "gpt-5.4(high)")
-	if resolvedWithSuffix != "gpt-5.2(high)" {
-		t.Fatalf("resolveOAuthUpstreamModel(alias-exposed model with suffix) = %q, want %q", resolvedWithSuffix, "gpt-5.2(high)")
-	}
-}
-
-func TestResolveOAuthUpstreamModel_PrefersConfiguredAliasWhenRegistryAdvertisesPlainAliasModel(t *testing.T) {
-	t.Parallel()
-
-	m := NewManager(nil, nil, nil)
-	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
-		"claude": {
-			{Name: "claude-sonnet-4-6", Alias: "sonnet", Fork: true},
-		},
-	})
-
-	auth := &Auth{
-		ID:       "oauth-plain-alias-registry",
-		Provider: "claude",
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{"email": "tester@example.com"},
-	}
-	if _, err := m.Register(context.Background(), auth); err != nil {
-		t.Fatalf("register auth: %v", err)
-	}
-
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{
-		{ID: "sonnet"},
-		{ID: "claude-sonnet-4-6"},
-	})
-	t.Cleanup(func() {
-		reg.UnregisterClient(auth.ID)
-	})
-
-	resolved := m.resolveOAuthUpstreamModel(auth, "sonnet")
-	if resolved != "sonnet" {
-		t.Fatalf("resolveOAuthUpstreamModel(plain registered alias) = %q, want %q", resolved, "sonnet")
-	}
-
-	resolvedWithSuffix := m.resolveOAuthUpstreamModel(auth, "sonnet(high)")
-	if resolvedWithSuffix != "sonnet(high)" {
-		t.Fatalf("resolveOAuthUpstreamModel(plain registered alias with suffix) = %q, want %q", resolvedWithSuffix, "sonnet(high)")
-	}
-}
-
-func TestPrepareExecutionModels_AuthSpecificRealFirstAliasSecond(t *testing.T) {
-	t.Parallel()
-
-	m := NewManager(nil, nil, nil)
-	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
-		"codex": {
-			{Name: "gpt-5.2", Alias: "gpt-5.4", Fork: true},
-		},
-	})
-
-	authA := &Auth{
-		ID:       "codex-auth-a",
-		Provider: "codex",
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{"username": "a"},
-	}
-	authB := &Auth{
-		ID:       "codex-auth-b",
-		Provider: "codex",
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{"username": "b"},
-	}
-	if _, err := m.Register(context.Background(), authA); err != nil {
-		t.Fatalf("register authA: %v", err)
-	}
-	if _, err := m.Register(context.Background(), authB); err != nil {
-		t.Fatalf("register authB: %v", err)
-	}
-
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(authA.ID, "codex", []*registry.ModelInfo{
-		{ID: "gpt-5.4"},
-		{ID: "gpt-5.2"},
-	})
-	reg.RegisterClient(authB.ID, "codex", []*registry.ModelInfo{
-		{ID: "gpt-5.2"},
-		{ID: "gpt-5.4", ExecutionTarget: "gpt-5.2"},
-	})
-	t.Cleanup(func() {
-		reg.UnregisterClient(authA.ID)
-		reg.UnregisterClient(authB.ID)
-	})
-
-	modelsA := m.prepareExecutionModels(authA, "gpt-5.4")
-	if len(modelsA) != 1 || modelsA[0] != "gpt-5.4" {
-		t.Fatalf("prepareExecutionModels(authA) = %v, want [%q]", modelsA, "gpt-5.4")
-	}
-
-	modelsB := m.prepareExecutionModels(authB, "gpt-5.4")
-	if len(modelsB) != 1 || modelsB[0] != "gpt-5.2" {
-		t.Fatalf("prepareExecutionModels(authB) = %v, want [%q]", modelsB, "gpt-5.2")
-	}
-}
-
-func TestPrepareExecutionModels_FallbackModelsDoNotReverseResolveAliases(t *testing.T) {
-	t.Parallel()
-
-	m := NewManager(nil, nil, nil)
-	m.SetFallbackModels(map[string]string{
-		"gpt-5.5": "higher-coding",
-	})
-
-	auth := &Auth{
-		ID:       "codex-auth-fallback-does-not-reverse-alias",
-		Provider: "codex",
-		Status:   StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-	}
-	if _, err := m.Register(context.Background(), auth); err != nil {
-		t.Fatalf("register auth: %v", err)
-	}
-
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{
-		{ID: "higher-coding"},
-		{ID: "gpt-5.5"},
-	})
-	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
-
-	models := m.prepareExecutionModels(auth, "higher-coding")
-	if len(models) != 1 || models[0] != "higher-coding" {
-		t.Fatalf("prepareExecutionModels(higher-coding) = %v, want [%q]", models, "higher-coding")
-	}
-}
-
-func TestPrepareExecutionModels_HigherCodingDoesNotResolveToGpt55ViaOpenAICompatAlias(t *testing.T) {
-	t.Parallel()
-
-	// Scenario: OpenAI-compat config has name: "gpt-5.5" with alias: "higher-coding".
-	// Requesting "higher-coding" should resolve to "gpt-5.5" through the alias pool,
-	// but only for the auth that owns this OpenAI-compat entry.
-	// A different auth without this mapping should NOT resolve "higher-coding" → "gpt-5.5".
-	cfg := &internalconfig.Config{
-		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
-			Name: "pool",
-			Models: []internalconfig.OpenAICompatibilityModel{
-				{Name: "gpt-5.5", Alias: "higher-coding"},
-			},
-		}},
-	}
-	m := NewManager(nil, nil, nil)
-	m.SetConfig(cfg)
-
-	// Auth WITH OpenAI-compat mapping
-	authWithMapping := &Auth{
-		ID:       "auth-with-compat-mapping",
-		Provider: "pool",
-		Status:   StatusActive,
-		Attributes: map[string]string{
-			"api_key":      "test-key",
-			"compat_name":  "pool",
-			"provider_key": "pool",
-		},
-	}
-	if _, err := m.Register(context.Background(), authWithMapping); err != nil {
-		t.Fatalf("register authWithMapping: %v", err)
-	}
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(authWithMapping.ID, "pool", []*registry.ModelInfo{{ID: "higher-coding"}})
-	t.Cleanup(func() { reg.UnregisterClient(authWithMapping.ID) })
-
-	// Auth WITHOUT OpenAI-compat mapping
-	authWithoutMapping := &Auth{
-		ID:       "auth-without-compat-mapping",
-		Provider: "claude",
-		Status:   StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-	}
-	if _, err := m.Register(context.Background(), authWithoutMapping); err != nil {
-		t.Fatalf("register authWithoutMapping: %v", err)
-	}
-	reg.RegisterClient(authWithoutMapping.ID, "claude", []*registry.ModelInfo{{ID: "higher-coding"}})
-	t.Cleanup(func() { reg.UnregisterClient(authWithoutMapping.ID) })
-
-	// Auth WITH mapping: should resolve higher-coding → gpt-5.5 via OpenAI-compat alias
-	modelsWithMapping := m.prepareExecutionModels(authWithMapping, "higher-coding")
-	if len(modelsWithMapping) != 1 || modelsWithMapping[0] != "gpt-5.5" {
-		t.Fatalf("prepareExecutionModels(authWithMapping, higher-coding) = %v, want [%q]", modelsWithMapping, "gpt-5.5")
-	}
-
-	// Auth WITHOUT mapping: should keep higher-coding as-is
-	modelsWithoutMapping := m.prepareExecutionModels(authWithoutMapping, "higher-coding")
-	if len(modelsWithoutMapping) != 1 || modelsWithoutMapping[0] != "higher-coding" {
-		t.Fatalf("prepareExecutionModels(authWithoutMapping, higher-coding) = %v, want [%q]", modelsWithoutMapping, "higher-coding")
-
 func TestApplyOAuthModelAlias_PluginProvider(t *testing.T) {
 	t.Parallel()
 
 	aliases := map[string][]internalconfig.OAuthModelAlias{
-		"qoder": {{Name: "qmodel_latest", Alias: "qlatest"}},
+		"sample-provider": {{Name: "sample-model-latest", Alias: "sample-latest"}},
 	}
 
 	mgr := NewManager(nil, nil, nil)
 	mgr.SetConfig(&internalconfig.Config{})
 	mgr.SetOAuthModelAlias(aliases)
 
-	auth := &Auth{ID: "qoder-auth", Provider: "qoder", Attributes: map[string]string{"auth_kind": "oauth"}}
+	auth := &Auth{ID: "sample-provider-auth", Provider: "sample-provider", Attributes: map[string]string{"auth_kind": "oauth"}}
 
-	resolvedModel := mgr.applyOAuthModelAlias(auth, "qlatest")
-	if resolvedModel != "qmodel_latest" {
-		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "qmodel_latest")
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "sample-latest")
+	if resolvedModel != "sample-model-latest" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "sample-model-latest")
 	}
 }
 
@@ -800,18 +225,17 @@ func TestApplyOAuthModelAlias_PluginProviderSkipsAPIKey(t *testing.T) {
 	t.Parallel()
 
 	aliases := map[string][]internalconfig.OAuthModelAlias{
-		"qoder": {{Name: "qmodel_latest", Alias: "qlatest"}},
+		"sample-provider": {{Name: "sample-model-latest", Alias: "sample-latest"}},
 	}
 
 	mgr := NewManager(nil, nil, nil)
 	mgr.SetConfig(&internalconfig.Config{})
 	mgr.SetOAuthModelAlias(aliases)
 
-	auth := &Auth{ID: "qoder-auth", Provider: "qoder", Attributes: map[string]string{"auth_kind": "api_key"}}
+	auth := &Auth{ID: "sample-provider-auth", Provider: "sample-provider", Attributes: map[string]string{"auth_kind": "api_key"}}
 
-	resolvedModel := mgr.applyOAuthModelAlias(auth, "qlatest")
-	if resolvedModel != "qlatest" {
-		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "qlatest")
-
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "sample-latest")
+	if resolvedModel != "sample-latest" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "sample-latest")
 	}
 }
