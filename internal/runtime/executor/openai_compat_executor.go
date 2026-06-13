@@ -126,9 +126,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	// Provider-specific request transformations
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
-	// MiniMax models behind opencode.ai/zen/ only accept "adaptive" or "disabled"
-	// for thinking.type. Rewrite "enabled" → "adaptive" for MiniMax only.
-	translated = normalizeOpenCodeZenThinkingType(baseURL, baseModel, translated)
+	translated = normalizeMiniMaxM3ThinkingType(baseModel, translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
 	}
@@ -365,9 +363,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Provider-specific request transformations
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
-	// MiniMax models behind opencode.ai/zen/ only accept "adaptive" or "disabled"
-	// for thinking.type. Rewrite "enabled" → "adaptive" for MiniMax only.
-	translated = normalizeOpenCodeZenThinkingType(baseURL, baseModel, translated)
+	translated = normalizeMiniMaxM3ThinkingType(baseModel, translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
 	}
@@ -925,28 +921,25 @@ func isOpenCodeZenProvider(baseURL string) bool {
 	return strings.Contains(lower, "opencode.ai/zen/")
 }
 
-// isOpenCodeZenMiniMaxModel reports whether the model name targets the
-// MiniMax-M3 upstream behind the opencode.ai/zen/ gateway. MiniMax-M3
-// only allows thinking.type "adaptive" or "disabled" and rejects "enabled".
-// Other providers behind the gateway (e.g. Claude, GPT) accept "enabled"
-// and must not be remapped.
-func isOpenCodeZenMiniMaxModel(model string) bool {
+// isMiniMaxM3Model reports whether the model name targets a MiniMax-M3
+// model, regardless of the upstream gateway. MiniMax-M3 only allows
+// thinking.type "adaptive" or "disabled" and rejects "enabled".
+func isMiniMaxM3Model(model string) bool {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	if lower == "" {
 		return false
 	}
-	// Match the specific MiniMax-M3 model name (case-insensitive).
 	return strings.Contains(lower, "minimax-m3")
 }
 
-// normalizeOpenCodeZenThinkingType rewrites thinking.type from "enabled"
-// to "adaptive" for MiniMax models served via the opencode.ai/zen/ gateway,
-// since MiniMax only allows "adaptive" or "disabled" and rejects "enabled".
+// normalizeMiniMaxM3ThinkingType rewrites thinking.type from "enabled"
+// to "adaptive" for MiniMax-M3 models, since MiniMax only allows
+// "adaptive" or "disabled" and rejects "enabled".
 // If thinking.type is "disabled" or "adaptive", it is left untouched.
-// Non-MiniMax models are not affected, since other providers behind the
-// gateway (e.g. Claude, GPT) accept "enabled".
-func normalizeOpenCodeZenThinkingType(baseURL, model string, body []byte) []byte {
-	if !isOpenCodeZenProvider(baseURL) || !isOpenCodeZenMiniMaxModel(model) || len(body) == 0 || !gjson.ValidBytes(body) {
+// Non-MiniMax models are not affected, since other providers (e.g. Claude,
+// GPT) accept "enabled".
+func normalizeMiniMaxM3ThinkingType(model string, body []byte) []byte {
+	if !isMiniMaxM3Model(model) || len(body) == 0 || !gjson.ValidBytes(body) {
 		return body
 	}
 	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
