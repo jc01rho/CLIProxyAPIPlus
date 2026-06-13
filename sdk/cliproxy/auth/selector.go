@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -215,6 +216,11 @@ func (e *modelCooldownError) Headers() http.Header {
 	return headers
 }
 
+const (
+	primaryPriorityBonus = 1_000_000
+	maxAuthWeight        = 1_000_000
+)
+
 func authPriority(auth *Auth) int {
 	if auth == nil {
 		return 0
@@ -228,8 +234,17 @@ func authPriority(auth *Auth) int {
 			}
 		}
 	}
+	if basePriority < 0 {
+		basePriority = 0
+	}
+	if basePriority > maxAuthWeight {
+		basePriority = maxAuthWeight
+	}
 	if auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
-		return basePriority + 1000000
+		if basePriority > maxAuthWeight-primaryPriorityBonus {
+			return maxAuthWeight
+		}
+		return basePriority + primaryPriorityBonus
 	}
 	return basePriority
 }
@@ -504,7 +519,7 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 // The model string is used as the cycle key so that different model/alias
 // requests maintain independent shuffled cycles and cursors. This prevents
 // traffic for one alias from interfering with the cursor of another.
-func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (selected *Auth, _ error) {
 	_ = opts
 	now := time.Now()
 
@@ -560,6 +575,11 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		return available[0], nil
 	}
 
+	cycleAuths := s.evictUnusedAuths(available)
+	if len(cycleAuths) == 0 {
+		return nil, &Error{Code: "auth_unavailable", Message: "no auth available after LRU eviction"}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -578,14 +598,14 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 	// Without this check, priority/weight edits after the first build
 	// are silently ignored until the next full cycle wrap.
 	if state.cycle == nil || len(state.cycle) == 0 {
-		s.rebuildCycle(available, state)
+		s.rebuildCycle(cycleAuths, state)
 	} else {
 		sameSet := state.authIDs != nil
 		if sameSet {
-			if len(state.authIDs) != len(available) {
+			if len(state.authIDs) != len(cycleAuths) {
 				sameSet = false
 			} else {
-				for _, a := range available {
+				for _, a := range cycleAuths {
 					if _, found := state.authIDs[a.ID]; !found {
 						sameSet = false
 						break
@@ -593,16 +613,16 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 				}
 			}
 		}
-		newHash := calculateWeightHash(available)
+		newHash := calculateWeightHash(cycleAuths)
 		if !sameSet || state.weightHash != newHash {
-			s.rebuildCycle(available, state)
+			s.rebuildCycle(cycleAuths, state)
 		}
 	}
 
-	for {
+	for attempts := 0; attempts < len(state.cycle); attempts++ {
 		if state.head >= len(state.cycle) {
 			state.head = 0
-			s.rebuildCycle(available, state)
+			s.rebuildCycle(cycleAuths, state)
 		}
 		selected := state.cycle[state.head]
 		state.head++
@@ -618,7 +638,18 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		return selected, nil
 	}
 
-	return nil, &Error{Code: "no_auth_available", Message: "no valid auth found in cycle"}
+	s.rebuildCycle(cycleAuths, state)
+	if len(state.cycle) == 0 {
+		return nil, &Error{Code: "auth_unavailable", Message: "no valid auth found in cycle"}
+	}
+
+	selected = state.cycle[0]
+	state.head = 1
+	s.lastUsed[selected.ID] = now
+	s.pickedCounts[selected.ID]++
+	s.totalPicks++
+	s.lastPickedAt = now
+	return selected, nil
 }
 
 func authWeight(a *Auth) int {
@@ -699,10 +730,11 @@ func calculateWeightHash(auths []*Auth) uint64 {
 		return sorted[i].ID < sorted[j].ID
 	})
 	h := fnv.New64()
+	var buf [8]byte
 	for _, a := range sorted {
-		w := authWeight(a)
 		h.Write([]byte(a.ID))
-		h.Write([]byte{byte(w), byte(w >> 8), byte(w >> 16), byte(w >> 24)})
+		binary.LittleEndian.PutUint64(buf[:], uint64(authWeight(a)))
+		h.Write(buf[:])
 	}
 	return h.Sum64()
 }
@@ -752,11 +784,14 @@ type CycleEntry struct {
 // been routed through Pick() at least once. Auths only seen in Pick() (knownAuths)
 // contribute lastPicked and recent-pick metadata, but the entry list itself is
 // derived from allAuths.
-func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) QueueStateSnapshot {
+func (s *WeightedRobinSelector) QueueState(provider, model string, allAuths []*Auth) QueueStateSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	cycleKey := canonicalModelKey(model)
+	if cycleKey != "" && strings.TrimSpace(provider) != "" {
+		cycleKey = cycleKey + "::" + strings.TrimSpace(provider)
+	}
 
 	// If model is empty, don't create a meaningless cycle.
 	// Return entries only (no cycle) so frontend shows available auths without fake cycle.
@@ -847,7 +882,9 @@ func (s *WeightedRobinSelector) QueueState(model string, allAuths []*Auth) Queue
 		cycleIndex = make(map[string]int, len(state.cycle))
 		for i, a := range state.cycle[state.head:] {
 			if a != nil {
-				cycleIndex[a.ID] = i
+				if _, exists := cycleIndex[a.ID]; !exists {
+					cycleIndex[a.ID] = i
+				}
 			}
 		}
 	}

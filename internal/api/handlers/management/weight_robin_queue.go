@@ -27,7 +27,8 @@ func (h *Handler) GetWeightRobinQueue(c *gin.Context) {
 	}
 
 	model := c.Query("model")
+	provider := c.Query("provider")
 	allAuths := manager.List()
-	snapshot := weightedSelector.QueueState(model, allAuths)
+	snapshot := weightedSelector.QueueState(provider, model, allAuths)
 	c.JSON(http.StatusOK, snapshot)
 }
