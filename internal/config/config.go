@@ -1422,6 +1422,28 @@ func (cfg *Config) SanitizeMistralKeys() {
 	cfg.MistralKey = out
 }
 
+// SanitizeMiMoCodeKeys trims whitespace from MiMo Code client entries.
+// It preserves order for remaining entries.
+func (cfg *Config) SanitizeMiMoCodeKeys() {
+	if cfg == nil || len(cfg.MiMoCodeKey) == 0 {
+		return
+	}
+	out := make([]MiMoCodeKey, 0, len(cfg.MiMoCodeKey))
+	for i := range cfg.MiMoCodeKey {
+		e := cfg.MiMoCodeKey[i]
+		e.ClientID = strings.TrimSpace(e.ClientID)
+		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.ProxyURL = strings.TrimSpace(e.ProxyURL)
+		e.Prefix = strings.TrimSpace(e.Prefix)
+		e.Headers = NormalizeHeaders(e.Headers)
+		if e.ClientID == "" {
+			continue
+		}
+		out = append(out, e)
+	}
+	cfg.MiMoCodeKey = out
+}
+
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.
 // It trims whitespace and preserves order for remaining entries.
 func (cfg *Config) SanitizeCodexKeys() {

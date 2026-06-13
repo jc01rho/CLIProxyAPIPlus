@@ -778,6 +778,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/mistral-api-key", s.mgmt.PatchMistralKey)
 		mgmt.DELETE("/mistral-api-key", s.mgmt.DeleteMistralKey)
 
+		mgmt.GET("/mimo-code-api-key", s.mgmt.GetMiMoCodeKeys)
+		mgmt.PUT("/mimo-code-api-key", s.mgmt.PutMiMoCodeKeys)
+		mgmt.PATCH("/mimo-code-api-key", s.mgmt.PatchMiMoCodeKey)
+		mgmt.DELETE("/mimo-code-api-key", s.mgmt.DeleteMiMoCodeKey)
+
 		mgmt.GET("/openai-compatibility", s.mgmt.GetOpenAICompat)
 		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)
 		mgmt.PATCH("/openai-compatibility", s.mgmt.PatchOpenAICompat)

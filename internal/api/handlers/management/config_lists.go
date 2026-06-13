@@ -1158,20 +1158,20 @@ func (h *Handler) PutCommandCodeKeys(c *gin.Context) {
 
 func (h *Handler) PatchCommandCodeKey(c *gin.Context) {
 	type commandCodeKeyPatch struct {
-		APIKey         *string                      `json:"api-key"`
-		Priority       *int                         `json:"priority"`
-		Prefix         *string                      `json:"prefix"`
-		BaseURL        *string                      `json:"base-url"`
-		ProxyURL       *string                      `json:"proxy-url"`
-		Models         *[]config.CommandCodeModel   `json:"models"`
-		Headers        *map[string]string           `json:"headers"`
-		ExcludedModels *[]string                    `json:"excluded-models"`
-		DisableCooling *bool                        `json:"disable-cooling"`
+		APIKey         *string                    `json:"api-key"`
+		Priority       *int                       `json:"priority"`
+		Prefix         *string                    `json:"prefix"`
+		BaseURL        *string                    `json:"base-url"`
+		ProxyURL       *string                    `json:"proxy-url"`
+		Models         *[]config.CommandCodeModel `json:"models"`
+		Headers        *map[string]string         `json:"headers"`
+		ExcludedModels *[]string                  `json:"excluded-models"`
+		DisableCooling *bool                      `json:"disable-cooling"`
 	}
 	var body struct {
-		Index *int                  `json:"index"`
-		Match *string               `json:"match"`
-		Value *commandCodeKeyPatch  `json:"value"`
+		Index *int                 `json:"index"`
+		Match *string              `json:"match"`
+		Value *commandCodeKeyPatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
@@ -1328,25 +1328,26 @@ func (h *Handler) PutMistralKeys(c *gin.Context) {
 	defer h.mu.Unlock()
 	h.cfg.MistralKey = filtered
 	h.cfg.SanitizeMistralKeys()
+	h.cfg.SanitizeMiMoCodeKeys()
 	h.persistLocked(c)
 }
 
 func (h *Handler) PatchMistralKey(c *gin.Context) {
 	type mistralKeyPatch struct {
-		APIKey         *string                   `json:"api-key"`
-		Priority       *int                      `json:"priority"`
-		Prefix         *string                   `json:"prefix"`
-		BaseURL        *string                   `json:"base-url"`
-		ProxyURL       *string                   `json:"proxy-url"`
-		Models         *[]config.MistralModel    `json:"models"`
-		Headers        *map[string]string        `json:"headers"`
-		ExcludedModels *[]string                 `json:"excluded-models"`
-		DisableCooling *bool                     `json:"disable-cooling"`
+		APIKey         *string                `json:"api-key"`
+		Priority       *int                   `json:"priority"`
+		Prefix         *string                `json:"prefix"`
+		BaseURL        *string                `json:"base-url"`
+		ProxyURL       *string                `json:"proxy-url"`
+		Models         *[]config.MistralModel `json:"models"`
+		Headers        *map[string]string     `json:"headers"`
+		ExcludedModels *[]string              `json:"excluded-models"`
+		DisableCooling *bool                  `json:"disable-cooling"`
 	}
 	var body struct {
-		Index *int               `json:"index"`
-		Match *string            `json:"match"`
-		Value *mistralKeyPatch   `json:"value"`
+		Index *int             `json:"index"`
+		Match *string          `json:"match"`
+		Value *mistralKeyPatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
@@ -1388,6 +1389,7 @@ func (h *Handler) PatchMistralKey(c *gin.Context) {
 		if trimmed == "" {
 			h.cfg.MistralKey = append(h.cfg.MistralKey[:targetIndex], h.cfg.MistralKey[targetIndex+1:]...)
 			h.cfg.SanitizeMistralKeys()
+			h.cfg.SanitizeMiMoCodeKeys()
 			h.persistLocked(c)
 			return
 		}
@@ -1411,6 +1413,7 @@ func (h *Handler) PatchMistralKey(c *gin.Context) {
 	normalizeMistralKey(&entry)
 	h.cfg.MistralKey[targetIndex] = entry
 	h.cfg.SanitizeMistralKeys()
+	h.cfg.SanitizeMiMoCodeKeys()
 	h.persistLocked(c)
 }
 
@@ -1429,6 +1432,7 @@ func (h *Handler) DeleteMistralKey(c *gin.Context) {
 			}
 			h.cfg.MistralKey = out
 			h.cfg.SanitizeMistralKeys()
+			h.cfg.SanitizeMiMoCodeKeys()
 			h.persistLocked(c)
 			return
 		}
@@ -1452,6 +1456,7 @@ func (h *Handler) DeleteMistralKey(c *gin.Context) {
 			h.cfg.MistralKey = append(h.cfg.MistralKey[:matchIndex], h.cfg.MistralKey[matchIndex+1:]...)
 		}
 		h.cfg.SanitizeMistralKeys()
+		h.cfg.SanitizeMiMoCodeKeys()
 		h.persistLocked(c)
 		return
 	}
@@ -1461,11 +1466,175 @@ func (h *Handler) DeleteMistralKey(c *gin.Context) {
 		if err == nil && idx >= 0 && idx < len(h.cfg.MistralKey) {
 			h.cfg.MistralKey = append(h.cfg.MistralKey[:idx], h.cfg.MistralKey[idx+1:]...)
 			h.cfg.SanitizeMistralKeys()
+			h.cfg.SanitizeMiMoCodeKeys()
 			h.persistLocked(c)
 			return
 		}
 	}
 	c.JSON(400, gin.H{"error": "missing api-key or index"})
+}
+
+func (h *Handler) GetMiMoCodeKeys(c *gin.Context) {
+	c.JSON(200, gin.H{"mimo-code-api-key": h.miMoCodeKeysWithAuthIndex()})
+}
+
+func (h *Handler) PutMiMoCodeKeys(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.MiMoCodeKey
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.MiMoCodeKey `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	filtered := make([]config.MiMoCodeKey, 0, len(arr))
+	for i := range arr {
+		entry := arr[i]
+		normalizeMiMoCodeKey(&entry)
+		if entry.ClientID == "" {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.MiMoCodeKey = filtered
+	h.cfg.SanitizeMiMoCodeKeys()
+	h.persistLocked(c)
+}
+
+func (h *Handler) PatchMiMoCodeKey(c *gin.Context) {
+	type miMoCodeKeyPatch struct {
+		ClientID       *string                 `json:"client-id"`
+		Priority       *int                    `json:"priority"`
+		Prefix         *string                 `json:"prefix"`
+		BaseURL        *string                 `json:"base-url"`
+		ProxyURL       *string                 `json:"proxy-url"`
+		Models         *[]config.MiMoCodeModel `json:"models"`
+		Headers        *map[string]string      `json:"headers"`
+		DisableCooling *bool                   `json:"disable-cooling"`
+	}
+	var body struct {
+		Index *int              `json:"index"`
+		Match *string           `json:"match"`
+		Value *miMoCodeKeyPatch `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	targetIndex := -1
+	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.MiMoCodeKey) {
+		targetIndex = *body.Index
+	}
+	if targetIndex == -1 && body.Match != nil {
+		match := strings.TrimSpace(*body.Match)
+		for i := range h.cfg.MiMoCodeKey {
+			if strings.TrimSpace(h.cfg.MiMoCodeKey[i].ClientID) == match {
+				targetIndex = i
+				break
+			}
+		}
+	}
+	if targetIndex == -1 {
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+
+	entry := h.cfg.MiMoCodeKey[targetIndex]
+	if body.Value.ClientID != nil {
+		entry.ClientID = strings.TrimSpace(*body.Value.ClientID)
+	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
+	}
+	if body.Value.Prefix != nil {
+		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.BaseURL != nil {
+		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)
+	}
+	if body.Value.ProxyURL != nil {
+		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+	}
+	if body.Value.Models != nil {
+		entry.Models = append([]config.MiMoCodeModel(nil), (*body.Value.Models)...)
+	}
+	if body.Value.Headers != nil {
+		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+	}
+	if body.Value.DisableCooling != nil {
+		entry.DisableCooling = *body.Value.DisableCooling
+	}
+	normalizeMiMoCodeKey(&entry)
+	h.cfg.MiMoCodeKey[targetIndex] = entry
+	h.cfg.SanitizeMiMoCodeKeys()
+	h.persistLocked(c)
+}
+
+func (h *Handler) DeleteMiMoCodeKey(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if val := strings.TrimSpace(c.Query("client-id")); val != "" {
+		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
+			base := strings.TrimSpace(baseRaw)
+			out := make([]config.MiMoCodeKey, 0, len(h.cfg.MiMoCodeKey))
+			for _, v := range h.cfg.MiMoCodeKey {
+				if strings.TrimSpace(v.ClientID) == val && strings.TrimSpace(v.BaseURL) == base {
+					continue
+				}
+				out = append(out, v)
+			}
+			h.cfg.MiMoCodeKey = out
+			h.cfg.SanitizeMiMoCodeKeys()
+			h.persistLocked(c)
+			return
+		}
+
+		matchIndex := -1
+		matchCount := 0
+		for i := range h.cfg.MiMoCodeKey {
+			if strings.TrimSpace(h.cfg.MiMoCodeKey[i].ClientID) == val {
+				matchCount++
+			}
+		}
+		if matchCount == 1 {
+			for i := range h.cfg.MiMoCodeKey {
+				if strings.TrimSpace(h.cfg.MiMoCodeKey[i].ClientID) == val {
+					matchIndex = i
+					break
+				}
+			}
+		}
+		if matchIndex != -1 {
+			h.cfg.MiMoCodeKey = append(h.cfg.MiMoCodeKey[:matchIndex], h.cfg.MiMoCodeKey[matchIndex+1:]...)
+		}
+		h.cfg.SanitizeMiMoCodeKeys()
+		h.persistLocked(c)
+		return
+	}
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		_, err := fmt.Sscanf(idxStr, "%d", &idx)
+		if err == nil && idx >= 0 && idx < len(h.cfg.MiMoCodeKey) {
+			h.cfg.MiMoCodeKey = append(h.cfg.MiMoCodeKey[:idx], h.cfg.MiMoCodeKey[idx+1:]...)
+			h.cfg.SanitizeMiMoCodeKeys()
+			h.persistLocked(c)
+			return
+		}
+	}
+	c.JSON(400, gin.H{"error": "missing client-id or index"})
 }
 
 func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
@@ -1597,6 +1766,31 @@ func normalizeMistralKey(entry *config.MistralKey) {
 		return
 	}
 	normalized := make([]config.MistralModel, 0, len(entry.Models))
+	for i := range entry.Models {
+		model := entry.Models[i]
+		model.Name = strings.TrimSpace(model.Name)
+		model.Alias = strings.TrimSpace(model.Alias)
+		if model.Name == "" && model.Alias == "" {
+			continue
+		}
+		normalized = append(normalized, model)
+	}
+	entry.Models = normalized
+}
+
+func normalizeMiMoCodeKey(entry *config.MiMoCodeKey) {
+	if entry == nil {
+		return
+	}
+	entry.ClientID = strings.TrimSpace(entry.ClientID)
+	entry.Prefix = strings.TrimSpace(entry.Prefix)
+	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+	entry.Headers = config.NormalizeHeaders(entry.Headers)
+	if len(entry.Models) == 0 {
+		return
+	}
+	normalized := make([]config.MiMoCodeModel, 0, len(entry.Models))
 	for i := range entry.Models {
 		model := entry.Models[i]
 		model.Name = strings.TrimSpace(model.Name)
