@@ -39,8 +39,6 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeCommandCodeKeys(ctx)...)
 	// Mistral API Keys
 	out = append(out, s.synthesizeMistralKeys(ctx)...)
-	// MiMo Code API Keys
-	out = append(out, s.synthesizeMiMoCodeKeys(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
@@ -336,59 +334,6 @@ func (s *ConfigSynthesizer) synthesizeMistralKeys(ctx *SynthesisContext) []*core
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, mk.ExcludedModels, "apikey")
-		if len(a.Metadata) == 0 {
-			a.Metadata = nil
-		}
-		out = append(out, a)
-	}
-	return out
-}
-
-func (s *ConfigSynthesizer) synthesizeMiMoCodeKeys(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0, len(cfg.MiMoCodeKey))
-	for i := range cfg.MiMoCodeKey {
-		mk := cfg.MiMoCodeKey[i]
-		clientID := strings.TrimSpace(mk.ClientID)
-		if clientID == "" {
-			continue
-		}
-		prefix := strings.TrimSpace(mk.Prefix)
-		id, token := idGen.Next("mimo-code:apikey", clientID, mk.BaseURL)
-		attrs := map[string]string{
-			"source":     fmt.Sprintf("config:mimo-code[%s]", token),
-			"client_id":  clientID,
-		}
-		metadata := map[string]any{}
-		if mk.DisableCooling {
-			metadata["disable_cooling"] = true
-		}
-		if mk.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(mk.Priority)
-		}
-		if mk.BaseURL != "" {
-			attrs["base_url"] = mk.BaseURL
-		}
-		if hash := diff.ComputeMiMoCodeModelsHash(mk.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(mk.Headers, attrs)
-		proxyURL := strings.TrimSpace(mk.ProxyURL)
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "mimo-code",
-			Label:      "mimo-code-apikey",
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			Attributes: attrs,
-			Metadata:   metadata,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}

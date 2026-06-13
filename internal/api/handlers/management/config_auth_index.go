@@ -33,11 +33,6 @@ type mistralKeyWithAuthIndex struct {
 	AuthIndex string `json:"auth-index,omitempty"`
 }
 
-type miMoCodeKeyWithAuthIndex struct {
-	config.MiMoCodeKey
-	AuthIndex string `json:"auth-index,omitempty"`
-}
-
 type vertexCompatKeyWithAuthIndex struct {
 	config.VertexCompatKey
 	AuthIndex string `json:"auth-index,omitempty"`
@@ -232,35 +227,6 @@ func (h *Handler) mistralKeysWithAuthIndex() []mistralKeyWithAuthIndex {
 		out[i] = mistralKeyWithAuthIndex{
 			MistralKey: entry,
 			AuthIndex:  authIndex,
-		}
-	}
-	return out
-}
-
-func (h *Handler) miMoCodeKeysWithAuthIndex() []miMoCodeKeyWithAuthIndex {
-	if h == nil {
-		return nil
-	}
-	liveIndexByID := h.liveAuthIndexByID()
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.cfg == nil {
-		return nil
-	}
-
-	idGen := synthesizer.NewStableIDGenerator()
-	out := make([]miMoCodeKeyWithAuthIndex, len(h.cfg.MiMoCodeKey))
-	for i := range h.cfg.MiMoCodeKey {
-		entry := h.cfg.MiMoCodeKey[i]
-		authIndex := ""
-		if clientID := strings.TrimSpace(entry.ClientID); clientID != "" {
-			id, _ := idGen.Next("mimo-code:apikey", clientID, entry.BaseURL)
-			authIndex = liveIndexByID[id]
-		}
-		out[i] = miMoCodeKeyWithAuthIndex{
-			MiMoCodeKey: entry,
-			AuthIndex:   authIndex,
 		}
 	}
 	return out
