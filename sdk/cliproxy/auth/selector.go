@@ -68,11 +68,12 @@ type WeightedRobinSelector struct {
 // traffic for different aliases does not share a cursor and does not
 // trigger cycle rebuilds when other aliases are picked.
 type aliasCycle struct {
-	cycle       []*Auth // shuffled cycle, length = normalized totalWeight
-	head        int     // pop position (front of queue)
-	totalWeight int     // total weight when cycle was built (GCD-normalized)
-	gcd         int     // GCD used to normalize totalWeight; 0 if cycle is empty
-	weightHash  uint64  // FNV hash of auth IDs × weights when cycle was built
+	cycle       []*Auth         // shuffled cycle, length = normalized totalWeight
+	head        int             // pop position (front of queue)
+	totalWeight int             // total weight when cycle was built (GCD-normalized)
+	gcd         int             // GCD used to normalize totalWeight; 0 if cycle is empty
+	weightHash  uint64          // FNV hash of auth IDs × weights when cycle was built
+	authIDs     map[string]struct{} // auth ID set captured at build time, for invalidation
 }
 
 const defaultLRUEvictWindow = 24 * time.Hour
@@ -572,8 +573,30 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		s.cycles[cycleKey] = state
 	}
 
+	// Rebuild cycle when: (1) empty, (2) total weight changed, or
+	// (3) any available auth changed its ID set since the last build.
+	// Without this check, priority/weight edits after the first build
+	// are silently ignored until the next full cycle wrap.
 	if state.cycle == nil || len(state.cycle) == 0 {
 		s.rebuildCycle(available, state)
+	} else {
+		sameSet := state.authIDs != nil
+		if sameSet {
+			if len(state.authIDs) != len(available) {
+				sameSet = false
+			} else {
+				for _, a := range available {
+					if _, found := state.authIDs[a.ID]; !found {
+						sameSet = false
+						break
+					}
+				}
+			}
+		}
+		newHash := calculateWeightHash(available)
+		if !sameSet || state.weightHash != newHash {
+			s.rebuildCycle(available, state)
+		}
 	}
 
 	for {
@@ -941,6 +964,12 @@ func (s *WeightedRobinSelector) rebuildCycle(auths []*Auth, state *aliasCycle) {
 	state.totalWeight = total
 	state.gcd = gcd
 	state.weightHash = calculateWeightHash(auths)
+	state.authIDs = make(map[string]struct{}, len(auths))
+	for _, a := range auths {
+		if a != nil {
+			state.authIDs[a.ID] = struct{}{}
+		}
+	}
 	state.head = 0
 }
 
