@@ -97,6 +97,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 			ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
 			coreauth.ApplyCustomHeadersFromMetadata(auth)
+			syncPriorityFromMetadata(auth, metadata)
 			return []*coreauth.Auth{auth}
 		}
 	}
@@ -405,6 +406,32 @@ func normalizeFileBillingClass(raw string) string {
 
 // extractExcludedModelsFromMetadata reads per-account excluded models from the OAuth JSON metadata.
 // Supports both "excluded_models" and "excluded-models" keys, and accepts both []string and []interface{}.
+// syncPriorityFromMetadata reads the "priority" key from OAuth JSON metadata
+// and writes it into auth.Attributes["priority"] if it is a valid integer.
+// Plugin auth parser and standard auth file paths both use this to ensure
+// weight-robin picks up priority from auth files consistently.
+func syncPriorityFromMetadata(auth *coreauth.Auth, metadata map[string]any) {
+	if auth == nil || metadata == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	rawPriority, ok := metadata["priority"]
+	if !ok {
+		return
+	}
+	switch v := rawPriority.(type) {
+	case float64:
+		auth.Attributes["priority"] = strconv.Itoa(int(v))
+	case string:
+		priority := strings.TrimSpace(v)
+		if _, errAtoi := strconv.Atoi(priority); errAtoi == nil {
+			auth.Attributes["priority"] = priority
+		}
+	}
+}
+
 func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
 	if metadata == nil {
 		return nil

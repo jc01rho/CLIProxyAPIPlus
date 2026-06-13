@@ -173,6 +173,7 @@ const (
 	refreshIneffectiveBackoff = 30 * time.Second
 	quotaBackoffBase          = 5 * time.Minute
 	quotaBackoffMax           = 24 * time.Hour
+	maxQuotaBackoffLevel      = 9
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -3833,15 +3834,17 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							var next time.Time
 							backoffLevel := state.Quota.BackoffLevel
 							if !disableCooling {
-								if result.RetryAfter != nil {
-									next = now.Add(*result.RetryAfter)
-								} else {
-									cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
-									if cooldown > 0 {
-										next = now.Add(cooldown)
-									}
-									backoffLevel = nextLevel
+							cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
+							if cooldown > 0 {
+								next = now.Add(cooldown)
+							}
+							backoffLevel = nextLevel
+							if result.RetryAfter != nil {
+								retryAfter := now.Add(*result.RetryAfter)
+								if retryAfter.After(next) {
+									next = retryAfter
 								}
+							}
 							}
 							state.NextRetryAfter = next
 							state.Quota = QuotaState{
@@ -4458,15 +4461,17 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.Quota.Reason = "quota"
 		var next time.Time
 		if !disableCooling {
-			if retryAfter != nil {
-				next = now.Add(*retryAfter)
-			} else {
-				cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, disableCooling)
-				if cooldown > 0 {
-					next = now.Add(cooldown)
-				}
-				auth.Quota.BackoffLevel = nextLevel
+		cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, disableCooling)
+		if cooldown > 0 {
+			next = now.Add(cooldown)
+		}
+		auth.Quota.BackoffLevel = nextLevel
+		if retryAfter != nil {
+			retryAfterTime := now.Add(*retryAfter)
+			if retryAfterTime.After(next) {
+				next = retryAfterTime
 			}
+		}
 		}
 		auth.Quota.NextRecoverAt = next
 		auth.NextRetryAfter = next
@@ -4491,6 +4496,9 @@ func nextQuotaCooldown(prevLevel int, disableCooling bool) (time.Duration, int) 
 	}
 	if disableCooling {
 		return 0, prevLevel
+	}
+	if prevLevel > maxQuotaBackoffLevel {
+		prevLevel = maxQuotaBackoffLevel
 	}
 	cooldown := quotaBackoffBase * time.Duration(1<<prevLevel)
 	if cooldown < quotaBackoffBase {
@@ -4669,7 +4677,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	m.mu.RLock()
 	selector := m.selector
 	pluginScheduler := m.pluginScheduler
-	_, isWeightedRobin := selector.(*WeightedRobinSelector)
+	_, isWeightedRobin := unwrapWeightedRobin(selector)
 	executor, okExecutor := m.executors[provider]
 	if !okExecutor && !isWeightedRobin {
 		m.mu.RUnlock()
@@ -4718,7 +4726,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	var available []*Auth
 	var errAvailable error
-	if _, isWeightedRobin := m.selector.(*WeightedRobinSelector); isWeightedRobin {
+	if _, isWeightedRobin := unwrapWeightedRobin(m.selector); isWeightedRobin {
 		now := time.Now()
 		checkModel := modelKey
 		if checkModel == "" {
@@ -4786,7 +4794,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	}
 	// WeightedRobinSelector uses a global cycle across all providers; bypass
 	// the per-provider scheduler fast path so the cycle is honored.
-	if _, isWeightedRobin := m.selector.(*WeightedRobinSelector); isWeightedRobin {
+	if _, isWeightedRobin := unwrapWeightedRobin(m.selector); isWeightedRobin {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	if strings.TrimSpace(model) != "" {
@@ -4916,7 +4924,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	var available []*Auth
 	var errAvailable error
-	if _, isWeightedRobin := m.selector.(*WeightedRobinSelector); isWeightedRobin {
+	if _, isWeightedRobin := unwrapWeightedRobin(m.selector); isWeightedRobin {
 		// Weight-robin distributes across ALL priorities by weight.
 		// Skip priority-based filtering; the selector handles weight distribution internally.
 		now := time.Now()
@@ -4982,7 +4990,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 	// WeightedRobinSelector uses a global cycle across all providers; bypass
 	// the per-provider scheduler fast path so the cycle is honored.
-	if _, isWeightedRobin := m.selector.(*WeightedRobinSelector); isWeightedRobin {
+	if _, isWeightedRobin := unwrapWeightedRobin(m.selector); isWeightedRobin {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 
