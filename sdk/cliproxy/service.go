@@ -1219,6 +1219,13 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 	if s.coreManager != nil {
 		s.coreManager.SetConfig(newCfg)
 		s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
+		// When the strategy stays weight-robin, the existing selector keeps its
+		// shuffled cycles. Auth priorities/weights may have changed in the new
+		// config, so clear the cycles so the next Pick() rebuilds from the
+		// current auth set instead of serving stale distribution.
+		if !selectorChanged {
+			s.coreManager.ResetSelectorCycles()
+		}
 	}
 	var auths []*coreauth.Auth
 	if s.coreManager != nil {
