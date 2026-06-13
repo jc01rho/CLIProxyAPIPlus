@@ -218,7 +218,7 @@ func (e *modelCooldownError) Headers() http.Header {
 
 const (
 	primaryPriorityBonus = 1_000_000
-	maxAuthWeight        = 1_000_000
+	maxAuthWeight        = 100
 )
 
 func authPriority(auth *Auth) int {
@@ -575,13 +575,13 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		return available[0], nil
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	cycleAuths := s.evictUnusedAuths(available)
 	if len(cycleAuths) == 0 {
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available after LRU eviction"}
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	cycleKey := canonicalModelKey(model) + "::" + provider
 	if s.cycles == nil {
@@ -656,6 +656,9 @@ func authWeight(a *Auth) int {
 	w := authPriority(a)
 	if w <= 0 {
 		return 1
+	}
+	if w > maxAuthWeight {
+		return maxAuthWeight
 	}
 	return w
 }
@@ -982,6 +985,20 @@ func (s *WeightedRobinSelector) ResetCycles() {
 	defer s.mu.Unlock()
 	s.cycles = make(map[string]*aliasCycle)
 	s.lastUsed = make(map[string]time.Time)
+}
+
+// unwrapWeightedRobin extracts a WeightedRobinSelector whether it is the
+// top-level selector or wrapped inside a SessionAffinitySelector.
+func unwrapWeightedRobin(selector Selector) (*WeightedRobinSelector, bool) {
+	switch s := selector.(type) {
+	case *WeightedRobinSelector:
+		return s, true
+	case *SessionAffinitySelector:
+		wr, ok := s.fallback.(*WeightedRobinSelector)
+		return wr, ok
+	default:
+		return nil, false
+	}
 }
 
 func (s *WeightedRobinSelector) rebuildCycle(auths []*Auth, state *aliasCycle) {
