@@ -237,6 +237,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		}
 	}
 
+<<<<<<< HEAD
 	// CommandCode keys (do not print key material)
 	if len(oldCfg.CommandCodeKey) != len(newCfg.CommandCodeKey) {
 		changes = append(changes, fmt.Sprintf("commandcode-api-key count: %d -> %d", len(oldCfg.CommandCodeKey), len(newCfg.CommandCodeKey)))
@@ -305,6 +306,8 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("ampcode.upstream-api-keys: updated (%d -> %d entries)", oldUpstreamAPIKeysCount, newUpstreamAPIKeysCount))
 	}
 
+=======
+>>>>>>> upstream/main
 	if entries, _ := DiffOAuthExcludedModelChanges(oldCfg.OAuthExcludedModels, newCfg.OAuthExcludedModels); len(entries) > 0 {
 		changes = append(changes, entries...)
 	}
@@ -453,44 +456,4 @@ func formatProxyURL(raw string) string {
 		return host
 	}
 	return scheme + "://" + host
-}
-
-func equalStringSet(a, b []string) bool {
-	if len(a) == 0 && len(b) == 0 {
-		return true
-	}
-	aSet := make(map[string]struct{}, len(a))
-	for _, k := range a {
-		aSet[strings.TrimSpace(k)] = struct{}{}
-	}
-	bSet := make(map[string]struct{}, len(b))
-	for _, k := range b {
-		bSet[strings.TrimSpace(k)] = struct{}{}
-	}
-	if len(aSet) != len(bSet) {
-		return false
-	}
-	for k := range aSet {
-		if _, ok := bSet[k]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// equalUpstreamAPIKeys compares two slices of AmpUpstreamAPIKeyEntry for equality.
-// Comparison is done by count and content (upstream key and client keys).
-func equalUpstreamAPIKeys(a, b []config.AmpUpstreamAPIKeyEntry) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if strings.TrimSpace(a[i].UpstreamAPIKey) != strings.TrimSpace(b[i].UpstreamAPIKey) {
-			return false
-		}
-		if !equalStringSet(a[i].APIKeys, b[i].APIKeys) {
-			return false
-		}
-	}
-	return true
 }

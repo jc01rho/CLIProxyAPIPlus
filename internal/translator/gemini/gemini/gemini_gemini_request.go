@@ -86,10 +86,16 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 		out = []byte(strJson)
 	}
 
+<<<<<<< HEAD
 	// Backfill empty functionResponse.name and keep functionCall/functionResponse
 	// counts aligned. Gemini rejects history turns where a model functionCall turn
 	// is followed by a response turn with a different number of response parts.
 	out = normalizeFunctionResponseParts(out)
+=======
+	// Backfill empty functionResponse.name from the preceding functionCall.name.
+	// Some clients send function responses with empty names; the Gemini API rejects these.
+	out = backfillEmptyFunctionResponseNames(out)
+>>>>>>> upstream/main
 
 	out = common.AttachDefaultSafetySettings(out, "safetySettings")
 	return out
