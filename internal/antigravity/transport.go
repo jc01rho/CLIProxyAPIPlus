@@ -26,6 +26,8 @@ const (
 
 	// DefaultAgyResponseHeaderTimeout is the default timeout for connect and response headers.
 	DefaultAgyResponseHeaderTimeout = 180 * time.Second
+	// DefaultAgyIdleTimeout is the default idle timeout for the transport connection.
+	DefaultAgyIdleTimeout = 180 * time.Second
 )
 
 // AgyTransportOptions configures the raw agy CLI HTTP/1.1 transport.
