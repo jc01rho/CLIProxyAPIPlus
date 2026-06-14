@@ -990,43 +990,23 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		deviceProfile = helps.ResolveClaudeDeviceProfile(auth, apiKey, ginHeaders, cfg)
 	}
 
-	baseBetas := "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28"
-	if val := strings.TrimSpace(ginHeaders.Get("Anthropic-Beta")); val != "" {
-		baseBetas = val
-		if !strings.Contains(val, "oauth") {
-			baseBetas += ",oauth-2025-04-20"
-		}
+	// Body for beta selection (get from request body if present)
+	body := []byte(nil)
+	if isAnthropicBase {
+		// For Anthropic base URLs, read the body from the request
+		body, _ = io.ReadAll(r.Body)
+		// Recreate the body for downstream reads
+		r.Body = io.NopCloser(bytes.NewReader(body))
 	}
-	if !strings.Contains(baseBetas, "interleaved-thinking") {
-		baseBetas += ",interleaved-thinking-2025-05-14"
-	}
-
-	// Merge extra betas from request body and request flags.
-	if len(extraBetas) > 0 {
-		existingSet := make(map[string]bool)
-		for _, b := range strings.Split(baseBetas, ",") {
-			betaName := strings.TrimSpace(b)
-			if betaName != "" {
-				existingSet[betaName] = true
-			}
-		}
-		for _, beta := range extraBetas {
-			beta = strings.TrimSpace(beta)
-			if beta != "" && !existingSet[beta] {
-				baseBetas += "," + beta
-				existingSet[beta] = true
-			}
-		}
-	}
-	r.Header.Set("Anthropic-Beta", baseBetas)
 
 	misc.EnsureHeader(r.Header, ginHeaders, "Anthropic-Version", "2023-06-01")
+	misc.EnsureHeader(r.Header, ginHeaders, "Anthropic-Beta", helps.SelectClaudeCodeBetas(body, extraBetas))
 	// Only set browser access header for API key mode; real Claude Code CLI does not send it.
 	if useAPIKey {
 		misc.EnsureHeader(r.Header, ginHeaders, "Anthropic-Dangerous-Direct-Browser-Access", "true")
 	}
 	misc.EnsureHeader(r.Header, ginHeaders, "X-App", "cli")
-	// Values below match Claude Code 2.1.63 / @anthropic-ai/sdk 0.74.0 (updated 2026-02-28).
+	// Values below match Claude Code 2.1.141 / @anthropic-ai/sdk 0.94.0 (updated 2026-06-14).
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Retry-Count", "0")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Runtime", "node")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Lang", "js")
@@ -1086,7 +1066,7 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 }
 
 func checkSystemInstructions(payload []byte) []byte {
-	return checkSystemInstructionsWithSigningMode(payload, false, false, false, "2.1.63", "", "")
+	return checkSystemInstructionsWithSigningMode(payload, false, false, false, "2.1.141", "", "")
 }
 
 func isClaudeOAuthToken(apiKey string) bool {
