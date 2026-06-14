@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -1117,4 +1118,944 @@ func thinkingLevelFromBudget(budget int) string {
 	default:
 		return "high"
 	}
+}
+
+// ThinkingTier is a normalized thinking tier suffix from model names.
+type ThinkingTier string
+
+const (
+	ThinkingTierMinimal ThinkingTier = "minimal"
+	ThinkingTierLow     ThinkingTier = "low"
+	ThinkingTierMedium  ThinkingTier = "medium"
+	ThinkingTierHigh    ThinkingTier = "high"
+)
+
+// ModelFamily identifies the broad target family for transforms and sanitization.
+type ModelFamily string
+
+const (
+	ModelFamilyClaude      ModelFamily = "claude"
+	ModelFamilyGeminiFlash ModelFamily = "gemini-flash"
+	ModelFamilyGeminiPro   ModelFamily = "gemini-pro"
+	ModelFamilyUnknown     ModelFamily = "unknown"
+)
+
+// RequestPayload is the generic JSON payload shape used by transform helpers.
+type RequestPayload map[string]any
+
+// ThinkingConfig is the backend thinking configuration object.
+type ThinkingConfig map[string]any
+
+// NormalizedThinkingConfig carries normalized user thinking settings.
+type NormalizedThinkingConfig struct {
+	IncludeThoughts *bool
+	ThinkingBudget  int
+}
+
+// GoogleSearchConfig carries Gemini grounding settings.
+type GoogleSearchConfig struct {
+	Mode      string
+	Threshold float64
+}
+
+// ClaudeTransformOptions configures ApplyClaudeTransforms.
+type ClaudeTransformOptions struct {
+	Model              string
+	TierThinkingBudget int
+	NormalizedThinking *NormalizedThinkingConfig
+	CleanJSONSchema    func(schema any) map[string]any
+}
+
+// ClaudeTransformResult is returned by ApplyClaudeTransforms.
+type ClaudeTransformResult struct {
+	Payload            []byte
+	ToolDebugMissing   int
+	ToolDebugSummaries []string
+}
+
+// GeminiTransformOptions configures ApplyGeminiTransforms.
+type GeminiTransformOptions struct {
+	Model              string
+	TierThinkingBudget int
+	TierThinkingLevel  ThinkingTier
+	NormalizedThinking *NormalizedThinkingConfig
+	GoogleSearch       *GoogleSearchConfig
+}
+
+// GeminiTransformResult is returned by ApplyGeminiTransforms.
+type GeminiTransformResult struct {
+	Payload              []byte
+	ToolDebugMissing     int
+	ToolDebugSummaries   []string
+	WrappedFunctionCount int
+	PassthroughToolCount int
+}
+
+// ImageConfig is the Gemini image-generation configuration.
+type ImageConfig struct {
+	AspectRatio string `json:"aspectRatio,omitempty"`
+}
+
+// TransformContext contains request transformation context.
+type TransformContext struct {
+	ProjectID       string
+	Model           string
+	RequestedModel  string
+	Family          ModelFamily
+	Streaming       bool
+	RequestID       string
+	SessionID       string
+	ThinkingTier    ThinkingTier
+	ThinkingBudget  int
+	ThinkingLevel   string
+}
+
+// TransformDebugInfo describes a transform pass.
+type TransformDebugInfo struct {
+	Transformer      string
+	ToolCount        int
+	ToolsTransformed bool
+	ThinkingTier     string
+	ThinkingBudget   int
+	ThinkingLevel    string
+}
+
+// TransformResult is a transformed JSON body plus debug info.
+type TransformResult struct {
+	Body      string
+	DebugInfo TransformDebugInfo
+}
+
+// ResolvedModel is a resolved model name and tier/quota configuration.
+type ResolvedModel struct {
+	ActualModel     string
+	ThinkingLevel   string
+	ThinkingBudget  int
+	Tier            ThinkingTier
+	IsThinkingModel bool
+	IsImageModel    bool
+	QuotaPreference HeaderStyle
+	ExplicitQuota   bool
+	ConfigSource    string
+	GoogleSearch    *GoogleSearchConfig
+}
+
+// ModelResolverOptions configures ResolveModelWithTier.
+type ModelResolverOptions struct {
+	CLIFirst bool
+}
+
+// SanitizerOptions configures SanitizeCrossModelPayload.
+type SanitizerOptions struct {
+	TargetModel                  string
+	SourceModel                  string
+	PreserveNonSignatureMetadata *bool
+}
+
+// SanitizationResult is returned by SanitizeCrossModelPayload.
+type SanitizationResult struct {
+	Payload             []byte
+	Modified            bool
+	SignaturesStripped  int
+}
+
+// WrapToolsResult describes Gemini tool wrapping.
+type WrapToolsResult struct {
+	Payload              []byte
+	WrappedFunctionCount int
+	PassthroughToolCount int
+}
+
+// ConfigureClaudeToolConfig sets Claude tool calling to VALIDATED mode.
+func ConfigureClaudeToolConfig(payload []byte) ([]byte, error) {
+	updated, err := sjson.SetBytes(payload, "toolConfig.functionCallingConfig.mode", "VALIDATED")
+	if err != nil {
+		return payload, err
+	}
+	return updated, nil
+}
+
+// BuildClaudeThinkingConfig builds Claude thinking config with snake_case keys.
+func BuildClaudeThinkingConfig(includeThoughts bool, thinkingBudget int) ThinkingConfig {
+	return ThinkingConfig(buildClaudeThinkingConfig(includeThoughts, thinkingBudget))
+}
+
+// EnsureClaudeMaxOutputTokens ensures maxOutputTokens exceeds the Claude thinking budget.
+func EnsureClaudeMaxOutputTokens(generationConfig map[string]any, thinkingBudget int) {
+	if thinkingBudget <= 0 || generationConfig == nil {
+		return
+	}
+	currentMax := intValue(generationConfig["maxOutputTokens"])
+	if currentMax == 0 {
+		currentMax = intValue(generationConfig["max_output_tokens"])
+	}
+	if currentMax == 0 || currentMax <= thinkingBudget {
+		generationConfig["maxOutputTokens"] = computeClaudeMaxOutputTokens(thinkingBudget)
+		delete(generationConfig, "max_output_tokens")
+	}
+}
+
+// ConvertStopSequences converts generationConfig.stop_sequences to stopSequences.
+func ConvertStopSequences(generationConfig map[string]any) {
+	if generationConfig == nil {
+		return
+	}
+	if seqs, ok := generationConfig["stop_sequences"]; ok {
+		switch seqs.(type) {
+		case []any, []string:
+			generationConfig["stopSequences"] = seqs
+			delete(generationConfig, "stop_sequences")
+		}
+	}
+}
+
+// ApplyClaudeTransforms applies all Claude-specific JSON transforms.
+func ApplyClaudeTransforms(payload []byte, options ClaudeTransformOptions) (ClaudeTransformResult, error) {
+	var err error
+	payload, err = ConfigureClaudeToolConfig(payload)
+	if err != nil {
+		return ClaudeTransformResult{Payload: payload}, err
+	}
+
+	if gjson.GetBytes(payload, "generationConfig").IsObject() {
+		generationConfig := objectAt(payload, "generationConfig")
+		ConvertStopSequences(generationConfig)
+		payload, err = setObjectAt(payload, "generationConfig", generationConfig)
+		if err != nil {
+			return ClaudeTransformResult{Payload: payload}, err
+		}
+	}
+
+	isThinking := IsClaudeThinkingModel(options.Model)
+	if options.NormalizedThinking != nil && isThinking {
+		thinkingBudget := options.NormalizedThinking.ThinkingBudget
+		if options.TierThinkingBudget > 0 {
+			thinkingBudget = options.TierThinkingBudget
+		}
+		includeThoughts := true
+		if options.NormalizedThinking.IncludeThoughts != nil {
+			includeThoughts = *options.NormalizedThinking.IncludeThoughts
+		}
+
+		generationConfig := objectAt(payload, "generationConfig")
+		generationConfig["thinkingConfig"] = BuildClaudeThinkingConfig(includeThoughts, thinkingBudget)
+		EnsureClaudeMaxOutputTokens(generationConfig, thinkingBudget)
+		payload, err = setObjectAt(payload, "generationConfig", generationConfig)
+		if err != nil {
+			return ClaudeTransformResult{Payload: payload}, err
+		}
+	}
+
+	if isThinking {
+		tools := gjson.GetBytes(payload, "tools")
+		if tools.IsArray() && len(tools.Array()) > 0 {
+			payload = appendClaudeThinkingHint(payload)
+		}
+	}
+
+	payload, missing, summaries := normalizeClaudeTools(payload)
+	return ClaudeTransformResult{Payload: payload, ToolDebugMissing: missing, ToolDebugSummaries: summaries}, nil
+}
+
+// BuildGemini3ThinkingConfig builds Gemini 3 thinking config using a thinkingLevel string.
+func BuildGemini3ThinkingConfig(includeThoughts bool, thinkingLevel ThinkingTier) ThinkingConfig {
+	return ThinkingConfig(buildGemini3ThinkingConfig(includeThoughts, string(thinkingLevel)))
+}
+
+// BuildGemini25ThinkingConfig builds Gemini 2.5 thinking config using a numeric budget.
+func BuildGemini25ThinkingConfig(includeThoughts bool, thinkingBudget int) ThinkingConfig {
+	return ThinkingConfig(buildGemini25ThinkingConfig(includeThoughts, thinkingBudget))
+}
+
+// BuildImageGenerationConfig builds Gemini image-generation config from OPENCODE_IMAGE_ASPECT_RATIO.
+func BuildImageGenerationConfig() ImageConfig {
+	aspectRatio := os.Getenv("OPENCODE_IMAGE_ASPECT_RATIO")
+	if aspectRatio == "" {
+		aspectRatio = "1:1"
+	}
+	validRatios := map[string]bool{
+		"1:1": true, "2:3": true, "3:2": true, "3:4": true, "4:3": true,
+		"4:5": true, "5:4": true, "9:16": true, "16:9": true, "21:9": true,
+	}
+	if !validRatios[aspectRatio] {
+		aspectRatio = "1:1"
+	}
+	return ImageConfig{AspectRatio: aspectRatio}
+}
+
+// NormalizeGeminiTools normalizes Gemini tools and returns the updated payload.
+func NormalizeGeminiTools(payload []byte) ([]byte, int, []string) {
+	return normalizeGeminiTools(payload)
+}
+
+// WrapToolsAsFunctionDeclarations wraps Gemini tools in functionDeclarations format.
+func WrapToolsAsFunctionDeclarations(payload []byte) (WrapToolsResult, error) {
+	if !gjson.GetBytes(payload, "tools").Exists() {
+		return WrapToolsResult{Payload: payload}, nil
+	}
+	tools := gjson.GetBytes(payload, "tools").Array()
+	if len(tools) == 0 {
+		return WrapToolsResult{Payload: payload}, nil
+	}
+
+	var functionDeclarations []map[string]any
+	var passthroughTools []map[string]any
+	hasWebSearch := false
+
+	for _, tool := range tools {
+		var toolMap map[string]any
+		if err := json.Unmarshal([]byte(tool.Raw), &toolMap); err != nil {
+			continue
+		}
+		if toolMap["googleSearch"] != nil || toolMap["googleSearchRetrieval"] != nil || toolMap["codeExecution"] != nil {
+			passthroughTools = append(passthroughTools, toolMap)
+			continue
+		}
+		if isWebSearchTool(toolMap) {
+			hasWebSearch = true
+			continue
+		}
+		if fds, ok := toolMap["functionDeclarations"].([]interface{}); ok && len(fds) > 0 {
+			for _, decl := range fds {
+				declMap, ok := decl.(map[string]any)
+				if !ok {
+					continue
+				}
+				params, _ := declMap["parameters"].(map[string]any)
+				if params == nil {
+					params = map[string]any{"type": "OBJECT", "properties": map[string]any{}}
+				}
+				functionDeclarations = append(functionDeclarations, map[string]any{
+					"name":        stringOrDefault(declMap["name"], fmt.Sprintf("tool-%d", len(functionDeclarations))),
+					"description": stringOrDefault(declMap["description"], ""),
+					"parameters":  params,
+				})
+			}
+			continue
+		}
+		fn, _ := toolMap["function"].(map[string]any)
+		custom, _ := toolMap["custom"].(map[string]any)
+		name := stringOrDefault(firstNonEmpty(toolMap["name"], mapValue(fn, "name"), mapValue(custom, "name")), fmt.Sprintf("tool-%d", len(functionDeclarations)))
+		desc := stringOrDefault(firstNonEmpty(toolMap["description"], mapValue(fn, "description"), mapValue(custom, "description")), "")
+		functionDeclarations = append(functionDeclarations, map[string]any{
+			"name":        name,
+			"description": desc,
+			"parameters":  firstGeminiSchema(fn, custom, toolMap),
+		})
+	}
+
+	var finalTools []map[string]any
+	if len(functionDeclarations) > 0 {
+		finalTools = append(finalTools, map[string]any{"functionDeclarations": functionDeclarations})
+	}
+	finalTools = append(finalTools, passthroughTools...)
+	if hasWebSearch && len(functionDeclarations) == 0 {
+		finalTools = append(finalTools, map[string]any{"googleSearch": map[string]any{}})
+	}
+	encoded, err := json.Marshal(finalTools)
+	if err != nil {
+		return WrapToolsResult{Payload: payload}, err
+	}
+	payload, err = sjson.SetRawBytes(payload, "tools", encoded)
+	if err != nil {
+		return WrapToolsResult{Payload: payload}, err
+	}
+	passthroughCount := len(passthroughTools)
+	if hasWebSearch && len(functionDeclarations) == 0 {
+		passthroughCount++
+	}
+	return WrapToolsResult{Payload: payload, WrappedFunctionCount: len(functionDeclarations), PassthroughToolCount: passthroughCount}, nil
+}
+
+// ApplyGeminiTransforms applies all Gemini-specific JSON transforms.
+func ApplyGeminiTransforms(payload []byte, options GeminiTransformOptions) (GeminiTransformResult, error) {
+	var err error
+	if options.NormalizedThinking != nil {
+		includeThoughts := true
+		if options.NormalizedThinking.IncludeThoughts != nil {
+			includeThoughts = *options.NormalizedThinking.IncludeThoughts
+		}
+		var thinkingConfig ThinkingConfig
+		if options.TierThinkingLevel != "" && IsGemini3Model(options.Model) {
+			thinkingConfig = BuildGemini3ThinkingConfig(includeThoughts, options.TierThinkingLevel)
+		} else {
+			thinkingBudget := options.NormalizedThinking.ThinkingBudget
+			if options.TierThinkingBudget > 0 {
+				thinkingBudget = options.TierThinkingBudget
+			}
+			thinkingConfig = BuildGemini25ThinkingConfig(includeThoughts, thinkingBudget)
+		}
+		generationConfig := objectAt(payload, "generationConfig")
+		generationConfig["thinkingConfig"] = thinkingConfig
+		payload, err = setObjectAt(payload, "generationConfig", generationConfig)
+		if err != nil {
+			return GeminiTransformResult{Payload: payload}, err
+		}
+	}
+
+	if options.GoogleSearch != nil && options.GoogleSearch.Mode == "auto" {
+		tools := gjson.GetBytes(payload, "tools")
+		var toolsArray []any
+		if tools.IsArray() {
+			_ = json.Unmarshal([]byte(tools.Raw), &toolsArray)
+		}
+		toolsArray = append(toolsArray, map[string]any{"googleSearch": map[string]any{}})
+		encoded, _ := json.Marshal(toolsArray)
+		payload, err = sjson.SetRawBytes(payload, "tools", encoded)
+		if err != nil {
+			return GeminiTransformResult{Payload: payload}, err
+		}
+	}
+
+	payload, missing, summaries := NormalizeGeminiTools(payload)
+	wrapResult, err := WrapToolsAsFunctionDeclarations(payload)
+	if err != nil {
+		return GeminiTransformResult{Payload: payload, ToolDebugMissing: missing, ToolDebugSummaries: summaries}, err
+	}
+	return GeminiTransformResult{
+		Payload:              wrapResult.Payload,
+		ToolDebugMissing:     missing,
+		ToolDebugSummaries:   summaries,
+		WrappedFunctionCount: wrapResult.WrappedFunctionCount,
+		PassthroughToolCount: wrapResult.PassthroughToolCount,
+	}, nil
+}
+
+func objectAt(payload []byte, path string) map[string]any {
+	result := map[string]any{}
+	value := gjson.GetBytes(payload, path)
+	if value.IsObject() {
+		_ = json.Unmarshal([]byte(value.Raw), &result)
+	}
+	return result
+}
+
+func setObjectAt(payload []byte, path string, value map[string]any) ([]byte, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return payload, err
+	}
+	return sjson.SetRawBytes(payload, path, encoded)
+}
+
+func intValue(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		i, _ := v.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
+func stringOrDefault(value any, fallback string) string {
+	if value == nil {
+		return fallback
+	}
+	s := fmt.Sprintf("%v", value)
+	if s == "" || s == "<nil>" {
+		return fallback
+	}
+	return s
+}
+
+func mapValue(m map[string]any, key string) any {
+	if m == nil {
+		return nil
+	}
+	return m[key]
+}
+
+func firstNonEmpty(values ...any) any {
+	for _, value := range values {
+		if s := stringOrDefault(value, ""); s != "" {
+			return value
+		}
+	}
+	return nil
+}
+
+var thinkingTierBudgets = map[string]map[ThinkingTier]int{
+	"claude":           {ThinkingTierLow: 8192, ThinkingTierMedium: 16384, ThinkingTierHigh: 32768},
+	"gemini-2.5-pro":   {ThinkingTierLow: 8192, ThinkingTierMedium: 16384, ThinkingTierHigh: 32768},
+	"gemini-2.5-flash": {ThinkingTierLow: 6144, ThinkingTierMedium: 12288, ThinkingTierHigh: 24576},
+	"default":          {ThinkingTierLow: 4096, ThinkingTierMedium: 8192, ThinkingTierHigh: 16384},
+}
+
+// GetTransformModelFamily returns a broad model family for routing decisions.
+func GetTransformModelFamily(model string) ModelFamily {
+	lower := strings.ToLower(model)
+	if strings.Contains(lower, "claude") {
+		return ModelFamilyClaude
+	}
+	if strings.Contains(lower, "flash") {
+		return ModelFamilyGeminiFlash
+	}
+	if strings.Contains(lower, "gemini") {
+		return ModelFamilyGeminiPro
+	}
+	return ModelFamilyUnknown
+}
+
+// GetSanitizerModelFamily returns claude/gemini/unknown for cross-model metadata sanitization.
+func GetSanitizerModelFamily(model string) ModelFamily {
+	if IsClaudeModel(model) {
+		return ModelFamilyClaude
+	}
+	if IsGeminiModel(model) {
+		if strings.Contains(strings.ToLower(model), "flash") {
+			return ModelFamilyGeminiFlash
+		}
+		return ModelFamilyGeminiPro
+	}
+	return ModelFamilyUnknown
+}
+
+// StripGeminiThinkingMetadata removes Gemini thought signatures from a content part.
+func StripGeminiThinkingMetadata(part map[string]any, preserveNonSignature bool) (map[string]any, int) {
+	stripped := 0
+	if _, ok := part["thoughtSignature"]; ok {
+		delete(part, "thoughtSignature")
+		stripped++
+	}
+	if _, ok := part["thinkingMetadata"]; ok {
+		delete(part, "thinkingMetadata")
+		stripped++
+	}
+	metadata, ok := part["metadata"].(map[string]any)
+	if ok {
+		google, ok := metadata["google"].(map[string]any)
+		if ok {
+			for _, field := range []string{"thoughtSignature", "thinkingMetadata"} {
+				if _, exists := google[field]; exists {
+					delete(google, field)
+					stripped++
+				}
+			}
+			if !preserveNonSignature || len(google) == 0 {
+				delete(metadata, "google")
+			}
+			if len(metadata) == 0 {
+				delete(part, "metadata")
+			}
+		}
+	}
+	return part, stripped
+}
+
+// StripClaudeThinkingFields removes Claude thinking signatures from a content part.
+func StripClaudeThinkingFields(part map[string]any) (map[string]any, int) {
+	stripped := 0
+	partType, _ := part["type"].(string)
+	if partType == "thinking" || partType == "redacted_thinking" {
+		if _, ok := part["signature"]; ok {
+			delete(part, "signature")
+			stripped++
+		}
+	}
+	if signature, ok := part["signature"].(string); ok && len(signature) >= 50 {
+		delete(part, "signature")
+		stripped++
+	}
+	return part, stripped
+}
+
+// DeepSanitizeCrossModelMetadata strips foreign model signatures from nested payload content.
+func DeepSanitizeCrossModelMetadata(obj any, targetFamily ModelFamily, preserveNonSignature bool) (any, int) {
+	root, ok := obj.(map[string]any)
+	if !ok {
+		return obj, 0
+	}
+	result := copyMap(root)
+	total := 0
+	if contents, ok := result["contents"].([]any); ok {
+		result["contents"], total = sanitizeContentList(contents, targetFamily, preserveNonSignature, total)
+	}
+	if messages, ok := result["messages"].([]any); ok {
+		result["messages"], total = sanitizeMessageList(messages, targetFamily, preserveNonSignature, total)
+	}
+	if extraBody, ok := result["extra_body"].(map[string]any); ok {
+		extraCopy := copyMap(extraBody)
+		if messages, ok := extraCopy["messages"].([]any); ok {
+			extraCopy["messages"], total = sanitizeMessageList(messages, targetFamily, preserveNonSignature, total)
+		}
+		result["extra_body"] = extraCopy
+	}
+	if requests, ok := result["requests"].([]any); ok {
+		sanitizedRequests := make([]any, 0, len(requests))
+		for _, req := range requests {
+			sanitized, stripped := DeepSanitizeCrossModelMetadata(req, targetFamily, preserveNonSignature)
+			total += stripped
+			sanitizedRequests = append(sanitizedRequests, sanitized)
+		}
+		result["requests"] = sanitizedRequests
+	}
+	return result, total
+}
+
+// SanitizeCrossModelPayload strips model-family-specific thought signatures from JSON payload bytes.
+func SanitizeCrossModelPayload(payload []byte, options SanitizerOptions) (SanitizationResult, error) {
+	targetFamily := GetSanitizerModelFamily(options.TargetModel)
+	if targetFamily == ModelFamilyUnknown {
+		return SanitizationResult{Payload: payload}, nil
+	}
+	preserve := true
+	if options.PreserveNonSignatureMetadata != nil {
+		preserve = *options.PreserveNonSignatureMetadata
+	}
+	var root any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return SanitizationResult{Payload: payload}, err
+	}
+	sanitized, stripped := DeepSanitizeCrossModelMetadata(root, targetFamily, preserve)
+	if stripped == 0 {
+		return SanitizationResult{Payload: payload}, nil
+	}
+	encoded, err := json.Marshal(sanitized)
+	if err != nil {
+		return SanitizationResult{Payload: payload}, err
+	}
+	return SanitizationResult{Payload: encoded, Modified: true, SignaturesStripped: stripped}, nil
+}
+
+// SanitizeCrossModelPayloadInPlace strips signatures from an already-decoded payload map.
+func SanitizeCrossModelPayloadInPlace(payload map[string]any, options SanitizerOptions) int {
+	targetFamily := GetSanitizerModelFamily(options.TargetModel)
+	if targetFamily == ModelFamilyUnknown {
+		return 0
+	}
+	preserve := true
+	if options.PreserveNonSignatureMetadata != nil {
+		preserve = *options.PreserveNonSignatureMetadata
+	}
+	sanitized, stripped := DeepSanitizeCrossModelMetadata(payload, targetFamily, preserve)
+	if sanitizedMap, ok := sanitized.(map[string]any); ok {
+		for key := range payload {
+			delete(payload, key)
+		}
+		for key, value := range sanitizedMap {
+			payload[key] = value
+		}
+	}
+	return stripped
+}
+
+func sanitizeContentList(contents []any, targetFamily ModelFamily, preserveNonSignature bool, runningTotal int) ([]any, int) {
+	sanitized := make([]any, 0, len(contents))
+	total := runningTotal
+	for _, content := range contents {
+		contentMap, ok := content.(map[string]any)
+		if !ok {
+			sanitized = append(sanitized, content)
+			continue
+		}
+		contentCopy := copyMap(contentMap)
+		if parts, ok := contentCopy["parts"].([]any); ok {
+			newParts, stripped := sanitizeParts(parts, targetFamily, preserveNonSignature)
+			contentCopy["parts"] = newParts
+			total += stripped
+		}
+		sanitized = append(sanitized, contentCopy)
+	}
+	return sanitized, total
+}
+
+func sanitizeMessageList(messages []any, targetFamily ModelFamily, preserveNonSignature bool, runningTotal int) ([]any, int) {
+	sanitized := make([]any, 0, len(messages))
+	total := runningTotal
+	for _, message := range messages {
+		messageMap, ok := message.(map[string]any)
+		if !ok {
+			sanitized = append(sanitized, message)
+			continue
+		}
+		messageCopy := copyMap(messageMap)
+		if content, ok := messageCopy["content"].([]any); ok {
+			newParts, stripped := sanitizeParts(content, targetFamily, preserveNonSignature)
+			messageCopy["content"] = newParts
+			total += stripped
+		}
+		sanitized = append(sanitized, messageCopy)
+	}
+	return sanitized, total
+}
+
+func sanitizeParts(parts []any, targetFamily ModelFamily, preserveNonSignature bool) ([]any, int) {
+	total := 0
+	sanitized := make([]any, 0, len(parts))
+	for _, part := range parts {
+		partMap, ok := part.(map[string]any)
+		if !ok {
+			sanitized = append(sanitized, part)
+			continue
+		}
+		partCopy := copyMap(partMap)
+		stripped := 0
+		if targetFamily == ModelFamilyClaude {
+			partCopy, stripped = StripGeminiThinkingMetadata(partCopy, preserveNonSignature)
+		} else if isGeminiTransformFamily(targetFamily) {
+			partCopy, stripped = StripClaudeThinkingFields(partCopy)
+		}
+		total += stripped
+		sanitized = append(sanitized, partCopy)
+	}
+	return sanitized, total
+}
+
+func isGeminiTransformFamily(family ModelFamily) bool {
+	return family == ModelFamilyGeminiFlash || family == ModelFamilyGeminiPro
+}
+
+// ResolveModelWithTier resolves model aliases, quota preference, and thinking tier metadata.
+func ResolveModelWithTier(requestedModel string, options ...ModelResolverOptions) ResolvedModel {
+	option := ModelResolverOptions{}
+	if len(options) > 0 {
+		option = options[0]
+	}
+	isAntigravity := hasPrefixFold(requestedModel, "antigravity-")
+	modelWithoutQuota := trimPrefixFold(requestedModel, "antigravity-")
+	tier := extractThinkingTierFromModel(modelWithoutQuota)
+	baseName := modelWithoutQuota
+	if tier != "" {
+		baseName = removeThinkingTierSuffix(modelWithoutQuota)
+	}
+
+	isImageModel := IsImageGenerationModel(modelWithoutQuota)
+	isClaude := strings.Contains(strings.ToLower(modelWithoutQuota), "claude")
+	preferGeminiCLI := option.CLIFirst && !isAntigravity && !isImageModel && !isClaude
+	quotaPreference := HeaderStyleAntigravity
+	if preferGeminiCLI {
+		quotaPreference = HeaderStyleGeminiCLI
+	}
+	explicitQuota := isAntigravity || isImageModel
+
+	lowerWithoutQuota := strings.ToLower(modelWithoutQuota)
+	isGemini3 := strings.HasPrefix(lowerWithoutQuota, "gemini-3")
+	skipAlias := isAntigravity && isGemini3
+	isGemini31Pro := strings.HasPrefix(strings.ToLower(baseName), "gemini-3.1-pro")
+	isGemini35Flash := isGemini35FlashModelName(baseName)
+
+	if isGemini31Pro && quotaPreference == HeaderStyleAntigravity {
+		return ResolvedModel{ActualModel: getAgyGemini31ProModel(tier), ThinkingBudget: getAgyGemini31ProThinkingBudget(tier), Tier: tier, IsThinkingModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+	}
+	if isGemini35Flash && quotaPreference == HeaderStyleAntigravity {
+		resolvedTier := tier
+		if resolvedTier == "" {
+			resolvedTier = ThinkingTierMedium
+		}
+		return ResolvedModel{ActualModel: GetGemini35FlashAntigravityModel(string(resolvedTier)), ThinkingBudget: getAgyGemini35FlashThinkingBudget(resolvedTier), Tier: resolvedTier, IsThinkingModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+	}
+
+	antigravityModel := modelWithoutQuota
+	if skipAlias && (isGemini3ProModelName(modelWithoutQuota) || isGemini3FlashModelName(modelWithoutQuota)) && tier == "" && !isImageModel {
+		defaultTier := ThinkingTierMedium
+		if isGemini3ProModelName(modelWithoutQuota) {
+			defaultTier = ThinkingTierLow
+		}
+		antigravityModel = modelWithoutQuota + "-" + string(defaultTier)
+	}
+
+	actualModel := baseName
+	if skipAlias {
+		actualModel = antigravityModel
+	} else if alias := resolverAliases[strings.ToLower(modelWithoutQuota)]; alias != "" {
+		actualModel = alias
+	} else if alias := resolverAliases[strings.ToLower(baseName)]; alias != "" {
+		actualModel = alias
+	}
+
+	isThinking := isThinkingCapableModelName(actualModel)
+	if isImageModel {
+		return ResolvedModel{ActualModel: actualModel, IsThinkingModel: false, IsImageModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+	}
+
+	isEffectiveGemini3 := strings.Contains(strings.ToLower(actualModel), "gemini-3")
+	isClaudeThinking := (strings.Contains(strings.ToLower(actualModel), "claude") && strings.Contains(strings.ToLower(actualModel), "thinking")) ||
+		(strings.Contains(lowerWithoutQuota, "claude") && strings.Contains(lowerWithoutQuota, "thinking")) ||
+		lowerWithoutQuota == "gemini-claude-sonnet-4-6"
+
+	if tier == "" {
+		if isEffectiveGemini3 {
+			level := ThinkingTierLow
+			if isGemini35Flash {
+				level = ThinkingTierMedium
+			}
+			return ResolvedModel{ActualModel: actualModel, ThinkingLevel: string(level), IsThinkingModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+		}
+		if isClaudeThinking {
+			return ResolvedModel{ActualModel: actualModel, ThinkingBudget: 1024, IsThinkingModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+		}
+		return ResolvedModel{ActualModel: actualModel, IsThinkingModel: isThinking, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+	}
+
+	if isEffectiveGemini3 {
+		return ResolvedModel{ActualModel: actualModel, ThinkingLevel: string(tier), Tier: tier, IsThinkingModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+	}
+	if isClaudeThinking {
+		return ResolvedModel{ActualModel: actualModel, ThinkingBudget: 1024, Tier: tier, IsThinkingModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+	}
+
+	budgetFamily := getBudgetFamilyName(actualModel)
+	thinkingBudget := thinkingTierBudgets[budgetFamily][tier]
+	return ResolvedModel{ActualModel: actualModel, ThinkingBudget: thinkingBudget, Tier: tier, IsThinkingModel: isThinking, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+}
+
+// ResolveModelForHeaderStyle resolves model names when switching between Antigravity and Gemini CLI quota headers.
+func ResolveModelForHeaderStyle(requestedModel string, headerStyle HeaderStyle) ResolvedModel {
+	lower := strings.ToLower(requestedModel)
+	if !strings.Contains(lower, "gemini-3") {
+		return ResolveModelWithTier(requestedModel)
+	}
+	if headerStyle == HeaderStyleAntigravity {
+		transformedModel := trimPrefixFold(requestedModel, "antigravity-")
+		transformedModel = removeSuffixFold(transformedModel, "-preview-customtools")
+		transformedModel = removeSuffixFold(transformedModel, "-preview")
+		hasTier := hasThinkingTierSuffix(transformedModel)
+		isImageModel := IsImageGenerationModel(transformedModel)
+		isGemini35Flash := isGemini35FlashModelName(removeThinkingTierSuffix(transformedModel))
+		if (isGemini3ProModelName(transformedModel) || isGemini3FlashModelName(transformedModel)) && !isGemini35Flash && !hasTier && !isImageModel {
+			defaultTier := ThinkingTierMedium
+			if isGemini3ProModelName(transformedModel) {
+				defaultTier = ThinkingTierLow
+			}
+			transformedModel = transformedModel + "-" + string(defaultTier)
+		}
+		return ResolveModelWithTier("antigravity-" + transformedModel)
+	}
+	if headerStyle == HeaderStyleGeminiCLI {
+		withoutQuota := trimPrefixFold(requestedModel, "antigravity-")
+		requestedTier := extractThinkingTierFromModel(withoutQuota)
+		transformedModel := removeThinkingTierSuffix(withoutQuota)
+		hasPreviewSuffix := strings.Contains(strings.ToLower(transformedModel), "-preview")
+		if isGemini35FlashModelName(transformedModel) {
+			transformedModel = GetGemini35FlashGeminiCliFallbackModel()
+		} else if !hasPreviewSuffix {
+			transformedModel += "-preview"
+		}
+		resolved := ResolveModelWithTier(transformedModel, ModelResolverOptions{CLIFirst: true})
+		if requestedTier != "" {
+			resolved.ThinkingLevel = string(requestedTier)
+			resolved.Tier = requestedTier
+		}
+		resolved.QuotaPreference = HeaderStyleGeminiCLI
+		return resolved
+	}
+	return ResolveModelWithTier(requestedModel)
+}
+
+func supportsThinkingTiers(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "gemini-3") || strings.Contains(lower, "gemini-2.5") || (strings.Contains(lower, "claude") && strings.Contains(lower, "thinking"))
+}
+
+func extractThinkingTierFromModel(model string) ThinkingTier {
+	if !supportsThinkingTiers(model) {
+		return ""
+	}
+	lower := strings.ToLower(model)
+	for _, tier := range []ThinkingTier{ThinkingTierMinimal, ThinkingTierLow, ThinkingTierMedium, ThinkingTierHigh} {
+		if strings.HasSuffix(lower, "-"+string(tier)) {
+			return tier
+		}
+	}
+	return ""
+}
+
+func hasThinkingTierSuffix(model string) bool {
+	return extractThinkingTierFromModel(model) != ""
+}
+
+func removeThinkingTierSuffix(model string) string {
+	lower := strings.ToLower(model)
+	for _, tier := range []ThinkingTier{ThinkingTierMinimal, ThinkingTierLow, ThinkingTierMedium, ThinkingTierHigh} {
+		suffix := "-" + string(tier)
+		if strings.HasSuffix(lower, suffix) {
+			return model[:len(model)-len(suffix)]
+		}
+	}
+	return model
+}
+
+func getBudgetFamilyName(model string) string {
+	lower := strings.ToLower(model)
+	switch {
+	case strings.Contains(lower, "claude"):
+		return "claude"
+	case strings.Contains(lower, "gemini-2.5-pro"):
+		return "gemini-2.5-pro"
+	case strings.Contains(lower, "gemini-2.5-flash"):
+		return "gemini-2.5-flash"
+	default:
+		return "default"
+	}
+}
+
+func isThinkingCapableModelName(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "thinking") || strings.Contains(lower, "gemini-3") || strings.Contains(lower, "gemini-2.5")
+}
+
+func isGemini3ProModelName(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.HasPrefix(lower, "gemini-3-pro") || strings.HasPrefix(lower, "gemini-3.") && strings.Contains(lower, "-pro")
+}
+
+func isGemini3FlashModelName(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.HasPrefix(lower, "gemini-3-flash") || strings.HasPrefix(lower, "gemini-3.") && strings.Contains(lower, "-flash")
+}
+
+func isGemini35FlashModelName(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "gemini-3.5-flash")
+}
+
+func getAgyGemini35FlashThinkingBudget(tier ThinkingTier) int {
+	switch tier {
+	case ThinkingTierLow:
+		return 1000
+	case ThinkingTierHigh:
+		return 10000
+	case ThinkingTierMedium, "":
+		return 4000
+	default:
+		return 4000
+	}
+}
+
+func getAgyGemini31ProModel(tier ThinkingTier) string {
+	if tier == ThinkingTierHigh {
+		return "gemini-pro-agent"
+	}
+	return "gemini-3.1-pro-low"
+}
+
+func getAgyGemini31ProThinkingBudget(tier ThinkingTier) int {
+	if tier == ThinkingTierHigh {
+		return 10001
+	}
+	return 1001
+}
+
+func hasPrefixFold(value, prefix string) bool {
+	return strings.HasPrefix(strings.ToLower(value), strings.ToLower(prefix))
+}
+
+func trimPrefixFold(value, prefix string) string {
+	if hasPrefixFold(value, prefix) {
+		return value[len(prefix):]
+	}
+	return value
+}
+
+func removeSuffixFold(value, suffix string) string {
+	if strings.HasSuffix(strings.ToLower(value), strings.ToLower(suffix)) {
+		return value[:len(value)-len(suffix)]
+	}
+	return value
 }
