@@ -424,7 +424,6 @@ type OAuthModelAlias struct {
 	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
 }
 
-<<<<<<< HEAD
 type OAuthEndpointConfig struct {
 	ApiBaseURL         string `yaml:"api-base-url,omitempty" json:"api-base-url,omitempty"`
 	AuthorizeURL       string `yaml:"authorize-url,omitempty" json:"authorize-url,omitempty"`
@@ -514,8 +513,6 @@ type AmpUpstreamAPIKeyEntry struct {
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 }
 
-=======
->>>>>>> upstream/main
 // PayloadConfig defines default and override parameter rules applied to provider payloads.
 type PayloadConfig struct {
 	// Default defines rules that only set parameters when they are missing in the payload.
@@ -1022,22 +1019,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-<<<<<<< HEAD
-	var legacy legacyConfigData
-	if errLegacy := yaml.Unmarshal(data, &legacy); errLegacy == nil {
-		if cfg.migrateLegacyGeminiKeys(legacy.LegacyGeminiKeys) {
-			cfg.legacyMigrationPending = true
-		}
-		if cfg.migrateLegacyOpenAICompatibilityKeys(legacy.OpenAICompat) {
-			cfg.legacyMigrationPending = true
-		}
-		if cfg.migrateLegacyAmpConfig(&legacy) {
-			cfg.legacyMigrationPending = true
-		}
-	}
-
-=======
->>>>>>> upstream/main
 	// Hash remote management key if plaintext is detected (nested)
 	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
 	if cfg.RemoteManagement.SecretKey != "" && !looksLikeBcrypt(cfg.RemoteManagement.SecretKey) {
@@ -1127,7 +1108,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
-<<<<<<< HEAD
 	if cfg.legacyMigrationPending {
 		fmt.Println("Detected legacy configuration keys, attempting to persist the normalized config...")
 		if !optional && configFile != "" {
@@ -1140,8 +1120,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		}
 	}
 
-=======
->>>>>>> upstream/main
 	// Return the populated configuration struct.
 	return &cfg, nil
 }

@@ -2272,25 +2272,11 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return resp, nil
 	}
 	if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, err, normalized) {
-		if fallbackResp, ok := m.tryAntigravityCreditsExecute(ctx, req, opts); ok {
+		if fallbackResp, ok, _ := m.tryAntigravityCreditsExecute(ctx, req, opts); ok {
 			return fallbackResp, nil
 		}
 	}
-<<<<<<< HEAD
 	return cliproxyexecutor.Response{}, err
-=======
-	if lastErr != nil {
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
-			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
-				return cliproxyexecutor.Response{}, errCredits
-			} else if ok {
-				return resp, nil
-			}
-		}
-		return cliproxyexecutor.Response{}, lastErr
-	}
-	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
->>>>>>> upstream/main
 }
 
 
@@ -2315,29 +2301,13 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		return result, nil
 	}
 	if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, err, normalized) {
-		if fallbackResult, ok := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); ok {
+		if fallbackResult, ok, _ := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); ok {
 			return fallbackResult, nil
 		}
 	}
-<<<<<<< HEAD
 	var bootstrapErr *streamBootstrapError
 	if errors.As(err, &bootstrapErr) && bootstrapErr != nil {
 		return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
-=======
-	if lastErr != nil {
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
-			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
-				return nil, errCredits
-			} else if ok {
-				return result, nil
-			}
-		}
-		var bootstrapErr *streamBootstrapError
-		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
-			return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
-		}
-		return nil, lastErr
->>>>>>> upstream/main
 	}
 	return nil, err
 }

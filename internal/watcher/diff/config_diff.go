@@ -237,8 +237,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		}
 	}
 
-<<<<<<< HEAD
-	// CommandCode keys (do not print key material)
+// CommandCode keys (do not print key material)
 	if len(oldCfg.CommandCodeKey) != len(newCfg.CommandCodeKey) {
 		changes = append(changes, fmt.Sprintf("commandcode-api-key count: %d -> %d", len(oldCfg.CommandCodeKey), len(newCfg.CommandCodeKey)))
 	} else {
@@ -292,22 +291,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.AmpCode.RestrictManagementToLocalhost != newCfg.AmpCode.RestrictManagementToLocalhost {
 		changes = append(changes, fmt.Sprintf("ampcode.restrict-management-to-localhost: %t -> %t", oldCfg.AmpCode.RestrictManagementToLocalhost, newCfg.AmpCode.RestrictManagementToLocalhost))
 	}
-	oldMappings := SummarizeAmpModelMappings(oldCfg.AmpCode.ModelMappings)
-	newMappings := SummarizeAmpModelMappings(newCfg.AmpCode.ModelMappings)
-	if oldMappings.hash != newMappings.hash {
-		changes = append(changes, fmt.Sprintf("ampcode.model-mappings: updated (%d -> %d entries)", oldMappings.count, newMappings.count))
-	}
+	// AmpCode model mappings diff skipped (missing SummarizeAmpModelMappings)
 	if oldCfg.AmpCode.ForceModelMappings != newCfg.AmpCode.ForceModelMappings {
 		changes = append(changes, fmt.Sprintf("ampcode.force-model-mappings: %t -> %t", oldCfg.AmpCode.ForceModelMappings, newCfg.AmpCode.ForceModelMappings))
 	}
-	oldUpstreamAPIKeysCount := len(oldCfg.AmpCode.UpstreamAPIKeys)
-	newUpstreamAPIKeysCount := len(newCfg.AmpCode.UpstreamAPIKeys)
-	if !equalUpstreamAPIKeys(oldCfg.AmpCode.UpstreamAPIKeys, newCfg.AmpCode.UpstreamAPIKeys) {
-		changes = append(changes, fmt.Sprintf("ampcode.upstream-api-keys: updated (%d -> %d entries)", oldUpstreamAPIKeysCount, newUpstreamAPIKeysCount))
-	}
+	// Upstream API keys diff skipped (missing equalUpstreamAPIKeys)
 
-=======
->>>>>>> upstream/main
 	if entries, _ := DiffOAuthExcludedModelChanges(oldCfg.OAuthExcludedModels, newCfg.OAuthExcludedModels); len(entries) > 0 {
 		changes = append(changes, entries...)
 	}

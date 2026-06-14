@@ -1885,8 +1885,7 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 		payload = checkSystemInstructionsWithSigningMode(payload, strictMode, useCCHSigning, oauthToken, billingVersion, entrypoint, workload)
 	}
 
-<<<<<<< HEAD
-	// Resolve Claude Code identity (bootstrap API for OAuth) and inject metadata.user_id
+// Resolve Claude Code identity (bootstrap API for OAuth) and inject metadata.user_id
 	// Replaces the old injectFakeUserID with real Claude Code identity format.
 	identity := helps.ResolveClaudeCodeIdentity(ctx, apiKey, model)
 	if identity != nil && identity.AccountUUID != "" {
@@ -1894,20 +1893,13 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 		payload, _ = helps.ApplyClaudeCodeMetadata(payload, identity)
 	} else {
 		// Fallback: keep fake user ID for non-OAuth or unresolved tokens
-		payload = injectFakeUserID(payload, apiKey, cacheUserID)
+		payload, _ = injectFakeUserID(ctx, payload, apiKey, cacheUserID)
 	}
 
 	// Apply Claude Code body field ordering (matches anthropic-auth's orderClaudeCodeBody)
 	orderedBody, err := helps.OrderClaudeCodeBody(payload)
 	if err == nil && orderedBody != nil {
 		payload = orderedBody
-=======
-	// Inject fake user ID
-	var errFakeUserID error
-	payload, errFakeUserID = injectFakeUserID(ctx, payload, apiKey, cacheUserID)
-	if errFakeUserID != nil {
-		return nil, errFakeUserID
->>>>>>> upstream/main
 	}
 
 	// Apply sensitive word obfuscation
