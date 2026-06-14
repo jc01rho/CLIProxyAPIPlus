@@ -1,9 +1,12 @@
 package helps
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +46,8 @@ type bootstrapResult struct {
 const (
 	claudeCodeBootstrapTTL          = 24 * time.Hour
 	claudeCodeBootstrapNegativeTTL = 5 * time.Minute
+	claudeCodeBootstrapURL          = "https://api.anthropic.com/api/claude_cli/bootstrap"
+	claudeCodeBootstrapTimeout      = 5 * time.Second
 )
 
 // GetClaudeCodeIdentity returns a stable identity for the given seed (typically the access token).
@@ -90,11 +95,11 @@ func GetClaudeCodeIdentity(seed string) *ClaudeCodeIdentity {
 
 // ResolveClaudeCodeIdentity resolves the full identity including account_uuid from the Claude bootstrap API.
 // If accessToken does not start with "sk-ant-oat", returns identity without account_uuid.
-func ResolveClaudeCodeIdentity(accessToken string, model string) *ClaudeCodeIdentity {
+func ResolveClaudeCodeIdentity(ctx context.Context, accessToken string, model string) *ClaudeCodeIdentity {
 	identity := GetClaudeCodeIdentity(accessToken)
 
 	// Only OAuth tokens can be resolved
-	if accessToken == "" || len(accessToken) < 8 || accessToken[:8] != "sk-ant-o" {
+	if accessToken == "" || len(accessToken) < 8 || !strings.HasPrefix(accessToken, "sk-ant-oat") {
 		return identity
 	}
 
@@ -111,9 +116,59 @@ func ResolveClaudeCodeIdentity(accessToken string, model string) *ClaudeCodeIden
 	}
 	claudeCodeBootstrapMu.RUnlock()
 
-	// Fetch account_uuid from bootstrap API (this is a placeholder - actual HTTP call would be in executor)
-	// The executor calls this and provides the result back
+	// Fetch account_uuid from bootstrap API
+	accountUUID := fetchClaudeCodeAccountUUID(ctx, accessToken, model)
+	if accountUUID != "" {
+		identity.AccountUUID = accountUUID
+		SetBootstrapAccountUUID(accessToken, accountUUID)
+	}
 	return identity
+}
+
+// fetchClaudeCodeAccountUUID performs the actual HTTP fetch to the bootstrap API
+func fetchClaudeCodeAccountUUID(ctx context.Context, accessToken, model string) string {
+	url := claudeCodeBootstrapURL
+	
+	// Build query parameters
+	query := url + "?entrypoint=sdk-cli"
+	if model != "" {
+		query += "&model=" + model
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, query, nil)
+	if err != nil {
+		return ""
+	}
+
+	// Set headers matching Claude Code
+	req.Header.Set("accept", "application/json, text/plain, */*")
+	req.Header.Set("authorization", "Bearer "+accessToken)
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	req.Header.Set("user-agent", "claude-code/2.1.141")
+
+	client := &http.Client{Timeout: claudeCodeBootstrapTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+
+	var result struct {
+		OAuthAccount struct {
+			AccountUUID string `json:"account_uuid"`
+		} `json:"oauth_account"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+
+	return result.OAuthAccount.AccountUUID
 }
 
 // SetBootstrapAccountUUID sets the account UUID for an access token (called by executor after HTTP lookup).
