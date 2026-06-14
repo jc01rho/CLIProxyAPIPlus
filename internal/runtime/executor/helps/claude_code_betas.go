@@ -57,6 +57,11 @@ func SelectClaudeCodeBetas(body []byte, extraBetas []string) string {
 		selected = claudeCodeBaseBetas
 	}
 
+	// Fast mode: add fast-mode beta when body.speed === "fast"
+	if isFastMode(body) {
+		selected = append(selected, "fast-mode-2026-02-01")
+	}
+
 	// Deduplicate with extra betas
 	seen := make(map[string]bool, len(selected)+len(extraBetas))
 	result := make([]string, 0, len(selected)+len(extraBetas))
@@ -76,6 +81,14 @@ func SelectClaudeCodeBetas(body []byte, extraBetas []string) string {
 	}
 
 	return strings.Join(result, ",")
+}
+
+// isFastMode checks if the body has speed === "fast".
+func isFastMode(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	return gjson.GetBytes(body, "speed").String() == "fast"
 }
 
 // hasFullAgentShape checks if the body has the full Claude Code agent shape:
