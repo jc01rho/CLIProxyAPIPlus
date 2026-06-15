@@ -280,7 +280,7 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	}
 
 	hasAPIError := len(slicesAPIResponseError) > 0 || finalStatusCode >= http.StatusBadRequest
-forceLog := w.logOnErrorOnly && hasAPIError && !w.logger.IsEnabled()
+	forceLog := hasAPIError && (w.logOnErrorOnly || w.logger.IsEnabled())
 	websocketTimelineSource := w.extractWebsocketTimelineSource(c)
 	apiRequestSource := w.extractAPIRequestSource(c)
 	apiResponseSource := w.extractAPIResponseSource(c)
