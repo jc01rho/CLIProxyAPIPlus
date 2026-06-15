@@ -154,7 +154,6 @@ func (s *Service) GetWatcher() *WatcherWrapper {
 	return s.watcher
 }
 
-
 func (s *Service) registerPluginAuthParser() {
 	var parser PluginAuthParser
 	if s != nil && s.pluginHost != nil {
@@ -753,6 +752,9 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 	if strings.EqualFold(provider, "codex") {
 		executor.CloseCodexWebsocketSessionsForAuthID(id, "auth_removed")
 	}
+	if strings.EqualFold(provider, "xai") {
+		executor.CloseXAIWebsocketSessionsForAuthID(id, "auth_removed")
+	}
 	s.syncPluginRuntime(ctx)
 }
 
@@ -961,7 +963,7 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	case "kimi":
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
 	case "xai":
-		s.coreManager.RegisterExecutor(executor.NewXAIExecutor(s.cfg))
+		s.coreManager.RegisterExecutor(executor.NewXAIAutoExecutor(s.cfg))
 	case "kiro":
 		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
 	case "kilo":
@@ -2431,18 +2433,18 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 			}
 		}
 		out = append(out, info)
-		
+
 		// Add alias as a separate model entry so it can be found by alias lookup
 		if alias != name && alias != "" {
 			aliasInfo := &ModelInfo{
-				ID:          alias,
-				Object:      "model",
-				Created:     now,
-				OwnedBy:     ownedBy,
-				Type:        modelType,
-				DisplayName: alias,
-				UserDefined: true,
-				Alias:       alias,
+				ID:              alias,
+				Object:          "model",
+				Created:         now,
+				OwnedBy:         ownedBy,
+				Type:            modelType,
+				DisplayName:     alias,
+				UserDefined:     true,
+				Alias:           alias,
 				ExecutionTarget: name,
 			}
 			if upstream := registry.LookupStaticModelInfo(name); upstream != nil && upstream.Thinking != nil {
@@ -2629,7 +2631,6 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 				out = append(out, model)
 			}
 		}
-
 
 		addedAlias := false
 		for _, entry := range entries {
