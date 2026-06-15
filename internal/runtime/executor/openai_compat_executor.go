@@ -167,6 +167,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		translated = NormalizeXAITools(translated)
 	}
 
+	// Ensure all tool-related id fields are JSON strings (some clients send
+	// numeric or null ids which upstream providers reject).
+	translated = normalizeToolResultIDsToString(translated)
+
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
@@ -401,6 +405,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if e.provider == "xai" {
 		translated = NormalizeXAITools(translated)
 	}
+
+	// Ensure all tool-related id fields are JSON strings (some clients send
+	// numeric or null ids which upstream providers reject).
+	translated = normalizeToolResultIDsToString(translated)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -1119,6 +1127,66 @@ func (e *OpenAICompatExecutor) fixMistralMessageOrder(payload []byte) []byte {
 		return payload
 	}
 	return next
+}
+
+// normalizeToolResultIDsToString ensures all tool-related id fields in the
+// request payload are JSON strings.  Some clients send numeric or null id
+// values which upstream providers (e.g. north-mini-code-free) reject with
+// "A tool result's output's id field must be a string".
+//
+// The function inspects both the chat-completions format (messages array)
+// and the responses format (input array) and coerces non-string id/call_id/
+// tool_call_id fields to their string representation via sjson.
+func normalizeToolResultIDsToString(body []byte) []byte {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	out := body
+
+	// --- Chat completions format: messages array ---
+	messages := gjson.GetBytes(out, "messages")
+	if messages.Exists() && messages.IsArray() {
+		for msgIdx, msg := range messages.Array() {
+			// tool role messages: ensure tool_call_id is a string
+			if msg.Get("role").String() == "tool" {
+				tcID := msg.Get("tool_call_id")
+				if tcID.Exists() && tcID.Type != gjson.String {
+					path := fmt.Sprintf("messages.%d.tool_call_id", msgIdx)
+					out, _ = sjson.SetBytes(out, path, tcID.String())
+				}
+			}
+			// assistant messages with tool_calls: ensure each tool call id is a string
+			toolCalls := msg.Get("tool_calls")
+			if toolCalls.Exists() && toolCalls.IsArray() {
+				for callIdx, call := range toolCalls.Array() {
+					idVal := call.Get("id")
+					if idVal.Exists() && idVal.Type != gjson.String {
+						path := fmt.Sprintf("messages.%d.tool_calls.%d.id", msgIdx, callIdx)
+						out, _ = sjson.SetBytes(out, path, idVal.String())
+					}
+				}
+			}
+		}
+	}
+
+	// --- Responses format: input array ---
+	input := gjson.GetBytes(out, "input")
+	if input.Exists() && input.IsArray() {
+		for itemIdx, item := range input.Array() {
+			itemType := item.Get("type").String()
+			if itemType == "function_call" || itemType == "function_call_output" {
+				for _, field := range []string{"id", "call_id"} {
+					val := item.Get(field)
+					if val.Exists() && val.Type != gjson.String {
+						path := fmt.Sprintf("input.%d.%s", itemIdx, field)
+						out, _ = sjson.SetBytes(out, path, val.String())
+					}
+				}
+			}
+		}
+	}
+
+	return out
 }
 
 type statusErr struct {

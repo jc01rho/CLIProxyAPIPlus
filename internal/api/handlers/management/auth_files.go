@@ -336,7 +336,8 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	c.JSON(200, gin.H{"files": files})
 }
 
-// GetAuthFileModels returns the models supported by a specific auth file
+// GetAuthFileModels returns the models supported by a specific auth file,
+// filtered by auth-level excluded_models, Copilot allowlist, and global OAuthExcludedModels.
 func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	name := c.Query("name")
 	if name == "" {
@@ -346,11 +347,13 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 
 	// Try to find auth ID via authManager
 	var authID string
+	var auth *coreauth.Auth
 	if h.authManager != nil {
 		auths := h.authManager.List()
-		for _, auth := range auths {
-			if auth.FileName == name || auth.ID == name {
-				authID = auth.ID
+		for _, a := range auths {
+			if filepath.Base(a.FileName) == name || a.ID == name {
+				authID = a.ID
+				auth = a
 				break
 			}
 		}
@@ -364,10 +367,68 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	reg := registry.GetGlobalRegistry()
 	models := reg.GetModelsForClient(authID)
 
+	// Collect exclusion filters
+	excludedSet := make(map[string]struct{})
+	// 1. Auth-level excluded_models attribute
+	if auth != nil && auth.Attributes != nil {
+		if raw, ok := auth.Attributes["excluded_models"]; ok && raw != "" {
+			for _, id := range strings.Split(raw, ",") {
+				id = strings.TrimSpace(id)
+				if id != "" {
+					excludedSet[id] = struct{}{}
+				}
+			}
+		}
+	}
+	// 2. Global OAuthExcludedModels config
+	if h.cfg != nil {
+		for provider, models := range h.cfg.OAuthExcludedModels {
+			if provider == "" {
+				continue
+			}
+			var authProvider string
+			if auth != nil {
+				authProvider = strings.ToLower(strings.TrimSpace(auth.Provider))
+			}
+			if authProvider == "" {
+				authProvider = strings.ToLower(strings.TrimSpace(authID))
+			}
+			if strings.EqualFold(authProvider, provider) {
+				for _, id := range models {
+					id = strings.TrimSpace(id)
+					if id != "" {
+						excludedSet[id] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Copilot allowlist: for github-copilot, only expose supported models
+	copilotSupported := map[string]bool{
+		"claude-haiku-4.5":  true,
+		"gemini-2.5-pro":    true,
+		"gemini-3-pro-preview":    true,
+		"gemini-3.1-pro-preview":  true,
+		"gemini-3-flash-preview":  true,
+	}
+
 	result := make([]gin.H, 0, len(models))
 	for _, m := range models {
+		id := m.ID
+		// Skip excluded models
+		if _, excluded := excludedSet[id]; excluded {
+			continue
+		}
+		// Apply Copilot allowlist for github-copilot provider
+		mType := strings.ToLower(strings.TrimSpace(m.Type))
+		if mType == "github-copilot" {
+			if !copilotSupported[id] {
+				continue
+			}
+		}
 		entry := gin.H{
-			"id": m.ID,
+			"id": id,
 		}
 		if m.DisplayName != "" {
 			entry["display_name"] = m.DisplayName
@@ -392,6 +453,13 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 		return
 	}
 	files := make([]gin.H, 0)
+	type antigravityDiskEntry struct {
+		index      int
+		isPrimary  bool
+		disabled   bool
+		order      int64
+	}
+	antigravityEntries := make(map[int]antigravityDiskEntry)
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -428,34 +496,89 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						fileData["note"] = trimmed
 					}
 				}
-					if wv := gjson.GetBytes(data, "websockets"); wv.Exists() {
-						switch wv.Type {
-						case gjson.True:
-							fileData["websockets"] = true
-						case gjson.False:
-							fileData["websockets"] = false
-						case gjson.String:
-							if parsed, errParse := strconv.ParseBool(strings.TrimSpace(wv.String())); errParse == nil {
-								fileData["websockets"] = parsed
-							}
-						}
-					}
-					if bv := gjson.GetBytes(data, "billing_class"); bv.Exists() && bv.Type == gjson.String {
-						if normalized := normalizeBillingClassValue(bv.String()); normalized != "" {
-							fileData["billing_class"] = normalized
-						}
-					} else if bv := gjson.GetBytes(data, "billing-class"); bv.Exists() && bv.Type == gjson.String {
-						if normalized := normalizeBillingClassValue(bv.String()); normalized != "" {
-							fileData["billing_class"] = normalized
-						}
-					}
-					if uv := gjson.GetBytes(data, "base_url"); uv.Exists() && uv.Type == gjson.String {
-						if trimmed := strings.TrimSpace(uv.String()); trimmed != "" {
-							fileData["base_url"] = trimmed
+				if wv := gjson.GetBytes(data, "websockets"); wv.Exists() {
+					switch wv.Type {
+					case gjson.True:
+						fileData["websockets"] = true
+					case gjson.False:
+						fileData["websockets"] = false
+					case gjson.String:
+						if parsed, errParse := strconv.ParseBool(strings.TrimSpace(wv.String())); errParse == nil {
+							fileData["websockets"] = parsed
 						}
 					}
 				}
+				if bv := gjson.GetBytes(data, "billing_class"); bv.Exists() && bv.Type == gjson.String {
+					if normalized := normalizeBillingClassValue(bv.String()); normalized != "" {
+						fileData["billing_class"] = normalized
+					}
+				} else if bv := gjson.GetBytes(data, "billing-class"); bv.Exists() && bv.Type == gjson.String {
+					if normalized := normalizeBillingClassValue(bv.String()); normalized != "" {
+						fileData["billing_class"] = normalized
+					}
+				}
+				if uv := gjson.GetBytes(data, "base_url"); uv.Exists() && uv.Type == gjson.String {
+					if trimmed := strings.TrimSpace(uv.String()); trimmed != "" {
+						fileData["base_url"] = trimmed
+					}
+				}
+				if strings.EqualFold(strings.TrimSpace(typeValue), "antigravity") {
+					disabled := false
+					if dv := gjson.GetBytes(data, "disabled"); dv.Exists() {
+						switch dv.Type {
+						case gjson.True:
+							disabled = true
+						case gjson.String:
+							if parsed, errParse := strconv.ParseBool(strings.TrimSpace(dv.String())); errParse == nil {
+								disabled = parsed
+							}
+						}
+					}
+					isPrimary := gjson.GetBytes(data, "primary_info.is_primary").Bool()
+					order := gjson.GetBytes(data, "primary_info.order").Int()
+					antigravityEntries[len(files)] = antigravityDiskEntry{
+						index:     len(files),
+						isPrimary: isPrimary,
+						disabled:  disabled,
+						order:     order,
+					}
+				}
+			}
 			files = append(files, fileData)
+		}
+	}
+	// Reconcile antigravity primary_info for disk-only listings.
+	if len(antigravityEntries) > 0 {
+		var primaryIndex int = -1
+		for idx, entry := range antigravityEntries {
+			if entry.isPrimary {
+				primaryIndex = idx
+				break
+			}
+		}
+		if primaryIndex == -1 {
+			enabledCount := 0
+			var soleEnabledIndex int = -1
+			for idx, entry := range antigravityEntries {
+				if !entry.disabled {
+					enabledCount++
+					soleEnabledIndex = idx
+				}
+			}
+			if enabledCount == 1 {
+				primaryIndex = soleEnabledIndex
+			}
+		}
+		for idx, entry := range antigravityEntries {
+			pi := gin.H{"is_primary": idx == primaryIndex}
+			if entry.order > 0 {
+				pi["order"] = entry.order
+			} else if idx == primaryIndex {
+				pi["order"] = 1
+			} else {
+				pi["order"] = 0
+			}
+			files[idx]["primary_info"] = pi
 		}
 	}
 	c.JSON(200, gin.H{"files": files})
@@ -598,10 +721,12 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			}
 		}
 	}
-	if auth.PrimaryInfo != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
-		entry["primary_info"] = gin.H{
-			"is_primary": auth.PrimaryInfo.IsPrimary,
-			"order":      auth.PrimaryInfo.Order,
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		if pi := h.reconcileAntigravityPrimaryInfoForResponse(auth); pi != nil {
+			entry["primary_info"] = gin.H{
+				"is_primary": pi.IsPrimary,
+				"order":      pi.Order,
+			}
 		}
 	}
 	return entry
@@ -994,6 +1119,22 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err != nil {
 		return err
 	}
+	// Assign primary/standby role for new antigravity credentials.
+	h.initAntigravityPrimaryInfo(ctx, auth)
+	// Update the JSON data with canonical primary_info before writing to disk.
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") && auth.PrimaryInfo != nil {
+		var m map[string]any
+		if err := json.Unmarshal(data, &m); err == nil {
+			m["primary_info"] = map[string]any{
+				"is_primary": auth.PrimaryInfo.IsPrimary,
+				"order":      auth.PrimaryInfo.Order,
+			}
+			m["disabled"] = auth.Disabled
+			if newData, err := json.Marshal(m); err == nil {
+				data = newData
+			}
+		}
+	}
 	if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}
@@ -1205,6 +1346,16 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 	attr := map[string]string{
 		"path":   path,
 		"source": path,
+	}
+	// Extract billing_class from metadata and normalize (underscore -> hyphen)
+	if bv, ok := metadata["billing_class"].(string); ok {
+		if normalized := normalizeBillingClassValue(bv); normalized != "" {
+			attr["billing_class"] = normalized
+		}
+	} else if bv, ok := metadata["billing-class"].(string); ok {
+		if normalized := normalizeBillingClassValue(bv); normalized != "" {
+			attr["billing_class"] = normalized
+		}
 	}
 	auth := &coreauth.Auth{
 		ID:         authID,
@@ -1795,9 +1946,24 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if store == nil {
 		return "", fmt.Errorf("token store unavailable")
 	}
+	// Assign primary/standby role for new antigravity credentials so the
+	// manager can reconcile quota decisions deterministically.
+	h.initAntigravityPrimaryInfo(ctx, record)
 	if h.postAuthHook != nil {
 		if err := h.postAuthHook(ctx, record); err != nil {
 			return "", fmt.Errorf("post-auth hook failed: %w", err)
+		}
+	}
+	// Mirror PrimaryInfo into metadata so the file-backed token store
+	// persists the canonical primary_info block alongside the rest of the
+	// credential payload.
+	if record.PrimaryInfo != nil {
+		if record.Metadata == nil {
+			record.Metadata = map[string]any{}
+		}
+		record.Metadata["primary_info"] = map[string]any{
+			"is_primary": record.PrimaryInfo.IsPrimary,
+			"order":      record.PrimaryInfo.Order,
 		}
 	}
 	savedPath, errSave := store.Save(ctx, record)

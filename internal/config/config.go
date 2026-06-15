@@ -1021,6 +1021,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	// Migrate legacy config fields to new structures.
+	// This must run after unmarshal but before sanitization.
+	cfg.migrateLegacyConfigFields(data)
+
 	// Hash remote management key if plaintext is detected (nested)
 	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
 	if cfg.RemoteManagement.SecretKey != "" && !looksLikeBcrypt(cfg.RemoteManagement.SecretKey) {
@@ -2415,4 +2419,111 @@ func removeLegacyAuthBlock(root *yaml.Node) {
 		return
 	}
 	removeMapKey(root, "auth")
+}
+
+// legacyConfigData mirrors legacy YAML keys that are not part of Config struct fields.
+type legacyConfigData struct {
+	GenerativeLanguageAPIKey         []string          `yaml:"generative-language-api-key,omitempty"`
+	OpenAICompatibility              []legacyOAICompat `yaml:"openai-compatibility,omitempty"`
+	AmpUpstreamURL                   string            `yaml:"amp-upstream-url,omitempty"`
+	AmpUpstreamAPIKey                string            `yaml:"amp-upstream-api-key,omitempty"`
+	AmpRestrictManagementToLocalhost bool              `yaml:"amp-restrict-management-to-localhost,omitempty"`
+	AmpModelMappings                 []AmpModelMapping `yaml:"amp-model-mappings,omitempty"`
+}
+
+type legacyOAICompat struct {
+	Name    string   `yaml:"name"`
+	BaseURL string   `yaml:"base-url"`
+	APIKeys []string `yaml:"api-keys,omitempty"`
+}
+
+// migrateLegacyConfigFields detects legacy YAML fields and populates new Config fields.
+// It sets legacyMigrationPending=true so the caller can persist the migrated config.
+func (cfg *Config) migrateLegacyConfigFields(rawYAML []byte) {
+	var legacy legacyConfigData
+	if err := yaml.Unmarshal(rawYAML, &legacy); err != nil {
+		return
+	}
+	migrated := false
+
+	// 1. generative-language-api-key -> GeminiKey
+	if len(legacy.GenerativeLanguageAPIKey) > 0 {
+		for _, key := range legacy.GenerativeLanguageAPIKey {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			// Avoid duplicates with existing GeminiKey entries
+			exists := false
+			for _, existing := range cfg.GeminiKey {
+				if existing.APIKey == key {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				cfg.GeminiKey = append(cfg.GeminiKey, GeminiKey{APIKey: key})
+				migrated = true
+			}
+		}
+	}
+
+	// 2. openai-compatibility.*.api-keys -> OpenAICompatibility.*.APIKeyEntries
+	if len(legacy.OpenAICompatibility) > 0 {
+		for _, legacyEntry := range legacy.OpenAICompatibility {
+			if len(legacyEntry.APIKeys) == 0 {
+				continue
+			}
+			// Find matching provider by name + base-url
+			var target *OpenAICompatibility
+			for i := range cfg.OpenAICompatibility {
+				if strings.EqualFold(strings.TrimSpace(cfg.OpenAICompatibility[i].Name), strings.TrimSpace(legacyEntry.Name)) &&
+					strings.EqualFold(strings.TrimSpace(cfg.OpenAICompatibility[i].BaseURL), strings.TrimSpace(legacyEntry.BaseURL)) {
+					target = &cfg.OpenAICompatibility[i]
+					break
+				}
+			}
+			if target == nil {
+				continue
+			}
+			for _, key := range legacyEntry.APIKeys {
+				key = strings.TrimSpace(key)
+				if key == "" {
+					continue
+				}
+				exists := false
+				for _, existing := range target.APIKeyEntries {
+					if existing.APIKey == key {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					target.APIKeyEntries = append(target.APIKeyEntries, OpenAICompatibilityAPIKey{APIKey: key})
+					migrated = true
+				}
+			}
+		}
+	}
+
+	// 3. amp-* fields -> AmpCode
+	if legacy.AmpUpstreamURL != "" || legacy.AmpUpstreamAPIKey != "" || legacy.AmpRestrictManagementToLocalhost || len(legacy.AmpModelMappings) > 0 {
+		if legacy.AmpUpstreamURL != "" {
+			cfg.AmpCode.UpstreamURL = strings.TrimSpace(legacy.AmpUpstreamURL)
+			migrated = true
+		}
+		if legacy.AmpUpstreamAPIKey != "" {
+			cfg.AmpCode.UpstreamAPIKey = strings.TrimSpace(legacy.AmpUpstreamAPIKey)
+			migrated = true
+		}
+		cfg.AmpCode.RestrictManagementToLocalhost = legacy.AmpRestrictManagementToLocalhost
+		if len(legacy.AmpModelMappings) > 0 {
+			cfg.AmpCode.ModelMappings = legacy.AmpModelMappings
+			migrated = true
+		}
+	}
+
+	if migrated {
+		cfg.legacyMigrationPending = true
+	}
 }

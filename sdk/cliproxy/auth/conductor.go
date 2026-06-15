@@ -5013,10 +5013,18 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	if len(eligibleProviders) == 0 {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	// Build provider set that includes OAuth alias providers for weighted-robin
+	providerSet := make(map[string]struct{}, len(eligibleProviders))
+	for _, providerKey := range eligibleProviders {
+		providerSet[providerKey] = struct{}{}
+	}
 	if strings.TrimSpace(model) != "" {
-		providerSet := make(map[string]struct{}, len(eligibleProviders))
-		for _, providerKey := range eligibleProviders {
-			providerSet[providerKey] = struct{}{}
+		// Merge OAuth alias providers that might not have registry models
+		oauthProviders := m.ProvidersForOAuthAliasWithoutRegisteredModels(model)
+		for _, p := range oauthProviders {
+			if _, ok := providerSet[p]; !ok {
+				providerSet[p] = struct{}{}
+			}
 		}
 		m.mu.RLock()
 		for _, candidate := range m.auths {
