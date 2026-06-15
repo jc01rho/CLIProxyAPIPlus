@@ -208,6 +208,24 @@ func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, cfg *conf
 	}
 }
 
+func (h *Handler) reloadConfigAfterManagementSaveAsync(ctx context.Context, cfg *config.Config) {
+	if h == nil || cfg == nil {
+		return
+	}
+	reloadCtx := context.Background()
+	if ctx != nil {
+		reloadCtx = context.WithoutCancel(ctx)
+	}
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.WithField("panic", recovered).Error("management: async config reload panicked")
+			}
+		}()
+		h.reloadConfigAfterManagementSave(reloadCtx, cfg)
+	}()
+}
+
 // SetLocalPassword configures the runtime-local password accepted for localhost requests.
 func (h *Handler) SetLocalPassword(password string) { h.localPassword = password }
 
