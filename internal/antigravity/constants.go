@@ -142,6 +142,9 @@ const (
 
 	// HeaderStyleGeminiCLI produces Gemini CLI headers.
 	HeaderStyleGeminiCLI HeaderStyle = "gemini-cli"
+
+	// HeaderStyleLoadCodeAssist produces LoadCodeAssist headers.
+	HeaderStyleLoadCodeAssist HeaderStyle = "load-code-assist"
 )
 
 var (
