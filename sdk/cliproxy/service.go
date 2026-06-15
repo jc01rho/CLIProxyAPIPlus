@@ -337,20 +337,10 @@ func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []mod
 }
 
 func modelRegistrationPhase(auth *coreauth.Auth) int {
-	if isConfigAPIKeyAuth(auth) {
+	if coreauth.IsConfigAPIKeyAuth(auth) {
 		return modelRegistrationPhaseConfigAPIKey
 	}
 	return modelRegistrationPhaseOther
-}
-
-func isConfigAPIKeyAuth(auth *coreauth.Auth) bool {
-	if auth == nil || auth.Attributes == nil {
-		return false
-	}
-	if strings.TrimSpace(auth.Attributes["api_key"]) == "" {
-		return false
-	}
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(auth.Attributes["source"])), "config:")
 }
 
 func modelRegistrationCategory(auth *coreauth.Auth) string {
@@ -1239,6 +1229,9 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 		forceReplaceAuths: true,
 		auths:             auths,
 	})
+	ctx = coreauth.WithSkipPersist(context.Background())
+	s.registerConfigAPIKeyAuths(ctx, newCfg)
+	s.syncPluginRuntime(ctx)
 }
 
 func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Config) {
@@ -1261,7 +1254,7 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 
 	tasks := make([]modelRegistrationTask, 0, len(auths))
 	for _, auth := range auths {
-		if !isConfigAPIKeyAuth(auth) {
+		if !coreauth.IsConfigAPIKeyAuth(auth) {
 			continue
 		}
 		prepared := s.prepareCoreAuthForModelRegistration(ctx, auth)
