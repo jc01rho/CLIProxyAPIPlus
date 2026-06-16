@@ -2470,21 +2470,11 @@ func antigravityTrackerAccountIndex(auth *cliproxyauth.Auth) int {
 	return int(binary.BigEndian.Uint32(sum[:4]) % 100000)
 }
 
-func antigravityEstimateRequestTokenCost(payload []byte) float64 {
-	chars := 0
-	for _, content := range gjson.GetBytes(payload, "request.contents").Array() {
-		for _, part := range content.Get("parts").Array() {
-			chars += len(part.Get("text").String())
-		}
-	}
-	if chars == 0 {
-		return 1
-	}
-	cost := chars / 4
-	if cost < 1 {
-		return 1
-	}
-	return float64(cost)
+func antigravityEstimateRequestTokenCost(_ []byte) float64 {
+	// Reference (cortexkit/antigravity-auth) always uses cost=1 per request.
+	// chars/4 was incorrect: long conversations (100K+ chars) produced cost=25K+,
+	// exceeding the MaxTokens=50 bucket and causing permanent exhaustion.
+	return 1
 }
 
 func antigravityEnsureRequestTokens(auth *cliproxyauth.Auth, payload []byte) error {
