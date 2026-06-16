@@ -1281,7 +1281,8 @@ func ConfigureClaudeToolConfig(payload []byte) ([]byte, error) {
 	return updated, nil
 }
 
-// BuildClaudeThinkingConfig builds Claude thinking config with snake_case keys.
+// BuildClaudeThinkingConfig builds Claude thinking config with camelCase keys
+// (matching headerStyle=antigravity in the cortexkit reference client).
 func BuildClaudeThinkingConfig(includeThoughts bool, thinkingBudget int) ThinkingConfig {
 	return ThinkingConfig(buildClaudeThinkingConfig(includeThoughts, thinkingBudget))
 }
