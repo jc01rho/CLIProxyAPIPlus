@@ -1442,6 +1442,24 @@ func ApplyClaudeTransforms(payload []byte, options ClaudeTransformOptions) (Clau
 		payload, _ = sjson.DeleteBytes(payload, "system")
 	}
 
+	// Normalize snake_case cached_content → cachedContent (camelCase).
+	if gjson.GetBytes(payload, "cached_content").Exists() && !gjson.GetBytes(payload, "cachedContent").Exists() {
+		raw := gjson.GetBytes(payload, "cached_content").Raw
+		payload, _ = sjson.SetRawBytes(payload, "cachedContent", []byte(raw))
+		payload, _ = sjson.DeleteBytes(payload, "cached_content")
+	}
+
+	// Clean up extra_body thinking fields if present.
+	if gjson.GetBytes(payload, "extra_body").IsObject() {
+		payload, _ = sjson.DeleteBytes(payload, "extra_body.thinkingConfig")
+		payload, _ = sjson.DeleteBytes(payload, "extra_body.thinking")
+	}
+
+	// Delete top-level thinkingConfig and thinking fields.
+	// These are set inside generationConfig.thinkingConfig instead.
+	payload, _ = sjson.DeleteBytes(payload, "thinkingConfig")
+	payload, _ = sjson.DeleteBytes(payload, "thinking")
+
 	if gjson.GetBytes(payload, "generationConfig").IsObject() {
 		generationConfig := objectAt(payload, "generationConfig")
 		ConvertStopSequences(generationConfig)
