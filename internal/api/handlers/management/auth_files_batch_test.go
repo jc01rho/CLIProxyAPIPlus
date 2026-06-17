@@ -19,7 +19,6 @@ import (
 
 func TestUploadAuthFile_BatchMultipart(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	authDir := t.TempDir()
 	manager := coreauth.NewManager(nil, nil, nil)
@@ -87,7 +86,6 @@ func TestUploadAuthFile_BatchMultipart(t *testing.T) {
 
 func TestUploadAuthFile_BatchMultipart_InvalidJSONDoesNotOverwriteExistingFile(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	authDir := t.TempDir()
 	manager := coreauth.NewManager(nil, nil, nil)
@@ -165,7 +163,6 @@ func jsonStringEqual(want, got string) bool {
 
 func TestDeleteAuthFile_BatchQuery(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	authDir := t.TempDir()
 	files := []string{"alpha.json", "beta.json"}
