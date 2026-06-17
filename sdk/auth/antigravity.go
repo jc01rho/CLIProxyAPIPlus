@@ -7,10 +7,10 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
@@ -29,18 +29,8 @@ type AntigravityProjectInfo struct {
 }
 
 const (
-	antigravityClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-	antigravityClientSecret = "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"
 	antigravityCallbackPort = 51121
 )
-
-var antigravityScopes = []string{
-	"https://www.googleapis.com/auth/cloud-platform",
-	"https://www.googleapis.com/auth/userinfo.email",
-	"https://www.googleapis.com/auth/userinfo.profile",
-	"https://www.googleapis.com/auth/cclog",
-	"https://www.googleapis.com/auth/experimentsandconfigs",
-}
 
 // AntigravityAuthenticator implements OAuth login for the antigravity provider.
 type AntigravityAuthenticator struct{}
@@ -75,10 +65,16 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 	}
 
 	httpClient := util.SetProxy(&cfg.SDKConfig, &http.Client{})
+	authSvc := antigravity.NewAntigravityAuth(cfg, httpClient)
 
-	state, err := misc.GenerateRandomState()
-	if err != nil {
-		return nil, fmt.Errorf("antigravity: failed to generate state: %w", err)
+	pkceCodes, errPKCE := antigravity.GeneratePKCECodes()
+	if errPKCE != nil {
+		return nil, fmt.Errorf("antigravity: failed to generate PKCE codes: %w", errPKCE)
+	}
+
+	state, errState := antigravity.EncodeAntigravityState(pkceCodes.CodeVerifier, "")
+	if errState != nil {
+		return nil, fmt.Errorf("antigravity: failed to generate state: %w", errState)
 	}
 
 	srv, port, cbChan, errServer := startAntigravityCallbackServer(callbackPort)
@@ -92,7 +88,7 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 	}()
 
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", port)
-	authURL := buildAntigravityAuthURL(redirectURI, state)
+	authURL := authSvc.BuildAuthURL(state, redirectURI, pkceCodes)
 
 	if !opts.NoBrowser {
 		fmt.Println("Opening browser for antigravity authentication")
@@ -179,15 +175,15 @@ waitForCallback:
 		return nil, fmt.Errorf("antigravity: missing authorization code")
 	}
 
-	tokenResp, errToken := exchangeAntigravityCode(ctx, cbRes.Code, redirectURI, httpClient)
+	tokenResp, errToken := authSvc.ExchangeCodeForTokens(ctx, cbRes.Code, redirectURI, state, pkceCodes)
 	if errToken != nil {
 		return nil, fmt.Errorf("antigravity: token exchange failed: %w", errToken)
 	}
 
 	email := ""
 	if tokenResp.AccessToken != "" {
-		if info, errInfo := fetchAntigravityUserInfo(ctx, tokenResp.AccessToken, httpClient); errInfo == nil && strings.TrimSpace(info.Email) != "" {
-			email = strings.TrimSpace(info.Email)
+		if fetched, errInfo := authSvc.FetchUserInfo(ctx, tokenResp.AccessToken); errInfo == nil && strings.TrimSpace(fetched) != "" {
+			email = strings.TrimSpace(fetched)
 		}
 	}
 
@@ -294,92 +290,6 @@ func startAntigravityCallbackServer(port int) (*http.Server, int, <-chan callbac
 	return srv, port, resultCh, nil
 }
 
-type antigravityTokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int64  `json:"expires_in"`
-	TokenType    string `json:"token_type"`
-}
-
-func exchangeAntigravityCode(ctx context.Context, code, redirectURI string, httpClient *http.Client) (*antigravityTokenResponse, error) {
-	data := url.Values{}
-	data.Set("code", code)
-	data.Set("client_id", antigravityClientID)
-	data.Set("client_secret", antigravityClientSecret)
-	data.Set("redirect_uri", redirectURI)
-	data.Set("grant_type", "authorization_code")
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, errDo := httpClient.Do(req)
-	if errDo != nil {
-		return nil, errDo
-	}
-	defer func() {
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("antigravity token exchange: close body error: %v", errClose)
-		}
-	}()
-
-	var token antigravityTokenResponse
-	if errDecode := json.NewDecoder(resp.Body).Decode(&token); errDecode != nil {
-		return nil, errDecode
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("oauth token exchange failed: status %d", resp.StatusCode)
-	}
-	return &token, nil
-}
-
-type antigravityUserInfo struct {
-	Email string `json:"email"`
-}
-
-func fetchAntigravityUserInfo(ctx context.Context, accessToken string, httpClient *http.Client) (*antigravityUserInfo, error) {
-	if strings.TrimSpace(accessToken) == "" {
-		return &antigravityUserInfo{}, nil
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v1/userinfo?alt=json", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	resp, errDo := httpClient.Do(req)
-	if errDo != nil {
-		return nil, errDo
-	}
-	defer func() {
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("antigravity userinfo: close body error: %v", errClose)
-		}
-	}()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return &antigravityUserInfo{}, nil
-	}
-	var info antigravityUserInfo
-	if errDecode := json.NewDecoder(resp.Body).Decode(&info); errDecode != nil {
-		return nil, errDecode
-	}
-	return &info, nil
-}
-
-func buildAntigravityAuthURL(redirectURI, state string) string {
-	params := url.Values{}
-	params.Set("access_type", "offline")
-	params.Set("client_id", antigravityClientID)
-	params.Set("prompt", "consent")
-	params.Set("redirect_uri", redirectURI)
-	params.Set("response_type", "code")
-	params.Set("scope", strings.Join(antigravityScopes, " "))
-	params.Set("state", state)
-	return "https://accounts.google.com/o/oauth2/v2/auth?" + params.Encode()
-}
 
 func sanitizeAntigravityFileName(email string) string {
 	if strings.TrimSpace(email) == "" {
