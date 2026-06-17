@@ -2567,7 +2567,14 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 
 	authSvc := antigravity.NewAntigravityAuth(h.cfg, nil)
 
-	state, errState := misc.GenerateRandomState()
+	pkceCodes, errPKCE := antigravity.GeneratePKCECodes()
+	if errPKCE != nil {
+		log.Errorf("Failed to generate antigravity PKCE codes: %v", errPKCE)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
+		return
+	}
+
+	state, errState := antigravity.EncodeAntigravityState(pkceCodes.CodeVerifier, "")
 	if errState != nil {
 		log.Errorf("Failed to generate state parameter: %v", errState)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
@@ -2575,7 +2582,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 	}
 
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
-	authURL := authSvc.BuildAuthURL(state, redirectURI)
+	authURL := authSvc.BuildAuthURL(state, redirectURI, pkceCodes)
 
 	RegisterOAuthSession(state, "antigravity")
 
@@ -2638,7 +2645,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		tokenResp, errToken := authSvc.ExchangeCodeForTokens(ctx, authCode, redirectURI)
+		tokenResp, errToken := authSvc.ExchangeCodeForTokens(ctx, authCode, redirectURI, state, nil)
 		if errToken != nil {
 			log.Errorf("Failed to exchange token: %v", errToken)
 			SetOAuthSessionError(state, "Failed to exchange token")
