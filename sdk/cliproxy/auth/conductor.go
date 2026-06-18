@@ -1476,10 +1476,29 @@ func (m *Manager) authSupportsExplicitOAuthAliasWithoutRegistry(registryRef *reg
 	if authID == "" {
 		return false
 	}
+	// Attempt to resolve the route model via the OAuth alias table first.
+	// Even if the auth has registered models, the route model may be a cross-provider
+	// alias (e.g., "higher-coding") that resolves to one of this auth's models.
+	oauthResolved := strings.TrimSpace(m.resolveOAuthUpstreamModel(auth, routeModel))
+	if oauthResolved != "" {
+		providerKey := effectiveProviderKey(auth)
+		if providerKey != "" {
+			providers := util.GetProviderName(strings.TrimSpace(thinking.ParseSuffix(oauthResolved).ModelName))
+			if len(providers) == 0 {
+				providers = util.GetProviderName(oauthResolved)
+			}
+			for _, provider := range providers {
+				if strings.EqualFold(strings.TrimSpace(provider), providerKey) {
+					return true
+				}
+			}
+		}
+	}
+	// If the auth has no registered models, fall back to the original check:
+	// see if the route model resolves to any known provider.
 	if models := registryRef.GetModelsForClient(authID); len(models) > 0 {
 		return false
 	}
-	oauthResolved := strings.TrimSpace(m.resolveOAuthUpstreamModel(auth, routeModel))
 	if oauthResolved == "" {
 		return false
 	}
