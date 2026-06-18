@@ -22,11 +22,13 @@ import (
 
 // OAuth configuration constants for Claude/Anthropic
 const (
-	AuthURL              = "https://claude.ai/oauth/authorize"
+	AuthURL              = "https://claude.com/cai/oauth/authorize"
 	PlatformConsoleAuthURL = "https://platform.claude.com/oauth/authorize"
-	TokenURL             = "https://api.anthropic.com/v1/oauth/token"
+	TokenURL             = "https://platform.claude.com/v1/oauth/token"
 	ClientID             = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	RedirectURI          = "http://localhost:54545/callback"
+	ClaudeUserAgent      = "axios/1.15.2"
+	RefreshScope         = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 
 	claudeRefreshMinBackoff = 5 * time.Second
 	claudeRefreshMaxBackoff = 5 * time.Minute
@@ -303,7 +305,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("User-Agent", "axios/1.13.6")
+	req.Header.Set("User-Agent", ClaudeUserAgent)
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
@@ -397,6 +399,7 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 		"client_id":     ClientID,
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
+		"scope":         RefreshScope,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -447,11 +450,17 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 	}
 
 	// Create token data
+	// Reference: if refresh response doesn't include new refresh_token, keep the original one
+	effectiveRefreshToken := refreshToken
+	if tokenResp.RefreshToken != "" {
+		effectiveRefreshToken = tokenResp.RefreshToken
+	}
+
 	clearClaudeRefreshBlockedUntil(refreshToken)
 
 	return &ClaudeTokenData{
 		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
+		RefreshToken: effectiveRefreshToken,
 		Email:        tokenResp.Account.EmailAddress,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}, nil

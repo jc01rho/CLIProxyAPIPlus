@@ -1585,10 +1585,23 @@ func configModelAliasKeysMatchingUpstream[T interface {
 	seen := make(map[string]struct{})
 	for i := range models {
 		nameKey := canonicalModelKey(models[i].GetName())
-		if _, ok := targetSet[nameKey]; !ok {
+		aliasKey := canonicalModelKey(models[i].GetAlias())
+		// Match by name OR alias against the target set.
+		// When the route model is an alias (e.g., "higher-coding"),
+		// name ("qwen3.7-plus") won't match — alias must be checked too.
+		matched := false
+		if _, ok := targetSet[nameKey]; ok {
+			matched = true
+		}
+		if !matched && aliasKey != "" {
+			if _, ok := targetSet[aliasKey]; ok {
+				matched = true
+			}
+		}
+		if !matched {
 			continue
 		}
-		registryKey := canonicalModelKey(models[i].GetAlias())
+		registryKey := aliasKey
 		if registryKey == "" {
 			registryKey = nameKey
 		}
