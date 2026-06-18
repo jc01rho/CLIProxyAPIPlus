@@ -4959,8 +4959,15 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if providerKey == "" {
 			continue
 		}
-		if _, ok := providerSet[providerKey]; !ok {
-			continue
+		// For weight-robin selector, allow ALL provider keys (wildcard).
+		// Weight-robin distributes across ALL priorities by weight, not by provider.
+		if len(providerSet) > 0 {
+			// Only apply providerSet filtering for non-weight-robin selector modes
+			if _, isWeightedRobin := unwrapWeightedRobin(m.selector); !isWeightedRobin {
+				if _, ok := providerSet[providerKey]; !ok {
+					continue
+				}
+			}
 		}
 		if _, used := tried[candidate.ID]; used {
 			continue
