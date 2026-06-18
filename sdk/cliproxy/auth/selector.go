@@ -218,7 +218,6 @@ func (e *modelCooldownError) Headers() http.Header {
 
 const (
 	primaryPriorityBonus = 1_000_000
-	maxAuthWeight        = 100
 )
 
 func authPriority(auth *Auth) int {
@@ -237,13 +236,7 @@ func authPriority(auth *Auth) int {
 	if basePriority < 0 {
 		basePriority = 0
 	}
-	if basePriority > maxAuthWeight {
-		basePriority = maxAuthWeight
-	}
 	if auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
-		if basePriority > maxAuthWeight-primaryPriorityBonus {
-			return maxAuthWeight
-		}
 		return basePriority + primaryPriorityBonus
 	}
 	return basePriority
@@ -656,9 +649,6 @@ func authWeight(a *Auth) int {
 	w := authPriority(a)
 	if w <= 0 {
 		return 1
-	}
-	if w > maxAuthWeight {
-		return maxAuthWeight
 	}
 	return w
 }
