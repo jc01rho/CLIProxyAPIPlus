@@ -576,7 +576,7 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available after LRU eviction"}
 	}
 
-	cycleKey := canonicalModelKey(model) + "::" + provider
+	cycleKey := canonicalModelKey(model)
 	if s.cycles == nil {
 		s.cycles = make(map[string]*aliasCycle)
 	}
@@ -782,9 +782,6 @@ func (s *WeightedRobinSelector) QueueState(provider, model string, allAuths []*A
 	defer s.mu.Unlock()
 
 	cycleKey := canonicalModelKey(model)
-	if cycleKey != "" && strings.TrimSpace(provider) != "" {
-		cycleKey = cycleKey + "::" + strings.TrimSpace(provider)
-	}
 
 	// If model is empty, don't create a meaningless cycle.
 	// Return entries only (no cycle) so frontend shows available auths without fake cycle.
