@@ -33,6 +33,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -1344,31 +1345,46 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 	if authID == "" {
 		authID = path
 	}
-	attr := map[string]string{
-		"path":   path,
-		"source": path,
-	}
-	// Extract billing_class from metadata and normalize (underscore -> hyphen)
-	if bv, ok := metadata["billing_class"].(string); ok {
-		if normalized := normalizeBillingClassValue(bv); normalized != "" {
-			attr["billing_class"] = normalized
+	auth := (*coreauth.Auth)(nil)
+	if h != nil && h.cfg != nil {
+		sctx := &synthesizer.SynthesisContext{
+			Config:      h.cfg,
+			AuthDir:     h.cfg.AuthDir,
+			Now:         time.Now(),
+			IDGenerator: synthesizer.NewStableIDGenerator(),
 		}
-	} else if bv, ok := metadata["billing-class"].(string); ok {
-		if normalized := normalizeBillingClassValue(bv); normalized != "" {
-			attr["billing_class"] = normalized
+		if generated := synthesizer.SynthesizeAuthFile(sctx, path, data); len(generated) > 0 && generated[0] != nil {
+			auth = generated[0].Clone()
 		}
 	}
-	auth := &coreauth.Auth{
-		ID:         authID,
-		Provider:   provider,
-		FileName:   filepath.Base(path),
-		Label:      label,
-		Status:     coreauth.StatusActive,
-		Attributes: attr,
-		Metadata:   metadata,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+	if auth == nil {
+		attrs := map[string]string{
+			"path":   path,
+			"source": path,
+		}
+		if bv, ok := metadata["billing_class"].(string); ok {
+			if normalized := normalizeBillingClassValue(bv); normalized != "" {
+				attrs["billing_class"] = normalized
+			}
+		} else if bv, ok := metadata["billing-class"].(string); ok {
+			if normalized := normalizeBillingClassValue(bv); normalized != "" {
+				attrs["billing_class"] = normalized
+			}
+		}
+		auth = &coreauth.Auth{
+			ID:         authID,
+			Provider:   provider,
+			FileName:   filepath.Base(path),
+			Label:      label,
+			Status:     coreauth.StatusActive,
+			Attributes: attrs,
+			Metadata:   metadata,
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
+		}
 	}
+	auth.ID = authID
+	auth.FileName = filepath.Base(path)
 	if hasLastRefresh {
 		auth.LastRefreshedAt = lastRefresh
 	}
