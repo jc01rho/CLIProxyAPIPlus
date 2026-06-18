@@ -106,6 +106,7 @@ func (o *CodexAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string,
 		"prompt":                     {"login"},
 		"id_token_add_organizations": {"true"},
 		"codex_cli_simplified_flow":  {"true"},
+		"originator":                 {"opencode"},
 	}
 
 	authURL := fmt.Sprintf("%s?%s", o.authEndpoint(), params.Encode())
@@ -239,7 +240,6 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 		"client_id":     {ClientID},
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
-		"scope":         {"openid profile email"},
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", o.tokenEndpoint(true), strings.NewReader(data.Encode()))
