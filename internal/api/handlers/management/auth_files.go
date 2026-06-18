@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	agyproject "github.com/router-for-me/CLIProxyAPI/v7/internal/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
@@ -2684,10 +2685,16 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		}
 
 		now := time.Now()
+		// Reference (cortexkit/antigravity-auth): store refresh_token as `${refreshToken}|${projectId}`
+		// so project context survives across token refresh cycles.
+		refreshStored := agyproject.FormatRefreshParts(agyproject.RefreshParts{
+			RefreshToken: tokenResp.RefreshToken,
+			ProjectID:    projectID,
+		})
 		metadata := map[string]any{
 			"type":          "antigravity",
 			"access_token":  tokenResp.AccessToken,
-			"refresh_token": tokenResp.RefreshToken,
+			"refresh_token": refreshStored,
 			"expires_in":    tokenResp.ExpiresIn,
 			"timestamp":     now.UnixMilli(),
 			"expired":       now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),

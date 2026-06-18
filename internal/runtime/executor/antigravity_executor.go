@@ -2035,11 +2035,19 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 }
 
 func (e *AntigravityExecutor) refreshTokenSingleFlight(ctx context.Context, auth *cliproxyauth.Auth, refreshToken string) (*antigravityTokenRefreshData, error) {
+	// Extract raw refresh token from combined format (refreshToken|projectId|managedProjectId).
+	// Google OAuth expects only the raw token, not the combined format.
+	parts := antigravity.ParseRefreshParts(refreshToken)
+	rawToken := parts.RefreshToken
+	if rawToken == "" {
+		rawToken = refreshToken // fallback for legacy plain tokens
+	}
+
 	form := url.Values{}
 	form.Set("client_id", antigravityClientID)
 	form.Set("client_secret", antigravityClientSecret)
 	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
+	form.Set("refresh_token", rawToken)
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(form.Encode()))
 	if errReq != nil {
