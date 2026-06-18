@@ -603,6 +603,9 @@ type ClaudeKey struct {
 	// APIKey is the authentication key for accessing Claude API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Comment is an optional free-form note for this credential (display only).
+	Comment string `yaml:"comment,omitempty" json:"comment,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
@@ -661,6 +664,9 @@ type CodexKey struct {
 	// APIKey is the authentication key for accessing Codex API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Comment is an optional free-form note for this credential (display only).
+	Comment string `yaml:"comment,omitempty" json:"comment,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
@@ -714,6 +720,9 @@ type CommandCodeKey struct {
 	// APIKey is the authentication key for accessing CommandCode API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Comment is an optional free-form note for this credential (display only).
+	Comment string `yaml:"comment,omitempty" json:"comment,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
@@ -762,6 +771,9 @@ func (m CommandCodeModel) GetAlias() string { return m.Alias }
 type MistralKey struct {
 	// APIKey is the authentication key for accessing Mistral API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Comment is an optional free-form note for this credential (display only).
+	Comment string `yaml:"comment,omitempty" json:"comment,omitempty"`
 
 	// Priority controls selection preference when multiple credentials match.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
@@ -813,6 +825,9 @@ type GeminiKey struct {
 	// APIKey is the authentication key for accessing Gemini API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Comment is an optional free-form note for this credential (display only).
+	Comment string `yaml:"comment,omitempty" json:"comment,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
@@ -863,6 +878,9 @@ type KiroKey struct {
 
 	// AccessToken is the OAuth access token for direct configuration.
 	AccessToken string `yaml:"access-token,omitempty" json:"access-token,omitempty"`
+
+	// Comment is an optional free-form note for this credential (display only).
+	Comment string `yaml:"comment,omitempty" json:"comment,omitempty"`
 
 	// RefreshToken is the OAuth refresh token for token renewal.
 	RefreshToken string `yaml:"refresh-token,omitempty" json:"refresh-token,omitempty"`
@@ -925,6 +943,9 @@ type OpenAICompatibility struct {
 
 	// APIKeyEntries defines API keys with optional per-key proxy configuration.
 	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
+
+	// Comment is an optional free-form note for this credential (display only).
+	Comment string `yaml:"comment,omitempty" json:"comment,omitempty"`
 
 	// Models defines the model configurations including aliases for routing.
 	Models []OpenAICompatibilityModel `yaml:"models" json:"models"`
