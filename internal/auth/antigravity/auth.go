@@ -219,7 +219,7 @@ func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redir
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8")
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
-	req.Header.Set("User-Agent", o.shortUserAgent())
+	req.Header.Set("User-Agent", GeminicliUserAgent)
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
@@ -261,7 +261,7 @@ func (o *AntigravityAuth) FetchUserInfo(ctx context.Context, accessToken string)
 		return "", fmt.Errorf("antigravity userinfo: create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("User-Agent", o.shortUserAgent())
+	req.Header.Set("User-Agent", GeminicliUserAgent)
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
