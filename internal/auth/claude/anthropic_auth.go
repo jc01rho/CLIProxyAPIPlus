@@ -208,7 +208,27 @@ func (o *ClaudeAuth) tokenEndpoint(forRefresh bool) string {
 	return TokenURL
 }
 
-// GenerateAuthURL creates the OAuth authorization URL with PKCE.
+// AnthropicAuthMode represents the OAuth authorization mode for Anthropic Claude.
+type AnthropicAuthMode string
+
+const (
+	// AnthropicAuthModeMax uses the claude.com/cai OAuth endpoint (for Max plan users).
+	AnthropicAuthModeMax AnthropicAuthMode = "max"
+	// AnthropicAuthModeConsole uses the platform.claude.com OAuth endpoint (for Console/API plan users).
+	AnthropicAuthModeConsole AnthropicAuthMode = "console"
+)
+
+// authEndpointForMode returns the authorization endpoint for the given mode.
+func authEndpointForMode(mode AnthropicAuthMode) string {
+	switch mode {
+	case AnthropicAuthModeConsole:
+		return PlatformConsoleAuthURL
+	default:
+		return AuthURL
+	}
+}
+
+// GenerateAuthURL creates the OAuth authorization URL with PKCE using the default (max) mode.
 // This method generates a secure authorization URL including PKCE challenge codes
 // for the OAuth2 flow with Anthropic's API.
 //
@@ -221,8 +241,33 @@ func (o *ClaudeAuth) tokenEndpoint(forRefresh bool) string {
 //   - string: The state parameter for verification
 //   - error: An error if PKCE codes are missing or URL generation fails
 func (o *ClaudeAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string, string, error) {
+	return o.GenerateAuthURLWithMode(state, pkceCodes, AnthropicAuthModeMax)
+}
+
+// GenerateAuthURLWithMode creates the OAuth authorization URL with PKCE for the specified mode.
+// This method generates a secure authorization URL including PKCE challenge codes
+// for the OAuth2 flow with Anthropic's API, using the appropriate authorization endpoint
+// based on the user's subscription type.
+//
+// Parameters:
+//   - state: A random state parameter for CSRF protection
+//   - pkceCodes: The PKCE codes for secure code exchange
+//   - mode: The authorization mode (AnthropicAuthModeMax or AnthropicAuthModeConsole)
+//
+// Returns:
+//   - string: The complete authorization URL
+//   - string: The state parameter for verification
+//   - error: An error if PKCE codes are missing or URL generation fails
+func (o *ClaudeAuth) GenerateAuthURLWithMode(state string, pkceCodes *PKCECodes, mode AnthropicAuthMode) (string, string, error) {
 	if pkceCodes == nil {
 		return "", "", fmt.Errorf("PKCE codes are required")
+	}
+
+	// Use config override if available, otherwise use mode-based endpoint
+	authEndpoint := o.authEndpoint()
+	if authEndpoint == AuthURL || authEndpoint == PlatformConsoleAuthURL {
+		// No override, use mode-specific endpoint
+		authEndpoint = authEndpointForMode(mode)
 	}
 
 	params := url.Values{
@@ -236,7 +281,7 @@ func (o *ClaudeAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string
 		"state":                 {state},
 	}
 
-	authURL := fmt.Sprintf("%s?%s", o.authEndpoint(), params.Encode())
+	authURL := fmt.Sprintf("%s?%s", authEndpoint, params.Encode())
 	return authURL, state, nil
 }
 
