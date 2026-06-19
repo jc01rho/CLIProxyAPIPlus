@@ -187,7 +187,7 @@ waitForCallback:
 		}
 	}
 
-	// Fetch project ID via loadCodeAssist (same approach as Gemini CLI)
+	// Fetch project ID via loadCodeAssist.
 	projectID := ""
 	tierID := "unknown"
 	tierName := "Unknown"
