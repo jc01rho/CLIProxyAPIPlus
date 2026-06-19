@@ -2358,3 +2358,33 @@ func TestRestoreClaudeOAuthToolNamesFromStreamLine_MixedCaseWithPrefix(t *testin
 		t.Fatalf("Glob should be restored to glob, got: %s", string(out))
 	}
 }
+
+func TestStripTrailingClaudeAssistantMessages(t *testing.T) {
+	// Trailing assistant messages must be popped until the last is a user message.
+	in := []byte(`{"messages":[` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":"a1"},` +
+		`{"role":"user","content":"more"},` +
+		`{"role":"assistant","content":"a2"},` +
+		`{"role":"assistant","content":"a3"}` +
+		`]}`)
+	out := stripTrailingClaudeAssistantMessages(in)
+	msgs := gjson.GetBytes(out, "messages").Array()
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages after strip, got %d: %s", len(msgs), string(out))
+	}
+	if role := msgs[len(msgs)-1].Get("role").String(); role != "user" {
+		t.Fatalf("last message role = %q, want user", role)
+	}
+	if msgs[2].Get("content").String() != "more" {
+		t.Fatalf("expected last kept message to be the user 'more' turn: %s", string(out))
+	}
+}
+
+func TestStripTrailingClaudeAssistantMessages_NoTrailingAssistant(t *testing.T) {
+	in := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"a"},{"role":"user","content":"bye"}]}`)
+	out := stripTrailingClaudeAssistantMessages(in)
+	if len(gjson.GetBytes(out, "messages").Array()) != 3 {
+		t.Fatalf("no trailing assistant: messages must be unchanged: %s", string(out))
+	}
+}

@@ -262,6 +262,10 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	oauthToken := isClaudeOAuthToken(apiKey)
 	var oauthToolNamesReverseMap map[string]string
 	if oauthToken {
+		// Strip trailing assistant messages first (cortexkit/anthropic-auth parity).
+		// Anthropic rejects assistant-message prefill on Claude Code OAuth models:
+		// "the conversation must end with a user message".
+		bodyForUpstream = stripTrailingClaudeAssistantMessages(bodyForUpstream)
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
@@ -450,6 +454,10 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	oauthToken := isClaudeOAuthToken(apiKey)
 	var oauthToolNamesReverseMap map[string]string
 	if oauthToken {
+		// Strip trailing assistant messages first (cortexkit/anthropic-auth parity).
+		// Anthropic rejects assistant-message prefill on Claude Code OAuth models:
+		// "the conversation must end with a user message".
+		bodyForUpstream = stripTrailingClaudeAssistantMessages(bodyForUpstream)
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
@@ -1146,6 +1154,35 @@ func prepareClaudeOAuthToolNamesForUpstream(body []byte, prefix string, prefixDi
 		body = applyClaudeToolPrefix(body, prefix, reverseMap)
 	}
 	return body, reverseMap
+}
+
+// stripTrailingClaudeAssistantMessages removes trailing assistant messages from
+// the request body, mirroring cortexkit/anthropic-auth stripTrailingAssistantMessages.
+// Anthropic rejects assistant-message prefill on Claude Code OAuth models with
+// "the conversation must end with a user message"; a resumed/compacted session can
+// end on an assistant turn (e.g. after a failed tool round), so pop those.
+func stripTrailingClaudeAssistantMessages(body []byte) []byte {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return body
+	}
+	arr := messages.Array()
+	n := len(arr)
+	for n > 0 && arr[n-1].Get("role").String() == "assistant" {
+		n--
+	}
+	if n == len(arr) {
+		return body
+	}
+	kept := "[]"
+	for i := 0; i < n; i++ {
+		kept, _ = sjson.SetRaw(kept, "-1", arr[i].Raw)
+	}
+	out, err := sjson.SetRawBytes(body, "messages", []byte(kept))
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // upperFirstToolName uppercases the first character of a tool name, mirroring
