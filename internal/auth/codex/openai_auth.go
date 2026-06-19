@@ -103,7 +103,6 @@ func (o *CodexAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string,
 		"state":                      {state},
 		"code_challenge":             {pkceCodes.CodeChallenge},
 		"code_challenge_method":      {"S256"},
-		"prompt":                     {"login"},
 		"id_token_add_organizations": {"true"},
 		"codex_cli_simplified_flow":  {"true"},
 		"originator":                 {"opencode"},
@@ -111,6 +110,23 @@ func (o *CodexAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string,
 
 	authURL := fmt.Sprintf("%s?%s", o.authEndpoint(), params.Encode())
 	return authURL, nil
+}
+
+// extractAccountIDAndEmail parses an ID token and returns the account ID and email.
+// Returns empty strings when the token is missing or unparseable.
+func extractAccountIDAndEmail(idToken string) (accountID, email string) {
+	if idToken == "" {
+		return "", ""
+	}
+	claims, err := ParseJWTToken(idToken)
+	if err != nil {
+		log.Warnf("Failed to parse ID token: %v", err)
+		return "", ""
+	}
+	if claims == nil {
+		return "", ""
+	}
+	return claims.GetAccountID(), claims.GetUserEmail()
 }
 
 // ExchangeCodeForTokens exchanges an authorization code for access and refresh tokens.
@@ -146,7 +162,6 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
@@ -179,17 +194,13 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 		return nil, fmt.Errorf("failed to parse token response: %w", err)
 	}
 
-	// Extract account ID from ID token
-	claims, err := ParseJWTToken(tokenResp.IDToken)
-	if err != nil {
-		log.Warnf("Failed to parse ID token: %v", err)
-	}
+	accountID, email := extractAccountIDAndEmail(tokenResp.IDToken)
 
-	accountID := ""
-	email := ""
-	if claims != nil {
-		accountID = claims.GetAccountID()
-		email = claims.GetUserEmail()
+	if accountID == "" && tokenResp.AccessToken != "" {
+		// Fallback: try to extract account ID from access token
+		if claims, err := ParseJWTToken(tokenResp.AccessToken); err == nil && claims != nil {
+			accountID = claims.GetAccountID()
+		}
 	}
 
 	// Create token data
@@ -248,7 +259,6 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
@@ -291,7 +301,7 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 	email := ""
 	if claims != nil {
 		accountID = claims.GetAccountID()
-		email = claims.Email
+		email = claims.GetUserEmail()
 	}
 
 	return &CodexTokenData{
