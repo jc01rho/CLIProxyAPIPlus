@@ -130,7 +130,7 @@ func fetchClaudeCodeAccountUUID(ctx context.Context, accessToken, model string) 
 	url := claudeCodeBootstrapURL
 	
 	// Build query parameters
-	query := url + "?entrypoint=sdk-cli"
+	query := url + "?entrypoint=cli"
 	if model != "" {
 		query += "&model=" + model
 	}
@@ -145,7 +145,7 @@ func fetchClaudeCodeAccountUUID(ctx context.Context, accessToken, model string) 
 	req.Header.Set("authorization", "Bearer "+accessToken)
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	req.Header.Set("user-agent", "claude-code/2.1.141")
+	req.Header.Set("user-agent", "claude-code/2.1.177")
 
 	client := &http.Client{Timeout: claudeCodeBootstrapTimeout}
 	resp, err := client.Do(req)

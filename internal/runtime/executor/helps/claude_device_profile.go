@@ -20,7 +20,9 @@ import (
 )
 
 const (
-	defaultClaudeFingerprintUserAgent      = "claude-cli/2.1.141 (external, sdk-cli)"
+	// Fingerprint constants mirror cortexkit/anthropic-auth constants.ts
+	// (CLAUDE_CODE_VERSION 2.1.177, ENTRYPOINT cli, BUILD_HASH 3bf).
+	defaultClaudeFingerprintUserAgent      = "claude-cli/2.1.177 (external, cli)"
 	defaultClaudeFingerprintPackageVersion = "0.94.0"
 	defaultClaudeFingerprintRuntimeVersion = "v24.3.0"
 	defaultClaudeFingerprintOS             = "MacOS"
@@ -28,8 +30,8 @@ const (
 	claudeDeviceProfileTTL                 = 7 * 24 * time.Hour
 	claudeDeviceProfileLockTTL             = 5 * time.Second
 	claudeDeviceProfileCleanupPeriod       = time.Hour
-	claudeCodeEntrypoint                   = "sdk-cli"
-	claudeCodeBuildHash                    = "67b"
+	claudeCodeEntrypoint                   = "cli"
+	claudeCodeBuildHash                    = "3bf"
 )
 
 var (

@@ -25,14 +25,17 @@ const (
 	// BillingHeaderCCHPlaceholderPattern matches the placeholder cch=00000; in billing header
 	billingHeaderCCHPlaceholderPattern = `(?i)(x-anthropic-billing-header: cc_version=[^;"]+; cc_entrypoint=[^;"]+; )cch=00000;`
 
-	// DefaultClaudeCodeVersion is the version used by Claude Code
-	DefaultClaudeCodeVersion = "2.1.141"
+	// DefaultClaudeCodeVersion is the version used by Claude Code.
+	// Mirrors cortexkit/anthropic-auth constants.ts CLAUDE_CODE_VERSION.
+	DefaultClaudeCodeVersion = "2.1.177"
 
-	// DefaultClaudeCodeBuildHash is the build hash for the default version
-	DefaultClaudeCodeBuildHash = "67b"
+	// DefaultClaudeCodeBuildHash is the build hash for the default version.
+	// Mirrors cortexkit/anthropic-auth constants.ts CLAUDE_CODE_BUILD_HASH.
+	DefaultClaudeCodeBuildHash = "3bf"
 
-	// DefaultClaudeCodeEntrypoint is the entrypoint used by Claude Code
-	DefaultClaudeCodeEntrypoint = "sdk-cli"
+	// DefaultClaudeCodeEntrypoint is the entrypoint used by Claude Code.
+	// Mirrors cortexkit/anthropic-auth constants.ts CLAUDE_CODE_ENTRYPOINT.
+	DefaultClaudeCodeEntrypoint = "cli"
 )
 
 var (
