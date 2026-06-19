@@ -224,6 +224,14 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 
+	// cortexkit/anthropic-auth parity: stripTrailingAssistantMessages is the FIRST
+	// transform in rewriteRequestBody, before billing/system/cache injection, so the
+	// cache_control breakpoints and signed body reflect the trimmed conversation.
+	// Anthropic rejects assistant-message prefill on Claude Code OAuth models.
+	if isClaudeOAuthToken(apiKey) {
+		body = stripTrailingClaudeAssistantMessages(body)
+	}
+
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
 	body, err = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
@@ -262,10 +270,8 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	oauthToken := isClaudeOAuthToken(apiKey)
 	var oauthToolNamesReverseMap map[string]string
 	if oauthToken {
-		// Strip trailing assistant messages first (cortexkit/anthropic-auth parity).
-		// Anthropic rejects assistant-message prefill on Claude Code OAuth models:
-		// "the conversation must end with a user message".
-		bodyForUpstream = stripTrailingClaudeAssistantMessages(bodyForUpstream)
+		// Trailing assistant messages already stripped before cloaking (top of the
+		// pipeline) to match cortexkit's transform order.
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
@@ -419,6 +425,14 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		return nil, err
 	}
 
+	// cortexkit/anthropic-auth parity: stripTrailingAssistantMessages is the FIRST
+	// transform in rewriteRequestBody, before billing/system/cache injection, so the
+	// cache_control breakpoints and signed body reflect the trimmed conversation.
+	// Anthropic rejects assistant-message prefill on Claude Code OAuth models.
+	if isClaudeOAuthToken(apiKey) {
+		body = stripTrailingClaudeAssistantMessages(body)
+	}
+
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
 	body, err = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
@@ -454,10 +468,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	oauthToken := isClaudeOAuthToken(apiKey)
 	var oauthToolNamesReverseMap map[string]string
 	if oauthToken {
-		// Strip trailing assistant messages first (cortexkit/anthropic-auth parity).
-		// Anthropic rejects assistant-message prefill on Claude Code OAuth models:
-		// "the conversation must end with a user message".
-		bodyForUpstream = stripTrailingClaudeAssistantMessages(bodyForUpstream)
+		// Trailing assistant messages already stripped before cloaking (top of the
+		// pipeline) to match cortexkit's transform order.
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
