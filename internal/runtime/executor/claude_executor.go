@@ -18,7 +18,8 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
-	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
+		"github.com/router-for-me/CLIProxyAPI/v7/internal/antigravity"
+claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -1847,11 +1848,21 @@ func computeFingerprint(messageText, version string) string {
 // generateBillingHeader creates the x-anthropic-billing-header text block that
 // real Claude Code prepends to every system prompt array.
 // Format: x-anthropic-billing-header: cc_version=<ver>.<build>; cc_entrypoint=<ep>; cch=<hash>; [cc_workload=<wl>;]
-func generateBillingHeader(payload []byte, experimentalCCHSigning bool, version, messageText, entrypoint, workload string) string {
+func generateBillingHeader(payload []byte, experimentalCCHSigning bool, oauthMode bool, version, messageText, entrypoint, workload string) string {
 	if entrypoint == "" {
 		entrypoint = "cli"
 	}
-	buildHash := computeFingerprint(messageText, version)
+	// OAuth (Claude Code masquerade): the build hash is VERSION-derived only,
+	// matching cortexkit/anthropic-auth computeVersionSuffix (fixed "3bf" for the
+	// pinned 2.1.177, else SHA256(version)[:3]). This keeps cc_version byte-identical
+	// to the reference wire body regardless of message content. The non-OAuth legacy
+	// path keeps the original message-derived fingerprint for backward compatibility.
+	var buildHash string
+	if oauthMode {
+		buildHash = antigravity.ComputeVersionSuffix(version)
+	} else {
+		buildHash = computeFingerprint(messageText, version)
+	}
 	workloadPart := ""
 	if workload != "" {
 		workloadPart = fmt.Sprintf(" cc_workload=%s;", workload)
@@ -1903,7 +1914,7 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, exp
 		return payload
 	}
 
-	billingText := generateBillingHeader(payload, experimentalCCHSigning, version, messageText, entrypoint, workload)
+	billingText := generateBillingHeader(payload, experimentalCCHSigning, oauthMode, version, messageText, entrypoint, workload)
 	billingBlock := buildTextBlock(billingText, nil)
 
 	// OAuth masquerade: match cortexkit/anthropic-auth prependClaudeCodeIdentity.
