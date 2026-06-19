@@ -182,20 +182,26 @@ func buildClaudeThinkingConfig(includeThoughts bool, thinkingBudget int) map[str
 	return result
 }
 
-// ensureClaudeMaxOutputTokens ensures maxOutputTokens is sufficient for Claude thinking models.
-// If thinking budget is set, max output must be larger than the budget.
+// ensureClaudeMaxOutputTokens ensures maxOutputTokens is sufficient for Claude
+// thinking models on the Antigravity proxy. It mirrors cortexkit/anthropic? no —
+// cortexkit antigravity-auth request.ts (1256-1266) for headerStyle="antigravity":
+//   - if no current max is set, pin maxOutputTokens to 64000 (the antigravity cap)
+//   - else if the current max is <= budget, scale via computeClaudeMaxOutputTokens
+// This package always runs in antigravity headerStyle, so the unset-max case pins 64000.
 func ensureClaudeMaxOutputTokens(generationConfig map[string]any, thinkingBudget int) {
 	if thinkingBudget <= 0 {
 		return
 	}
-	currentMax := 0
-	if v, ok := generationConfig["maxOutputTokens"].(int); ok {
-		currentMax = v
+	currentMax := intValue(generationConfig["maxOutputTokens"])
+	if currentMax == 0 {
+		currentMax = intValue(generationConfig["max_output_tokens"])
 	}
-	if v, ok := generationConfig["max_output_tokens"].(int); ok && currentMax == 0 {
-		currentMax = v
-	}
-	if currentMax == 0 || currentMax <= thinkingBudget {
+	switch {
+	case currentMax == 0:
+		// Antigravity headerStyle pins the cap to 64000 when the client sent no max.
+		generationConfig["maxOutputTokens"] = 64000
+		delete(generationConfig, "max_output_tokens")
+	case currentMax <= thinkingBudget:
 		generationConfig["maxOutputTokens"] = computeClaudeMaxOutputTokens(thinkingBudget)
 		delete(generationConfig, "max_output_tokens")
 	}
@@ -1287,19 +1293,13 @@ func BuildClaudeThinkingConfig(includeThoughts bool, thinkingBudget int) Thinkin
 	return ThinkingConfig(buildClaudeThinkingConfig(includeThoughts, thinkingBudget))
 }
 
-// EnsureClaudeMaxOutputTokens ensures maxOutputTokens exceeds the Claude thinking budget.
+// EnsureClaudeMaxOutputTokens is the exported wrapper for the antigravity-aware
+// ensureClaudeMaxOutputTokens (pins 64000 when no client max is set).
 func EnsureClaudeMaxOutputTokens(generationConfig map[string]any, thinkingBudget int) {
-	if thinkingBudget <= 0 || generationConfig == nil {
+	if generationConfig == nil {
 		return
 	}
-	currentMax := intValue(generationConfig["maxOutputTokens"])
-	if currentMax == 0 {
-		currentMax = intValue(generationConfig["max_output_tokens"])
-	}
-	if currentMax == 0 || currentMax <= thinkingBudget {
-		generationConfig["maxOutputTokens"] = computeClaudeMaxOutputTokens(thinkingBudget)
-		delete(generationConfig, "max_output_tokens")
-	}
+	ensureClaudeMaxOutputTokens(generationConfig, thinkingBudget)
 }
 
 // ConvertStopSequences converts generationConfig.stop_sequences to stopSequences.
