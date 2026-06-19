@@ -272,6 +272,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if oauthToken {
 		// Trailing assistant messages already stripped before cloaking (top of the
 		// pipeline) to match cortexkit's transform order.
+		// cortexkit/anthropic-auth (rewriteRequestBody:959-962): fast mode is not
+		// enabled for proxied requests, so a client-supplied speed:"fast" is removed.
+		bodyForUpstream = stripClaudeFastSpeed(bodyForUpstream)
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
@@ -470,6 +473,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if oauthToken {
 		// Trailing assistant messages already stripped before cloaking (top of the
 		// pipeline) to match cortexkit's transform order.
+		// cortexkit/anthropic-auth (rewriteRequestBody:959-962): fast mode is not
+		// enabled for proxied requests, so a client-supplied speed:"fast" is removed.
+		bodyForUpstream = stripClaudeFastSpeed(bodyForUpstream)
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
@@ -1197,6 +1203,39 @@ func stripTrailingClaudeAssistantMessages(body []byte) []byte {
 	return out
 }
 
+// stripClaudeFastSpeed removes a client-supplied speed:"fast" field, mirroring
+// cortexkit/anthropic-auth rewriteRequestBody (959-962): fast mode is not enabled
+// for proxied requests, so speed:"fast" must not reach the upstream.
+func stripClaudeFastSpeed(body []byte) []byte {
+	if gjson.GetBytes(body, "speed").String() != "fast" {
+		return body
+	}
+	out, err := sjson.DeleteBytes(body, "speed")
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// claudeMessagesHaveUserRole reports whether the request body has at least one
+// message with role "user", mirroring cortexkit's billing-header guard in
+// rewriteRequestBody (only inject billing when a user message exists).
+func claudeMessagesHaveUserRole(body []byte) bool {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+	found := false
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		if msg.Get("role").String() == "user" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // upperFirstToolName uppercases the first character of a tool name, mirroring
 // cortexkit/anthropic-auth prefixName(). Claude Code emits PascalCase tool names
 // (mcp_Bash, mcp_Read); lowercase names are flagged as non-Claude-Code clients.
@@ -1876,10 +1915,24 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, exp
 	if oauthMode {
 		withIdentity := prependClaudeCodeIdentityToSystem(payload)
 		identitySystem := gjson.GetBytes(withIdentity, "system")
-		systemResult := "[" + billingBlock
+		// cortexkit/anthropic-auth (rewriteRequestBody:919-922) only injects the
+		// billing header when the conversation has at least one user message;
+		// otherwise it prepends the identity block alone.
+		includeBilling := claudeMessagesHaveUserRole(withIdentity)
+		systemResult := "["
+		first := true
+		if includeBilling {
+			systemResult += billingBlock
+			first = false
+		}
 		if identitySystem.IsArray() {
 			identitySystem.ForEach(func(_, block gjson.Result) bool {
-				systemResult += "," + block.Raw
+				if first {
+					systemResult += block.Raw
+					first = false
+				} else {
+					systemResult += "," + block.Raw
+				}
 				return true
 			})
 		}

@@ -2429,3 +2429,28 @@ func TestPrependClaudeCodeIdentityToSystem_NoSystemAddsIdentityOnly(t *testing.T
 		t.Fatalf("missing system should yield single identity block: %s", string(out))
 	}
 }
+
+func TestStripClaudeFastSpeed(t *testing.T) {
+	if got := stripClaudeFastSpeed([]byte(`{"speed":"fast","model":"claude-3"}`)); gjson.GetBytes(got, "speed").Exists() {
+		t.Fatalf("speed:fast must be removed: %s", string(got))
+	}
+	if got := stripClaudeFastSpeed([]byte(`{"speed":"normal"}`)); gjson.GetBytes(got, "speed").String() != "normal" {
+		t.Fatalf("non-fast speed must be preserved: %s", string(got))
+	}
+	in := []byte(`{"model":"claude-3"}`)
+	if got := stripClaudeFastSpeed(in); !bytes.Equal(got, in) {
+		t.Fatalf("body without speed must be unchanged: %s", string(got))
+	}
+}
+
+func TestClaudeMessagesHaveUserRole(t *testing.T) {
+	if !claudeMessagesHaveUserRole([]byte(`{"messages":[{"role":"assistant","content":"a"},{"role":"user","content":"u"}]}`)) {
+		t.Fatal("expected user role detected")
+	}
+	if claudeMessagesHaveUserRole([]byte(`{"messages":[{"role":"assistant","content":"a"}]}`)) {
+		t.Fatal("expected no user role")
+	}
+	if claudeMessagesHaveUserRole([]byte(`{"model":"claude-3"}`)) {
+		t.Fatal("no messages array -> false")
+	}
+}
