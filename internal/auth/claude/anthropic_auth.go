@@ -322,19 +322,29 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	}
 	newCode, newState := o.parseCodeAndState(code)
 
-	// Prepare token exchange request
-	reqBody := map[string]interface{}{
-		"code":          newCode,
-		"state":         state,
-		"grant_type":    "authorization_code",
-		"client_id":     ClientID,
-		"redirect_uri":  RedirectURI,
-		"code_verifier": pkceCodes.CodeVerifier,
+	// Determine effective state: prefer parsed state from callback fragment.
+	effectiveState := state
+	if newState != "" {
+		effectiveState = newState
 	}
 
-	// Include state if present
-	if newState != "" {
-		reqBody["state"] = newState
+	// Prepare token exchange request.
+	// Field order mirrors cortexkit/anthropic-auth exchangeCode():
+	// code, state, grant_type, client_id, redirect_uri, code_verifier.
+	reqBody := struct {
+		Code         string `json:"code"`
+		State        string `json:"state"`
+		GrantType    string `json:"grant_type"`
+		ClientID     string `json:"client_id"`
+		RedirectURI  string `json:"redirect_uri"`
+		CodeVerifier string `json:"code_verifier"`
+	}{
+		Code:         newCode,
+		State:        effectiveState,
+		GrantType:    "authorization_code",
+		ClientID:     ClientID,
+		RedirectURI:  RedirectURI,
+		CodeVerifier: pkceCodes.CodeVerifier,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -440,11 +450,19 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 		}
 	}
 
-	reqBody := map[string]interface{}{
-		"client_id":     ClientID,
-		"grant_type":    "refresh_token",
-		"refresh_token": refreshToken,
-		"scope":         RefreshScope,
+	// Prepare refresh request.
+	// Field order mirrors cortexkit/anthropic-auth refreshClaudeOAuthToken():
+	// grant_type, refresh_token, client_id, scope.
+	reqBody := struct {
+		GrantType    string `json:"grant_type"`
+		RefreshToken string `json:"refresh_token"`
+		ClientID     string `json:"client_id"`
+		Scope        string `json:"scope"`
+	}{
+		GrantType:    "refresh_token",
+		RefreshToken: refreshToken,
+		ClientID:     ClientID,
+		Scope:        RefreshScope,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)

@@ -261,6 +261,10 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
+	// Reorder top-level body keys to match Claude Code's canonical field order
+	// (cortexkit/anthropic-auth parity). Runs before signing so the cch signature
+	// is computed over the final canonical wire bytes.
+	bodyForUpstream = orderClaudeCodeBody(bodyForUpstream)
 	// Enable cch signing by default for OAuth tokens (not just experimental flag).
 	// Claude Code always computes cch; missing or invalid cch is a detectable fingerprint.
 	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
@@ -449,6 +453,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
 		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
 	}
+	// Reorder top-level body keys to match Claude Code's canonical field order
+	// (cortexkit/anthropic-auth parity). Must run last so all prior mutations are captured.
+	bodyForUpstream = orderClaudeCodeBody(bodyForUpstream)
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
@@ -2484,6 +2491,60 @@ func injectSystemCacheControl(payload []byte) []byte {
 	}
 
 	return payload
+}
+
+// claudeCodeBodyFieldOrder mirrors cortexkit/anthropic-auth claude-code.ts BODY_FIELD_ORDER.
+// Anthropic's Claude Code client emits request body keys in this exact order; matching it
+// keeps the wire-level JSON byte-identical to the reference client for fingerprint parity.
+var claudeCodeBodyFieldOrder = []string{
+	"model",
+	"messages",
+	"system",
+	"tools",
+	"tool_choice",
+	"metadata",
+	"max_tokens",
+	"temperature",
+	"thinking",
+	"context_management",
+	"output_config",
+	"diagnostics",
+	"stream",
+	"speed",
+}
+
+// orderClaudeCodeBody reorders top-level JSON keys to match claudeCodeBodyFieldOrder,
+// appending any keys not in the canonical list afterwards (in their original order).
+// This mirrors orderClaudeCodeBody() in cortexkit/anthropic-auth.
+func orderClaudeCodeBody(body []byte) []byte {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return body
+	}
+
+	ordered := []byte("{}")
+	seen := make(map[string]bool)
+
+	// Emit canonical fields first, in reference order.
+	for _, key := range claudeCodeBodyFieldOrder {
+		if v := root.Get(key); v.Exists() {
+			ordered, _ = sjson.SetRawBytes(ordered, key, []byte(v.Raw))
+			seen[key] = true
+		}
+	}
+	// Append any remaining keys in their original insertion order.
+	root.ForEach(func(k, v gjson.Result) bool {
+		key := k.String()
+		if !seen[key] {
+			ordered, _ = sjson.SetRawBytes(ordered, key, []byte(v.Raw))
+		}
+		return true
+	})
+
+	return ordered
 }
 
 func ensureModelMaxTokens(body []byte, modelID string) []byte {
