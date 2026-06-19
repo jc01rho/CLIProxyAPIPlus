@@ -1855,6 +1855,30 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, exp
 	billingText := generateBillingHeader(payload, experimentalCCHSigning, version, messageText, entrypoint, workload)
 	billingBlock := buildTextBlock(billingText, nil)
 
+	// OAuth masquerade: match cortexkit/anthropic-auth prependClaudeCodeIdentity.
+	// Preserve the client's actual system prompt (only stripping OpenCode branding)
+	// and prepend a single Claude Code identity block, then unshift the billing
+	// header so the final layout is [billing, identity, ...sanitized client system].
+	// This mirrors the reference exactly and avoids the static-prompt replacement /
+	// first-user-message move used for non-OAuth clients below.
+	if oauthMode {
+		withIdentity := prependClaudeCodeIdentityToSystem(payload)
+		identitySystem := gjson.GetBytes(withIdentity, "system")
+		systemResult := "[" + billingBlock
+		if identitySystem.IsArray() {
+			identitySystem.ForEach(func(_, block gjson.Result) bool {
+				systemResult += "," + block.Raw
+				return true
+			})
+		}
+		systemResult += "]"
+		out, err := sjson.SetRawBytes(withIdentity, "system", []byte(systemResult))
+		if err != nil {
+			return withIdentity
+		}
+		return out
+	}
+
 	// Build system blocks matching real Claude Code structure.
 	// Important: Claude Code's internal cacheScope='org' does NOT serialize to
 	// scope='org' in the API request. Only scope='global' is sent explicitly.
