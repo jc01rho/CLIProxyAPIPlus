@@ -10,16 +10,18 @@ import (
 // Full-agent shape gets the most betas; structured-output gets a subset;
 // everything else gets the base set.
 
+// Field order and membership mirror cortexkit/anthropic-auth claude-code.ts exactly.
+// The anthropic-beta header is a comma-joined string, so ORDER is part of the wire format.
+
 var claudeCodeFullAgentBetas = []string{
-	"claude-code-20250219",
 	"oauth-2025-04-20",
 	"interleaved-thinking-2025-05-14",
+	"thinking-token-count-2026-05-13",
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
+	"claude-code-20250219",
 	"advisor-tool-2026-03-01",
 	"advanced-tool-use-2025-11-20",
-	"context-1m-2025-08-07",
-	"effort-2025-11-24",
 	"extended-cache-ttl-2025-04-11",
 	"cache-diagnosis-2026-04-07",
 }
@@ -27,6 +29,7 @@ var claudeCodeFullAgentBetas = []string{
 var claudeCodeStructuredOutputBetas = []string{
 	"oauth-2025-04-20",
 	"interleaved-thinking-2025-05-14",
+	"thinking-token-count-2026-05-13",
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"advisor-tool-2026-03-01",
@@ -37,9 +40,12 @@ var claudeCodeStructuredOutputBetas = []string{
 var claudeCodeBaseBetas = []string{
 	"oauth-2025-04-20",
 	"interleaved-thinking-2025-05-14",
+	"thinking-token-count-2026-05-13",
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"advisor-tool-2026-03-01",
+	"advanced-tool-use-2025-11-20",
+	"extended-cache-ttl-2025-04-11",
 	"cache-diagnosis-2026-04-07",
 }
 
@@ -91,18 +97,32 @@ func isFastMode(body []byte) bool {
 	return gjson.GetBytes(body, "speed").String() == "fast"
 }
 
-// hasFullAgentShape checks if the body has the full Claude Code agent shape:
-// tools, system, thinking, context_management, output_config, diagnostics.
+// hasFullAgentShape checks if the body has the full Claude Code agent shape.
+// Mirrors cortexkit/anthropic-auth hasFullAgentShape() exactly:
+//   - tools is a non-empty array
+//   - system is an array
+//   - thinking, context_management, output_config, diagnostics are objects
 func hasFullAgentShape(body []byte) bool {
 	if len(body) == 0 {
 		return false
 	}
-	return hasField(body, "tools") &&
-		hasField(body, "system") &&
-		hasField(body, "thinking") &&
-		hasField(body, "context_management") &&
-		hasField(body, "output_config") &&
-		hasField(body, "diagnostics")
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() || len(tools.Array()) == 0 {
+		return false
+	}
+	if !gjson.GetBytes(body, "system").IsArray() {
+		return false
+	}
+	return isJSONObject(body, "thinking") &&
+		isJSONObject(body, "context_management") &&
+		isJSONObject(body, "output_config") &&
+		isJSONObject(body, "diagnostics")
+}
+
+// isJSONObject reports whether the given top-level field is a JSON object.
+func isJSONObject(body []byte, field string) bool {
+	v := gjson.GetBytes(body, field)
+	return v.Exists() && v.IsObject()
 }
 
 // hasStructuredOutput checks if the body has output_config with json_schema format.
@@ -120,9 +140,4 @@ func hasStructuredOutput(body []byte) bool {
 		return false
 	}
 	return gjson.GetBytes(body, "output_config.format.type").String() == "json_schema"
-}
-
-// hasField checks if a JSON body has a non-null field at the top level.
-func hasField(body []byte, field string) bool {
-	return gjson.GetBytes(body, field).Exists()
 }

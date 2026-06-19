@@ -23,7 +23,7 @@ func TestAntigravityBuildRequest_SignsBillingHeaderCCH(t *testing.T) {
 	payload := []byte(`{
 		"request": {
 			"contents": [{"role":"user","parts":[{"text":"hi"}]}],
-			"systemInstruction": {"parts": [{"text":"x-anthropic-billing-header: cc_version=2.1.141.67b; cc_entrypoint=sdk-cli; cch=00000;"}]}
+			"systemInstruction": {"parts": [{"text":"x-anthropic-billing-header: cc_version=2.1.177.3bf; cc_entrypoint=cli; cch=00000;"}]}
 		}
 	}`)
 

@@ -1060,7 +1060,7 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		misc.EnsureHeader(r.Header, ginHeaders, "Anthropic-Dangerous-Direct-Browser-Access", "true")
 	}
 	misc.EnsureHeader(r.Header, ginHeaders, "X-App", "cli")
-	// Values below match Claude Code 2.1.141 / @anthropic-ai/sdk 0.94.0 (updated 2026-06-14).
+	// Values below match Claude Code 2.1.177 / @anthropic-ai/sdk 0.94.0 (cortexkit/anthropic-auth parity).
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Retry-Count", "0")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Runtime", "node")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Lang", "js")
@@ -1125,7 +1125,7 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 }
 
 func checkSystemInstructions(payload []byte) []byte {
-	return checkSystemInstructionsWithSigningMode(payload, false, false, false, "2.1.141", "", "")
+	return checkSystemInstructionsWithSigningMode(payload, false, false, false, "2.1.177", "", "")
 }
 
 func isClaudeOAuthToken(apiKey string) bool {
