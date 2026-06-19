@@ -35,8 +35,11 @@ import (
 )
 
 const (
-	codexUserAgent             = "codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)"
-	codexOriginator            = "codex-tui"
+	codexVersion               = "0.139.0"
+	codexUserAgent             = "codex_exec/" + codexVersion + " (Debian 12.0.0; aarch64) unknown (codex_exec; " + codexVersion + ")"
+	codexOriginator            = "codex_exec"
+	codexBetaFeatures          = "terminal_resize_reflow"
+	codexSandbox               = "seccomp"
 	codexDefaultImageToolModel = "gpt-image-2"
 )
 
@@ -825,6 +828,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body = normalizeCodexInstructions(body)
+	body = normalizeCodexTools(body)
+	body = ensureCodexParallelToolCalls(body)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
@@ -1737,6 +1742,125 @@ func normalizeCodexInstructions(body []byte) []byte {
 	if !instructions.Exists() || instructions.Type == gjson.Null {
 		body, _ = sjson.SetBytes(body, "instructions", "")
 	}
+	return body
+}
+
+// normalizeCodexTools applies Codex function-tool normalization to every tool in the
+// body's tools array, matching the cortexkit/openai-auth reference:
+//   - strips the JSON-Schema `$schema` dialect marker from function tool parameters
+//   - sets strict: false on function tools (matching Codex's default)
+//   - enforces Codex's function-tool key order: type, name, description, strict, parameters
+//
+// Non-function tools (image_generation, web_search, etc.) are passed through unchanged.
+func normalizeCodexTools(body []byte) []byte {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return body
+	}
+	arr := tools.Array()
+	if len(arr) == 0 {
+		return body
+	}
+	items := make([]string, 0, len(arr))
+	for _, tool := range arr {
+		if tool.Get("type").String() != "function" {
+			items = append(items, tool.Raw)
+			continue
+		}
+		items = append(items, normalizeCodexFunctionTool(tool))
+	}
+	updated, err := sjson.SetRawBytes(body, "tools", []byte("["+strings.Join(items, ",")+"]"))
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
+// normalizeCodexFunctionTool rebuilds a single function tool object with Codex's
+// canonical key order: type, name, description, strict, parameters, then any extras.
+// It strips `$schema` from parameters and defaults strict to false.
+func normalizeCodexFunctionTool(tool gjson.Result) string {
+	// Extract and clean parameters (strip $schema)
+	var paramsRaw string
+	if params := tool.Get("parameters"); params.Exists() {
+		paramsRaw = params.Raw
+		if params.Get("$schema").Exists() {
+			cleaned, err := sjson.DeleteBytes([]byte(params.Raw), "$schema")
+			if err == nil {
+				paramsRaw = string(cleaned)
+			}
+		}
+	}
+
+	// Rebuild tool with canonical key order
+	ordered := []byte("{}")
+	seen := make(map[string]bool)
+
+	if v := tool.Get("type"); v.Exists() {
+		ordered, _ = sjson.SetRawBytes(ordered, "type", []byte(v.Raw))
+		seen["type"] = true
+	}
+	if v := tool.Get("name"); v.Exists() {
+		ordered, _ = sjson.SetRawBytes(ordered, "name", []byte(v.Raw))
+		seen["name"] = true
+	}
+	if v := tool.Get("description"); v.Exists() {
+		ordered, _ = sjson.SetRawBytes(ordered, "description", []byte(v.Raw))
+		seen["description"] = true
+	}
+	if v := tool.Get("strict"); v.Exists() {
+		ordered, _ = sjson.SetRawBytes(ordered, "strict", []byte(v.Raw))
+	} else {
+		ordered, _ = sjson.SetBytes(ordered, "strict", false)
+	}
+	seen["strict"] = true
+	if paramsRaw != "" {
+		ordered, _ = sjson.SetRawBytes(ordered, "parameters", []byte(paramsRaw))
+	}
+	seen["parameters"] = true
+
+	// Append remaining keys in their original order
+	tool.ForEach(func(k, v gjson.Result) bool {
+		key := k.String()
+		if !seen[key] {
+			ordered, _ = sjson.SetRawBytes(ordered, key, []byte(v.Raw))
+		}
+		return true
+	})
+	return string(ordered)
+}
+
+// ensureCodexParallelToolCalls sets parallel_tool_calls to true if not already present,
+// matching Codex CLI's default behavior (parsed.parallel_tool_calls ??= true).
+func ensureCodexParallelToolCalls(body []byte) []byte {
+	if !gjson.GetBytes(body, "parallel_tool_calls").Exists() {
+		body, _ = sjson.SetBytes(body, "parallel_tool_calls", true)
+	}
+	return body
+}
+
+var codexCacheStabilizerToolJSON = []byte(`{"type":"web_search","external_web_access":false,"search_content_types":["text","image"]}`)
+
+// maybeInjectCodexCacheStabilizerTool injects a native web_search tool when the
+// request already carries tools, to flip the request onto OpenAI's STABLE prompt-cache
+// path. Function-only tool declarations land on a flaky best-effort cache; appending a
+// native tool type eliminates cache "cliffs" (cached_tokens dropping to 0).
+// Only injected when tools array is non-empty and no web_search tool already exists.
+func maybeInjectCodexCacheStabilizerTool(body []byte) []byte {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return body
+	}
+	arr := tools.Array()
+	if len(arr) == 0 {
+		return body
+	}
+	for _, t := range arr {
+		if t.Get("type").String() == "web_search" {
+			return body
+		}
+	}
+	body, _ = sjson.SetRawBytes(body, "tools.-1", codexCacheStabilizerToolJSON)
 	return body
 }
 
