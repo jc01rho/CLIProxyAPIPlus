@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/andybalholm/brotli"
 	"github.com/google/uuid"
@@ -43,7 +44,10 @@ type ClaudeExecutor struct {
 
 // claudeToolPrefix is empty to match real Claude Code behavior (no tool name prefix).
 // Previously "proxy_" was used but this is a detectable fingerprint difference.
-const claudeToolPrefix = ""
+// claudeToolPrefix matches cortexkit/anthropic-auth TOOL_PREFIX. Claude Code uses
+// PascalCase tool names with this prefix (e.g. mcp_Bash, mcp_Read); lowercase or
+// unprefixed names are flagged by Anthropic as non-Claude-Code clients.
+const claudeToolPrefix = "mcp_"
 
 func sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx context.Context, body []byte, baseModel string) []byte {
 	sanitized, report := sigcompat.SanitizeClaudeMessagesForClaudeUpstream(body, baseModel)
@@ -1139,27 +1143,45 @@ func isClaudeOAuthToken(apiKey string) bool {
 func prepareClaudeOAuthToolNamesForUpstream(body []byte, prefix string, prefixDisabled bool) ([]byte, map[string]string) {
 	body, reverseMap := remapOAuthToolNames(body)
 	if !prefixDisabled {
-		body = applyClaudeToolPrefix(body, prefix)
+		body = applyClaudeToolPrefix(body, prefix, reverseMap)
 	}
 	return body, reverseMap
+}
+
+// upperFirstToolName uppercases the first character of a tool name, mirroring
+// cortexkit/anthropic-auth prefixName(). Claude Code emits PascalCase tool names
+// (mcp_Bash, mcp_Read); lowercase names are flagged as non-Claude-Code clients.
+func upperFirstToolName(name string) string {
+	if name == "" {
+		return name
+	}
+	r := []rune(name)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
 }
 
 // restoreClaudeOAuthToolNamesFromResponse undoes the Claude OAuth tool-name
 // transforms for non-stream responses in reverse order.
 func restoreClaudeOAuthToolNamesFromResponse(body []byte, prefix string, prefixDisabled bool, reverseMap map[string]string) []byte {
+	// reverseMap is keyed on the final wire name (e.g. proxy_Glob -> glob), so it
+	// must run BEFORE prefix stripping. The strip pass is a fallback for any
+	// prefixed name the map does not cover.
+	body = reverseRemapOAuthToolNames(body, reverseMap)
 	if !prefixDisabled {
 		body = stripClaudeToolPrefixFromResponse(body, prefix)
 	}
-	return reverseRemapOAuthToolNames(body, reverseMap)
+	return body
 }
 
 // restoreClaudeOAuthToolNamesFromStreamLine undoes the Claude OAuth tool-name
 // transforms for SSE lines in reverse order.
 func restoreClaudeOAuthToolNamesFromStreamLine(line []byte, prefix string, prefixDisabled bool, reverseMap map[string]string) []byte {
+	// reverseMap is keyed on the final wire name; run it before prefix stripping.
+	line = reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
 	if !prefixDisabled {
 		line = stripClaudeToolPrefixFromStreamLine(line, prefix)
 	}
-	return reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
+	return line
 }
 
 // remapOAuthToolNames renames third-party tool names to Claude Code equivalents
@@ -1386,7 +1408,12 @@ func reverseRemapOAuthToolNamesFromStreamLine(line []byte, reverseMap map[string
 	return updated
 }
 
-func applyClaudeToolPrefix(body []byte, prefix string) []byte {
+// applyClaudeToolPrefix prefixes tool names with `prefix` and uppercases the first
+// character, matching cortexkit/anthropic-auth prefixName() (bash -> mcp_Bash).
+// Renames are recorded into reverseMap (prefixed -> original) so response handlers
+// can restore the client's original tool names. Built-in Anthropic tools
+// (web_search, etc.) keep their names unchanged.
+func applyClaudeToolPrefix(body []byte, prefix string, reverseMap map[string]string) []byte {
 	if prefix == "" {
 		return body
 	}
@@ -1394,6 +1421,26 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 	// Collect built-in tool names from the authoritative fallback seed list and
 	// augment it with any typed built-ins present in the current request body.
 	builtinTools := helps.AugmentClaudeBuiltinToolRegistry(body, nil)
+
+	// record maps the final wire name (prefixed) back to the TRUE original client
+	// name. When the remap stage already renamed this tool (e.g. glob -> Glob), the
+	// shared reverseMap holds Glob -> glob; we compose through it so the prefixed
+	// key resolves directly to the client's original name (proxy_Glob -> glob).
+	record := func(postRemapName, prefixed string) {
+		if reverseMap == nil || postRemapName == prefixed {
+			return
+		}
+		original := postRemapName
+		if o, ok := reverseMap[postRemapName]; ok {
+			original = o
+		}
+		if _, exists := reverseMap[prefixed]; !exists {
+			reverseMap[prefixed] = original
+		}
+	}
+	prefixed := func(name string) string {
+		return prefix + upperFirstToolName(name)
+	}
 
 	if tools := gjson.GetBytes(body, "tools"); tools.Exists() && tools.IsArray() {
 		tools.ForEach(func(index, tool gjson.Result) bool {
@@ -1409,8 +1456,10 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 			if name == "" || strings.HasPrefix(name, prefix) {
 				return true
 			}
+			newName := prefixed(name)
 			path := fmt.Sprintf("tools.%d.name", index.Int())
-			body, _ = sjson.SetBytes(body, path, prefix+name)
+			body, _ = sjson.SetBytes(body, path, newName)
+			record(name, newName)
 			return true
 		})
 	}
@@ -1418,7 +1467,9 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 	if gjson.GetBytes(body, "tool_choice.type").String() == "tool" {
 		name := gjson.GetBytes(body, "tool_choice.name").String()
 		if name != "" && !strings.HasPrefix(name, prefix) && !builtinTools[name] {
-			body, _ = sjson.SetBytes(body, "tool_choice.name", prefix+name)
+			newName := prefixed(name)
+			body, _ = sjson.SetBytes(body, "tool_choice.name", newName)
+			record(name, newName)
 		}
 	}
 
@@ -1436,15 +1487,19 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 					if name == "" || strings.HasPrefix(name, prefix) || builtinTools[name] {
 						return true
 					}
+					newName := prefixed(name)
 					path := fmt.Sprintf("messages.%d.content.%d.name", msgIndex.Int(), contentIndex.Int())
-					body, _ = sjson.SetBytes(body, path, prefix+name)
+					body, _ = sjson.SetBytes(body, path, newName)
+					record(name, newName)
 				case "tool_reference":
 					toolName := part.Get("tool_name").String()
 					if toolName == "" || strings.HasPrefix(toolName, prefix) || builtinTools[toolName] {
 						return true
 					}
+					newName := prefixed(toolName)
 					path := fmt.Sprintf("messages.%d.content.%d.tool_name", msgIndex.Int(), contentIndex.Int())
-					body, _ = sjson.SetBytes(body, path, prefix+toolName)
+					body, _ = sjson.SetBytes(body, path, newName)
+					record(toolName, newName)
 				case "tool_result":
 					// Handle nested tool_reference blocks inside tool_result.content[]
 					nestedContent := part.Get("content")
@@ -1453,8 +1508,10 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 							if nestedPart.Get("type").String() == "tool_reference" {
 								nestedToolName := nestedPart.Get("tool_name").String()
 								if nestedToolName != "" && !strings.HasPrefix(nestedToolName, prefix) && !builtinTools[nestedToolName] {
+									newName := prefixed(nestedToolName)
 									nestedPath := fmt.Sprintf("messages.%d.content.%d.content.%d.tool_name", msgIndex.Int(), contentIndex.Int(), nestedIndex.Int())
-									body, _ = sjson.SetBytes(body, nestedPath, prefix+nestedToolName)
+									body, _ = sjson.SetBytes(body, nestedPath, newName)
+									record(nestedToolName, newName)
 								}
 							}
 							return true
