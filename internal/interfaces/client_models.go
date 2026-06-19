@@ -3,6 +3,17 @@
 // such as AI service clients, API handlers, and data models.
 package interfaces
 
+type GCPProject struct {
+	Projects []GCPProjectProjects `json:"projects"`
+}
+
+type GCPProjectProjects struct {
+	ProjectID string            `json:"projectId"`
+	Name      string            `json:"name"`
+	Labels    map[string]string `json:"labels"`
+	Quotas    map[string]any    `json:"quotas"`
+}
+
 // Content represents a single message in a conversation, with a role and parts.
 // This structure models a message exchange between a user and an AI model.
 type Content struct {
