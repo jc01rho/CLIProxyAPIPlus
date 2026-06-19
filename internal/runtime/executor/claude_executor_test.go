@@ -2388,3 +2388,44 @@ func TestStripTrailingClaudeAssistantMessages_NoTrailingAssistant(t *testing.T) 
 		t.Fatalf("no trailing assistant: messages must be unchanged: %s", string(out))
 	}
 }
+
+func TestSanitizeClaudeSystemText_RemovesOpenCodeBranding(t *testing.T) {
+	in := "You are OpenCode, a coding agent.\n\nKeep responses concise.\n\nSee opencode.ai/docs for more."
+	out := sanitizeClaudeSystemText(in)
+	if strings.Contains(out, "OpenCode") {
+		t.Fatalf("OpenCode identity paragraph should be removed: %q", out)
+	}
+	if strings.Contains(out, "opencode.ai/docs") {
+		t.Fatalf("anchor paragraph should be removed: %q", out)
+	}
+	if !strings.Contains(out, "Keep responses concise.") {
+		t.Fatalf("non-branded paragraph should be preserved: %q", out)
+	}
+}
+
+func TestPrependClaudeCodeIdentityToSystem_ArrayPreservesClientSystem(t *testing.T) {
+	in := []byte(`{"system":[{"type":"text","text":"You are OpenCode.\n\nBe helpful."},{"type":"text","text":"Use tools."}]}`)
+	out := prependClaudeCodeIdentityToSystem(in)
+	blocks := gjson.GetBytes(out, "system").Array()
+	if len(blocks) < 2 {
+		t.Fatalf("expected identity + client blocks, got %d: %s", len(blocks), string(out))
+	}
+	if blocks[0].Get("text").String() != claudeCodeIdentityText {
+		t.Fatalf("first block must be Claude Code identity, got %q", blocks[0].Get("text").String())
+	}
+	joined := string(out)
+	if !strings.Contains(joined, "Be helpful.") || !strings.Contains(joined, "Use tools.") {
+		t.Fatalf("client system content must be preserved: %s", joined)
+	}
+	if strings.Contains(joined, "You are OpenCode") {
+		t.Fatalf("OpenCode branding must be stripped: %s", joined)
+	}
+}
+
+func TestPrependClaudeCodeIdentityToSystem_NoSystemAddsIdentityOnly(t *testing.T) {
+	out := prependClaudeCodeIdentityToSystem([]byte(`{"model":"claude-3"}`))
+	blocks := gjson.GetBytes(out, "system").Array()
+	if len(blocks) != 1 || blocks[0].Get("text").String() != claudeCodeIdentityText {
+		t.Fatalf("missing system should yield single identity block: %s", string(out))
+	}
+}
