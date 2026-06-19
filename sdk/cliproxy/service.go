@@ -154,6 +154,12 @@ func (s *Service) GetWatcher() *WatcherWrapper {
 	return s.watcher
 }
 
+func (s *Service) reloadConfigFromWatcher() {
+	if s != nil && s.watcher != nil {
+		s.watcher.ReloadConfigIfChanged()
+	}
+}
+
 func (s *Service) registerPluginAuthParser() {
 	var parser PluginAuthParser
 	if s != nil && s.pluginHost != nil {

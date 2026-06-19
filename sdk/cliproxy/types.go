@@ -104,8 +104,8 @@ type WatcherWrapper struct {
 	notifyTokenRefreshed  func(tokenID, accessToken, refreshToken, expiresAt string) // 方案 A: 后台刷新通知
 
 	dispatchPersistedAuth func(update watcher.AuthUpdate) bool
-	setPluginAuthParser   func(parser PluginAuthParser)
-
+	setPluginAuthParser    func(parser PluginAuthParser)
+	reloadConfigIfChanged  func()
 }
 
 // Start proxies to the underlying watcher Start implementation.
@@ -138,6 +138,15 @@ func (w *WatcherWrapper) SetPluginAuthParser(parser PluginAuthParser) {
 		return
 	}
 	w.setPluginAuthParser(parser)
+}
+
+// ReloadConfigIfChanged triggers a re-read of the config file when the watcher
+// detects an external change.
+func (w *WatcherWrapper) ReloadConfigIfChanged() {
+	if w == nil || w.reloadConfigIfChanged == nil {
+		return
+	}
+	w.reloadConfigIfChanged()
 }
 
 // DispatchRuntimeAuthUpdate forwards runtime auth updates (e.g., websocket providers)

@@ -3946,13 +3946,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								shouldSuspendModel = true
 								setModelQuota = true
 							}
-						case 408, 500, 502, 503, 504:
-							if disableCooling {
-								state.NextRetryAfter = time.Time{}
-							} else {
-								next := now.Add(1 * time.Minute)
-								state.NextRetryAfter = next
-							}
+		case 408, 500, 502, 503, 504:
+			if disableCooling {
+				state.NextRetryAfter = time.Time{}
+			} else {
+				state.NextRetryAfter = nextTransientErrorRetryAfter(now)
+			}
 						default:
 							state.NextRetryAfter = time.Time{}
 						}
@@ -4568,7 +4567,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		if disableCooling {
 			auth.NextRetryAfter = time.Time{}
 		} else {
-			auth.NextRetryAfter = now.Add(1 * time.Minute)
+			auth.NextRetryAfter = nextTransientErrorRetryAfter(now)
 		}
 	default:
 		if auth.StatusMessage == "" {
