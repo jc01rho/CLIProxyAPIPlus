@@ -184,12 +184,7 @@ func SetQuotaCooldownDisabled(disable bool) {
 }
 
 func quotaCooldownDisabledForAuth(auth *Auth) bool {
-	if auth != nil {
-		if override, ok := auth.DisableCoolingOverride(); ok {
-			return override
-		}
-	}
-	return quotaCooldownDisabled.Load()
+	return quotaCooldownDisabledForAuthWithConfig(auth, nil)
 }
 
 // Result captures execution outcome used to adjust auth state.
@@ -252,10 +247,11 @@ func (NoopHook) OnResult(context.Context, Result) {}
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
-	store     Store
-	executors map[string]ProviderExecutor
-	selector  Selector
-	hook      Hook
+	store         Store
+	cooldownStore CooldownStateStore
+	executors     map[string]ProviderExecutor
+	selector      Selector
+	hook          Hook
 	mu        sync.RWMutex
 	auths     map[string]*Auth
 	scheduler *authScheduler
@@ -591,6 +587,16 @@ func (m *Manager) SetStore(store Store) {
 	m.store = store
 }
 
+// SetCooldownStateStore swaps the independent runtime cooldown state store.
+func (m *Manager) SetCooldownStateStore(store CooldownStateStore) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cooldownStore = store
+}
+
 // SetRoundTripperProvider register a provider that returns a per-auth RoundTripper.
 func (m *Manager) SetRoundTripperProvider(p RoundTripperProvider) {
 	m.mu.Lock()
@@ -608,10 +614,14 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 		cfg = &internalconfig.Config{}
 	}
 	m.runtimeConfig.Store(cfg)
+	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
 	if !cfg.Home.Enabled {
 		m.clearHomeRuntimeAuths()
 	}
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+	if clearedCooldowns {
+		m.persistCooldownStates(context.Background())
+	}
 }
 
 // HomeEnabled reports whether the home control plane integration is enabled in the runtime config.
@@ -681,13 +691,13 @@ func openAICompatProviderKey(auth *Auth) string {
 	}
 	if auth.Attributes != nil {
 		if providerKey := strings.TrimSpace(auth.Attributes["provider_key"]); providerKey != "" {
-			return strings.ToLower(providerKey)
+			return util.OpenAICompatibleProviderKey(providerKey)
 		}
 		if compatName := strings.TrimSpace(auth.Attributes["compat_name"]); compatName != "" {
-			return strings.ToLower(compatName)
+			return util.OpenAICompatibleProviderKey(compatName)
 		}
 	}
-	return strings.ToLower(strings.TrimSpace(auth.Provider))
+	return util.OpenAICompatibleProviderKey(auth.Provider)
 }
 
 func effectiveProviderKey(auth *Auth) string {
@@ -3660,7 +3670,7 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 		if auth == nil {
 			continue
 		}
-		providerKey := strings.TrimSpace(strings.ToLower(auth.Provider))
+		providerKey := executorKeyFromAuth(auth)
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
@@ -3720,7 +3730,7 @@ func (m *Manager) retryAllowed(attempt int, providers []string) bool {
 		if auth == nil {
 			continue
 		}
-		providerKey := strings.TrimSpace(strings.ToLower(auth.Provider))
+		providerKey := executorKeyFromAuth(auth)
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
@@ -3799,10 +3809,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	setModelQuota := false
 	var authSnapshot *Auth
 	var handoffSnapshots []*Auth
+	cooldownStateChanged := false
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
+		var cooldownRecordsBefore []CooldownStateRecord
+		trackCooldownState := m.cooldownStore != nil
+		if trackCooldownState {
+			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
+		}
 		failureReason := ""
 		if !result.Success && result.Error != nil {
 			failureReason = result.Error.Message
@@ -3975,10 +3991,17 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
+		if trackCooldownState {
+			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
+			cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
+		}
 	}
 	m.mu.Unlock()
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
+	}
+	if authSnapshot != nil && cooldownStateChanged {
+		m.persistCooldownStates(context.Background())
 	}
 	if m.scheduler != nil {
 		for _, snapshot := range handoffSnapshots {
@@ -4779,12 +4802,12 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
-		if candidate.Disabled {
+		if candidate == nil || candidate.Disabled {
 			continue
 		}
 		// WeightedRobinSelector uses a global cycle across all providers;
 		// other selectors remain per-provider scoped.
-		if !isWeightedRobin && effectiveProviderKey(candidate) != provider {
+		if !isWeightedRobin && executorKeyFromAuth(candidate) != provider {
 			continue
 		}
 		if !m.authMatchesThresholdRule(candidate, model, opts) {
@@ -4888,7 +4911,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 			if candidate == nil || candidate.Disabled {
 				continue
 			}
-			if effectiveProviderKey(candidate) != provider {
+			if executorKeyFromAuth(candidate) != provider {
 				continue
 			}
 			if _, used := tried[candidate.ID]; used {
@@ -4984,7 +5007,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if disallowFreeAuth && isFreeCodexAuth(candidate) {
 			continue
 		}
-		providerKey := effectiveProviderKey(candidate)
+		providerKey := executorKeyFromAuth(candidate)
 		if providerKey == "" {
 			continue
 		}
@@ -5051,7 +5074,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	if selected == nil {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
-	providerKey := effectiveProviderKey(selected)
+	providerKey := executorKeyFromAuth(selected)
 	m.annotateThresholdDecisionSelected(ctx, model, opts, providerKey, selected)
 	executor, okExecutor := m.Executor(providerKey)
 	if !okExecutor {
@@ -5123,7 +5146,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			if candidate == nil || candidate.Disabled {
 				continue
 			}
-			if _, ok := providerSet[effectiveProviderKey(candidate)]; !ok {
+			if _, ok := providerSet[executorKeyFromAuth(candidate)]; !ok {
 				continue
 			}
 			if _, used := tried[candidate.ID]; used {
@@ -5403,7 +5426,7 @@ func (m *Manager) homeRuntimeAuthByID(sessionID string, authID string) (*Auth, P
 	if auth == nil || !authWebsocketsEnabled(auth) {
 		return nil, nil, "", false
 	}
-	providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
+	providerKey := executorKeyFromAuth(auth)
 	if providerKey == "" {
 		return nil, nil, "", false
 	}
@@ -5498,7 +5521,7 @@ func (m *Manager) pickNextViaHome(ctx context.Context, model string, opts clipro
 	if homeAuthAlreadyTried(tried, auth.ID) {
 		return nil, nil, "", repeatedHomeAuthError()
 	}
-	providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
+	providerKey := executorKeyFromAuth(&auth)
 	if providerKey == "" {
 		return nil, nil, "", &Error{Code: "invalid_auth", Message: "home returned auth without provider", HTTPStatus: http.StatusBadGateway}
 	}
@@ -5571,7 +5594,7 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
 		if !strings.Contains(strings.ToLower(strings.TrimSpace(routeModel)), "claude") {
 			continue
 		}
-		providerKey := strings.TrimSpace(strings.ToLower(auth.Provider))
+		providerKey := executorKeyFromAuth(auth)
 		executor, ok := m.executors[providerKey]
 		if !ok {
 			continue
@@ -6186,8 +6209,15 @@ func executorKeyFromAuth(auth *Auth) string {
 			if providerKey == "" {
 				providerKey = compatName
 			}
-			return strings.ToLower(providerKey)
+			return util.OpenAICompatibleProviderKey(providerKey)
 		}
+	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
+		providerKey := strings.TrimSpace(auth.Label)
+		if providerKey == "" {
+			providerKey = "openai-compatibility"
+		}
+		return util.OpenAICompatibleProviderKey(providerKey)
 	}
 	return strings.ToLower(strings.TrimSpace(auth.Provider))
 }
