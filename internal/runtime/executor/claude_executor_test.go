@@ -2113,6 +2113,67 @@ func TestClaudeExecutor_ExperimentalCCHSigningOptInSignsFinalBody(t *testing.T) 
 	}
 }
 
+// TestClaudeExecutor_ExecuteStream_CCHMatchesFinalOrderedBody verifies that for
+// OAuth (sk-ant-oat) streaming requests, the CCH signature embedded in the billing
+// header is computed over the FINAL canonical (orderClaudeCodeBody) wire bytes.
+// cortexkit/anthropic-auth rewriteRequestBody runs prefixToolNames+orderClaudeCodeBody
+// BEFORE signRequestBody, so the cch must validate against the body the upstream
+// actually receives. A sign-before-order pipeline produces a stale cch that does not
+// match the final wire body (detectable fingerprint mismatch).
+func TestClaudeExecutor_ExecuteStream_CCHMatchesFinalOrderedBody(t *testing.T) {
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "sk-ant-oat-test-token-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"model":"claude-opus-4-6","max_tokens":1024,"system":[{"type":"text","text":"You are a coding agent."}],"messages":[{"role":"user","content":[{"type":"text","text":"hello world"}]}],"tools":[{"name":"bash","input_schema":{"type":"object"}}]}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-opus-4-6",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+	}
+
+	if len(seenBody) == 0 {
+		t.Fatal("expected streaming request body to be captured")
+	}
+
+	// Extract the cch the executor embedded.
+	billingPattern := regexp.MustCompile(`(x-anthropic-billing-header:[^"]*?\bcch=)([0-9a-f]{5})(;)`)
+	match := billingPattern.FindSubmatch(seenBody)
+	if match == nil {
+		t.Fatalf("expected signed billing header in streaming body: %s", string(seenBody))
+	}
+	actualCCH := string(match[2])
+
+	// Recompute cch over the FINAL wire body (cch=00000 placeholder). If sign ran
+	// before order, the captured body's key order differs from what was signed, so
+	// this recomputation will not match the embedded cch.
+	unsignedBody := billingPattern.ReplaceAll(seenBody, []byte(`${1}00000${3}`))
+	wantCCH := fmt.Sprintf("%05x", xxHash64.Checksum(unsignedBody, claudeCCHSeed)&0xFFFFF)
+	if actualCCH != wantCCH {
+		t.Fatalf("streaming cch = %q, want %q (cch must be computed over final ordered wire body)\nbody: %s", actualCCH, wantCCH, string(seenBody))
+	}
+}
+
 func TestApplyCloaking_PreservesConfiguredStrictModeAndSensitiveWordsWhenModeOmitted(t *testing.T) {
 	cfg := &config.Config{
 		ClaudeKey: []config.ClaudeKey{{

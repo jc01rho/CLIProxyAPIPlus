@@ -480,13 +480,14 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
+	// Reorder top-level body keys to match Claude Code's canonical field order
+	// (cortexkit/anthropic-auth parity). Runs before signing so the cch signature
+	// is computed over the final canonical wire bytes (mirrors Execute).
+	bodyForUpstream = orderClaudeCodeBody(bodyForUpstream)
 	// Enable cch signing by default for OAuth tokens (not just experimental flag).
 	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
 		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
 	}
-	// Reorder top-level body keys to match Claude Code's canonical field order
-	// (cortexkit/anthropic-auth parity). Must run last so all prior mutations are captured.
-	bodyForUpstream = orderClaudeCodeBody(bodyForUpstream)
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
