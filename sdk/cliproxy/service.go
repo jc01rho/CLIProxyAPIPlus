@@ -772,11 +772,16 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 			if providerKey == "" {
 				providerKey = compatName
 			}
-			return strings.ToLower(providerKey), compatName, true
+			return util.OpenAICompatibleProviderKey(providerKey), compatName, true
 		}
 	}
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "openai-compatibility") {
-		return "openai-compatibility", strings.TrimSpace(a.Label), true
+		compatName = strings.TrimSpace(a.Label)
+		providerKey = compatName
+		if providerKey == "" {
+			providerKey = "openai-compatibility"
+		}
+		return util.OpenAICompatibleProviderKey(providerKey), compatName, true
 	}
 	return "", "", false
 }
@@ -1231,9 +1236,47 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 		forceReplaceAuths: true,
 		auths:             auths,
 	})
+	s.configureCooldownStateStore(newCfg)
 	ctx = coreauth.WithSkipPersist(context.Background())
 	s.registerConfigAPIKeyAuths(ctx, newCfg)
+	if s.coreManager != nil && !newCfg.Home.Enabled && newCfg.SaveCooldownStatus {
+		if errRestoreCooldown := s.coreManager.RestoreCooldownStates(context.Background()); errRestoreCooldown != nil {
+			log.Warnf("failed to restore cooldown state after config update: %v", errRestoreCooldown)
+		}
+	}
 	s.syncPluginRuntime(ctx)
+}
+
+func (s *Service) configureCooldownStateStore(cfg *config.Config) {
+	if s == nil || s.coreManager == nil {
+		return
+	}
+	if cfg == nil || !cfg.SaveCooldownStatus || cfg.Home.Enabled {
+		s.coreManager.SetCooldownStateStore(nil)
+		return
+	}
+	authDir, errResolve := resolveCooldownStateAuthDir(cfg)
+	if errResolve != nil {
+		log.Warnf("failed to resolve cooldown state directory: %v", errResolve)
+		s.coreManager.SetCooldownStateStore(nil)
+		return
+	}
+	if authDir == "" {
+		s.coreManager.SetCooldownStateStore(nil)
+		return
+	}
+	s.coreManager.SetCooldownStateStore(coreauth.NewFileCooldownStateStoreWithAuthDir(authDir, authDir))
+}
+
+func resolveCooldownStateAuthDir(cfg *config.Config) (string, error) {
+	if cfg == nil {
+		return "", nil
+	}
+	authDir, errAuthDir := util.ResolveAuthDir(cfg.AuthDir)
+	if errAuthDir != nil {
+		return "", errAuthDir
+	}
+	return authDir, nil
 }
 
 func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Config) {
@@ -1479,9 +1522,15 @@ func (s *Service) Run(ctx context.Context) error {
 	s.applyRetryConfig(s.cfg)
 
 	s.registerPluginAuthParser()
+	s.configureCooldownStateStore(s.cfg)
 	if s.coreManager != nil && !homeEnabled {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
+		}
+		if s.cfg.SaveCooldownStatus {
+			if errRestoreCooldown := s.coreManager.RestoreCooldownStates(ctx); errRestoreCooldown != nil {
+				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)
+			}
 		}
 	}
 
