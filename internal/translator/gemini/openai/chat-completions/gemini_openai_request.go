@@ -210,6 +210,18 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 									p++
 								}
 							}
+						case "video_url":
+							videoURL := item.Get("video_url.url").String()
+							if len(videoURL) > 5 {
+								pieces := strings.SplitN(videoURL[5:], ";", 2)
+								if len(pieces) == 2 && len(pieces[1]) > 7 {
+									mime := pieces[0]
+									data := pieces[1][7:]
+									node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".inlineData.mime_type", mime)
+									node, _ = sjson.SetBytes(node, "parts."+itoa(p)+".inlineData.data", data)
+									p++
+								}
+							}
 						case "file":
 							filename := item.Get("file.filename").String()
 							fileData := item.Get("file.file_data").String()
@@ -376,6 +388,9 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 					fnRawBytes := []byte(fnRaw)
 					fnRawBytes, _ = sjson.SetBytes(fnRawBytes, "name", util.SanitizeFunctionName(fn.Get("name").String()))
 					fnRaw = string(fnRawBytes)
+					if parameters := gjson.Get(fnRaw, "parametersJsonSchema"); parameters.Exists() {
+						fnRaw, _ = sjson.SetRaw(fnRaw, "parametersJsonSchema", util.CleanJSONSchemaForGemini(parameters.Raw))
+					}
 					fnRaw, _ = sjson.Delete(fnRaw, "strict")
 					if !hasFunction {
 						functionToolNode, _ = sjson.SetRawBytes(functionToolNode, "functionDeclarations", []byte("[]"))

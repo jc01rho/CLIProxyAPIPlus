@@ -224,6 +224,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if err != nil {
 		return resp, err
 	}
+	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
+		body = rebuildMidSystemMessagesToTopLevel(body)
+	}
 
 	// cortexkit/anthropic-auth parity: stripTrailingAssistantMessages is the FIRST
 	// transform in rewriteRequestBody, before billing/system/cache injection, so the
@@ -427,6 +430,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, err
+	}
+	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
+		body = rebuildMidSystemMessagesToTopLevel(body)
 	}
 
 	// cortexkit/anthropic-auth parity: stripTrailingAssistantMessages is the FIRST
@@ -713,6 +719,9 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	stream := from != to
 	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, stream)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
+	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
+		body = rebuildMidSystemMessagesToTopLevel(body)
+	}
 
 	if !strings.HasPrefix(baseModel, "claude-3-5-haiku") {
 		body = checkSystemInstructions(body)
@@ -1160,6 +1169,91 @@ func checkSystemInstructions(payload []byte) []byte {
 	return checkSystemInstructionsWithSigningMode(payload, false, false, false, "2.1.177", "", "")
 }
 
+func rebuildMidSystemMessagesToTopLevel(payload []byte) []byte {
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.IsArray() {
+		return payload
+	}
+
+	var movedSystemParts []string
+	keptMessages := make([]string, 0, int(messages.Get("#").Int()))
+	messages.ForEach(func(_, message gjson.Result) bool {
+		if strings.EqualFold(strings.TrimSpace(message.Get("role").String()), "system") {
+			movedSystemParts = append(movedSystemParts, claudeSystemTextParts(message.Get("content"))...)
+			return true
+		}
+		keptMessages = append(keptMessages, message.Raw)
+		return true
+	})
+	if len(movedSystemParts) == 0 {
+		return payload
+	}
+
+	systemParts := claudeSystemTextParts(gjson.GetBytes(payload, "system"))
+	systemParts = append(systemParts, movedSystemParts...)
+	if len(systemParts) > 0 {
+		if updated, errSetSystem := sjson.SetRawBytes(payload, "system", rawJSONArray(systemParts)); errSetSystem == nil {
+			payload = updated
+		}
+	}
+	if updated, errSetMessages := sjson.SetRawBytes(payload, "messages", rawJSONArray(keptMessages)); errSetMessages == nil {
+		payload = updated
+	}
+	return payload
+}
+
+func claudeSystemTextParts(content gjson.Result) []string {
+	if !content.Exists() {
+		return nil
+	}
+	if content.Type == gjson.String {
+		text := content.String()
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		block := []byte(`{"type":"text","text":""}`)
+		block, _ = sjson.SetBytes(block, "text", text)
+		return []string{string(block)}
+	}
+	if !content.IsArray() {
+		return nil
+	}
+
+	var parts []string
+	content.ForEach(func(_, item gjson.Result) bool {
+		if item.Type == gjson.String {
+			text := item.String()
+			if strings.TrimSpace(text) != "" {
+				block := []byte(`{"type":"text","text":""}`)
+				block, _ = sjson.SetBytes(block, "text", text)
+				parts = append(parts, string(block))
+			}
+			return true
+		}
+		if item.IsObject() && item.Get("type").String() == "text" && strings.TrimSpace(item.Get("text").String()) != "" {
+			parts = append(parts, item.Raw)
+		}
+		return true
+	})
+	return parts
+}
+
+func rawJSONArray(items []string) []byte {
+	if len(items) == 0 {
+		return []byte("[]")
+	}
+	var builder strings.Builder
+	builder.WriteByte('[')
+	for i, item := range items {
+		if i > 0 {
+			builder.WriteByte(',')
+		}
+		builder.WriteString(item)
+	}
+	builder.WriteByte(']')
+	return []byte(builder.String())
+}
+
 func isClaudeOAuthToken(apiKey string) bool {
 	return strings.Contains(apiKey, "sk-ant-oat")
 }
@@ -1247,6 +1341,21 @@ func upperFirstToolName(name string) string {
 	}
 	r := []rune(name)
 	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
+// lowerFirstToolName lowercases the first character of a tool name. It is the
+// inverse of upperFirstToolName and is used by the prefix-stripping fallbacks
+// in stripClaudeToolPrefixFromResponse/StreamLine so the client receives the
+// original lowercase name it sent (e.g. mcp_Bash -> bash, not mcp_Bash -> Bash).
+// When the client's original name is PascalCase (e.g. mcp_Read -> Read), the
+// reverseMap path handles the restoration and this fallback is not reached.
+func lowerFirstToolName(name string) string {
+	if name == "" {
+		return name
+	}
+	r := []rune(name)
+	r[0] = unicode.ToLower(r[0])
 	return string(r)
 }
 
@@ -1633,15 +1742,17 @@ func stripClaudeToolPrefixFromResponse(body []byte, prefix string) []byte {
 			if !strings.HasPrefix(name, prefix) {
 				return true
 			}
+			stripped := lowerFirstToolName(strings.TrimPrefix(name, prefix))
 			path := fmt.Sprintf("content.%d.name", index.Int())
-			body, _ = sjson.SetBytes(body, path, strings.TrimPrefix(name, prefix))
+			body, _ = sjson.SetBytes(body, path, stripped)
 		case "tool_reference":
 			toolName := part.Get("tool_name").String()
 			if !strings.HasPrefix(toolName, prefix) {
 				return true
 			}
+			stripped := lowerFirstToolName(strings.TrimPrefix(toolName, prefix))
 			path := fmt.Sprintf("content.%d.tool_name", index.Int())
-			body, _ = sjson.SetBytes(body, path, strings.TrimPrefix(toolName, prefix))
+			body, _ = sjson.SetBytes(body, path, stripped)
 		case "tool_result":
 			// Handle nested tool_reference blocks inside tool_result.content[]
 			nestedContent := part.Get("content")
@@ -1651,7 +1762,7 @@ func stripClaudeToolPrefixFromResponse(body []byte, prefix string) []byte {
 						nestedToolName := nestedPart.Get("tool_name").String()
 						if strings.HasPrefix(nestedToolName, prefix) {
 							nestedPath := fmt.Sprintf("content.%d.content.%d.tool_name", index.Int(), nestedIndex.Int())
-							body, _ = sjson.SetBytes(body, nestedPath, strings.TrimPrefix(nestedToolName, prefix))
+							body, _ = sjson.SetBytes(body, nestedPath, lowerFirstToolName(strings.TrimPrefix(nestedToolName, prefix)))
 						}
 					}
 					return true
@@ -1682,33 +1793,37 @@ func stripClaudeToolPrefixFromStreamLine(line []byte, prefix string) []byte {
 
 	switch blockType {
 	case "tool_use":
-		name := contentBlock.Get("name").String()
-		if !strings.HasPrefix(name, prefix) {
+			name := contentBlock.Get("name").String()
+			if !strings.HasPrefix(name, prefix) {
+				return line
+			}
+			stripped := strings.TrimPrefix(name, prefix)
+			stripped = lowerFirstToolName(stripped)
+			updated, err = sjson.SetBytes(payload, "content_block.name", stripped)
+			if err != nil {
+				return line
+			}
+		case "tool_reference":
+			toolName := contentBlock.Get("tool_name").String()
+			if !strings.HasPrefix(toolName, prefix) {
+				return line
+			}
+			stripped := strings.TrimPrefix(toolName, prefix)
+			stripped = lowerFirstToolName(stripped)
+			updated, err = sjson.SetBytes(payload, "content_block.tool_name", stripped)
+			if err != nil {
+				return line
+			}
+		default:
 			return line
 		}
-		updated, err = sjson.SetBytes(payload, "content_block.name", strings.TrimPrefix(name, prefix))
-		if err != nil {
-			return line
-		}
-	case "tool_reference":
-		toolName := contentBlock.Get("tool_name").String()
-		if !strings.HasPrefix(toolName, prefix) {
-			return line
-		}
-		updated, err = sjson.SetBytes(payload, "content_block.tool_name", strings.TrimPrefix(toolName, prefix))
-		if err != nil {
-			return line
-		}
-	default:
-		return line
-	}
 
-	trimmed := bytes.TrimSpace(line)
-	if bytes.HasPrefix(trimmed, []byte("data:")) {
-		return append([]byte("data: "), updated...)
+		trimmed := bytes.TrimSpace(line)
+		if bytes.HasPrefix(trimmed, []byte("data:")) {
+			return append([]byte("data: "), updated...)
+		}
+		return updated
 	}
-	return updated
-}
 
 // getClientUserAgent extracts the client User-Agent from the gin context.
 func getClientUserAgent(ctx context.Context) string {

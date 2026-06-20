@@ -74,9 +74,9 @@ func TestBuildAPIKeyClientsCounts(t *testing.T) {
 		},
 	}
 
-	gemini, vertex, claude, codex, compat, commandCode := BuildAPIKeyClients(cfg)
-	if gemini != 2 || vertex != 1 || claude != 1 || codex != 2 || compat != 2 || commandCode != 0 {
-		t.Fatalf("unexpected counts: %d %d %d %d %d %d", gemini, vertex, claude, codex, compat, commandCode)
+	gemini, vertex, claude, codex, compat, commandCode, mistral := BuildAPIKeyClients(cfg)
+	if gemini != 2 || vertex != 1 || claude != 1 || codex != 2 || compat != 2 || commandCode != 0 || mistral != 0 {
+		t.Fatalf("unexpected counts: %d %d %d %d %d %d %d", gemini, vertex, claude, codex, compat, commandCode, mistral)
 	}
 }
 

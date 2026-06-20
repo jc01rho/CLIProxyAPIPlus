@@ -27,6 +27,7 @@ func NewApplier() *Applier {
 
 func init() {
 	thinking.RegisterProvider("antigravity", NewApplier())
+	thinking.RegisterProvider("gemini-cli", NewApplier())
 }
 
 // Apply applies thinking configuration to Antigravity request body.
