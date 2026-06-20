@@ -740,6 +740,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
+	maybeAttachEstimatedInputTokens(reqMeta, sdktranslator.FromString(entryProtocol), normalizedModel, rawJSON)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON

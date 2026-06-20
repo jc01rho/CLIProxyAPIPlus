@@ -343,7 +343,7 @@ func TestGinLogrusLoggerAddsRequestIDForCodexBackend(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	engine := gin.New()
-	engine.Use(GinLogrusLogger())
+	engine.Use(GinLogrusLogger(&config.Config{}))
 
 	var requestIDFromContext string
 	var requestIDFromGin string

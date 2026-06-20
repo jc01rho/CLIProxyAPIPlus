@@ -25,6 +25,7 @@ var nativeProviderAppliers = map[string]ProviderApplier{
 	"openai":      nil,
 	"codex":       nil,
 	"antigravity": nil,
+	"gemini-cli":  nil,
 	"kimi":        nil,
 	"xai":         nil,
 }
@@ -222,6 +223,9 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 		}).Debug("thinking: config from model suffix |")
 	} else {
 		config = extractThinkingConfig(body, providerFormat)
+		if !hasThinkingConfig(config) && fromFormat != providerFormat {
+			config = extractThinkingConfig(body, fromFormat)
+		}
 		if hasThinkingConfig(config) {
 			log.WithFields(log.Fields{
 				"provider": providerFormat,
@@ -412,7 +416,7 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 	switch provider {
 	case "claude":
 		return extractClaudeConfig(body)
-	case "gemini", "antigravity":
+	case "gemini", "antigravity", "gemini-cli":
 		return extractGeminiConfig(body, provider)
 	case "openai":
 		return extractOpenAIConfig(body)
@@ -568,7 +572,7 @@ func extractClaudeConfig(body []byte) ThinkingConfig {
 // This prevents the 400 error: "thinking_budget and thinking_level are not supported together"
 func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 	prefix := "generationConfig.thinkingConfig"
-	if provider == "antigravity" {
+	if provider == "antigravity" || provider == "gemini-cli" {
 		prefix = "request.generationConfig.thinkingConfig"
 	}
 

@@ -102,3 +102,78 @@ func TestConvertOpenAIRequestToGeminiPreservesInputAudio(t *testing.T) {
 		t.Fatalf("audio data = %q, want %q", got, "SUQzBA==")
 	}
 }
+
+func TestConvertOpenAIRequestToGeminiPreservesVideoURL(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3-flash",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAAIGZ0eXBtcDQy"}},
+					{"type": "text", "text": "Describe the video"}
+				]
+			}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToGemini("gemini-3-flash", []byte(inputJSON), false)
+	resultJSON := gjson.ParseBytes(result)
+	parts := resultJSON.Get("contents.0.parts").Array()
+
+	if len(parts) != 2 {
+		t.Fatalf("parts length = %d, want 2. parts=%s", len(parts), resultJSON.Get("contents.0.parts").Raw)
+	}
+	if got := parts[0].Get("inlineData.mime_type").String(); got != "video/mp4" {
+		t.Fatalf("video mime_type = %q, want %q", got, "video/mp4")
+	}
+	if got := parts[0].Get("inlineData.data").String(); got != "AAAAIGZ0eXBtcDQy" {
+		t.Fatalf("video data = %q, want %q", got, "AAAAIGZ0eXBtcDQy")
+	}
+	if got := parts[1].Get("text").String(); got != "Describe the video" {
+		t.Fatalf("text part = %q, want prompt text", got)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiCleansToolSchemaRequiredFields(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-2.0-flash",
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [{
+			"type": "function",
+			"function": {
+				"name": "search_company",
+				"description": "Search",
+				"parameters": {
+					"type": "object",
+					"title": "SearchCompany",
+					"properties": {
+						"country": {"type": "string"},
+						"industry": {"type": "string"}
+					},
+					"required": ["country", "industry", "stale_field", "another_stale"]
+				}
+			}
+		}]
+	}`
+
+	output := ConvertOpenAIRequestToGemini("gemini-2.0-flash", []byte(inputJSON), false)
+	schema := gjson.GetBytes(output, "tools.0.functionDeclarations.0.parametersJsonSchema")
+
+	if !schema.Exists() {
+		t.Fatalf("parametersJsonSchema missing. Output: %s", output)
+	}
+	if schema.Get("title").Exists() {
+		t.Fatalf("schema title should be removed. Output: %s", output)
+	}
+	required := schema.Get("required").Array()
+	if len(required) != 2 {
+		t.Fatalf("required length = %d, want 2. Schema: %s", len(required), schema.Raw)
+	}
+	if got := required[0].String(); got != "country" {
+		t.Fatalf("required[0] = %q, want country. Schema: %s", got, schema.Raw)
+	}
+	if got := required[1].String(); got != "industry" {
+		t.Fatalf("required[1] = %q, want industry. Schema: %s", got, schema.Raw)
+	}
+}
