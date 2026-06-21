@@ -837,6 +837,24 @@ func (s *Service) hasNativeOpenAICompatExecutorConfig(a *coreauth.Auth, provider
 	return false
 }
 
+func (s *Service) unregisterOpenAICompatExecutor(providerKey string) {
+	if s == nil || s.coreManager == nil {
+		return
+	}
+	providerKey = strings.ToLower(strings.TrimSpace(providerKey))
+	if providerKey == "" {
+		return
+	}
+	existing, okExecutor := s.coreManager.Executor(providerKey)
+	if !okExecutor || existing == nil {
+		return
+	}
+	if _, okOpenAICompat := existing.(*executor.OpenAICompatExecutor); !okOpenAICompat {
+		return
+	}
+	s.coreManager.UnregisterExecutor(providerKey)
+}
+
 func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
 	s.ensureExecutorsForAuthWithMode(a, false)
 }
@@ -985,6 +1003,7 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		if s.pluginHost != nil &&
 			s.pluginHost.HasExecutorCandidateProvider(providerKey) &&
 			!s.hasNativeOpenAICompatExecutorConfig(a, providerKey) {
+			s.unregisterOpenAICompatExecutor(providerKey)
 			return
 		}
 		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(providerKey, s.cfg))
@@ -1132,6 +1151,14 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 }
 
 func (s *Service) applyConfigUpdate(newCfg *config.Config) {
+	s.applyConfigUpdateWithAuthSynthesis(newCfg, true)
+}
+
+func (s *Service) applyWatcherConfigUpdate(newCfg *config.Config) {
+	s.applyConfigUpdateWithAuthSynthesis(newCfg, false)
+}
+
+func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synthesizeConfigAuths bool) {
 	if s == nil {
 		return
 	}
@@ -1208,6 +1235,7 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 	}
 
 	s.applyRetryConfig(newCfg)
+	s.configureCooldownStateStore(newCfg)
 	s.applyPprofConfig(newCfg)
 	if s.server != nil {
 		s.server.UpdateClients(newCfg)
@@ -1216,9 +1244,11 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 		s.coreManager.SetConfig(newCfg)
 		s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
 	}
-	ctx := context.Background()
-	s.registerConfigAPIKeyAuths(ctx, newCfg)
-	s.syncPluginRuntime(ctx)
+	ctx := coreauth.WithSkipPersist(context.Background())
+	if synthesizeConfigAuths {
+		s.registerConfigAPIKeyAuths(ctx, newCfg)
+	}
+	s.syncPluginRuntimeConfig(ctx)
 	s.cfgMu.Lock()
 	s.cfg = newCfg
 	s.cfgMu.Unlock()
@@ -1236,15 +1266,15 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 		forceReplaceAuths: true,
 		auths:             auths,
 	})
-	s.configureCooldownStateStore(newCfg)
-	ctx = coreauth.WithSkipPersist(context.Background())
-	s.registerConfigAPIKeyAuths(ctx, newCfg)
+	if synthesizeConfigAuths {
+		s.registerConfigAPIKeyAuths(ctx, newCfg)
+	}
 	if s.coreManager != nil && !newCfg.Home.Enabled && newCfg.SaveCooldownStatus {
 		if errRestoreCooldown := s.coreManager.RestoreCooldownStates(context.Background()); errRestoreCooldown != nil {
 			log.Warnf("failed to restore cooldown state after config update: %v", errRestoreCooldown)
 		}
 	}
-	s.syncPluginRuntime(ctx)
+	s.syncPluginModelRuntime(ctx)
 }
 
 func (s *Service) configureCooldownStateStore(cfg *config.Config) {
@@ -1622,7 +1652,7 @@ func (s *Service) Run(ctx context.Context) error {
 
 	if !homeEnabled {
 		var watcherWrapper *WatcherWrapper
-		reloadCallback := func(newCfg *config.Config) { s.applyConfigUpdate(newCfg) }
+		reloadCallback := func(newCfg *config.Config) { s.applyWatcherConfigUpdate(newCfg) }
 
 		watcherWrapper, errCreate := s.watcherFactory(s.configPath, s.cfg.AuthDir, reloadCallback)
 		if errCreate != nil {

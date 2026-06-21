@@ -80,31 +80,46 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	}
 	t, _ := metadata["type"].(string)
 	provider := strings.ToLower(strings.TrimSpace(t))
+	if provider == "gemini" {
+		provider = "gemini-cli"
+	}
 	if ctx.PluginAuthParser != nil {
-		auth, handled, errParse := ctx.PluginAuthParser.ParseAuth(context.Background(), pluginapi.AuthParseRequest{
+		auths, handled, errParse := parsePluginFileAuths(ctx.PluginAuthParser, pluginapi.AuthParseRequest{
 			Provider: provider,
 			Path:     fullPath,
 			FileName: filepath.Base(fullPath),
 			RawJSON:  data,
 		})
-		if errParse == nil && handled && auth != nil {
-			auth.CreatedAt = now
-			auth.UpdatedAt = now
-			if auth.Attributes == nil {
-				auth.Attributes = make(map[string]string)
+		if errParse == nil && handled {
+			auths = compactPluginAuths(auths)
+			if len(auths) == 0 {
+				return nil
 			}
-			auth.Attributes["path"] = fullPath
-			auth.Attributes["source"] = fullPath
 			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
-			coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
-			ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
-			coreauth.ApplyCustomHeadersFromMetadata(auth)
-			syncPriorityFromMetadata(auth, metadata)
-			return []*coreauth.Auth{auth}
+			for index, auth := range auths {
+				if auth == nil {
+					continue
+				}
+				if len(auths) > 1 {
+					coreauth.MarkPluginVirtualAuth(auth, fullPath, index)
+				}
+				auth.CreatedAt = now
+				auth.UpdatedAt = now
+				if auth.Attributes == nil {
+					auth.Attributes = make(map[string]string)
+				}
+				auth.Attributes["path"] = fullPath
+				auth.Attributes["source"] = fullPath
+				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
+				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
+				coreauth.ApplyCustomHeadersFromMetadata(auth)
+				syncPriorityFromMetadata(auth, metadata)
+			}
+			return auths
 		}
 	}
-	if provider == "" {
+	if provider == "" || provider == "gemini-cli" {
 		return nil
 	}
 
@@ -407,6 +422,34 @@ func normalizeFileBillingClass(raw string) string {
 	default:
 		return ""
 	}
+}
+
+func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
+	if parser == nil {
+		return nil, false, nil
+	}
+	if multiParser, ok := parser.(PluginMultiAuthParser); ok {
+		return multiParser.ParseAuths(context.Background(), req)
+	}
+	auth, handled, errParse := parser.ParseAuth(context.Background(), req)
+	if errParse != nil || !handled || auth == nil {
+		return nil, handled, errParse
+	}
+	return []*coreauth.Auth{auth}, true, nil
+}
+
+func compactPluginAuths(auths []*coreauth.Auth) []*coreauth.Auth {
+	if len(auths) == 0 {
+		return nil
+	}
+	out := auths[:0]
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		out = append(out, auth)
+	}
+	return out
 }
 
 // extractOAuthModelAliasesFromMetadata reads per-account model aliases from OAuth JSON metadata.
