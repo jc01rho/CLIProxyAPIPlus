@@ -6,14 +6,21 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// Claude Code beta tiers — mirrors anthropic-auth's selectClaudeCodeBetas.
-// Full-agent shape gets the most betas; structured-output gets a subset;
-// everything else gets the base set.
-
-// Field order and membership mirror cortexkit/anthropic-auth claude-code.ts exactly.
-// The anthropic-beta header is a comma-joined string, so ORDER is part of the wire format.
-
+// claudeCodeFullAgentBetas contains the full-set beta flags used for Claude Code
+// full-agent tier requests. These match the anthropic-auth reference repository's
+// configureClaudeCodeHeaders combined with selectClaudeCodeBetas.
 var claudeCodeFullAgentBetas = []string{
+	// From configureClaudeCodeHeaders (full-agent tier)
+	"max-tokens-3-5-sonnet-2024-07-15",
+	"computer-use-2024-10-22",
+	"computer-use-2025-01-24",
+	"pdfs-2024-09-25",
+	"token-efficient-tools-2025-02-19",
+	"output-128k-2025-02-19",
+	"message-batches-2025-03-26",
+	"fine-grained-tool-streaming-2025-05-14",
+	"output-8192-2025-02-19",
+	// Proxy-specific additional betas
 	"oauth-2025-04-20",
 	"interleaved-thinking-2025-05-14",
 	"thinking-token-count-2026-05-13",
@@ -26,18 +33,38 @@ var claudeCodeFullAgentBetas = []string{
 	"cache-diagnosis-2026-04-07",
 }
 
+// claudeCodeStructuredOutputBetas contains the beta flags for Claude Code
+// structured-output tier requests.
 var claudeCodeStructuredOutputBetas = []string{
+	// From configureClaudeCodeHeaders (structured-output tier, extends full-agent)
+	"max-tokens-3-5-sonnet-2024-07-15",
+	"computer-use-2024-10-22",
+	"computer-use-2025-01-24",
+	"pdfs-2024-09-25",
+	"token-efficient-tools-2025-02-19",
+	"output-128k-2025-02-19",
+	"message-batches-2025-03-26",
+	"fine-grained-tool-streaming-2025-05-14",
+	"output-8192-2025-02-19",
+	"structured-outputs-2025-12-15",
+	// Proxy-specific additional betas
 	"oauth-2025-04-20",
 	"interleaved-thinking-2025-05-14",
 	"thinking-token-count-2026-05-13",
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"advisor-tool-2026-03-01",
-	"structured-outputs-2025-12-15",
 	"cache-diagnosis-2026-04-07",
 }
 
+// claudeCodeBaseBetas contains the minimal beta flags for Claude Code
+// base-tier requests.
 var claudeCodeBaseBetas = []string{
+	// From configureClaudeCodeHeaders (base tier)
+	"max-tokens-3-5-sonnet-2024-07-15",
+	"output-128k-2025-02-19",
+	"message-batches-2025-03-26",
+	// Proxy-specific additional betas
 	"oauth-2025-04-20",
 	"interleaved-thinking-2025-05-14",
 	"thinking-token-count-2026-05-13",
