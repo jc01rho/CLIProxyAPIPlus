@@ -56,3 +56,6 @@ _bmad-output/*
 .DS_Store
 ._*
 .gocache/
+
+# deepwork session state (local only)
+.slim/deepwork/

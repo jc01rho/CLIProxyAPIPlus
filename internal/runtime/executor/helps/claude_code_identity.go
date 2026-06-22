@@ -225,18 +225,22 @@ func generateRandomHex(n int) string {
 }
 
 // OrderClaudeCodeBody reorders the JSON body fields to match Claude Code's expected field order.
+//
+// It uses order-preserving sjson writes (NOT json.Marshal over a map, which Go
+// alphabetizes) so the emitted wire bytes keep the canonical key order required for
+// cortexkit/anthropic-auth byte-parity. The canonical order mirrors claude-code.ts
+// BODY_FIELD_ORDER; any keys outside that list are appended in their original order.
 func OrderClaudeCodeBody(body []byte) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil
 	}
 
-	// Parse the body as a JSON object
-	obj := gjson.ParseBytes(body)
-	if !obj.IsObject() {
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
 		return body, nil
 	}
 
-	// Target field order per anthropic-auth
+	// Target field order per anthropic-auth claude-code.ts BODY_FIELD_ORDER.
 	fieldOrder := []string{
 		"model",
 		"messages",
@@ -254,21 +258,33 @@ func OrderClaudeCodeBody(body []byte) ([]byte, error) {
 		"speed",
 	}
 
-	// Build ordered object
-	result := make(map[string]any)
+	ordered := []byte("{}")
+	seen := make(map[string]bool, len(fieldOrder))
+
+	// Emit canonical fields first, in reference order, preserving raw JSON values.
 	for _, field := range fieldOrder {
-		if gjson.GetBytes(body, field).Exists() {
-			result[field] = gjson.GetBytes(body, field).Value()
+		if v := root.Get(field); v.Exists() {
+			var err error
+			ordered, err = sjson.SetRawBytes(ordered, field, []byte(v.Raw))
+			if err != nil {
+				return nil, err
+			}
+			seen[field] = true
 		}
 	}
-	// Add any remaining fields not in the order list
-	rawObj := gjson.ParseBytes(body)
-	for key, val := range rawObj.Map() {
-		if _, exists := result[key]; !exists && val.Exists() {
-			result[key] = val.Value()
+	// Append any remaining keys in their original insertion order.
+	var setErr error
+	root.ForEach(func(k, v gjson.Result) bool {
+		key := k.String()
+		if seen[key] {
+			return true
 		}
+		ordered, setErr = sjson.SetRawBytes(ordered, key, []byte(v.Raw))
+		return setErr == nil
+	})
+	if setErr != nil {
+		return nil, setErr
 	}
 
-	// Convert back to JSON
-	return json.Marshal(result)
+	return ordered, nil
 }
