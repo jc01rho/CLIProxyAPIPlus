@@ -609,6 +609,48 @@ func TestSessionAffinitySelector_FailoverWhenAuthUnavailable(t *testing.T) {
 	}
 }
 
+func TestSessionAffinitySelector_PreservesCachedAuth_whenAliasedModelCandidatesPrefiltered(t *testing.T) {
+	t.Parallel()
+
+	fallback := &RoundRobinSelector{}
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: fallback,
+		TTL:      time.Minute,
+	})
+	defer selector.Stop()
+
+	aliasModel := "higher-coding"
+	authA := &Auth{ID: "auth-a"}
+	authB := &Auth{ID: "auth-b"}
+	auths := []*Auth{authA, authB}
+	payload := []byte(`{"metadata":{"user_id":"user_xxx_account__session_alias-prefilter-test"}}`)
+	opts := markAuthCandidatesPrefiltered(cliproxyexecutor.Options{OriginalRequest: payload})
+
+	first, err := selector.Pick(context.Background(), "mixed", aliasModel, opts, auths)
+	if err != nil {
+		t.Fatalf("first Pick() error = %v", err)
+	}
+	if first.ID != "auth-a" {
+		t.Fatalf("first Pick() auth.ID = %q, want auth-a", first.ID)
+	}
+
+	authA.ModelStates = map[string]*ModelState{
+		aliasModel: {
+			Status:         StatusError,
+			Unavailable:    true,
+			NextRetryAfter: time.Now().Add(time.Hour),
+		},
+	}
+
+	second, err := selector.Pick(context.Background(), "mixed", aliasModel, opts, auths)
+	if err != nil {
+		t.Fatalf("second Pick() error = %v", err)
+	}
+	if second.ID != "auth-a" {
+		t.Fatalf("second Pick() auth.ID = %q, want cached auth-a", second.ID)
+	}
+}
+
 func TestExtractSessionID_ClaudeCodePriorityOverHeader(t *testing.T) {
 	t.Parallel()
 
@@ -1463,4 +1505,3 @@ func TestWeightedRobinSelector_CycleRebuildOnWeightChange(t *testing.T) {
 		t.Errorf("after weight change: b count = %d, want 3", counts["b"])
 	}
 }
-
