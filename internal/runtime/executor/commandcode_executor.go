@@ -455,7 +455,7 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 		for _, msg := range messagesRaw.Array() {
 			role := msg.Get("role").String()
 			if role == "system" || role == "developer" {
-				content := msg.Get("content").String()
+				content := commandCodeMessageContentString(msg)
 				if systemContent == "" {
 					systemContent = content
 				} else {
@@ -497,9 +497,9 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 				parameters = `{"type":"object","properties":{}}`
 			}
 			ccTool := map[string]any{
-				"type":        "function",
-				"name":        name,
-				"description": description,
+				"type":         "function",
+				"name":         name,
+				"description":  description,
 				"input_schema": json.RawMessage(parameters),
 			}
 			b, _ := json.Marshal(ccTool)
@@ -566,49 +566,40 @@ func resolveCommandCodeModelName(cfg *config.Config, auth *cliproxyauth.Auth, mo
 	return model
 }
 
-// normalizeCommandCodeContentBlocks converts OpenAI-style content blocks to CommandCode/Anthropic-style.
-// OpenAI Chat Completions uses: {"type":"text","text":"..."} or {"type":"image_url","image_url":{"url":"..."}}
-// CommandCode (Anthropic) uses: {"type":"text","text":"..."} or {"type":"image","source":{"type":"base64","media_type":"...","data":"..."}}
-func normalizeCommandCodeContentBlocks(blocks []map[string]any) []map[string]any {
+func flattenCommandCodeContentBlocks(blocks []map[string]any) string {
 	if len(blocks) == 0 {
-		return blocks
+		return ""
 	}
-	var normalized []map[string]any
+	var parts []string
 	for _, block := range blocks {
 		blockType, ok := block["type"].(string)
 		if !ok {
 			continue
 		}
 		switch blockType {
-		case "text":
-			// OpenAI: {"type":"text","text":"..."} -> CommandCode: {"type":"text","text":"..."} (same)
-			normalized = append(normalized, map[string]any{"type": "text", "text": block["text"]})
-		case "image_url":
-			// OpenAI: {"type":"image_url","image_url":{"url":"..."}} -> CommandCode: {"type":"image","source":{"type":"base64","media_type":"image/...","data":"..."}}
-			// For now, skip image conversion as it requires base64 encoding
-			// CommandCode doesn't support URL-based images in the same way
-		case "output_text":
-			// Already Anthropic-style, pass through
-			normalized = append(normalized, block)
+		case "text", "input_text", "output_text":
+			if text, ok := block["text"].(string); ok && text != "" {
+				parts = append(parts, text)
+			}
 		case "tool_use":
-			// Already Anthropic-style, pass through
-			normalized = append(normalized, block)
+			name, _ := block["name"].(string)
+			input := commandCodeJSONText(block["input"])
+			if name != "" {
+				parts = append(parts, strings.TrimSpace("tool call "+name+" "+input))
+			}
 		case "tool_result":
-			// Already Anthropic-style, pass through
-			normalized = append(normalized, block)
+			parts = append(parts, flattenCommandCodeToolResult(block["content"]))
 		default:
-			// Unknown type, pass through as-is
-			normalized = append(normalized, block)
+			if text, ok := block["text"].(string); ok && text != "" {
+				parts = append(parts, text)
+			}
 		}
 	}
-	if len(normalized) == 0 {
-		return blocks // fallback to original
-	}
-	return normalized
+	return strings.Join(compactCommandCodeTextParts(parts), "\n")
 }
 
 // convertCommandCodeMessage converts an OpenAI message to CommandCode format.
-// CommandCode expects role to be "user" or "assistant" and content to be an array of content blocks.
+// CommandCode expects role to be "user" or "assistant" and content to be a string.
 func convertCommandCodeMessage(msg gjson.Result, role string) map[string]any {
 	// Map OpenAI roles to CommandCode roles.
 	ccRole := role
@@ -622,70 +613,114 @@ func convertCommandCodeMessage(msg gjson.Result, role string) map[string]any {
 		ccRole = "user"
 	}
 
-	// Convert content to CommandCode format (array of content blocks).
-	contentRaw := msg.Get("content").Raw
-	var contentBlocks []map[string]any
-	if contentRaw != "" && contentRaw != "null" {
-		// If content is a string, wrap it in a text block.
-		if strings.HasPrefix(contentRaw, `"`) {
-			contentStr := msg.Get("content").String()
-			if contentStr != "" {
-				contentBlocks = []map[string]any{
-					{"type": "text", "text": contentStr},
-				}
-			}
-	} else {
-		var blocks []map[string]any
-		if err := json.Unmarshal([]byte(contentRaw), &blocks); err == nil {
-			contentBlocks = normalizeCommandCodeContentBlocks(blocks)
-		}
-	}
-	} else {
+	content := commandCodeMessageContentString(msg)
+	if content == "" {
 		// Handle tool_call messages.
 		if toolCalls := msg.Get("tool_calls"); toolCalls.Exists() && toolCalls.IsArray() {
 			for _, tc := range toolCalls.Array() {
 				funcName := tc.Get("function.name").String()
 				funcArgsRaw := tc.Get("function.arguments").Raw
 				if funcName != "" {
-					var funcArgs json.RawMessage
-					if strings.HasPrefix(strings.TrimSpace(funcArgsRaw), "{") {
-						funcArgs = json.RawMessage(funcArgsRaw)
-					} else {
-						var parsed string
-						if err := json.Unmarshal([]byte(funcArgsRaw), &parsed); err == nil && strings.HasPrefix(strings.TrimSpace(parsed), "{") {
-							funcArgs = json.RawMessage(parsed)
-						} else {
-							funcArgs = json.RawMessage("{}")
-						}
-					}
-					contentBlocks = append(contentBlocks, map[string]any{
-						"type":  "tool_use",
-						"name":  funcName,
-						"input": funcArgs,
-					})
+					content = appendCommandCodeText(content, commandCodeToolCallText(funcName, funcArgsRaw))
 				}
 			}
 		}
 		// Handle tool_result messages.
 		if toolCallID := msg.Get("tool_call_id"); toolCallID.Exists() {
 			contentStr := msg.Get("content").String()
-			contentBlocks = []map[string]any{
-				{"type": "tool_result", "tool_use_id": toolCallID.String(), "content": []map[string]any{{"type": "text", "text": contentStr}}},
-			}
-		}
-	}
-
-	// Ensure content is never nil — CommandCode API requires a string or array, not null.
-	if contentBlocks == nil {
-		contentBlocks = []map[string]any{
-			{"type": "text", "text": ""},
+			content = appendCommandCodeText(content, contentStr)
 		}
 	}
 
 	return map[string]any{
 		"role":    ccRole,
-		"content": contentBlocks,
+		"content": content,
 	}
+}
+
+func commandCodeMessageContentString(msg gjson.Result) string {
+	content := msg.Get("content")
+	if !content.Exists() || content.Raw == "null" {
+		return ""
+	}
+	if content.Type == gjson.String {
+		return content.String()
+	}
+	var blocks []map[string]any
+	if err := json.Unmarshal([]byte(content.Raw), &blocks); err != nil {
+		return content.String()
+	}
+	return flattenCommandCodeContentBlocks(blocks)
+}
+
+func flattenCommandCodeToolResult(content any) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case []any:
+		var blocks []map[string]any
+		for _, item := range value {
+			block, ok := item.(map[string]any)
+			if ok {
+				blocks = append(blocks, block)
+			}
+		}
+		return flattenCommandCodeContentBlocks(blocks)
+	case []map[string]any:
+		return flattenCommandCodeContentBlocks(value)
+	default:
+		return commandCodeJSONText(value)
+	}
+}
+
+func commandCodeToolCallText(name, argumentsRaw string) string {
+	return strings.TrimSpace("tool call " + name + " " + commandCodeToolCallArguments(argumentsRaw))
+}
+
+func commandCodeToolCallArguments(argumentsRaw string) string {
+	trimmed := strings.TrimSpace(argumentsRaw)
+	if strings.HasPrefix(trimmed, "{") {
+		return trimmed
+	}
+	var parsed string
+	if err := json.Unmarshal([]byte(argumentsRaw), &parsed); err == nil {
+		trimmed = strings.TrimSpace(parsed)
+		if strings.HasPrefix(trimmed, "{") {
+			return trimmed
+		}
+	}
+	return "{}"
+}
+
+func commandCodeJSONText(value any) string {
+	if value == nil {
+		return ""
+	}
+	b, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func appendCommandCodeText(base, next string) string {
+	if next == "" {
+		return base
+	}
+	if base == "" {
+		return next
+	}
+	return base + "\n" + next
+}
+
+func compactCommandCodeTextParts(parts []string) []string {
+	filtered := parts[:0]
+	for _, part := range parts {
+		if part != "" {
+			filtered = append(filtered, part)
+		}
+	}
+	return filtered
 }
 
 // generateCommandCodeSessionID creates a random session ID for x-session-id header.
