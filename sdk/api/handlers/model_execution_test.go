@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -248,6 +250,45 @@ func TestExecuteModelCarriesEntryAndExitProtocols(t *testing.T) {
 	}
 	if gotOpts.Query.Get("q") != "callback" {
 		t.Fatalf("executor query = %#v, want callback query", gotOpts.Query)
+	}
+}
+
+func TestExecuteModelRecordsSuccessfulAPIResponseBodyForRequestLog(t *testing.T) {
+	model := "model-execution-log-response-model"
+	requestBody := []byte(fmt.Sprintf(`{"model":%q}`, model))
+	executor := &modelExecutionCaptureExecutor{
+		execute: func(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+			return coreexecutor.Response{Payload: []byte(`{"ok":true,"source":"provider"}`)}, nil
+		},
+	}
+	handler := newModelExecutionHandler(t, model, executor, &sdkconfig.SDKConfig{RequestLog: true})
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+
+	resp, errMsg := handler.ExecuteModel(ctx, ModelExecutionRequest{
+		EntryProtocol: "openai",
+		ExitProtocol:  "openai",
+		Model:         model,
+		Body:          requestBody,
+	})
+	if errMsg != nil {
+		t.Fatalf("ExecuteModel() error = %+v", errMsg)
+	}
+	if got := string(resp.Body); got != `{"ok":true,"source":"provider"}` {
+		t.Fatalf("response body = %q, want provider body", got)
+	}
+
+	raw, exists := ginCtx.Get("API_RESPONSE")
+	if !exists {
+		t.Fatal("API_RESPONSE was not recorded for successful provider response")
+	}
+	got, ok := raw.([]byte)
+	if !ok {
+		t.Fatalf("API_RESPONSE type = %T, want []byte", raw)
+	}
+	if string(got) != `{"ok":true,"source":"provider"}` {
+		t.Fatalf("API_RESPONSE = %q, want successful provider body", got)
 	}
 }
 

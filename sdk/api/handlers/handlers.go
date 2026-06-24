@@ -705,6 +705,28 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 	c.Set("API_RESPONSE", bytes.Clone(data))
 }
 
+func (h *BaseAPIHandler) recordSuccessfulAPIResponse(ctx context.Context, data []byte) {
+	if h == nil || h.Cfg == nil || !h.Cfg.RequestLog || len(bytes.TrimSpace(data)) == 0 {
+		return
+	}
+	if ctx == nil {
+		return
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return
+	}
+	if existing, exists := ginCtx.Get("API_RESPONSE"); exists {
+		if existingBytes, ok := existing.([]byte); ok && len(existingBytes) > 0 {
+			trimmedData := bytes.TrimSpace(data)
+			if len(trimmedData) > 0 && bytes.Contains(existingBytes, trimmedData) {
+				return
+			}
+		}
+	}
+	appendAPIResponse(ginCtx, data)
+}
+
 func isNotFoundError(err error) bool {
 	return statusFromError(err) == http.StatusNotFound
 }
@@ -819,6 +841,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	h.recordSuccessfulAPIResponse(ctx, body)
 	return body, responseHeaders, nil
 }
 
@@ -887,6 +910,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	h.recordSuccessfulAPIResponse(ctx, body)
 	return body, responseHeaders, nil
 }
 
@@ -905,6 +929,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	h.recordSuccessfulAPIResponse(ctx, body)
 	return body, responseHeaders, nil
 }
 
@@ -923,6 +948,7 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, handlerType, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	h.recordSuccessfulAPIResponse(ctx, body)
 	return body, responseHeaders, nil
 }
 

@@ -255,9 +255,9 @@ type Manager struct {
 	executors     map[string]ProviderExecutor
 	selector      Selector
 	hook          Hook
-	mu        sync.RWMutex
-	auths     map[string]*Auth
-	scheduler *authScheduler
+	mu            sync.RWMutex
+	auths         map[string]*Auth
+	scheduler     *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
 	// homeRuntimeAuths caches auths returned by Home so websocket sessions can
@@ -1345,12 +1345,12 @@ func (m *Manager) ProvidersForRouteModel(routeModel string) []string {
 			executorKeys = append(executorKeys, k)
 		}
 		log.WithFields(log.Fields{
-			"route_model":         routeModel,
-			"total_auths":         len(auths),
-			"skipped_disabled":    skippedDisabled,
-			"skipped_no_support":  skippedNoSupport,
-			"skipped_no_provider": skippedNoProvider,
-			"skipped_duplicate":   skippedDuplicate,
+			"route_model":          routeModel,
+			"total_auths":          len(auths),
+			"skipped_disabled":     skippedDisabled,
+			"skipped_no_support":   skippedNoSupport,
+			"skipped_no_provider":  skippedNoProvider,
+			"skipped_duplicate":    skippedDuplicate,
 			"registered_executors": executorKeys,
 		}).Warnf("ProvidersForRouteModel returned empty: no auth supports route model %q (checked %d auths)", routeModel, len(auths))
 	}
@@ -1906,18 +1906,18 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 	authKind, _ := auth.AccountInfo()
 	providerKey := effectiveProviderKey(auth)
 	log.WithFields(log.Fields{
-		"auth_id":          auth.ID,
-		"auth_kind":        authKind,
-		"provider_key":     providerKey,
-		"route_model":      routeModel,
-		"route_key":        routeKey,
-		"selection_key":    selectionKey,
-		"alias_keys":       aliasKeys,
-		"matched_alias":    matchedAlias,
-		"oauth_supported":  oauthSupported,
-		"registry_models":  len(registryRef.GetModelsForClient(auth.ID)),
-		"auth_disabled":    auth.Disabled,
-		"auth_status":      auth.Status,
+		"auth_id":         auth.ID,
+		"auth_kind":       authKind,
+		"provider_key":    providerKey,
+		"route_model":     routeModel,
+		"route_key":       routeKey,
+		"selection_key":   selectionKey,
+		"alias_keys":      aliasKeys,
+		"matched_alias":   matchedAlias,
+		"oauth_supported": oauthSupported,
+		"registry_models": len(registryRef.GetModelsForClient(auth.ID)),
+		"auth_disabled":   auth.Disabled,
+		"auth_status":     auth.Status,
 	}).Debug("authSupportsRouteModel: no matching resolution path")
 	return false
 }
@@ -2392,15 +2392,15 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
 		case "commandcode":
-		if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
-			compileAPIKeyModelAliasForModels(byAlias, entry.Models)
-		}
-	case "mistral":
-		if entry := resolveMistralAPIKeyConfig(cfg, auth); entry != nil {
-			compileAPIKeyModelAliasForModels(byAlias, entry.Models)
-		}
-	default:
-		// OpenAI-compat uses config selection from auth.Attributes.
+			if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
+				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+			}
+		case "mistral":
+			if entry := resolveMistralAPIKeyConfig(cfg, auth); entry != nil {
+				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+			}
+		default:
+			// OpenAI-compat uses config selection from auth.Attributes.
 			providerKey := ""
 			compatName := ""
 			if auth.Attributes != nil {
@@ -2775,7 +2775,6 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	return cliproxyexecutor.Response{}, err
 }
 
-
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	normalized := m.normalizeProviders(providers)
@@ -3084,7 +3083,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
 			execReq.Model = upstreamModel
-attemptCtx := execCtx
+			attemptCtx := execCtx
 			if execReq.Model != routeModel {
 				attemptCtx = SetFallbackInfoInContext(attemptCtx, routeModel, execReq.Model)
 			}
@@ -4404,17 +4403,17 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							var next time.Time
 							backoffLevel := state.Quota.BackoffLevel
 							if !disableCooling {
-							cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
-							if cooldown > 0 {
-								next = now.Add(cooldown)
-							}
-							backoffLevel = nextLevel
-							if result.RetryAfter != nil {
-								retryAfter := now.Add(*result.RetryAfter)
-								if retryAfter.After(next) {
-									next = retryAfter
+								cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
+								if cooldown > 0 {
+									next = now.Add(cooldown)
 								}
-							}
+								backoffLevel = nextLevel
+								if result.RetryAfter != nil {
+									retryAfter := now.Add(*result.RetryAfter)
+									if retryAfter.After(next) {
+										next = retryAfter
+									}
+								}
 							}
 							state.NextRetryAfter = next
 							state.Quota = QuotaState{
@@ -4428,12 +4427,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								shouldSuspendModel = true
 								setModelQuota = true
 							}
-		case 408, 500, 502, 503, 504:
-			if disableCooling {
-				state.NextRetryAfter = time.Time{}
-			} else {
-				state.NextRetryAfter = nextTransientErrorRetryAfter(now)
-			}
+						case 408, 500, 502, 503, 504:
+							if disableCooling {
+								state.NextRetryAfter = time.Time{}
+							} else {
+								state.NextRetryAfter = nextTransientErrorRetryAfter(now)
+							}
 						default:
 							state.NextRetryAfter = time.Time{}
 						}
@@ -5037,17 +5036,17 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.Quota.Reason = "quota"
 		var next time.Time
 		if !disableCooling {
-		cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, disableCooling)
-		if cooldown > 0 {
-			next = now.Add(cooldown)
-		}
-		auth.Quota.BackoffLevel = nextLevel
-		if retryAfter != nil {
-			retryAfterTime := now.Add(*retryAfter)
-			if retryAfterTime.After(next) {
-				next = retryAfterTime
+			cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, disableCooling)
+			if cooldown > 0 {
+				next = now.Add(cooldown)
 			}
-		}
+			auth.Quota.BackoffLevel = nextLevel
+			if retryAfter != nil {
+				retryAfterTime := now.Add(*retryAfter)
+				if retryAfterTime.After(next) {
+					next = retryAfterTime
+				}
+			}
 		}
 		auth.Quota.NextRecoverAt = next
 		auth.NextRetryAfter = next
@@ -6733,8 +6732,22 @@ func resultFailureLogFields(ctx context.Context, result Result) log.Fields {
 		if upstream.AuthID != "" && upstream.AuthID != result.AuthID {
 			fields["upstream_auth_id"] = upstream.AuthID
 		}
+		if upstream.Model != "" && upstreamSummaryMatchesResult(upstream, result) {
+			fields["selected_model"] = upstream.Model
+			fields["upstream_model"] = upstream.Model
+		}
 	}
 	return fields
+}
+
+func upstreamSummaryMatchesResult(upstream requestmeta.UpstreamRequestSummary, result Result) bool {
+	if upstream.AuthID != "" && upstream.AuthID != result.AuthID {
+		return false
+	}
+	if upstream.Provider != "" && upstream.Provider != result.Provider {
+		return false
+	}
+	return true
 }
 
 func requestPathFromContext(ctx context.Context) (string, bool) {
