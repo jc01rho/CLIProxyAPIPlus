@@ -7036,6 +7036,9 @@ func (m *Manager) shouldAllowRouteModelFallback(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	status := statusCodeFromError(err)
 	switch status {
 	case http.StatusBadRequest:
