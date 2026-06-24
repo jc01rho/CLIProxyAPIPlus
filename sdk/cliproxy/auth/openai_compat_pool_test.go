@@ -10,6 +10,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 const openAICompatPoolProviderKey = "openai-compatible-pool"
@@ -277,6 +278,166 @@ func TestManagerExecute_OpenAICompatAliasPoolRotatesWithinAuth(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("execute call %d model = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestManagerExecute_OpenAICompatAliasPoolKeepsSameUpstreamForSession(t *testing.T) {
+	alias := "claude-opus-4.66"
+	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: "deepseek-v3.1", Alias: alias},
+		{Name: "glm-5", Alias: alias},
+	}, executor)
+	headers := http.Header{}
+	headers.Set("X-Session-ID", "session-model-affinity")
+	opts := cliproxyexecutor.Options{Headers: headers}
+
+	for i := 0; i < 2; i++ {
+		resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, opts)
+		if err != nil {
+			t.Fatalf("execute %d: %v", i, err)
+		}
+		if len(resp.Payload) == 0 {
+			t.Fatalf("execute %d returned empty payload", i)
+		}
+	}
+
+	got := executor.ExecuteModels()
+	want := []string{"deepseek-v3.1", "deepseek-v3.1"}
+	if len(got) != len(want) {
+		t.Fatalf("execute calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("execute call %d model = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestManagerExecute_OpenAICompatAliasPoolKeepsSameUpstreamForSessionAcrossAuths(t *testing.T) {
+	alias := "claude-opus-4.66"
+	cfg := &internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
+			Name: "pool",
+			Models: []internalconfig.OpenAICompatibilityModel{
+				{Name: "deepseek-v3.1", Alias: alias},
+				{Name: "glm-5", Alias: alias},
+			},
+		}},
+	}
+	m := NewManager(nil, &RoundRobinSelector{}, nil)
+	m.SetConfig(cfg)
+
+	executor := &authScopedOpenAICompatPoolExecutor{id: openAICompatPoolProviderKey}
+	m.RegisterExecutor(executor)
+
+	firstAuth := &Auth{
+		ID:       "aa-first-auth",
+		Provider: openAICompatPoolProviderKey,
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"api_key":      "first-key",
+			"compat_name":  "pool",
+			"provider_key": openAICompatPoolProviderKey,
+		},
+	}
+	secondAuth := &Auth{
+		ID:       "bb-second-auth",
+		Provider: openAICompatPoolProviderKey,
+		Status:   StatusActive,
+		Attributes: map[string]string{
+			"api_key":      "second-key",
+			"compat_name":  "pool",
+			"provider_key": openAICompatPoolProviderKey,
+		},
+	}
+	if _, err := m.Register(context.Background(), firstAuth); err != nil {
+		t.Fatalf("register first auth: %v", err)
+	}
+	if _, err := m.Register(context.Background(), secondAuth); err != nil {
+		t.Fatalf("register second auth: %v", err)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(firstAuth.ID, openAICompatPoolProviderKey, []*registry.ModelInfo{{ID: alias}})
+	reg.RegisterClient(secondAuth.ID, openAICompatPoolProviderKey, []*registry.ModelInfo{{ID: alias}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(firstAuth.ID)
+		reg.UnregisterClient(secondAuth.ID)
+	})
+
+	selectedAuthIDs := []string{firstAuth.ID, secondAuth.ID}
+	m.SetPluginScheduler(&fakePluginScheduler{
+		handled: true,
+		pick: func(_ context.Context, _ pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
+			if len(selectedAuthIDs) == 0 {
+				t.Fatal("scheduler called more often than expected")
+			}
+			authID := selectedAuthIDs[0]
+			selectedAuthIDs = selectedAuthIDs[1:]
+			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: authID}, true, nil
+		},
+	})
+	m.nextModelPoolOffset(openAICompatModelPoolKey(secondAuth, alias), 2)
+
+	headers := http.Header{}
+	headers.Set("X-Session-ID", "session-model-affinity-cross-auth")
+	opts := cliproxyexecutor.Options{Headers: headers}
+	for i := 0; i < 2; i++ {
+		resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, opts)
+		if err != nil {
+			t.Fatalf("execute %d: %v", i, err)
+		}
+		if len(resp.Payload) == 0 {
+			t.Fatalf("execute %d returned empty payload", i)
+		}
+	}
+
+	got := executor.ExecuteCalls()
+	want := []string{
+		firstAuth.ID + "|deepseek-v3.1",
+		secondAuth.ID + "|deepseek-v3.1",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("execute calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("execute call %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestManagerExecuteStream_OpenAICompatAliasPoolKeepsSameUpstreamForSession(t *testing.T) {
+	alias := "claude-opus-4.66"
+	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: "deepseek-v3.1", Alias: alias},
+		{Name: "glm-5", Alias: alias},
+	}, executor)
+	headers := http.Header{}
+	headers.Set("X-Session-ID", "session-model-affinity-stream")
+	opts := cliproxyexecutor.Options{Headers: headers}
+
+	for i := 0; i < 2; i++ {
+		streamResult, err := m.ExecuteStream(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, opts)
+		if err != nil {
+			t.Fatalf("execute stream %d: %v", i, err)
+		}
+		if payload := readOpenAICompatStreamPayload(t, streamResult); payload != "deepseek-v3.1" {
+			t.Fatalf("execute stream %d payload = %q, want %q", i, payload, "deepseek-v3.1")
+		}
+	}
+
+	got := executor.StreamModels()
+	want := []string{"deepseek-v3.1", "deepseek-v3.1"}
+	if len(got) != len(want) {
+		t.Fatalf("stream calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("stream call %d model = %q, want %q", i, got[i], want[i])
 		}
 	}
 }
