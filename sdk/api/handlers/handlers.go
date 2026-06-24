@@ -32,6 +32,8 @@ import (
 	"golang.org/x/net/context"
 )
 
+const statusClientClosedRequest = 499
+
 // ErrorResponse represents a standard error response format for the API.
 // It contains a single ErrorDetail field.
 type ErrorResponse struct {
@@ -180,6 +182,9 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 	errType := "invalid_request_error"
 	var code string
 	switch status {
+	case statusClientClosedRequest:
+		errType = "invalid_request_error"
+		code = "client_closed_request"
 	case http.StatusUnauthorized:
 		errType = "authentication_error"
 		code = "invalid_api_key"
@@ -192,6 +197,12 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 	case http.StatusNotFound:
 		errType = "invalid_request_error"
 		code = "model_not_found"
+	case http.StatusRequestTimeout:
+		errType = "invalid_request_error"
+		code = "request_timeout"
+	case http.StatusGatewayTimeout:
+		errType = "server_error"
+		code = "gateway_timeout"
 	default:
 		if status >= http.StatusInternalServerError {
 			errType = "server_error"
@@ -695,8 +706,30 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 }
 
 func isNotFoundError(err error) bool {
-	se, ok := err.(interface{ StatusCode() int })
-	return ok && se != nil && se.StatusCode() == http.StatusNotFound
+	return statusFromError(err) == http.StatusNotFound
+}
+
+func errorMessageStatus(err error) int {
+	status := statusFromError(err)
+	if status > 0 {
+		return status
+	}
+	if errors.Is(err, context.Canceled) {
+		return statusClientClosedRequest
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusInternalServerError
+}
+
+func headersFromError(err error) http.Header {
+	if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
+		if hdr := he.Headers(); hdr != nil {
+			return hdr.Clone()
+		}
+	}
+	return nil
 }
 
 // resolveFallbackProvidersForRuntime404 resolves fallback providers when the original model
@@ -752,7 +785,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		Payload: cloneBytes(rawJSON),
 	}
 	afterAuthCapture := &requestAfterAuthCapture{}
-		opts := coreexecutor.Options{
+	opts := coreexecutor.Options{
 		Stream:                      false,
 		Alt:                         alt,
 		OriginalRequest:             rawJSON,
@@ -780,19 +813,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	}
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
-		status := http.StatusInternalServerError
-		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-			if code := se.StatusCode(); code > 0 {
-				status = code
-			}
-		}
-		var addon http.Header
-		if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
-			if hdr := he.Headers(); hdr != nil {
-				addon = hdr.Clone()
-			}
-		}
-		return nil, nil, &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
+		return nil, nil, &interfaces.ErrorMessage{StatusCode: errorMessageStatus(err), Error: err, Addon: headersFromError(err)}
 	}
 	executedReq, executedOpts := afterAuthCapture.apply(req, opts)
 	rawResponseHeaders := cloneHeader(resp.Headers)
@@ -833,7 +854,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		Payload: cloneBytes(rawJSON),
 	}
 	afterAuthCapture := &requestAfterAuthCapture{}
-		opts := coreexecutor.Options{
+	opts := coreexecutor.Options{
 		Stream:                      false,
 		Alt:                         alt,
 		OriginalRequest:             rawJSON,
@@ -860,19 +881,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	}
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
-		status := http.StatusInternalServerError
-		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-			if code := se.StatusCode(); code > 0 {
-				status = code
-			}
-		}
-		var addon http.Header
-		if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
-			if hdr := he.Headers(); hdr != nil {
-				addon = hdr.Clone()
-			}
-		}
-		return nil, nil, &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
+		return nil, nil, &interfaces.ErrorMessage{StatusCode: errorMessageStatus(err), Error: err, Addon: headersFromError(err)}
 	}
 	executedReq, executedOpts := afterAuthCapture.apply(req, opts)
 	rawResponseHeaders := cloneHeader(resp.Headers)
@@ -970,19 +979,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterPluginExecutorRoute(ctx co
 }
 
 func executionErrorMessage(err error) *interfaces.ErrorMessage {
-	status := http.StatusInternalServerError
-	if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-		if code := se.StatusCode(); code > 0 {
-			status = code
-		}
-	}
-	var addon http.Header
-	if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
-		if hdr := he.Headers(); hdr != nil {
-			addon = hdr.Clone()
-		}
-	}
-	return &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
+	return &interfaces.ErrorMessage{StatusCode: errorMessageStatus(err), Error: err, Addon: headersFromError(err)}
 }
 
 // ExecuteStreamWithAuthManager executes a streaming request via the core auth manager.
@@ -1174,7 +1171,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		Payload: cloneBytes(rawJSON),
 	}
 	afterAuthCapture := &requestAfterAuthCapture{}
-		opts := coreexecutor.Options{
+	opts := coreexecutor.Options{
 		Stream:                      true,
 		Alt:                         alt,
 		OriginalRequest:             rawJSON,
@@ -1203,19 +1200,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
-		status := http.StatusInternalServerError
-		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-			if code := se.StatusCode(); code > 0 {
-				status = code
-			}
-		}
-		var addon http.Header
-		if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
-			if hdr := he.Headers(); hdr != nil {
-				addon = hdr.Clone()
-			}
-		}
-		errChan <- &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
+		errChan <- &interfaces.ErrorMessage{StatusCode: errorMessageStatus(err), Error: err, Addon: headersFromError(err)}
 		close(errChan)
 		return nil, nil, errChan
 	}
@@ -1388,19 +1373,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 						}
 					}
 
-					status := http.StatusInternalServerError
-					if se, ok := streamErr.(interface{ StatusCode() int }); ok && se != nil {
-						if code := se.StatusCode(); code > 0 {
-							status = code
-						}
-					}
-					var addon http.Header
-					if he, ok := streamErr.(interface{ Headers() http.Header }); ok && he != nil {
-						if hdr := he.Headers(); hdr != nil {
-							addon = hdr.Clone()
-						}
-					}
-					_ = sendErr(&interfaces.ErrorMessage{StatusCode: status, Error: streamErr, Addon: addon})
+					_ = sendErr(&interfaces.ErrorMessage{StatusCode: errorMessageStatus(streamErr), Error: streamErr, Addon: headersFromError(streamErr)})
 					return
 				}
 				if len(chunk.Payload) > 0 {
@@ -1657,11 +1630,11 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 			return fbProviders, fbModel, nil
 		}
 		log.WithFields(log.Fields{
-			"requested_model":    modelName,
-			"base_model":         baseModel,
-			"resolved_model":     resolvedModelName,
-			"fallback_chain":     h.AuthManager.FallbackChain(),
-			"fallback_models":    h.AuthManager.FallbackModels(),
+			"requested_model": modelName,
+			"base_model":      baseModel,
+			"resolved_model":  resolvedModelName,
+			"fallback_chain":  h.AuthManager.FallbackChain(),
+			"fallback_models": h.AuthManager.FallbackModels(),
 		}).Warn("route fallback attempted but no providers found for any fallback model")
 	}
 

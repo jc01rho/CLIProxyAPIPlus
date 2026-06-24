@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -66,6 +68,52 @@ func TestWriteErrorResponse_AddonHeadersEnabled(t *testing.T) {
 	}
 	if got := recorder.Header().Values("X-Request-Id"); !reflect.DeepEqual(got, []string{"new-1", "new-2"}) {
 		t.Fatalf("X-Request-Id = %#v, want %#v", got, []string{"new-1", "new-2"})
+	}
+}
+
+func TestErrorMessageStatus_MapsContextCanceledToClientClosedRequest(t *testing.T) {
+	status := errorMessageStatus(context.Canceled)
+	if status != statusClientClosedRequest {
+		t.Fatalf("status = %d, want %d", status, statusClientClosedRequest)
+	}
+
+	body := BuildErrorResponseBody(status, context.Canceled.Error())
+
+	var payload ErrorResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal error body: %v", err)
+	}
+	if payload.Error.Code != "client_closed_request" {
+		t.Fatalf("code = %q, want %q", payload.Error.Code, "client_closed_request")
+	}
+	if payload.Error.Type != "invalid_request_error" {
+		t.Fatalf("type = %q, want %q", payload.Error.Type, "invalid_request_error")
+	}
+	if strings.Contains(string(body), "internal_server_error") {
+		t.Fatalf("body should not be classified as internal server error: %s", body)
+	}
+}
+
+func TestErrorMessageStatus_MapsDeadlineExceededToGatewayTimeout(t *testing.T) {
+	status := errorMessageStatus(context.DeadlineExceeded)
+	if status != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d", status, http.StatusGatewayTimeout)
+	}
+
+	body := BuildErrorResponseBody(status, context.DeadlineExceeded.Error())
+
+	var payload ErrorResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal error body: %v", err)
+	}
+	if payload.Error.Code != "gateway_timeout" {
+		t.Fatalf("code = %q, want %q", payload.Error.Code, "gateway_timeout")
+	}
+	if payload.Error.Type != "server_error" {
+		t.Fatalf("type = %q, want %q", payload.Error.Type, "server_error")
+	}
+	if strings.Contains(string(body), "internal_server_error") {
+		t.Fatalf("body should not be classified as internal server error: %s", body)
 	}
 }
 
