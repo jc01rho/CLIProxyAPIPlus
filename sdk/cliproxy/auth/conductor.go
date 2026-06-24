@@ -206,6 +206,11 @@ type Result struct {
 	Error *Error
 }
 
+type sessionModelBinding struct {
+	upstreamModel string
+	expiresAt     time.Time
+}
+
 // Selector chooses an auth candidate for execution.
 type Selector interface {
 	Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error)
@@ -281,6 +286,8 @@ type Manager struct {
 	// modelPoolOffsets tracks per-auth alias pool rotation state.
 	modelPoolOffsets map[string]int
 
+	sessionModelBindings map[string]sessionModelBinding
+
 	// runtimeConfig stores the latest application config for request-time decisions.
 	// It is initialized in NewManager; never Load() before first Store().
 	runtimeConfig atomic.Value
@@ -313,14 +320,15 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
-		store:            store,
-		executors:        make(map[string]ProviderExecutor),
-		selector:         selector,
-		hook:             hook,
-		auths:            make(map[string]*Auth),
-		homeRuntimeAuths: make(map[string]map[string]*Auth),
-		providerOffsets:  make(map[string]int),
-		modelPoolOffsets: make(map[string]int),
+		store:                store,
+		executors:            make(map[string]ProviderExecutor),
+		selector:             selector,
+		hook:                 hook,
+		auths:                make(map[string]*Auth),
+		homeRuntimeAuths:     make(map[string]map[string]*Auth),
+		providerOffsets:      make(map[string]int),
+		modelPoolOffsets:     make(map[string]int),
+		sessionModelBindings: make(map[string]sessionModelBinding),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -1516,6 +1524,107 @@ func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string
 	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled, aliasResult
 }
 
+const sessionModelAffinityTTL = time.Hour
+
+func sessionModelAffinityKeyFromParts(sessionID, routeModel string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	routeModel = strings.TrimSpace(routeModel)
+	if sessionID == "" || routeModel == "" {
+		return ""
+	}
+	return sessionID + "::" + routeModel
+}
+
+func sessionModelAffinityKeys(routeModel string, opts cliproxyexecutor.Options) []string {
+	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	if primaryID == "" {
+		if executionSessionID := homeExecutionSessionIDFromMetadata(opts.Metadata); executionSessionID != "" {
+			primaryID = "exec:" + executionSessionID
+		}
+	}
+	keys := make([]string, 0, 2)
+	if key := sessionModelAffinityKeyFromParts(primaryID, routeModel); key != "" {
+		keys = append(keys, key)
+	}
+	if fallbackID != "" && fallbackID != primaryID {
+		if key := sessionModelAffinityKeyFromParts(fallbackID, routeModel); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func moveModelToFront(models []string, preferred string) []string {
+	if len(models) < 2 || strings.TrimSpace(preferred) == "" {
+		return models
+	}
+	index := -1
+	for i, model := range models {
+		if model == preferred {
+			index = i
+			break
+		}
+	}
+	if index <= 0 {
+		return models
+	}
+	out := make([]string, 0, len(models))
+	out = append(out, models[index])
+	out = append(out, models[:index]...)
+	out = append(out, models[index+1:]...)
+	return out
+}
+
+func (m *Manager) applySessionModelAffinityForKeys(keys []string, models []string) []string {
+	if m == nil || len(keys) == 0 || len(models) < 2 {
+		return models
+	}
+	now := time.Now()
+	m.mu.Lock()
+	var binding sessionModelBinding
+	found := false
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		candidate, ok := m.sessionModelBindings[key]
+		if ok && now.After(candidate.expiresAt) {
+			delete(m.sessionModelBindings, key)
+			continue
+		}
+		if ok {
+			candidate.expiresAt = now.Add(sessionModelAffinityTTL)
+			m.sessionModelBindings[key] = candidate
+			binding = candidate
+			found = true
+			break
+		}
+	}
+	m.mu.Unlock()
+	if !found {
+		return models
+	}
+	return moveModelToFront(models, binding.upstreamModel)
+}
+
+func (m *Manager) rememberSessionModelAffinityForKeys(keys []string, upstreamModel string, pooled bool) {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if m == nil || len(keys) == 0 || upstreamModel == "" || !pooled {
+		return
+	}
+	m.mu.Lock()
+	binding := sessionModelBinding{
+		upstreamModel: upstreamModel,
+		expiresAt:     time.Now().Add(sessionModelAffinityTTL),
+	}
+	for _, key := range keys {
+		if key != "" {
+			m.sessionModelBindings[key] = binding
+		}
+	}
+	m.mu.Unlock()
+}
+
 func (m *Manager) executionModelCandidatesWithAlias(auth *Auth, routeModel string) ([]string, bool, OAuthModelAliasResult) {
 	requestedModel := rewriteModelForAuth(routeModel, auth)
 	aliasResult := m.applyOAuthModelAliasWithResult(auth, requestedModel)
@@ -2257,7 +2366,7 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 	}
 }
 
-func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult) *cliproxyexecutor.StreamResult {
+func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, onSuccess func()) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
@@ -2332,12 +2441,15 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		}
 		if !failed {
 			m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true})
+			if onSuccess != nil {
+				onSuccess()
+			}
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
 }
 
-func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel string, execModels []string, pooled bool, aliasResult OAuthModelAliasResult) (*cliproxyexecutor.StreamResult, error) {
+func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel string, execModels []string, pooled bool, aliasResult OAuthModelAliasResult, affinityKeys []string) (*cliproxyexecutor.StreamResult, error) {
 	if executor == nil {
 		return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
@@ -2429,7 +2541,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			close(closedCh)
 			remaining = closedCh
 		}
-		return m.wrapStreamResult(execCtx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, aliasResult), nil
+		return m.wrapStreamResult(execCtx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, aliasResult, func() {
+			m.rememberSessionModelAffinityForKeys(affinityKeys, execModel, pooled)
+		}), nil
 	}
 	if lastErr == nil {
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}
@@ -3050,6 +3164,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if len(models) == 0 {
 			continue
 		}
+		affinityKeys := sessionModelAffinityKeys(routeModel, opts)
+		models = m.applySessionModelAffinityForKeys(affinityKeys, models)
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
@@ -3097,6 +3213,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				continue
 			}
 			m.MarkResult(attemptCtx, result)
+			m.rememberSessionModelAffinityForKeys(affinityKeys, upstreamModel, pooled)
 			rewriteForceMappedResponse(&resp, aliasResult)
 			return resp, nil
 		}
@@ -3170,6 +3287,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		if len(models) == 0 {
 			continue
 		}
+		affinityKeys := sessionModelAffinityKeys(routeModel, opts)
+		models = m.applySessionModelAffinityForKeys(affinityKeys, models)
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
@@ -3214,6 +3333,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				continue
 			}
 			m.MarkResult(attemptCtx, result)
+			m.rememberSessionModelAffinityForKeys(affinityKeys, upstreamModel, pooled)
 			rewriteForceMappedResponse(&resp, aliasResult)
 			return resp, nil
 		}
@@ -3488,6 +3608,8 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		if len(models) == 0 {
 			continue
 		}
+		affinityKeys := sessionModelAffinityKeys(routeModel, opts)
+		models = m.applySessionModelAffinityForKeys(affinityKeys, models)
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
@@ -3502,7 +3624,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		execReq := sanitizeDownstreamWebsocketFallbackRequest(execCtx, auth, req)
 		countBudget := true
 
-		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, opts, routeModel, models, pooled, aliasResult)
+		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, opts, routeModel, models, pooled, aliasResult, affinityKeys)
 		if errStream != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return nil, errCtx
@@ -6376,7 +6498,8 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		if len(models) == 0 {
 			continue
 		}
-		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, models, pooled, aliasResult)
+		affinityKeys := sessionModelAffinityKeys(routeModel, creditsOpts)
+		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, models, pooled, aliasResult, affinityKeys)
 		if errStream != nil {
 			continue
 		}
