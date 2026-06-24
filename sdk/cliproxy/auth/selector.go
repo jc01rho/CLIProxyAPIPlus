@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
@@ -1126,7 +1127,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
-				entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+				entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s alias=%s", truncateSessionID(primaryID), auth.ID, provider, model, requestedModelAliasFromContext(ctx))
 				return auth, nil
 			}
 		}
@@ -1136,7 +1137,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			return nil, err
 		}
 		s.cache.Set(cacheKey, auth.ID)
-		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth=%s provider=%s model=%s alias=%s", truncateSessionID(primaryID), auth.ID, provider, model, requestedModelAliasFromContext(ctx))
 		return auth, nil
 	}
 
@@ -1146,7 +1147,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {
 					s.cache.Set(cacheKey, auth.ID)
-					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
+					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth=%s provider=%s model=%s alias=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model, requestedModelAliasFromContext(ctx))
 					return auth, nil
 				}
 			}
@@ -1158,8 +1159,15 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		return nil, err
 	}
 	s.cache.Set(cacheKey, auth.ID)
-	entry.Infof("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+	entry.Infof("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s alias=%s", truncateSessionID(primaryID), auth.ID, provider, model, requestedModelAliasFromContext(ctx))
 	return auth, nil
+}
+
+func requestedModelAliasFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	return usage.RequestedModelAliasFromContext(ctx)
 }
 
 func selectorLogEntry(ctx context.Context) *log.Entry {

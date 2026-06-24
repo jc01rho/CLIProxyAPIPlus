@@ -422,8 +422,10 @@ func commandCodeAPIKey(auth *cliproxyauth.Auth) string {
 		return ""
 	}
 	if auth.Attributes != nil {
-		if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
-			return key
+		for _, keyName := range []string{"api_key", "apiKey", "key", "commandcode", "access"} {
+			if key := strings.TrimSpace(auth.Attributes[keyName]); key != "" {
+				return key
+			}
 		}
 	}
 	return ""

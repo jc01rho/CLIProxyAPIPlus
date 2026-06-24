@@ -112,6 +112,57 @@ func Test_CommandCodeGenerateURL_uses_default_and_configured_base_url(t *testing
 	}
 }
 
+func Test_CommandCodeAPIKey_accepts_provider_auth_field_aliases(t *testing.T) {
+	tests := []struct {
+		name       string
+		attrs      map[string]string
+		wantAPIKey string
+	}{
+		{
+			name:       "config api_key",
+			attrs:      map[string]string{"api_key": " user_config "},
+			wantAPIKey: "user_config",
+		},
+		{
+			name:       "commandcode auth apiKey",
+			attrs:      map[string]string{"apiKey": " user_file "},
+			wantAPIKey: "user_file",
+		},
+		{
+			name:       "custom key",
+			attrs:      map[string]string{"key": " user_custom "},
+			wantAPIKey: "user_custom",
+		},
+		{
+			name:       "legacy commandcode field",
+			attrs:      map[string]string{"commandcode": " user_legacy "},
+			wantAPIKey: "user_legacy",
+		},
+		{
+			name:       "oauth access field",
+			attrs:      map[string]string{"access": " user_oauth_access "},
+			wantAPIKey: "user_oauth_access",
+		},
+		{
+			name: "prefers config api_key",
+			attrs: map[string]string{
+				"api_key":     " user_primary ",
+				"commandcode": "user_secondary",
+			},
+			wantAPIKey: "user_primary",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commandCodeAPIKey(&cliproxyauth.Auth{Attributes: tt.attrs})
+			if got != tt.wantAPIKey {
+				t.Fatalf("commandCodeAPIKey() = %q, want %q", got, tt.wantAPIKey)
+			}
+		})
+	}
+}
+
 func assertCommandCodeMessageContent(t *testing.T, message gjson.Result, want string) {
 	t.Helper()
 	if got := message.Get("content").Type; got != gjson.String {
