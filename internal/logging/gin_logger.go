@@ -24,6 +24,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // aiAPIPrefixes defines path prefixes for AI API requests that should have request ID tracking.
@@ -82,6 +83,36 @@ func formatDetailedLogBody(cfg *config.Config, body []byte) string {
 	formatted := strings.ToValidUTF8(string(body), "�")
 	formatted = truncateDetailedAPILogBody(formatted, detailedAPILogBodyLimit(cfg))
 	return strconv.QuoteToASCII(formatted)
+}
+
+func formatDetailedRequestLogBody(cfg *config.Config, path string, body []byte) string {
+	return formatDetailedLogBody(cfg, redactAccessLogRequestBody(path, body))
+}
+
+func redactAccessLogRequestBody(path string, body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+
+	var fields []string
+	switch {
+	case strings.HasPrefix(path, "/v1/chat/completions"):
+		fields = []string{"messages"}
+	case strings.HasPrefix(path, "/v1/responses"):
+		fields = []string{"instructions"}
+	default:
+		return body
+	}
+
+	redacted := body
+	for _, field := range fields {
+		next, errDelete := sjson.DeleteBytes(redacted, field)
+		if errDelete != nil {
+			return body
+		}
+		redacted = next
+	}
+	return redacted
 }
 
 func getProviderAuthFromContext(c *gin.Context) (provider, authID, authLabel string) {
@@ -397,7 +428,7 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 		logBodies := isAIAPIPath(path) && (statusCode >= http.StatusBadRequest || (cfg != nil && cfg.RequestLogSuccessBody))
 		if logBodies {
 			if len(requestBody) > 0 {
-				logLine = logLine + " | request=" + formatDetailedLogBody(cfg, requestBody)
+				logLine = logLine + " | request=" + formatDetailedRequestLogBody(cfg, path, requestBody)
 			}
 			if apiResponse, exists := c.Get("API_RESPONSE"); exists {
 				if bodyBytes, ok := apiResponse.([]byte); ok && len(bodyBytes) > 0 {
