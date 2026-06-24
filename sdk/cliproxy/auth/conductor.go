@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/requestmeta"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -38,6 +39,8 @@ const fallbackInfoContextKey = "cliproxy.fallback_info"
 const GinFallbackInfoKey = "fallbackInfo"
 const billingDecisionContextKey = "cliproxy.billing_decision"
 const GinBillingDecisionKey = "billingClassDecision"
+
+type requestPathContextKey struct{}
 
 func SetProviderAuthInContext(ctx context.Context, provider, authID, authLabel string) context.Context {
 	authInfo := map[string]string{
@@ -3586,6 +3589,9 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.Options, fallback string) context.Context {
 	alias := requestedModelAliasFromOptions(opts, fallback)
 	ctx = coreusage.WithRequestedModelAlias(ctx, alias)
+	if requestPath := requestPathFromOptions(opts); requestPath != "" {
+		ctx = context.WithValue(ctx, requestPathContextKey{}, requestPath)
+	}
 	effort := reasoningEffortFromOptions(opts)
 	if effort != "" {
 		ctx = coreusage.WithReasoningEffort(ctx, effort)
@@ -3595,6 +3601,24 @@ func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.O
 		ctx = coreusage.WithServiceTier(ctx, serviceTier)
 	}
 	return ctx
+}
+
+func requestPathFromOptions(opts cliproxyexecutor.Options) string {
+	if len(opts.Metadata) == 0 {
+		return ""
+	}
+	raw, ok := opts.Metadata[cliproxyexecutor.RequestPathMetadataKey]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
+	default:
+		return ""
+	}
 }
 
 func requestedModelAliasFromOptions(opts cliproxyexecutor.Options, fallback string) string {
@@ -4280,13 +4304,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 		auth.recordRecentRequest(now, result.Success, failureReason)
 		if !result.Success && result.Error != nil {
-			logEntryWithRequestID(ctx).WithFields(log.Fields{
-				"auth_id":  result.AuthID,
-				"provider": result.Provider,
-				"model":    result.Model,
-				"code":     result.Error.Code,
-				"status":   result.Error.HTTPStatus,
-			}).WithError(result.Error).Warn("request failed")
+			logEntryWithRequestID(ctx).WithFields(resultFailureLogFields(ctx, result)).WithError(result.Error).Warn("request failed")
 		}
 		if result.Success {
 			auth.Success++
@@ -6684,6 +6702,54 @@ func logEntryWithRequestID(ctx context.Context) *log.Entry {
 		return log.WithField("request_id", reqID)
 	}
 	return log.NewEntry(log.StandardLogger())
+}
+
+func resultFailureLogFields(ctx context.Context, result Result) log.Fields {
+	fields := log.Fields{
+		"auth_id":        result.AuthID,
+		"provider":       result.Provider,
+		"model":          result.Model,
+		"selected_model": result.Model,
+		"code":           result.Error.Code,
+		"status":         result.Error.HTTPStatus,
+	}
+	if requestedModel := coreusage.RequestedModelAliasFromContext(ctx); requestedModel != "" {
+		fields["requested_model"] = requestedModel
+	}
+	if requestPath, ok := requestPathFromContext(ctx); ok {
+		fields["request_path"] = requestPath
+	}
+	if upstream, ok := requestmeta.LatestUpstreamRequest(ctx); ok {
+		if upstream.URL != "" {
+			fields["upstream_url"] = upstream.URL
+			fields["endpoint"] = upstream.URL
+		}
+		if upstream.Method != "" {
+			fields["upstream_method"] = upstream.Method
+		}
+		if upstream.Provider != "" && upstream.Provider != result.Provider {
+			fields["upstream_provider"] = upstream.Provider
+		}
+		if upstream.AuthID != "" && upstream.AuthID != result.AuthID {
+			fields["upstream_auth_id"] = upstream.AuthID
+		}
+	}
+	return fields
+}
+
+func requestPathFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	switch typed := ctx.Value(requestPathContextKey{}).(type) {
+	case string:
+		return strings.TrimSpace(typed), strings.TrimSpace(typed) != ""
+	case []byte:
+		trimmed := strings.TrimSpace(string(typed))
+		return trimmed, trimmed != ""
+	default:
+		return "", false
+	}
 }
 
 func debugLogAuthSelection(entry *log.Entry, auth *Auth, provider string, model string) {

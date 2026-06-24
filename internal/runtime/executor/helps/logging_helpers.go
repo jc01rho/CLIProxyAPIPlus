@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/requestmeta"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -61,11 +62,12 @@ func requestLogCaptureEnabled(cfg *config.Config) bool {
 
 // RecordAPIRequest stores the upstream request metadata in Gin context for request logging.
 func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
-	if !requestLogCaptureEnabled(cfg) {
-		return
-	}
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
+		return
+	}
+	recordLatestUpstreamRequest(ctx, info)
+	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
 
@@ -236,11 +238,12 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 
 // RecordAPIWebsocketRequest stores an upstream websocket request event in Gin context.
 func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
-	if !requestLogCaptureEnabled(cfg) {
-		return
-	}
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
+		return
+	}
+	recordLatestUpstreamRequest(ctx, info)
+	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
 
@@ -374,6 +377,15 @@ func RecordAPIWebsocketError(ctx context.Context, cfg *config.Config, stage stri
 func ginContextFrom(ctx context.Context) *gin.Context {
 	ginCtx, _ := ctx.Value("gin").(*gin.Context)
 	return ginCtx
+}
+
+func recordLatestUpstreamRequest(ctx context.Context, info UpstreamRequestLog) {
+	requestmeta.RecordLatestUpstreamRequest(ctx, requestmeta.UpstreamRequestSummary{
+		URL:      strings.TrimSpace(info.URL),
+		Method:   strings.TrimSpace(info.Method),
+		Provider: strings.TrimSpace(info.Provider),
+		AuthID:   strings.TrimSpace(info.AuthID),
+	})
 }
 
 func getAttempts(ginCtx *gin.Context) []*upstreamAttempt {
