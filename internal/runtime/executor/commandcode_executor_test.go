@@ -2,8 +2,10 @@ package executor
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 )
 
@@ -57,6 +59,56 @@ func Test_BuildCommandCodePayload_serializes_message_content_as_strings(t *testi
 	}
 	if err := json.Unmarshal(got, &envelope); err != nil {
 		t.Fatalf("unmarshal envelope with string message content: %v", err)
+	}
+}
+
+func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T) {
+	// Given
+	req, err := http.NewRequest(http.MethodPost, "https://api.commandcode.ai/alpha/generate", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+
+	// When
+	applyCommandCodeHeaders(req, "user_test")
+
+	// Then
+	if got := req.Header.Get("Authorization"); got != "Bearer user_test" {
+		t.Fatalf("Authorization = %q, want %q", got, "Bearer user_test")
+	}
+	if got := req.Header.Get("x-command-code-version"); got != "0.29.0" {
+		t.Fatalf("x-command-code-version = %q, want %q", got, "0.29.0")
+	}
+	if got := req.Header.Get("x-cli-environment"); got != "production" {
+		t.Fatalf("x-cli-environment = %q, want %q", got, "production")
+	}
+	if got := req.Header.Get("x-project-slug"); got != "cli-proxy" {
+		t.Fatalf("x-project-slug = %q, want %q", got, "cli-proxy")
+	}
+	if got := req.Header.Get("x-taste-learning"); got != "true" {
+		t.Fatalf("x-taste-learning = %q, want %q", got, "true")
+	}
+	if got := req.Header.Get("x-co-flag"); got != "false" {
+		t.Fatalf("x-co-flag = %q, want %q", got, "false")
+	}
+	if got := req.Header.Get("x-session-id"); got != "" {
+		t.Fatalf("x-session-id = %q, want empty header", got)
+	}
+}
+
+func Test_CommandCodeGenerateURL_uses_default_and_configured_base_url(t *testing.T) {
+	// Given
+	defaultAuth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "user_default"}}
+	customAuth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "user_custom",
+		"base_url": "https://mock.commandcode.test/",
+	}}
+
+	if got := commandCodeGenerateURL(defaultAuth); got != "https://api.commandcode.ai/alpha/generate" {
+		t.Fatalf("default generate URL = %q", got)
+	}
+	if got := commandCodeGenerateURL(customAuth); got != "https://mock.commandcode.test/alpha/generate" {
+		t.Fatalf("custom generate URL = %q", got)
 	}
 }
 

@@ -1389,7 +1389,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 	cfg.OpenAICompatibility = out
 }
 
-// SanitizeCommandCodeKeys removes CommandCode API key entries missing a BaseURL.
+// SanitizeCommandCodeKeys removes CommandCode API key entries missing an API key.
 // It trims whitespace and preserves order for remaining entries.
 func (cfg *Config) SanitizeCommandCodeKeys() {
 	if cfg == nil || len(cfg.CommandCodeKey) == 0 {
@@ -1404,7 +1404,20 @@ func (cfg *Config) SanitizeCommandCodeKeys() {
 		e.BillingClass = normalizeBillingClass(e.BillingClass)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
-		if e.BaseURL == "" {
+		if len(e.Models) > 0 {
+			models := make([]CommandCodeModel, 0, len(e.Models))
+			for j := range e.Models {
+				model := e.Models[j]
+				model.Name = strings.TrimSpace(model.Name)
+				model.Alias = strings.TrimSpace(model.Alias)
+				if model.Name == "" && model.Alias == "" {
+					continue
+				}
+				models = append(models, model)
+			}
+			e.Models = models
+		}
+		if e.APIKey == "" {
 			continue
 		}
 		out = append(out, e)

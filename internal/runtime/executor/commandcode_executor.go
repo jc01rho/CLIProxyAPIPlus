@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,7 +23,7 @@ import (
 
 const (
 	commandCodeBaseURL = "https://api.commandcode.ai"
-	commandCodeVersion = "0.26.20"
+	commandCodeVersion = "0.29.0"
 	commandCodeProject = "cli-proxy"
 )
 
@@ -86,7 +84,7 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, fmt.Errorf("commandcode: build payload: %w", err)
 	}
 
-	url := commandCodeBaseURL + "/alpha/generate"
+	url := commandCodeGenerateURL(auth)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return resp, err
@@ -227,7 +225,7 @@ func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		return nil, fmt.Errorf("commandcode: build payload: %w", err)
 	}
 
-	url := commandCodeBaseURL + "/alpha/generate"
+	url := commandCodeGenerateURL(auth)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -431,6 +429,16 @@ func commandCodeAPIKey(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
+func commandCodeGenerateURL(auth *cliproxyauth.Auth) string {
+	baseURL := commandCodeBaseURL
+	if auth != nil && auth.Attributes != nil {
+		if configured := strings.TrimSpace(auth.Attributes["base_url"]); configured != "" {
+			baseURL = configured
+		}
+	}
+	return strings.TrimRight(baseURL, "/") + "/alpha/generate"
+}
+
 // applyCommandCodeHeaders sets the required CommandCode request headers.
 func applyCommandCodeHeaders(req *http.Request, apiKey string) {
 	req.Header.Set("Content-Type", "application/json")
@@ -440,9 +448,8 @@ func applyCommandCodeHeaders(req *http.Request, apiKey string) {
 	req.Header.Set("x-command-code-version", commandCodeVersion)
 	req.Header.Set("x-cli-environment", "production")
 	req.Header.Set("x-project-slug", commandCodeProject)
-	req.Header.Set("x-taste-learning", "false")
+	req.Header.Set("x-taste-learning", "true")
 	req.Header.Set("x-co-flag", "false")
-	req.Header.Set("x-session-id", generateCommandCodeSessionID())
 }
 
 // buildCommandCodePayload constructs the CommandCode envelope from an OpenAI-format payload.
@@ -723,15 +730,6 @@ func compactCommandCodeTextParts(parts []string) []string {
 		}
 	}
 	return filtered
-}
-
-// generateCommandCodeSessionID creates a random session ID for x-session-id header.
-func generateCommandCodeSessionID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("cc-%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(b[:])
 }
 
 func commandCodeStreamChunk(id, model string, delta map[string]any, finishReason string) map[string]any {
