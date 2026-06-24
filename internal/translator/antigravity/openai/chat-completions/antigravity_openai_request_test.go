@@ -6,7 +6,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-<<<<<<< HEAD
 func TestConvertOpenAIRequestToAntigravityPadsMissingToolResponses(t *testing.T) {
 	input := []byte(`{
 		"messages": [
@@ -48,7 +47,9 @@ func TestConvertOpenAIRequestToAntigravityUsesSameFallbackNameForEmptyToolName(t
 	responseName := gjson.GetBytes(out, "request.contents.2.parts.0.functionResponse.name").String()
 	if callName == "" || callName != responseName {
 		t.Fatalf("expected fallback call/response names to match, got call=%q response=%q body=%s", callName, responseName, out)
-=======
+	}
+}
+
 func TestConvertOpenAIRequestToAntigravitySkipsEmptyTextPartsWithoutNulls(t *testing.T) {
 	inputJSON := `{
 		"model": "gemini-3-flash",
@@ -95,6 +96,5 @@ func TestConvertOpenAIRequestToAntigravitySkipsEmptyTextPartsWithoutNulls(t *tes
 	}
 	if !assistantParts[0].Get("functionCall").Exists() {
 		t.Fatalf("functionCall missing. Output: %s", result)
->>>>>>> upstream/main
 	}
 }

@@ -1018,7 +1018,6 @@ func xaiMetadataString(meta map[string]any, key string) string {
 
 func sanitizeXAIResponsesBody(body []byte, model string) []byte {
 	body = removeXAIEncryptedReasoningInclude(body)
-<<<<<<< HEAD
 	name := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
 	if strings.HasPrefix(name, "grok-4.3") {
 		// Force reasoning effort to medium for grok-4.3 per user requirement.
@@ -1034,14 +1033,10 @@ func sanitizeXAIResponsesBody(body []byte, model string) []byte {
 		body, _ = sjson.DeleteBytes(body, "frequency_penalty")
 		body, _ = sjson.DeleteBytes(body, "stop")
 	} else {
-		body, _ = sjson.DeleteBytes(body, "reasoning")
-=======
-	if !xaiSupportsReasoningEffort(model) {
 		body, _ = sjson.DeleteBytes(body, "reasoning.effort")
 		if reasoning := gjson.GetBytes(body, "reasoning"); reasoning.Exists() && reasoning.IsObject() && len(reasoning.Map()) == 0 {
 			body, _ = sjson.DeleteBytes(body, "reasoning")
 		}
->>>>>>> upstream/main
 	}
 	return body
 }
@@ -1271,14 +1266,6 @@ func normalizeXAIInputReasoningItems(body []byte) []byte {
 		contentPath := fmt.Sprintf("input.%d.content", i)
 		if content := gjson.GetBytes(updated, contentPath); content.Exists() && content.Type == gjson.Null {
 			updatedBody, errDel := sjson.DeleteBytes(updated, contentPath)
-			if errDel != nil {
-				return body
-			}
-			updated = updatedBody
-		}
-		encryptedContentPath := fmt.Sprintf("input.%d.encrypted_content", i)
-		if encryptedContent := gjson.GetBytes(updated, encryptedContentPath); encryptedContent.Exists() {
-			updatedBody, errDel := sjson.DeleteBytes(updated, encryptedContentPath)
 			if errDel != nil {
 				return body
 			}
