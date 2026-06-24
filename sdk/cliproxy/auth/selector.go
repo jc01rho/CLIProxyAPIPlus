@@ -69,11 +69,11 @@ type WeightedRobinSelector struct {
 // traffic for different aliases does not share a cursor and does not
 // trigger cycle rebuilds when other aliases are picked.
 type aliasCycle struct {
-	cycle       []*Auth         // shuffled cycle, length = normalized totalWeight
-	head        int             // pop position (front of queue)
-	totalWeight int             // total weight when cycle was built (GCD-normalized)
-	gcd         int             // GCD used to normalize totalWeight; 0 if cycle is empty
-	weightHash  uint64          // FNV hash of auth IDs × weights when cycle was built
+	cycle       []*Auth             // shuffled cycle, length = normalized totalWeight
+	head        int                 // pop position (front of queue)
+	totalWeight int                 // total weight when cycle was built (GCD-normalized)
+	gcd         int                 // GCD used to normalize totalWeight; 0 if cycle is empty
+	weightHash  uint64              // FNV hash of auth IDs × weights when cycle was built
 	authIDs     map[string]struct{} // auth ID set captured at build time, for invalidation
 }
 
@@ -217,8 +217,27 @@ func (e *modelCooldownError) Headers() http.Header {
 }
 
 const (
-	primaryPriorityBonus = 1_000_000
+	primaryPriorityBonus                 = 1_000_000
+	prefilteredAuthCandidatesMetadataKey = "__cliproxy_prefiltered_auth_candidates"
 )
+
+func authCandidatesPrefiltered(opts cliproxyexecutor.Options) bool {
+	if len(opts.Metadata) == 0 {
+		return false
+	}
+	value, ok := opts.Metadata[prefilteredAuthCandidatesMetadataKey].(bool)
+	return ok && value
+}
+
+func markAuthCandidatesPrefiltered(opts cliproxyexecutor.Options) cliproxyexecutor.Options {
+	meta := make(map[string]any, len(opts.Metadata)+1)
+	for key, value := range opts.Metadata {
+		meta[key] = value
+	}
+	meta[prefilteredAuthCandidatesMetadataKey] = true
+	opts.Metadata = meta
+	return opts
+}
 
 func authPriority(auth *Auth) int {
 	if auth == nil {
@@ -368,6 +387,29 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 	return available, nil
 }
 
+func getPrefilteredAvailableAuths(auths []*Auth) ([]*Auth, error) {
+	if len(auths) == 0 {
+		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
+	}
+	available := make([]*Auth, 0, len(auths))
+	for _, auth := range auths {
+		if auth != nil {
+			available = append(available, auth)
+		}
+	}
+	if len(available) == 0 {
+		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
+	}
+	return available, nil
+}
+
+func availableAuthsForSelector(auths []*Auth, provider, model string, opts cliproxyexecutor.Options, now time.Time) ([]*Auth, error) {
+	if authCandidatesPrefiltered(opts) {
+		return getPrefilteredAvailableAuths(auths)
+	}
+	return getAvailableAuths(auths, provider, model, now)
+}
+
 // getAllAvailableAuths returns all non-blocked auths regardless of priority.
 // Used by WeightedRobinSelector to distribute across all priorities by weight.
 func getAllAvailableAuths(auths []*Auth, model string, now time.Time) []*Auth {
@@ -393,9 +435,8 @@ func getAllAvailableAuths(auths []*Auth, model string, now time.Time) []*Auth {
 
 // Pick selects the next available auth for the provider in a round-robin manner.
 func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
-	_ = opts
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now)
+	available, err := availableAuthsForSelector(auths, provider, model, opts, now)
 	if err != nil {
 		return nil, err
 	}
@@ -430,9 +471,8 @@ func (s *RoundRobinSelector) ensureCursorKey(key string, limit int) {
 
 // Pick selects the first available auth for the provider in a deterministic manner.
 func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
-	_ = opts
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now)
+	available, err := availableAuthsForSelector(auths, provider, model, opts, now)
 	if err != nil {
 		return nil, err
 	}
@@ -448,7 +488,6 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 // requests maintain independent shuffled cycles and cursors. This prevents
 // traffic for one alias from interfering with the cursor of another.
 func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (selected *Auth, _ error) {
-	_ = opts
 	now := time.Now()
 
 	s.mu.Lock()
@@ -472,6 +511,13 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 	s.mu.Unlock()
 
 	available := getAllAvailableAuths(auths, model, now)
+	if authCandidatesPrefiltered(opts) {
+		var errAvailable error
+		available, errAvailable = getPrefilteredAvailableAuths(auths)
+		if errAvailable != nil {
+			return nil, errAvailable
+		}
+	}
 	if len(available) == 0 {
 		cooldownCount := 0
 		earliest := time.Time{}
@@ -673,25 +719,25 @@ type QueueStateEntry struct {
 	Name        string   `json:"name"`
 	Provider    string   `json:"provider"`
 	Weight      int      `json:"weight"`
-	Position    int      `json:"position"`  // Position in cycle (-1 if not in cycle)
-	InCycle     bool     `json:"inCycle"`   // Whether this auth is currently in the active cycle
+	Position    int      `json:"position"` // Position in cycle (-1 if not in cycle)
+	InCycle     bool     `json:"inCycle"`  // Whether this auth is currently in the active cycle
 	Available   bool     `json:"available"`
-	PickedCount uint64   `json:"pickedCount"`            // total picks served by this auth since process start
+	PickedCount uint64   `json:"pickedCount"`      // total picks served by this auth since process start
 	Models      []string `json:"models,omitempty"` // Models/aliases this auth supports (existing only)
 }
 
 // QueueStateSnapshot represents the current state of the weight-robin queue.
 type QueueStateSnapshot struct {
-	Entries          []QueueStateEntry      `json:"entries"`
-	Cycle            []CycleEntry           `json:"cycle"`
-	AliasCycles      map[string][]CycleEntry `json:"aliasCycles,omitempty"` // per-alias/model independent cycles
-	CurrentIdx       int                    `json:"currentIdx"`
-	TotalWeight      int                    `json:"totalWeight"`     // sum(weight / GCD) of the active cycle
-	GCD              int                    `json:"gcd"`              // GCD used to normalize TotalWeight; 0 if cycle is empty
-	CycleLength      int                    `json:"cycleLength"`
-	LastPicked       string                 `json:"lastPicked,omitempty"`
-	LastPickedAt     *time.Time             `json:"lastPickedAt,omitempty"` // timestamp of the most recent successful Pick()
-	TotalPicks       uint64                 `json:"totalPicks"`             // total Pick() selections served by this selector
+	Entries      []QueueStateEntry       `json:"entries"`
+	Cycle        []CycleEntry            `json:"cycle"`
+	AliasCycles  map[string][]CycleEntry `json:"aliasCycles,omitempty"` // per-alias/model independent cycles
+	CurrentIdx   int                     `json:"currentIdx"`
+	TotalWeight  int                     `json:"totalWeight"` // sum(weight / GCD) of the active cycle
+	GCD          int                     `json:"gcd"`         // GCD used to normalize TotalWeight; 0 if cycle is empty
+	CycleLength  int                     `json:"cycleLength"`
+	LastPicked   string                  `json:"lastPicked,omitempty"`
+	LastPickedAt *time.Time              `json:"lastPickedAt,omitempty"` // timestamp of the most recent successful Pick()
+	TotalPicks   uint64                  `json:"totalPicks"`             // total Pick() selections served by this selector
 }
 
 // CycleEntry represents a single position in the shuffled cycle.
@@ -1070,7 +1116,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now)
+	available, err := availableAuthsForSelector(auths, provider, model, opts, now)
 	if err != nil {
 		return nil, err
 	}
