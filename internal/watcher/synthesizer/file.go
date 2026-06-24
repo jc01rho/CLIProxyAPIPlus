@@ -109,8 +109,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 				if auth.Attributes == nil {
 					auth.Attributes = make(map[string]string)
 				}
-				auth.Attributes["path"] = fullPath
-				auth.Attributes["source"] = fullPath
+				auth.Attributes[coreauth.AttributePath] = fullPath
+				auth.Attributes[coreauth.AttributeSource] = fullPath
+				auth.Attributes[coreauth.AttributeSourceBackend] = coreauth.AuthSourceFile
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
@@ -173,9 +174,10 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 		Status:   status,
 		Disabled: disabled,
 		Attributes: map[string]string{
-			"source":    fullPath,
-			"path":      fullPath,
-			"auth_kind": "oauth",
+			coreauth.AttributeSource:        fullPath,
+			coreauth.AttributePath:          fullPath,
+			coreauth.AttributeSourceBackend: coreauth.AuthSourceFile,
+			coreauth.AttributeAuthKind:      coreauth.AuthKindOAuth,
 		},
 		ProxyURL:  proxyURL,
 		Metadata:  metadata,

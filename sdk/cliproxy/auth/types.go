@@ -156,9 +156,9 @@ const (
 )
 
 type recentRequestBucket struct {
-	bucketID        int64
-	success         int64
-	failed          int64
+	bucketID          int64
+	success           int64
+	failed            int64
 	lastFailureReason string
 }
 
@@ -609,51 +609,52 @@ func (a *Auth) AccountInfo() (string, string) {
 	if a == nil {
 		return "", ""
 	}
-	// Check metadata for email first (OAuth-style auth)
-	if a.Metadata != nil {
-		if method, ok := a.Metadata["auth_method"].(string); ok {
-			switch strings.ToLower(strings.TrimSpace(method)) {
-			case "oauth":
-				for _, key := range []string{"email", "username", "name"} {
-					if value, okValue := a.Metadata[key].(string); okValue {
-						if trimmed := strings.TrimSpace(value); trimmed != "" {
-							return "oauth", trimmed
+	switch a.AuthKind() {
+	case AuthKindOAuth:
+		if a.Metadata != nil {
+			if method, ok := a.Metadata["auth_method"].(string); ok {
+				switch strings.ToLower(strings.TrimSpace(method)) {
+				case "oauth":
+					for _, key := range []string{"email", "username", "name"} {
+						if value, okValue := a.Metadata[key].(string); okValue {
+							if trimmed := strings.TrimSpace(value); trimmed != "" {
+								return "oauth", trimmed
+							}
 						}
 					}
-				}
-			case "pat", "personal_access_token":
-				for _, key := range []string{"username", "email", "name", "token_preview"} {
-					if value, okValue := a.Metadata[key].(string); okValue {
-						if trimmed := strings.TrimSpace(value); trimmed != "" {
-							return "personal_access_token", trimmed
+				case "pat", "personal_access_token":
+					for _, key := range []string{"username", "email", "name", "token_preview"} {
+						if value, okValue := a.Metadata[key].(string); okValue {
+							if trimmed := strings.TrimSpace(value); trimmed != "" {
+								return "personal_access_token", trimmed
+							}
 						}
 					}
-				}
-				return "personal_access_token", ""
-			}
-		}
-		// For GitHub provider (including github-copilot), return username when email isn't available.
-		if strings.HasPrefix(strings.ToLower(a.Provider), "github") {
-			if username, ok := a.Metadata["username"].(string); ok {
-				if trimmed := strings.TrimSpace(username); trimmed != "" {
-					return "oauth", trimmed
+					return "personal_access_token", ""
 				}
 			}
-		}
-		if v, ok := a.Metadata["email"].(string); ok {
-			email := strings.TrimSpace(v)
-			if email != "" {
-				return "oauth", email
+			if strings.HasPrefix(strings.ToLower(a.Provider), "github") {
+				if username, ok := a.Metadata["username"].(string); ok {
+					if trimmed := strings.TrimSpace(username); trimmed != "" {
+						return "oauth", trimmed
+					}
+				}
+			}
+			if v, ok := a.Metadata["email"].(string); ok {
+				if email := strings.TrimSpace(v); email != "" {
+					return "oauth", email
+				}
 			}
 		}
-	}
-	// Fall back to API key (API-key auth)
-	if a.Attributes != nil {
-		if v := a.Attributes["api_key"]; v != "" {
-			return "api_key", v
+		return "oauth", ""
+	case AuthKindAPIKey:
+		if apiKey := authAttribute(a, AttributeAPIKey); apiKey != "" {
+			return "api_key", apiKey
 		}
+		return "api_key", ""
+	default:
+		return "", ""
 	}
-	return "", ""
 }
 
 // ExpirationTime attempts to extract the credential expiration timestamp from metadata.
