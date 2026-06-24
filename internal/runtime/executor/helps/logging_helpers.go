@@ -36,6 +36,7 @@ type UpstreamRequestLog struct {
 	Body      []byte
 	Provider  string
 	AuthID    string
+	Model     string
 	AuthLabel string
 	AuthType  string
 	AuthValue string
@@ -385,6 +386,7 @@ func recordLatestUpstreamRequest(ctx context.Context, info UpstreamRequestLog) {
 		Method:   strings.TrimSpace(info.Method),
 		Provider: strings.TrimSpace(info.Provider),
 		AuthID:   strings.TrimSpace(info.AuthID),
+		Model:    strings.TrimSpace(info.Model),
 	})
 }
 

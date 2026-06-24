@@ -19,6 +19,7 @@ func TestRecordAPIRequestStoresUpstreamSummaryWhenRequestLogDisabled(t *testing.
 		Method:   http.MethodPost,
 		Provider: "commandcode",
 		AuthID:   "auth-commandcode",
+		Model:    "nvidia/nemotron-3-ultra-550b-a55b",
 	})
 
 	got, ok := requestmeta.LatestUpstreamRequest(ctx)
@@ -28,7 +29,8 @@ func TestRecordAPIRequestStoresUpstreamSummaryWhenRequestLogDisabled(t *testing.
 	if got.URL != "https://api.commandcode.ai/alpha/generate" ||
 		got.Method != http.MethodPost ||
 		got.Provider != "commandcode" ||
-		got.AuthID != "auth-commandcode" {
+		got.AuthID != "auth-commandcode" ||
+		got.Model != "nvidia/nemotron-3-ultra-550b-a55b" {
 		t.Fatalf("unexpected upstream summary: %+v", got)
 	}
 }

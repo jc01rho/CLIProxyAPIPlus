@@ -15,6 +15,7 @@ type UpstreamRequestSummary struct {
 	Method   string
 	Provider string
 	AuthID   string
+	Model    string
 }
 
 func RecordLatestUpstreamRequest(ctx context.Context, summary UpstreamRequestSummary) {
@@ -27,6 +28,7 @@ func RecordLatestUpstreamRequest(ctx context.Context, summary UpstreamRequestSum
 		Method:   strings.TrimSpace(summary.Method),
 		Provider: strings.TrimSpace(summary.Provider),
 		AuthID:   strings.TrimSpace(summary.AuthID),
+		Model:    strings.TrimSpace(summary.Model),
 	})
 }
 
