@@ -1143,12 +1143,11 @@ func (h *Handler) PutCommandCodeKeys(c *gin.Context) {
 		}
 		arr = obj.Items
 	}
-	// Filter out commandcode entries with empty base-url (treat as removed)
 	filtered := make([]config.CommandCodeKey, 0, len(arr))
 	for i := range arr {
 		entry := arr[i]
 		normalizeCommandCodeKey(&entry)
-		if entry.BaseURL == "" {
+		if entry.APIKey == "" {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -1390,9 +1389,9 @@ func (h *Handler) PatchMistralKey(c *gin.Context) {
 	if body.Value.BaseURL != nil {
 		trimmed := strings.TrimSpace(*body.Value.BaseURL)
 		if trimmed == "" {
-h.cfg.MistralKey = append(h.cfg.MistralKey[:targetIndex], h.cfg.MistralKey[targetIndex+1:]...)
-		h.cfg.SanitizeMistralKeys()
-		h.persistLocked(c)
+			h.cfg.MistralKey = append(h.cfg.MistralKey[:targetIndex], h.cfg.MistralKey[targetIndex+1:]...)
+			h.cfg.SanitizeMistralKeys()
+			h.persistLocked(c)
 			return
 		}
 		entry.BaseURL = trimmed
