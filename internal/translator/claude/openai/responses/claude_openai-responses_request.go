@@ -176,6 +176,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		raw    []byte
 	}
 	var pendingToolUseMessages []pendingToolUseMessage
+	seenToolUseCallIDs := map[string]bool{}
 	appendMessage := func(msg []byte) {
 		out, _ = sjson.SetRawBytes(out, "messages.-1", msg)
 	}
@@ -373,6 +374,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					callID = genToolCallID()
 				}
 				callID = util.SanitizeClaudeToolID(callID)
+				seenToolUseCallIDs[callID] = true
 				name := item.Get("name").String()
 				argsStr := item.Get("arguments").String()
 
@@ -399,11 +401,21 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 
 			case "function_call_output":
 				flushPendingReasoning()
-				// Map to user tool_result
+				// Map to user tool_result when the matching tool_use exists in the
+				// request history. Anthropic rejects orphan tool_result blocks, so
+				// preserve unmatched outputs as text instead of sending invalid tool
+				// content.
 				callID := item.Get("call_id").String()
 				callID = util.SanitizeClaudeToolID(callID)
-				flushPendingToolUseFor(callID)
 				outputStr := item.Get("output").String()
+				if !seenToolUseCallIDs[callID] {
+					usr := []byte(`{"role":"user","content":""}`)
+					usr, _ = sjson.SetBytes(usr, "content", fmt.Sprintf("[tool_result without adjacent tool_use: %s]\n%s", callID, outputStr))
+					appendMessage(usr)
+					break
+				}
+
+				flushPendingToolUseFor(callID)
 				toolResult := []byte(`{"type":"tool_result","tool_use_id":"","content":""}`)
 				toolResult, _ = sjson.SetBytes(toolResult, "tool_use_id", callID)
 				toolResult, _ = sjson.SetBytes(toolResult, "content", outputStr)
@@ -416,7 +428,15 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		})
 	}
 	flushPendingReasoning()
-	flushPendingToolUses()
+	for _, pending := range pendingToolUseMessages {
+		appendMessage(pending.raw)
+		toolResult := []byte(`{"type":"tool_result","tool_use_id":"","content":"[missing tool_result for this tool_use in conversation history]","is_error":true}`)
+		toolResult, _ = sjson.SetBytes(toolResult, "tool_use_id", pending.callID)
+		usr := []byte(`{"role":"user","content":[]}`)
+		usr, _ = sjson.SetRawBytes(usr, "content.-1", toolResult)
+		appendMessage(usr)
+	}
+	pendingToolUseMessages = nil
 
 	includedToolNames := map[string]struct{}{}
 	toolNameMap := map[string]string{}

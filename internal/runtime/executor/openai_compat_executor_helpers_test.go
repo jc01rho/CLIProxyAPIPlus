@@ -3,6 +3,9 @@ package executor
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/tidwall/gjson"
 )
 
 func TestNormalizeDeltaContentArray(t *testing.T) {
@@ -120,6 +123,31 @@ func TestNormalizeDeltaContentArray(t *testing.T) {
 			t.Errorf("content = %q, want %q", s, "hello world")
 		}
 	})
+}
+
+func TestStripOpenAICompatProviderUnsupportedFields_Kimi(t *testing.T) {
+	payload := []byte(`{"model":"kimi-k2.5","messages":[],"reasoning_effort":"high","reasoning":{"enabled":true},"reasoningSummary":"auto","include":["reasoning"],"verbosity":"detailed"}`)
+	compat := &config.OpenAICompatibility{Name: "kimi", BaseURL: "https://api.moonshot.cn/v1"}
+
+	got := stripOpenAICompatProviderUnsupportedFields("openai-compatible-kimi", compat, payload)
+	for _, field := range []string{"reasoning_effort", "reasoning", "reasoningSummary", "include", "verbosity"} {
+		if gjson.GetBytes(got, field).Exists() {
+			t.Fatalf("%s should be removed for OpenAI-compatible Kimi provider, got %s", field, got)
+		}
+	}
+	if model := gjson.GetBytes(got, "model").String(); model != "kimi-k2.5" {
+		t.Fatalf("model = %q, want kimi-k2.5; payload=%s", model, got)
+	}
+}
+
+func TestStripOpenAICompatProviderUnsupportedFields_NonKimiUnchanged(t *testing.T) {
+	payload := []byte(`{"model":"glm-5","messages":[],"reasoning_effort":"max"}`)
+	compat := &config.OpenAICompatibility{Name: "glm", BaseURL: "https://glm.example/v1"}
+
+	got := stripOpenAICompatProviderUnsupportedFields("openai-compatible-glm", compat, payload)
+	if string(got) != string(payload) {
+		t.Fatalf("non-Kimi compat payload changed: got %s want %s", got, payload)
+	}
 }
 
 func TestFixMistralMessageOrder(t *testing.T) {

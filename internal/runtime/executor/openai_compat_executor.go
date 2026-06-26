@@ -123,6 +123,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	compatCfg := e.resolveCompatConfig(auth)
 	// Provider-specific request transformations
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
@@ -145,14 +146,15 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if isDeepSeekModel(baseModel) {
 		translated = stripDeepSeekUnsupportedFields(translated)
 	}
-	if compatCfg := e.resolveCompatConfig(auth); needsToolCallIDNormalization(baseModel, compatCfg) {
+	if needsToolCallIDNormalization(baseModel, compatCfg) {
 		if normalized, patched, errNorm := normalizeNVIDIAToolCallIDs(translated); patched > 0 && errNorm == nil {
 			translated = normalized
 		}
 	}
-	if compatCfg := e.resolveCompatConfig(auth); isNVIDIACompatProvider(compatCfg) {
+	if isNVIDIACompatProvider(compatCfg) {
 		translated = applyNVIDIAMaxTokensReduction(translated)
 	}
+	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compatCfg, translated)
 	if opts.Alt == "responses/compact" {
 		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
 			translated = updated
@@ -364,6 +366,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	compatCfg := e.resolveCompatConfig(auth)
 	// Provider-specific request transformations
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
@@ -386,14 +389,15 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if isDeepSeekModel(baseModel) {
 		translated = stripDeepSeekUnsupportedFields(translated)
 	}
-	if compatCfg := e.resolveCompatConfig(auth); needsToolCallIDNormalization(baseModel, compatCfg) {
+	if needsToolCallIDNormalization(baseModel, compatCfg) {
 		if normalized, patched, errNorm := normalizeNVIDIAToolCallIDs(translated); patched > 0 && errNorm == nil {
 			translated = normalized
 		}
 	}
-	if compatCfg := e.resolveCompatConfig(auth); isNVIDIACompatProvider(compatCfg) {
+	if isNVIDIACompatProvider(compatCfg) {
 		translated = applyNVIDIAMaxTokensReduction(translated)
 	}
+	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compatCfg, translated)
 
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
@@ -852,6 +856,29 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 		}
 	}
 	return nil
+}
+
+func stripOpenAICompatProviderUnsupportedFields(provider string, compat *config.OpenAICompatibility, payload []byte) []byte {
+	if isKimiOpenAICompatProvider(provider, compat) {
+		return stripKimiUnsupportedFields(payload)
+	}
+	return payload
+}
+
+func isKimiOpenAICompatProvider(provider string, compat *config.OpenAICompatibility) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if strings.Contains(provider, "kimi") || strings.Contains(provider, "moonshot") {
+		return true
+	}
+	if compat == nil {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(compat.Name))
+	if strings.Contains(name, "kimi") || strings.Contains(name, "moonshot") {
+		return true
+	}
+	baseURL := strings.ToLower(strings.TrimSpace(compat.BaseURL))
+	return strings.Contains(baseURL, "moonshot") || strings.Contains(baseURL, "kimi")
 }
 
 func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
