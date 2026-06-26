@@ -202,6 +202,63 @@ func TestConvertOpenAIResponsesRequestToClaude_KeepsToolUseAdjacentToToolResult(
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToClaude_OrphanToolResultBecomesText(t *testing.T) {
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[
+			{
+				"type":"function_call_output",
+				"call_id":"missing_call",
+				"output":"stale tool output"
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	root := gjson.ParseBytes(out)
+
+	if got := root.Get("messages.0.role").String(); got != "user" {
+		t.Fatalf("message role = %q, want user. Output: %s", got, string(out))
+	}
+	if root.Get("messages.0.content.0.type").String() == "tool_result" {
+		t.Fatalf("orphan function_call_output should not become Anthropic tool_result. Output: %s", string(out))
+	}
+	content := root.Get("messages.0.content").String()
+	if content != "[tool_result without adjacent tool_use: missing_call]\nstale tool output" {
+		t.Fatalf("message content = %q, want orphan marker text. Output: %s", content, string(out))
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_SynthesizesMissingToolResult(t *testing.T) {
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[
+			{
+				"type":"function_call",
+				"call_id":"call_dangling",
+				"name":"read_file",
+				"arguments":"{\"path\":\"README.md\"}"
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	root := gjson.ParseBytes(out)
+
+	if got := root.Get("messages.0.content.0.type").String(); got != "tool_use" {
+		t.Fatalf("first message first content type = %q, want tool_use. Output: %s", got, string(out))
+	}
+	if got := root.Get("messages.1.content.0.type").String(); got != "tool_result" {
+		t.Fatalf("second message first content type = %q, want synthesized tool_result. Output: %s", got, string(out))
+	}
+	if got := root.Get("messages.1.content.0.tool_use_id").String(); got != "call_dangling" {
+		t.Fatalf("synthesized tool_result id = %q, want call_dangling. Output: %s", got, string(out))
+	}
+	if !root.Get("messages.1.content.0.is_error").Bool() {
+		t.Fatalf("synthesized tool_result should be marked is_error. Output: %s", string(out))
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToClaude_DropsApplyPatchCustomTool(t *testing.T) {
 	raw := []byte(`{
 		"model":"claude-test",
