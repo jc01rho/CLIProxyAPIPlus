@@ -14,6 +14,65 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+func TestBuildAuthURLMatchesReferenceQueryOrder(t *testing.T) {
+	auth := NewAntigravityAuth(nil, nil)
+	got := auth.BuildAuthURL("state value", "http://localhost:51121/oauth-callback", &PKCECodes{CodeChallenge: "challenge/value"})
+	want := AuthEndpoint + "?" + "client_id=" + ClientID + "&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A51121%2Foauth-callback&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcclog+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fexperimentsandconfigs&code_challenge=challenge%2Fvalue&code_challenge_method=S256&state=state+value&access_type=offline&prompt=consent"
+	if got != want {
+		t.Fatalf("auth URL = %q, want %q", got, want)
+	}
+}
+
+func TestExchangeCodeForTokensMatchesReferenceBodyAndHeaders(t *testing.T) {
+	var gotBody string
+	auth := NewAntigravityAuth(nil, &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		gotBody = string(body)
+		if got := req.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded;charset=UTF-8" {
+			t.Fatalf("Content-Type = %q", got)
+		}
+		if got := req.Header.Get("Accept"); got != "*/*" {
+			t.Fatalf("Accept = %q", got)
+		}
+		if got := req.Header.Get("Accept-Encoding"); got != "gzip, deflate, br" {
+			t.Fatalf("Accept-Encoding = %q", got)
+		}
+		if got := req.Header.Get("User-Agent"); got != GeminicliUserAgent {
+			t.Fatalf("User-Agent = %q", got)
+		}
+		return jsonResponse(`{"access_token":"access","refresh_token":"refresh","expires_in":3600,"token_type":"Bearer"}`), nil
+	})})
+
+	if _, err := auth.ExchangeCodeForTokens(context.Background(), "code value", "http://localhost:51121/oauth-callback", "", &PKCECodes{CodeVerifier: "verifier/value"}); err != nil {
+		t.Fatalf("ExchangeCodeForTokens error: %v", err)
+	}
+	want := "client_id=" + ClientID + "&client_secret=" + ClientSecret + "&code=code+value&grant_type=authorization_code&redirect_uri=http%3A%2F%2Flocalhost%3A51121%2Foauth-callback&code_verifier=verifier%2Fvalue"
+	if gotBody != want {
+		t.Fatalf("body = %q, want %q", gotBody, want)
+	}
+}
+
+func TestExchangeCodeForTokensMasksSensitiveErrorBody(t *testing.T) {
+	auth := NewAntigravityAuth(nil, &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(`client_secret=secret-client&code_verifier=secret-verifier&error=invalid_grant`)), Header: make(http.Header), Request: req}, nil
+	})})
+
+	_, err := auth.ExchangeCodeForTokens(context.Background(), "code", "http://localhost:51121/oauth-callback", "", &PKCECodes{CodeVerifier: "verifier"})
+	if err == nil {
+		t.Fatal("expected exchange error")
+	}
+	errText := err.Error()
+	if strings.Contains(errText, "secret-client") || strings.Contains(errText, "secret-verifier") {
+		t.Fatalf("error leaked sensitive value: %s", errText)
+	}
+	if !strings.Contains(errText, "secr...ient") || !strings.Contains(errText, "secr...fier") {
+		t.Fatalf("error did not preserve masked diagnostics: %s", errText)
+	}
+}
+
 func TestFetchProjectIDFromLoadCodeAssist(t *testing.T) {
 	auth := NewAntigravityAuth(nil, &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {

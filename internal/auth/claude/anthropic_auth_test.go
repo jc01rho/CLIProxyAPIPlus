@@ -113,6 +113,51 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+func TestClaudeOAuthRequestsMatchReferenceBodyOrderAndHeaders(t *testing.T) {
+	resetClaudeRefreshState()
+	defer resetClaudeRefreshState()
+
+	var gotExchangeBody string
+	var gotRefreshBody string
+	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if got := req.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q", got)
+		}
+		if got := req.Header.Get("Accept"); got != "application/json, text/plain, */*" {
+			t.Fatalf("Accept = %q", got)
+		}
+		if got := req.Header.Get("User-Agent"); got != ClaudeUserAgent {
+			t.Fatalf("User-Agent = %q", got)
+		}
+		if strings.Contains(string(body), `"authorization_code"`) {
+			gotExchangeBody = string(body)
+		} else {
+			gotRefreshBody = string(body)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"access_token":"access","refresh_token":"refresh","token_type":"Bearer","expires_in":3600,"account":{"email_address":"user@example.com"}}`)), Header: make(http.Header), Request: req}, nil
+	})}}
+
+	if _, err := auth.ExchangeCodeForTokens(context.Background(), "code#callback-state", "input-state", &PKCECodes{CodeVerifier: "verifier"}); err != nil {
+		t.Fatalf("ExchangeCodeForTokens error: %v", err)
+	}
+	wantExchange := `{"code":"code","state":"callback-state","grant_type":"authorization_code","client_id":"` + ClientID + `","redirect_uri":"` + RedirectURI + `","code_verifier":"verifier"}`
+	if gotExchangeBody != wantExchange {
+		t.Fatalf("exchange body = %q, want %q", gotExchangeBody, wantExchange)
+	}
+
+	if _, err := auth.RefreshTokens(context.Background(), "refresh-token"); err != nil {
+		t.Fatalf("RefreshTokens error: %v", err)
+	}
+	wantRefresh := `{"grant_type":"refresh_token","refresh_token":"refresh-token","client_id":"` + ClientID + `","scope":"` + RefreshScope + `"}`
+	if gotRefreshBody != wantRefresh {
+		t.Fatalf("refresh body = %q, want %q", gotRefreshBody, wantRefresh)
+	}
+}
+
 func TestRefreshTokensWithRetry_429BlocksImmediateReplay(t *testing.T) {
 	resetClaudeRefreshState()
 	defer resetClaudeRefreshState()
