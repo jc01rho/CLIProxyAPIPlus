@@ -24,6 +24,83 @@ func resetCodexRefreshGroupForTest() {
 	codexRefreshGroup = singleflight.Group{}
 }
 
+func TestGenerateAuthURLMatchesReferenceQueryOrder(t *testing.T) {
+	auth := &CodexAuth{}
+	got, err := auth.GenerateAuthURL("state value", &PKCECodes{CodeChallenge: "challenge/value"})
+	if err != nil {
+		t.Fatalf("GenerateAuthURL error: %v", err)
+	}
+	want := AuthURL + "?" + "response_type=code&client_id=" + ClientID + "&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_access&code_challenge=challenge%2Fvalue&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state=state+value&originator=opencode"
+	if got != want {
+		t.Fatalf("auth URL = %q, want %q", got, want)
+	}
+}
+
+func TestExchangeAndRefreshBodiesMatchReferenceOrder(t *testing.T) {
+	resetCodexRefreshGroupForTest()
+	t.Cleanup(resetCodexRefreshGroupForTest)
+
+	var gotExchangeBody string
+	var gotRefreshBody string
+	var calls int
+	auth := &CodexAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		calls++
+		if calls == 1 {
+			if got := req.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
+				t.Fatalf("exchange Content-Type = %q", got)
+			}
+			gotExchangeBody = string(body)
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"access_token":"access","refresh_token":"refresh","id_token":"","expires_in":3600}`)), Header: make(http.Header), Request: req}, nil
+		}
+		gotRefreshBody = string(body)
+		if got := req.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
+			t.Fatalf("refresh Content-Type = %q", got)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"access_token":"new-access","refresh_token":"new-refresh","id_token":"","expires_in":3600}`)), Header: make(http.Header), Request: req}, nil
+	})}}
+
+	if _, err := auth.ExchangeCodeForTokensWithRedirect(context.Background(), "code value", "http://localhost:1455/auth/callback", &PKCECodes{CodeVerifier: "verifier/value"}); err != nil {
+		t.Fatalf("ExchangeCodeForTokensWithRedirect error: %v", err)
+	}
+	wantExchange := "grant_type=authorization_code&code=code+value&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&client_id=" + ClientID + "&code_verifier=verifier%2Fvalue"
+	if gotExchangeBody != wantExchange {
+		t.Fatalf("exchange body = %q, want %q", gotExchangeBody, wantExchange)
+	}
+
+	if _, err := auth.RefreshTokens(context.Background(), "refresh value"); err != nil {
+		t.Fatalf("RefreshTokens error: %v", err)
+	}
+	wantRefresh := "grant_type=refresh_token&refresh_token=refresh+value&client_id=" + ClientID
+	if gotRefreshBody != wantRefresh {
+		t.Fatalf("refresh body = %q, want %q", gotRefreshBody, wantRefresh)
+	}
+}
+
+func TestOAuthErrorBodiesMaskSensitiveFields(t *testing.T) {
+	resetCodexRefreshGroupForTest()
+	t.Cleanup(resetCodexRefreshGroupForTest)
+
+	auth := &CodexAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(`refresh_token=secret-refresh&code_verifier=secret-verifier&error=invalid_grant`)), Header: make(http.Header), Request: req}, nil
+	})}}
+
+	_, err := auth.RefreshTokens(context.Background(), "refresh-token")
+	if err == nil {
+		t.Fatal("expected refresh error")
+	}
+	errText := err.Error()
+	if strings.Contains(errText, "secret-refresh") || strings.Contains(errText, "secret-verifier") {
+		t.Fatalf("error leaked sensitive value: %s", errText)
+	}
+	if !strings.Contains(errText, "secr...resh") || !strings.Contains(errText, "secr...fier") {
+		t.Fatalf("error did not preserve masked diagnostics: %s", errText)
+	}
+}
+
 func TestRefreshTokensWithRetry_NonRetryableOnlyAttemptsOnce(t *testing.T) {
 	var calls int32
 	auth := &CodexAuth{

@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/oauthform"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -34,7 +34,7 @@ type userInfo struct {
 // antigravityState is the reconstructed PKCE state returned from the OAuth
 // provider's redirect. The reference cortexkit client uses the same shape.
 type antigravityState struct {
-	Index    string `json:"index"`    // PKCE verifier – kept as "index" for compatibility with the reference client's decode path
+	Index     string `json:"index"` // PKCE verifier – kept as "index" for compatibility with the reference client's decode path
 	ProjectId string `json:"projectId"`
 }
 
@@ -169,19 +169,25 @@ func (o *AntigravityAuth) BuildAuthURL(state, redirectURI string, pkceCodes *PKC
 	if strings.TrimSpace(redirectURI) == "" {
 		redirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", CallbackPort)
 	}
-	params := url.Values{}
-	params.Set("access_type", "offline")
-	params.Set("client_id", ClientID)
-	params.Set("prompt", "consent")
-	params.Set("redirect_uri", redirectURI)
-	params.Set("response_type", "code")
-	params.Set("scope", strings.Join(Scopes, " "))
-	params.Set("state", state)
-	if pkceCodes != nil {
-		params.Set("code_challenge", pkceCodes.CodeChallenge)
-		params.Set("code_challenge_method", "S256")
+	query := oauthform.Encode(
+		oauthform.Pair{Key: "client_id", Value: ClientID},
+		oauthform.Pair{Key: "response_type", Value: "code"},
+		oauthform.Pair{Key: "redirect_uri", Value: redirectURI},
+		oauthform.Pair{Key: "scope", Value: strings.Join(Scopes, " ")},
+		oauthform.Pair{Key: "code_challenge", Value: pkceCodeChallenge(pkceCodes)},
+		oauthform.Pair{Key: "code_challenge_method", Value: "S256"},
+		oauthform.Pair{Key: "state", Value: state},
+		oauthform.Pair{Key: "access_type", Value: "offline"},
+		oauthform.Pair{Key: "prompt", Value: "consent"},
+	)
+	return o.authEndpoint() + "?" + query
+}
+
+func pkceCodeChallenge(pkceCodes *PKCECodes) string {
+	if pkceCodes == nil {
+		return ""
 	}
-	return o.authEndpoint() + "?" + params.Encode()
+	return pkceCodes.CodeChallenge
 }
 
 // ExchangeCodeForTokens exchanges authorization code for access and refresh tokens.
@@ -202,17 +208,18 @@ func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redir
 		verifier = pkceCodes.CodeVerifier
 	}
 
-	data := url.Values{}
-	data.Set("code", code)
-	data.Set("client_id", ClientID)
-	data.Set("client_secret", ClientSecret)
-	data.Set("redirect_uri", redirectURI)
-	data.Set("grant_type", "authorization_code")
-	if verifier != "" {
-		data.Set("code_verifier", verifier)
-	}
+	// Field order mirrors cortexkit/antigravity-auth exchangeAntigravity():
+	// client_id, client_secret, code, grant_type, redirect_uri, code_verifier.
+	body := oauthform.Encode(
+		oauthform.Pair{Key: "client_id", Value: ClientID},
+		oauthform.Pair{Key: "client_secret", Value: ClientSecret},
+		oauthform.Pair{Key: "code", Value: code},
+		oauthform.Pair{Key: "grant_type", Value: "authorization_code"},
+		oauthform.Pair{Key: "redirect_uri", Value: redirectURI},
+		oauthform.Pair{Key: "code_verifier", Value: verifier},
+	)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.tokenEndpoint(), strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.tokenEndpoint(), strings.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("antigravity token exchange: create request: %w", err)
 	}
@@ -240,7 +247,7 @@ func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redir
 		if body == "" {
 			return nil, fmt.Errorf("antigravity token exchange: request failed: status %d", resp.StatusCode)
 		}
-		return nil, fmt.Errorf("antigravity token exchange: request failed: status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("antigravity token exchange: request failed: status %d: %s", resp.StatusCode, oauthform.MaskSensitive(body))
 	}
 
 	var token TokenResponse
