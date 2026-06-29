@@ -854,7 +854,7 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 	if c.IsAborted() {
 		return
 	}
-	if s.mgmt.ServePluginAuthURL(c) {
+	if managementHandlers.ServePluginAuthURL(s.mgmt, c) {
 		c.Abort()
 		return
 	}

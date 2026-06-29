@@ -266,7 +266,7 @@ func pluginAuthProviderFromPath(path string) (string, bool) {
 	return provider, true
 }
 
-func (h *Handler) ServePluginAuthURL(c *gin.Context) bool {
+func ServePluginAuthURL(h *Handler, c *gin.Context) bool {
 	if h == nil || c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
 	}
@@ -411,11 +411,11 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 
 	// 3. Copilot allowlist: for github-copilot, only expose supported models
 	copilotSupported := map[string]bool{
-		"claude-haiku-4.5":  true,
-		"gemini-2.5-pro":    true,
-		"gemini-3-pro-preview":    true,
-		"gemini-3.1-pro-preview":  true,
-		"gemini-3-flash-preview":  true,
+		"claude-haiku-4.5":       true,
+		"gemini-2.5-pro":         true,
+		"gemini-3-pro-preview":   true,
+		"gemini-3.1-pro-preview": true,
+		"gemini-3-flash-preview": true,
 	}
 
 	result := make([]gin.H, 0, len(models))
@@ -459,10 +459,10 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 	}
 	files := make([]gin.H, 0)
 	type antigravityDiskEntry struct {
-		index      int
-		isPrimary  bool
-		disabled   bool
-		order      int64
+		index     int
+		isPrimary bool
+		disabled  bool
+		order     int64
 	}
 	antigravityEntries := make(map[int]antigravityDiskEntry)
 	for _, e := range entries {
