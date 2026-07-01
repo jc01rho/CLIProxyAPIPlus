@@ -444,7 +444,7 @@ func FetchKiloModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 		return true
 	})
 
-	log.Infof("kilo: fetched %d models from API, %d curated free (preferredIndex > 0)", totalCount, count)
+	log.Debugf("kilo: fetched %d models from API, %d curated free (preferredIndex > 0)", totalCount, count)
 	if count == 0 && totalCount > 0 {
 		log.Warn("kilo: no curated free models found (check API response fields)")
 	}
