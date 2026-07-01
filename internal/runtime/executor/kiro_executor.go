@@ -3787,7 +3787,7 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		updated.NextRefreshAfter = expiresAt.Add(-20 * time.Minute)
 	}
 
-	log.Infof("kiro executor: token refreshed successfully, expires at %s", tokenData.ExpiresAt)
+	log.Debugf("kiro executor: token refreshed successfully, expires at %s", tokenData.ExpiresAt)
 	return updated, nil
 }
 
