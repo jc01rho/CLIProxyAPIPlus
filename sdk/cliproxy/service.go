@@ -2022,6 +2022,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 				excluded = entry.ExcludedModels
 			}
 		}
+		if authKind != "apikey" {
+			models = mergeClaudeFetchedModels(models, s.fetchClaudeModelsForAuth(ctx, a))
+		}
 		models = applyExcludedModels(models, excluded)
 	case "codex":
 		codexPlanType := ""
