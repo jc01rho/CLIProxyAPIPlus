@@ -2966,7 +2966,7 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 	// Generate agentic variants
 	models = generateKiroAgenticVariants(models)
 
-	log.Infof("kiro: successfully fetched %d models from API (including agentic variants)", len(models))
+	log.Debugf("kiro: successfully fetched %d models from API (including agentic variants)", len(models))
 	return models
 }
 
