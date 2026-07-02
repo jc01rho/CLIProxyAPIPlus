@@ -14,18 +14,17 @@ import (
 )
 
 // AnthropicModelsResponse represents the response from the Anthropic /v1/models endpoint.
+// Pagination fields (has_more/first_id/last_id) are intentionally omitted: ListModels does
+// a single unpaginated GET and callers only need Data.
 type AnthropicModelsResponse struct {
-	Data    []AnthropicModelEntry `json:"data"`
-	HasMore bool                  `json:"has_more"`
-	FirstID string                `json:"first_id"`
-	LastID  string                `json:"last_id"`
+	Data []AnthropicModelEntry `json:"data"`
 }
 
 // AnthropicModelEntry represents a single model entry from the Anthropic models API.
 // See https://platform.claude.com/docs/en/api/models/retrieve
+// Only fields consumed by ToModelInfo() are kept; the API's `type` field is unused here.
 type AnthropicModelEntry struct {
 	ID             string                 `json:"id"`
-	Type           string                 `json:"type"`
 	DisplayName    string                 `json:"display_name"`
 	CreatedAt      string                 `json:"created_at"`
 	MaxInputTokens int                    `json:"max_input_tokens"`
@@ -33,14 +32,12 @@ type AnthropicModelEntry struct {
 	Capabilities   *AnthropicCapabilities `json:"capabilities,omitempty"`
 }
 
-// AnthropicCapabilities describes model capability flags from the API.
+// AnthropicCapabilities describes the model capability flags consumed by ToModelInfo().
+// The API also returns batch/citations/code_execution/structured_outputs, which are
+// dropped here since nothing reads them; re-add if a caller needs them.
 type AnthropicCapabilities struct {
-	Batch             AnthropicCapabilitySupport `json:"batch"`
-	Citations         AnthropicCapabilitySupport `json:"citations"`
-	CodeExecution     AnthropicCapabilitySupport `json:"code_execution"`
-	ImageInput        AnthropicCapabilitySupport `json:"image_input"`
-	PDFInput          AnthropicCapabilitySupport `json:"pdf_input"`
-	StructuredOutputs AnthropicCapabilitySupport `json:"structured_outputs"`
+	ImageInput AnthropicCapabilitySupport `json:"image_input"`
+	PDFInput   AnthropicCapabilitySupport `json:"pdf_input"`
 }
 
 // AnthropicCapabilitySupport indicates whether a capability is supported.
@@ -118,15 +115,15 @@ func (o *ClaudeAuth) ListModels(ctx context.Context, accessToken string) (*Anthr
 // this conversion is used to add dynamically-discovered models not in the static catalog.
 func (e AnthropicModelEntry) ToModelInfo() *registry.ModelInfo {
 	mi := &registry.ModelInfo{
-		ID:           e.ID,
-		Object:       "model",
-		Type:         "claude",
-		DisplayName:  e.DisplayName,
-		OwnedBy:      "anthropic",
-		Created:      parseAnthropicCreatedAt(e.CreatedAt),
-		InputTokenLimit:  e.MaxInputTokens,
+		ID:                  e.ID,
+		Object:              "model",
+		Type:                "claude",
+		DisplayName:         e.DisplayName,
+		OwnedBy:             "anthropic",
+		Created:             parseAnthropicCreatedAt(e.CreatedAt),
+		InputTokenLimit:     e.MaxInputTokens,
 		MaxCompletionTokens: e.MaxTokens,
-		ContextLength:     e.MaxInputTokens,
+		ContextLength:       e.MaxInputTokens,
 	}
 
 	if e.Capabilities != nil {
