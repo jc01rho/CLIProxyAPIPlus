@@ -593,7 +593,8 @@ jobs:
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
       - name: Discord Notification
-        if: success()
+        # ponytail: gate to one matrix leg so the release fires a single notification, not one per freebsd target
+        if: success() && matrix.target == 'freebsd-amd64'
         env:
           DISCORD_VERSION: ${{ env.RELEASE_VERSION }}
           DISCORD_COMMIT: ${{ env.COMMIT }}
