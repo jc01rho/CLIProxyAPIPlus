@@ -4776,7 +4776,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 		auth.recordRecentRequest(now, result.Success, failureReason)
 		if !result.Success && result.Error != nil {
-			logEntryWithRequestID(ctx).WithFields(resultFailureLogFields(ctx, result)).WithError(result.Error).Warn("request failed")
+			logEntryWithRequestID(ctx).WithFields(resultFailureLogFields(ctx, result, auth)).WithError(result.Error).Warn("request failed")
 		}
 		if result.Success {
 			auth.Success++
@@ -7380,7 +7380,7 @@ func logEntryWithRequestID(ctx context.Context) *log.Entry {
 	return log.NewEntry(log.StandardLogger())
 }
 
-func resultFailureLogFields(ctx context.Context, result Result) log.Fields {
+func resultFailureLogFields(ctx context.Context, result Result, auth *Auth) log.Fields {
 	fields := log.Fields{
 		"auth_id":        result.AuthID,
 		"provider":       result.Provider,
@@ -7389,6 +7389,7 @@ func resultFailureLogFields(ctx context.Context, result Result) log.Fields {
 		"code":           result.Error.Code,
 		"status":         result.Error.HTTPStatus,
 	}
+	addAuthCredentialLogFields(fields, auth)
 	if requestedModel := coreusage.RequestedModelAliasFromContext(ctx); requestedModel != "" {
 		fields["requested_model"] = requestedModel
 	}
@@ -7415,6 +7416,27 @@ func resultFailureLogFields(ctx context.Context, result Result) log.Fields {
 		}
 	}
 	return fields
+}
+
+func addAuthCredentialLogFields(fields log.Fields, auth *Auth) {
+	if fields == nil || auth == nil {
+		return
+	}
+	if kind, credential := auth.AccountInfo(); kind != "" {
+		fields["auth_kind"] = kind
+		if credential != "" {
+			if kind == "api_key" {
+				credential = util.HideAPIKey(credential)
+			}
+			fields["credential"] = credential
+		}
+	}
+	if label := strings.TrimSpace(auth.Label); label != "" {
+		fields["auth_label"] = label
+	}
+	if authFile := strings.TrimSpace(auth.FileName); authFile != "" {
+		fields["auth_file"] = filepath.Base(authFile)
+	}
 }
 
 func upstreamSummaryMatchesResult(upstream requestmeta.UpstreamRequestSummary, result Result) bool {

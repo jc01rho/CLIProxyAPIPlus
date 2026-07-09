@@ -133,3 +133,53 @@ func TestManagerMarkResultLogsResolvedUpstreamModelWhenRequestedModelIsAlias(t *
 		}
 	}
 }
+
+func TestManagerMarkResultLogsFailedCredentialIdentity(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "claude-oauth-1",
+		Provider: "claude",
+		FileName: "/tmp/cliproxy/claude-user.json",
+		Label:    "Claude Team Seat",
+		Attributes: map[string]string{
+			AttributeAuthKind: AuthKindOAuth,
+		},
+		Metadata: map[string]any{
+			"email": "user@example.com",
+		},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	logBuf, restoreLogger := captureStandardLogger(t)
+	defer restoreLogger()
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: "claude",
+		Model:    "claude-haiku-4-5-20251001",
+		Success:  false,
+		Error: &Error{
+			Code:       "authentication_error",
+			Message:    "Invalid authentication credentials",
+			HTTPStatus: http.StatusUnauthorized,
+		},
+	})
+
+	got := logBuf.String()
+	for _, want := range []string{
+		"request failed",
+		"auth_id=claude-oauth-1",
+		"auth_kind=oauth",
+		"credential=user@example.com",
+		"auth_file=claude-user.json",
+		"auth_label=\"Claude Team Seat\"",
+		"provider=claude",
+		"model=claude-haiku-4-5-20251001",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected log to contain %q, got: %s", want, got)
+		}
+	}
+}
