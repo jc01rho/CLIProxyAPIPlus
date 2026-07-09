@@ -1235,6 +1235,16 @@ func formatHomeClaudeModels(entries []homeModelEntry) []map[string]any {
 	for _, entry := range entries {
 		out = append(out, formatHomeClaudeModel(entry))
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		di, _ := out[i]["display_name"].(string)
+		dj, _ := out[j]["display_name"].(string)
+		if di != dj {
+			return di < dj
+		}
+		idi, _ := out[i]["id"].(string)
+		idj, _ := out[j]["id"].(string)
+		return idi < idj
+	})
 	return out
 }
 
@@ -1252,7 +1262,7 @@ func formatHomeClaudeModel(entry homeModelEntry) map[string]any {
 		maxOutput = registry.DefaultClaudeMaxOutputTokens
 	}
 	model := map[string]any{
-		"id":               entry.id,
+		"id":               util.EnsureClaudeModelIDPrefix(entry.id),
 		"object":           "model",
 		"owned_by":         entry.ownedBy,
 		"type":             "model",
