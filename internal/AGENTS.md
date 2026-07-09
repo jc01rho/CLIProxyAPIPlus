@@ -52,6 +52,7 @@ internal/
 api/AGENTS.md
 auth/kiro/AGENTS.md
 config/AGENTS.md
+pluginhost/AGENTS.md
 registry/AGENTS.md
 runtime/executor/AGENTS.md
 translator/AGENTS.md
