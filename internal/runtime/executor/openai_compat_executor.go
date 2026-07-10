@@ -127,7 +127,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	// Provider-specific request transformations
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
-	translated = normalizeMiniMaxM3ThinkingType(baseModel, translated)
+	translated = omitMiniMaxM3ThinkingType(baseModel, translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
 	}
@@ -370,7 +370,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Provider-specific request transformations
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
-	translated = normalizeMiniMaxM3ThinkingType(baseModel, translated)
+	translated = omitMiniMaxM3ThinkingType(baseModel, translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
 	}
@@ -957,9 +957,6 @@ func isOpenCodeZenProvider(baseURL string) bool {
 	return strings.Contains(lower, "opencode.ai/zen/")
 }
 
-// isMiniMaxM3Model reports whether the model name targets a MiniMax-M3
-// model, regardless of the upstream gateway. MiniMax-M3 only allows
-// thinking.type "adaptive" or "disabled" and rejects "enabled".
 func isMiniMaxM3Model(model string) bool {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	if lower == "" {
@@ -968,23 +965,20 @@ func isMiniMaxM3Model(model string) bool {
 	return strings.Contains(lower, "minimax-m3")
 }
 
-// normalizeMiniMaxM3ThinkingType rewrites thinking.type from "enabled"
-// to "adaptive" for MiniMax-M3 models, since MiniMax only allows
-// "adaptive" or "disabled" and rejects "enabled".
-// If thinking.type is "disabled" or "adaptive", it is left untouched.
-// Non-MiniMax models are not affected, since other providers (e.g. Claude,
-// GPT) accept "enabled".
-func normalizeMiniMaxM3ThinkingType(model string, body []byte) []byte {
+func omitMiniMaxM3ThinkingType(model string, body []byte) []byte {
 	if !isMiniMaxM3Model(model) || len(body) == 0 || !gjson.ValidBytes(body) {
 		return body
 	}
-	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
-	if thinkingType == "" || thinkingType == "disabled" || thinkingType == "adaptive" {
-		return body
-	}
-	updated, err := sjson.SetBytes(body, "thinking.type", "adaptive")
+	updated, err := sjson.DeleteBytes(body, "thinking.type")
 	if err != nil {
 		return body
+	}
+	thinking := gjson.GetBytes(updated, "thinking")
+	if thinking.IsObject() && len(thinking.Map()) == 0 {
+		withoutThinking, errDelete := sjson.DeleteBytes(updated, "thinking")
+		if errDelete == nil {
+			return withoutThinking
+		}
 	}
 	return updated
 }
