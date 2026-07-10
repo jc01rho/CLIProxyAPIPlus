@@ -69,6 +69,9 @@ type ModelInfo struct {
 	// This is optional and currently used for Gemini thinking budget normalization.
 	Thinking *ThinkingSupport `json:"thinking,omitempty"`
 
+	// Config holds model-specific runtime overrides loaded from models.json.
+	Config *ModelConfig `json:"config,omitempty"`
+
 	// UserDefined indicates this model was defined through config file's models[]
 	// array (e.g., openai-compatibility.*.models[], *-api-key.models[]).
 	// UserDefined models have thinking configuration passed through without validation.
@@ -88,6 +91,13 @@ func (m *ModelInfo) GetName() string {
 // GetAlias returns the model alias for alias resolution.
 func (m *ModelInfo) GetAlias() string {
 	return m.Alias
+}
+
+// ModelConfig holds optional runtime overrides for a model definition.
+type ModelConfig struct {
+	// OverrideHeader forces upstream request headers when non-empty.
+	// Keys are header names (e.g. "user-agent"); values replace any existing header.
+	OverrideHeader map[string]string `json:"override_header,omitempty"`
 }
 
 type availableModelsCacheEntry struct {
@@ -205,6 +215,27 @@ func LookupModelInfo(modelID string, provider ...string) *ModelInfo {
 		return cloneModelInfo(LookupStaticModelInfoForProvider(modelID, p))
 	}
 	return cloneModelInfo(LookupStaticModelInfo(modelID))
+}
+
+// ModelOverrideHeaders returns models.json config.override_header for the model, if any.
+// The returned map is a defensive copy and may be empty but never nil when overrides exist.
+func ModelOverrideHeaders(modelID string, provider ...string) map[string]string {
+	info := LookupModelInfo(modelID, provider...)
+	if info == nil || info.Config == nil || len(info.Config.OverrideHeader) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(info.Config.OverrideHeader))
+	for key, value := range info.Config.OverrideHeader {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // SetHook sets an optional hook for observing model registration changes.
@@ -575,6 +606,16 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 			copyThinking.Levels = append([]string(nil), model.Thinking.Levels...)
 		}
 		copyModel.Thinking = &copyThinking
+	}
+	if model.Config != nil {
+		copyConfig := *model.Config
+		if len(model.Config.OverrideHeader) > 0 {
+			copyConfig.OverrideHeader = make(map[string]string, len(model.Config.OverrideHeader))
+			for key, value := range model.Config.OverrideHeader {
+				copyConfig.OverrideHeader[key] = value
+			}
+		}
+		copyModel.Config = &copyConfig
 	}
 	return &copyModel
 }
