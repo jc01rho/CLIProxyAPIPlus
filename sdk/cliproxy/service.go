@@ -2587,6 +2587,34 @@ func matchWildcard(pattern, value string) bool {
 type modelEntry interface {
 	GetName() string
 	GetAlias() string
+	GetDisplayName() string
+}
+
+func buildConfiguredModelInfo(model modelEntry, ownedBy, modelType string, created int64, fallbackDisplayName string, userDefined bool) *ModelInfo {
+	name := strings.TrimSpace(model.GetName())
+	alias := strings.TrimSpace(model.GetAlias())
+	if alias == "" {
+		alias = name
+	}
+	if alias == "" {
+		return nil
+	}
+	displayName := strings.TrimSpace(model.GetDisplayName())
+	if displayName == "" {
+		displayName = fallbackDisplayName
+	}
+	if displayName == "" {
+		displayName = alias
+	}
+	return &ModelInfo{
+		ID:          alias,
+		Object:      "model",
+		Created:     created,
+		OwnedBy:     ownedBy,
+		Type:        modelType,
+		DisplayName: displayName,
+		UserDefined: userDefined,
+	}
 }
 
 func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []*ModelInfo {
@@ -2597,35 +2625,22 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 	models := make([]*ModelInfo, 0, len(compat.Models))
 	for i := range compat.Models {
 		model := compat.Models[i]
-		modelID := strings.TrimSpace(model.Alias)
-		if modelID == "" {
-			modelID = strings.TrimSpace(model.Name)
-		}
-		if modelID == "" {
-			continue
-		}
 		modelType := "openai-compatibility"
 		if model.Image {
 			modelType = registry.OpenAIImageModelType
+		}
+		info := buildConfiguredModelInfo(model, compat.Name, modelType, now, strings.TrimSpace(model.Alias), false)
+		if info == nil {
+			continue
 		}
 		thinking := model.Thinking
 		if thinking == nil && !model.Image {
 			thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
 		}
-		inputModalities := normalizeCompatConfigModalities(model.InputModalities)
-		outputModalities := normalizeCompatConfigModalities(model.OutputModalities)
-		models = append(models, &ModelInfo{
-			ID:                        modelID,
-			Object:                    "model",
-			Created:                   now,
-			OwnedBy:                   compat.Name,
-			Type:                      modelType,
-			DisplayName:               modelID,
-			UserDefined:               false,
-			Thinking:                  thinking,
-			SupportedInputModalities:  inputModalities,
-			SupportedOutputModalities: outputModalities,
-		})
+		info.Thinking = thinking
+		info.SupportedInputModalities = normalizeCompatConfigModalities(model.InputModalities)
+		info.SupportedOutputModalities = normalizeCompatConfigModalities(model.OutputModalities)
+		models = append(models, info)
 	}
 	return models
 }
@@ -2663,14 +2678,12 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 	for i := range models {
 		model := models[i]
 		name := strings.TrimSpace(model.GetName())
-		alias := strings.TrimSpace(model.GetAlias())
-		if alias == "" {
-			alias = name
-		}
-		if alias == "" {
+		info := buildConfiguredModelInfo(model, ownedBy, modelType, now, name, true)
+		if info == nil {
 			continue
 		}
-		key := strings.ToLower(alias) + "|" + strings.ToLower(name)
+		alias := info.ID
+		key := strings.ToLower(alias)
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -2679,15 +2692,9 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 		if display == "" {
 			display = alias
 		}
-		info := &ModelInfo{
-			ID:          name,
-			Object:      "model",
-			Created:     now,
-			OwnedBy:     ownedBy,
-			Type:        modelType,
-			DisplayName: display,
-			UserDefined: true,
-		}
+		info.ID = name
+		info.DisplayName = display
+		info.UserDefined = true
 		if alias != name && alias != "" {
 			info.Alias = alias
 		}
@@ -2748,7 +2755,39 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return registry.WithCodexBuiltins(buildConfigModels(entry.Models, "openai", "openai"))
+
+	models := registry.WithCodexBuiltins(buildConfigModels(entry.Models, "openai", "openai"))
+	configuredDisplayNames := make(map[string]string, len(entry.Models))
+	seenConfiguredModels := make(map[string]struct{}, len(entry.Models))
+	for i := range entry.Models {
+		model := entry.Models[i]
+		alias := strings.TrimSpace(model.Alias)
+		if alias == "" {
+			alias = strings.TrimSpace(model.Name)
+		}
+		if alias == "" {
+			continue
+		}
+		key := strings.ToLower(alias)
+		if _, exists := seenConfiguredModels[key]; exists {
+			continue
+		}
+		seenConfiguredModels[key] = struct{}{}
+
+		displayName := strings.TrimSpace(model.DisplayName)
+		if displayName != "" {
+			configuredDisplayNames[key] = displayName
+		}
+	}
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if displayName, ok := configuredDisplayNames[strings.ToLower(model.ID)]; ok {
+			model.DisplayName = displayName
+		}
+	}
+	return models
 }
 
 func buildCommandCodeConfigModels(entry *config.CommandCodeKey) []*ModelInfo {
