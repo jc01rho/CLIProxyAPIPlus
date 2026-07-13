@@ -801,9 +801,10 @@ type CommandCodeModel struct {
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m CommandCodeModel) GetName() string       { return m.Name }
-func (m CommandCodeModel) GetAlias() string      { return m.Alias }
-func (m CommandCodeModel) GetForceMapping() bool { return m.ForceMapping }
+func (m CommandCodeModel) GetName() string        { return m.Name }
+func (m CommandCodeModel) GetAlias() string       { return m.Alias }
+func (m CommandCodeModel) GetDisplayName() string { return "" }
+func (m CommandCodeModel) GetForceMapping() bool  { return m.ForceMapping }
 
 // MistralKey represents the configuration for a Mistral API key.
 type MistralKey struct {
@@ -857,9 +858,10 @@ type MistralModel struct {
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m MistralModel) GetName() string       { return m.Name }
-func (m MistralModel) GetAlias() string      { return m.Alias }
-func (m MistralModel) GetForceMapping() bool { return m.ForceMapping }
+func (m MistralModel) GetName() string        { return m.Name }
+func (m MistralModel) GetAlias() string       { return m.Alias }
+func (m MistralModel) GetDisplayName() string { return "" }
+func (m MistralModel) GetForceMapping() bool  { return m.ForceMapping }
 
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
