@@ -1193,7 +1193,7 @@ func TestNormalizeXAITools_SimplifiesCodexAppAutomationUpdateSchema(t *testing.T
 	// Large oneOf+$ref schema mimicking Codex Desktop codex_app.automation_update.
 	params := `{"oneOf":[{"type":"object","properties":{"mode":{"type":"string"}}}],"$defs":{"a":{"type":"string"}},"x":"` + strings.Repeat("y", 1600) + `"}`
 	body := []byte(`{"model":"grok-4.5","tools":[{"type":"namespace","name":"codex_app","tools":[{"type":"function","name":"automation_update","description":"sched","strict":true,"parameters":` + params + `}]},{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]}`)
-	out := normalizeXAITools(body)
+	out := NormalizeXAITools(body)
 
 	tools := gjson.GetBytes(out, "tools")
 	if !tools.IsArray() {
@@ -1259,7 +1259,7 @@ func TestNormalizeXAITools_PreservesUnrelatedSchemas(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out := normalizeXAITools(tt.body)
+			out := NormalizeXAITools(tt.body)
 			tool := gjson.GetBytes(out, "tools.0")
 			if tool.Get("strict").Type != gjson.True {
 				t.Fatalf("strict changed for unrelated tool: %s", string(out))
