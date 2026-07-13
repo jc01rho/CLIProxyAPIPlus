@@ -1145,7 +1145,6 @@ func xaiMetadataString(meta map[string]any, key string) string {
 }
 
 func sanitizeXAIResponsesBody(body []byte, model string) []byte {
-	body = removeXAIEncryptedReasoningInclude(body)
 	name := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
 	if strings.HasPrefix(name, "grok-4.3") {
 		// Force reasoning effort to medium for grok-4.3 per user requirement.
