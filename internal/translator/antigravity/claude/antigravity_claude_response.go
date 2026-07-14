@@ -112,7 +112,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 			HasFirstResponse: false,
 			ResponseType:     0,
 			ResponseIndex:    0,
-			ToolNameMap:      util.SanitizedToolNameMap(originalRequestRawJSON),
+			ToolNameMap:      util.DisambiguatedToolNameMap(originalRequestRawJSON),
 		}
 	}
 	modelName := gjson.GetBytes(requestRawJSON, "model").String()
@@ -549,7 +549,7 @@ func appendWebSearchBlocks(params *Params, output *[]byte) {
 // Returns:
 //   - []byte: A Claude-compatible JSON response.
 func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
-	toolNameMap := util.SanitizedToolNameMap(originalRequestRawJSON)
+	toolNameMap := util.DisambiguatedToolNameMap(originalRequestRawJSON)
 	modelName := gjson.GetBytes(requestRawJSON, "model").String()
 
 	root := gjson.ParseBytes(rawJSON)
