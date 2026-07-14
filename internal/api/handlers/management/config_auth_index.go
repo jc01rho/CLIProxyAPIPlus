@@ -33,6 +33,11 @@ type mistralKeyWithAuthIndex struct {
 	AuthIndex string `json:"auth-index,omitempty"`
 }
 
+type xaiKeyWithAuthIndex struct {
+	config.XAIKey
+	AuthIndex string `json:"auth-index,omitempty"`
+}
+
 type vertexCompatKeyWithAuthIndex struct {
 	config.VertexCompatKey
 	AuthIndex string `json:"auth-index,omitempty"`
@@ -257,6 +262,35 @@ func (h *Handler) mistralKeysWithAuthIndex() []mistralKeyWithAuthIndex {
 		out[i] = mistralKeyWithAuthIndex{
 			MistralKey: entry,
 			AuthIndex:  authIndex,
+		}
+	}
+	return out
+}
+
+func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveIndexByID := h.liveAuthIndexByID()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]xaiKeyWithAuthIndex, len(h.cfg.XAIKey))
+	for i := range h.cfg.XAIKey {
+		entry := h.cfg.XAIKey[i]
+		authIndex := ""
+		if key := strings.TrimSpace(entry.APIKey); key != "" {
+			id, _ := idGen.Next("xai:apikey", key, entry.BaseURL)
+			authIndex = liveIndexByID[id]
+		}
+		out[i] = xaiKeyWithAuthIndex{
+			XAIKey:    entry,
+			AuthIndex: authIndex,
 		}
 	}
 	return out

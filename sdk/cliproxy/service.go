@@ -2094,6 +2094,14 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = applyExcludedModels(models, excluded)
 	case "xai":
 		models = registry.GetXAIModels()
+		if entry := s.resolveConfigXAIKey(a); entry != nil {
+			if len(entry.Models) > 0 {
+				models = buildXAIConfigModels(entry)
+			}
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
+			}
+		}
 		models = applyExcludedModels(models, excluded)
 	case "cursor":
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -2399,7 +2407,21 @@ func (s *Service) resolveConfigVertexCompatKey(auth *coreauth.Auth) *config.Vert
 }
 
 func (s *Service) resolveConfigCodexKey(auth *coreauth.Auth) *config.CodexKey {
-	if auth == nil || s.cfg == nil {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	return resolveConfigCodexStyleKey(auth, s.cfg.CodexKey)
+}
+
+func (s *Service) resolveConfigXAIKey(auth *coreauth.Auth) *config.XAIKey {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	return resolveConfigCodexStyleKey(auth, s.cfg.XAIKey)
+}
+
+func resolveConfigCodexStyleKey(auth *coreauth.Auth, entries []config.CodexKey) *config.CodexKey {
+	if auth == nil {
 		return nil
 	}
 	var attrKey, attrBase string
@@ -2407,8 +2429,8 @@ func (s *Service) resolveConfigCodexKey(auth *coreauth.Auth) *config.CodexKey {
 		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
 		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
 	}
-	for i := range s.cfg.CodexKey {
-		entry := &s.cfg.CodexKey[i]
+	for i := range entries {
+		entry := &entries[i]
 		cfgKey := strings.TrimSpace(entry.APIKey)
 		cfgBase := strings.TrimSpace(entry.BaseURL)
 		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
@@ -2749,6 +2771,13 @@ func buildClaudeConfigModels(entry *config.ClaudeKey) []*ModelInfo {
 		return nil
 	}
 	return buildConfigModels(entry.Models, "anthropic", "claude")
+}
+
+func buildXAIConfigModels(entry *config.XAIKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "xai", "xai")
 }
 
 func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
