@@ -4,15 +4,15 @@ go 1.26.0
 
 require (
 	github.com/andybalholm/brotli v1.0.6
-	github.com/denisbrodbeck/machineid v1.0.1
 	github.com/atotto/clipboard v0.1.4
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/gin-gonic/gin v1.10.1
-	github.com/go-git/go-git/v6 v6.0.0-20251009132922-75a182125145
+	github.com/go-git/go-git/v6 v6.0.0-alpha.4.0.20260520124234-0860a7d8a164
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.2
@@ -20,31 +20,31 @@ require (
 	github.com/klauspost/compress v1.17.4
 	github.com/minio/minio-go/v7 v7.0.66
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
+	github.com/redis/go-redis/v9 v9.19.0
 	github.com/refraction-networking/utls v1.8.2
 	github.com/sirupsen/logrus v1.9.3
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/tiktoken-go/tokenizer v0.7.0
-	golang.org/x/crypto v0.45.0
-	golang.org/x/net v0.47.0
+	golang.org/x/crypto v0.54.0
+	golang.org/x/net v0.57.0
 	golang.org/x/oauth2 v0.30.0
-	golang.org/x/sync v0.18.0
-	golang.org/x/term v0.37.0
-	golang.org/x/sys v0.38.0
+	golang.org/x/sync v0.22.0
+	golang.org/x/sys v0.47.0
+	golang.org/x/term v0.45.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/redis/go-redis/v9 v9.19.0 // indirect
+	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 )
 
 require (
 	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/ProtonMail/go-crypto v1.3.0 // indirect
+	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
@@ -55,10 +55,9 @@ require (
 	github.com/clipperhouse/displaywidth v0.9.0 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
-	github.com/cloudflare/circl v1.6.1 // indirect
+	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect
 	github.com/cloudwego/iasm v0.2.0 // indirect
-	github.com/cyphar/filepath-securejoin v0.4.1 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
@@ -66,17 +65,16 @@ require (
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/go-git/gcfg/v2 v2.0.2 // indirect
-	github.com/go-git/go-billy/v6 v6.0.0-20250627091229-31e2a16eef30 // indirect
+	github.com/go-git/go-billy/v6 v6.0.0-alpha.1.0.20260519112248-0095b064a6c6 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.20.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
-	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/kevinburke/ssh_config v1.4.0 // indirect
+	github.com/kevinburke/ssh_config v1.6.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
@@ -92,7 +90,7 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/pierrec/xxHash v0.1.5
-	github.com/pjbgf/sha1cd v0.5.0 // indirect
+	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rs/xid v1.5.0 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
@@ -103,7 +101,7 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/arch v0.8.0 // indirect
-	golang.org/x/text v0.31.0 // indirect
-	google.golang.org/protobuf v1.34.1 // indirect
+	golang.org/x/text v0.40.0 // indirect
+	google.golang.org/protobuf v1.34.1
 	gopkg.in/ini.v1 v1.67.0 // indirect
 )
