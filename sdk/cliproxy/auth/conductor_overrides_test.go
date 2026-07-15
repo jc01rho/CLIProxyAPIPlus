@@ -288,6 +288,29 @@ type retryAfterStatusError struct {
 	retryAfter time.Duration
 }
 
+type requestScopedStatusError struct {
+	status  int
+	message string
+}
+
+func (e *requestScopedStatusError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.message
+}
+
+func (e *requestScopedStatusError) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.status
+}
+
+func (e *requestScopedStatusError) IsRequestScoped() bool {
+	return e != nil
+}
+
 func (e *retryAfterStatusError) Error() string {
 	if e == nil {
 		return ""
@@ -1906,6 +1929,123 @@ func TestManager_Execute_DisableCooling_RetriesAfter429RetryAfter(t *testing.T) 
 	calls := executor.ExecuteCalls()
 	if len(calls) != 4 {
 		t.Fatalf("execute calls = %d, want 4 (initial + 3 retries)", len(calls))
+	}
+}
+
+func TestManager_RequestScopedErrorStopsCredentialFallbackWithoutSuspendingAuth(t *testing.T) {
+	incompleteErr := &requestScopedStatusError{
+		status:  http.StatusRequestTimeout,
+		message: "stream error: stream disconnected before completion: stream closed before response.completed",
+	}
+	invalidRequestErr := &Error{
+		HTTPStatus: http.StatusBadRequest,
+		Message:    `{"error":{"type":"invalid_request_error","code":"invalid_value","message":"Invalid input."}}`,
+	}
+	badRequestErr := &Error{
+		HTTPStatus: http.StatusBadRequest,
+		Message:    `{"error":{"type":"bad_request_error","code":"invalid_value","message":"Bad input."}}`,
+	}
+	// Local behavior: 400 errors trigger credential fallback chains (e0a8e394),
+	// so invalid_request/bad_request 400s fall through to the next auth instead
+	// of stopping as request-scoped errors.
+	tests := []struct {
+		name         string
+		stream       bool
+		err          error
+		wantStatus   int
+		wantFallback bool
+	}{
+		{name: "non-streaming incomplete", err: incompleteErr, wantStatus: http.StatusRequestTimeout},
+		{name: "streaming incomplete", stream: true, err: incompleteErr, wantStatus: http.StatusRequestTimeout},
+		{name: "non-streaming invalid request", err: invalidRequestErr, wantFallback: true},
+		{name: "streaming invalid request", stream: true, err: invalidRequestErr, wantFallback: true},
+		{name: "non-streaming bad request", err: badRequestErr, wantFallback: true},
+		{name: "streaming bad request", stream: true, err: badRequestErr, wantFallback: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			m.SetRetryConfig(2, 30*time.Second, 0)
+
+			executor := &authFallbackExecutor{id: "codex"}
+			if tc.stream {
+				executor.streamFirstErrors = map[string]error{"aa-bad-auth": tc.err}
+			} else {
+				executor.executeErrors = map[string]error{"aa-bad-auth": tc.err}
+			}
+			m.RegisterExecutor(executor)
+
+			model := "gpt-5.5"
+			badAuth := &Auth{ID: "aa-bad-auth", Provider: "codex"}
+			goodAuth := &Auth{ID: "bb-good-auth", Provider: "codex"}
+
+			reg := registry.GetGlobalRegistry()
+			reg.RegisterClient(badAuth.ID, badAuth.Provider, []*registry.ModelInfo{{ID: model}})
+			reg.RegisterClient(goodAuth.ID, goodAuth.Provider, []*registry.ModelInfo{{ID: model}})
+			t.Cleanup(func() {
+				reg.UnregisterClient(badAuth.ID)
+				reg.UnregisterClient(goodAuth.ID)
+			})
+
+			if _, errRegister := m.Register(context.Background(), badAuth); errRegister != nil {
+				t.Fatalf("register bad auth: %v", errRegister)
+			}
+			if _, errRegister := m.Register(context.Background(), goodAuth); errRegister != nil {
+				t.Fatalf("register good auth: %v", errRegister)
+			}
+
+			var errExecute error
+			if tc.stream {
+				result, errStream := m.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{Stream: true})
+				if result != nil {
+					for range result.Chunks {
+					}
+				}
+				errExecute = errStream
+			} else {
+				_, errExecute = m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+			}
+			var calls []string
+			if tc.stream {
+				calls = executor.StreamCalls()
+			} else {
+				calls = executor.ExecuteCalls()
+			}
+			if tc.wantFallback {
+				if errExecute != nil {
+					t.Fatalf("expected fallback to succeed, got %v", errExecute)
+				}
+				if len(calls) != 2 || calls[0] != badAuth.ID || calls[1] != goodAuth.ID {
+					t.Fatalf("credential calls = %v, want [%s %s]", calls, badAuth.ID, goodAuth.ID)
+				}
+				return
+			}
+			if errExecute == nil {
+				t.Fatal("expected request-scoped stream error")
+			}
+			if got := statusCodeFromError(errExecute); got != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", got, tc.wantStatus)
+			}
+
+			if len(calls) != 1 || calls[0] != badAuth.ID {
+				t.Fatalf("credential calls = %v, want [%s]", calls, badAuth.ID)
+			}
+
+			updatedBad, ok := m.GetByID(badAuth.ID)
+			if !ok || updatedBad == nil {
+				t.Fatal("expected bad auth to remain registered")
+			}
+			if updatedBad.Unavailable {
+				t.Fatal("expected request-scoped error to keep auth available")
+			}
+			if !updatedBad.NextRetryAfter.IsZero() {
+				t.Fatalf("expected auth cooldown to remain unset, got %v", updatedBad.NextRetryAfter)
+			}
+			if state := updatedBad.ModelStates[model]; state != nil {
+				t.Fatalf("expected request-scoped error to avoid model cooldown state, got %#v", state)
+			}
+		})
 	}
 }
 
