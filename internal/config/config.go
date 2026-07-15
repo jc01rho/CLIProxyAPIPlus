@@ -1177,6 +1177,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	}
 
 	cfg.NormalizePluginsConfig()
+	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {
+		return nil, errResolvePluginsDir
+	}
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.
 	cfg.SanitizeGeminiKeys()
@@ -1264,7 +1267,7 @@ func (cfg *Config) NormalizePluginsConfig() {
 	}
 	cfg.Plugins.Dir = strings.TrimSpace(cfg.Plugins.Dir)
 	if cfg.Plugins.Dir == "" {
-		cfg.Plugins.Dir = "plugins"
+		cfg.Plugins.Dir = defaultPluginsDir
 	}
 	if len(cfg.Plugins.StoreSources) > 0 {
 		sources := make([]string, 0, len(cfg.Plugins.StoreSources))
