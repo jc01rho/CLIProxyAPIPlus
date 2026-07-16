@@ -35,7 +35,7 @@ import (
 )
 
 const (
-	codexVersion               = "0.139.0"
+	codexVersion               = "0.144.0"
 	codexUserAgent             = "codex_exec/" + codexVersion + " (Debian 12.0.0; aarch64) unknown (codex_exec; " + codexVersion + ")"
 	codexOriginator            = "codex_exec"
 	codexBetaFeatures          = "terminal_resize_reflow"
@@ -46,6 +46,58 @@ const (
 )
 
 var dataTag = []byte("data:")
+
+// codexBodyKeyOrder mirrors cortexkit/openai-auth ws-pool.ts CODEX_BODY_KEY_ORDER.
+// Codex serializes the response.create body in this exact key order; the reference
+// client applies it on both the HTTP /responses body and the websocket frame.
+var codexBodyKeyOrder = []string{
+	"type",
+	"model",
+	"instructions",
+	"previous_response_id",
+	"input",
+	"tools",
+	"tool_choice",
+	"parallel_tool_calls",
+	"reasoning",
+	"store",
+	"stream",
+	"include",
+	"prompt_cache_key",
+	"text",
+	"generate",
+	"client_metadata",
+}
+
+// orderCodexBody reorders top-level JSON keys to match codexBodyKeyOrder,
+// appending any keys not in the canonical list afterwards (in their original
+// order). Mirrors orderCodexBody() in cortexkit/openai-auth.
+func orderCodexBody(body []byte) []byte {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return body
+	}
+
+	ordered := []byte("{}")
+	seen := make(map[string]bool, len(codexBodyKeyOrder))
+	for _, key := range codexBodyKeyOrder {
+		if v := root.Get(key); v.Exists() {
+			ordered, _ = sjson.SetRawBytes(ordered, key, []byte(v.Raw))
+			seen[key] = true
+		}
+	}
+	root.ForEach(func(k, v gjson.Result) bool {
+		key := k.String()
+		if !seen[key] {
+			ordered, _ = sjson.SetRawBytes(ordered, key, []byte(v.Raw))
+		}
+		return true
+	})
+	return ordered
+}
 
 const codexIncompleteStreamMessage = "stream error: stream disconnected before completion: stream closed before response.completed"
 
@@ -1540,6 +1592,9 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	if identityState.promptCacheKey != "" {
 		cache.ID = identityState.promptCacheKey
 	}
+	// Serialize in Codex's exact key order at the final send, matching the
+	// reference client's orderCodexBody() applied in prepareCodexRequest.
+	rawJSON = orderCodexBody(rawJSON)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
 	if err != nil {
 		return nil, nil, codexIdentityConfuseState{}, err
