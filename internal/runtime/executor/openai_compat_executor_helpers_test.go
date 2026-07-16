@@ -178,6 +178,31 @@ func TestOmitMiniMaxM3ThinkingType_ForResolvedModel(t *testing.T) {
 	}
 }
 
+func TestNormalizeMistralReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name       string
+		model      string
+		payload    string
+		wantEffort string
+	}{
+		{name: "medium replaced", model: "mistral-medium-latest", payload: `{"reasoning_effort":"medium"}`, wantEffort: "high"},
+		{name: "low replaced", model: "mistralai/mistral-large", payload: `{"reasoning_effort":"low"}`, wantEffort: "high"},
+		{name: "high preserved", model: "mistral-medium-latest", payload: `{"reasoning_effort":"high"}`, wantEffort: "high"},
+		{name: "none replaced", model: "mistral-medium-latest", payload: `{"reasoning_effort":"none"}`, wantEffort: "high"},
+		{name: "missing field untouched", model: "mistral-medium-latest", payload: `{}`, wantEffort: ""},
+		{name: "non-mistral model untouched", model: "gpt-5", payload: `{"reasoning_effort":"medium"}`, wantEffort: "medium"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeMistralReasoningEffort(tt.model, []byte(tt.payload))
+			if effort := gjson.GetBytes(got, "reasoning_effort").String(); effort != tt.wantEffort {
+				t.Fatalf("reasoning_effort = %q, want %q; payload=%s", effort, tt.wantEffort, got)
+			}
+		})
+	}
+}
+
 func TestFixMistralMessageOrder(t *testing.T) {
 	e := &OpenAICompatExecutor{}
 
