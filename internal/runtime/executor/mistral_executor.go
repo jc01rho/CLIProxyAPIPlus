@@ -77,6 +77,7 @@ func (e *MistralExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), false)
 
 	translated = stripMistralUnsupportedFields(translated)
+	translated = normalizeMistralReasoningEffort(baseModel, translated)
 
 	url := e.resolveBaseURL(auth) + mistralChatEndpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -161,6 +162,7 @@ func (e *MistralExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), true)
 
 	translated = stripMistralUnsupportedFields(translated)
+	translated = normalizeMistralReasoningEffort(baseModel, translated)
 
 	url := e.resolveBaseURL(auth) + mistralChatEndpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))

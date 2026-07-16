@@ -127,6 +127,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	// Provider-specific request transformations
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
+	translated = normalizeMistralReasoningEffort(baseModel, translated)
 	translated = omitMiniMaxM3ThinkingType(baseModel, translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
@@ -370,6 +371,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Provider-specific request transformations
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
+	translated = normalizeMistralReasoningEffort(baseModel, translated)
 	translated = omitMiniMaxM3ThinkingType(baseModel, translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
@@ -928,6 +930,26 @@ func stripDeepSeekUnsupportedFields(body []byte) []byte {
 func isMistralProvider(provider string) bool {
 	p := strings.ToLower(strings.TrimSpace(provider))
 	return p == "mistral" || p == "mistral.ai"
+}
+
+// normalizeMistralReasoningEffort forces reasoning_effort to "high" for models
+// whose name contains "mistral". Mistral models only accept "high" or "none"
+// and reject values like "medium" or "low".
+func normalizeMistralReasoningEffort(model string, body []byte) []byte {
+	if !strings.Contains(strings.ToLower(strings.TrimSpace(model)), "mistral") {
+		return body
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	effort := gjson.GetBytes(body, "reasoning_effort")
+	if !effort.Exists() || effort.String() == "high" {
+		return body
+	}
+	if updated, err := sjson.SetBytes(body, "reasoning_effort", "high"); err == nil {
+		return updated
+	}
+	return body
 }
 
 // resolveReasoningEffortConflict resolves conflicts between the "reasoning" object
