@@ -3290,7 +3290,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
-		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
+		publishSelectedAuthMetadata(opts.Metadata, auth)
 
 		// Set provider auth info in context for gin logger
 		SetProviderAuthInContext(ctx, provider, auth.ID, auth.Label)
@@ -3425,7 +3425,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
-		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
+		publishSelectedAuthMetadata(opts.Metadata, auth)
 
 		tried[auth.ID] = struct{}{}
 		// Set provider auth info in context for gin logger
@@ -3760,7 +3760,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
-		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
+		publishSelectedAuthMetadata(opts.Metadata, auth)
 
 		tried[auth.ID] = struct{}{}
 		// Set provider auth info in context for gin logger
@@ -4183,17 +4183,21 @@ func isFreeCodexAuth(auth *Auth) bool {
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["plan_type"]), "free")
 }
 
-func publishSelectedAuthMetadata(meta map[string]any, authID string) {
-	if len(meta) == 0 {
+func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
+	if len(meta) == 0 || auth == nil {
 		return
 	}
-	authID = strings.TrimSpace(authID)
-	if authID == "" {
-		return
+	if authID := strings.TrimSpace(auth.ID); authID != "" {
+		meta[cliproxyexecutor.SelectedAuthMetadataKey] = authID
+		if callback, ok := meta[cliproxyexecutor.SelectedAuthCallbackMetadataKey].(func(string)); ok && callback != nil {
+			callback(authID)
+		}
 	}
-	meta[cliproxyexecutor.SelectedAuthMetadataKey] = authID
-	if callback, ok := meta[cliproxyexecutor.SelectedAuthCallbackMetadataKey].(func(string)); ok && callback != nil {
-		callback(authID)
+	if authIndex := strings.TrimSpace(auth.EnsureIndex()); authIndex != "" {
+		meta[cliproxyexecutor.SelectedAuthIndexMetadataKey] = authIndex
+		if callback, ok := meta[cliproxyexecutor.SelectedAuthIndexCallbackMetadataKey].(func(string)); ok && callback != nil {
+			callback(authIndex)
+		}
 	}
 }
 
@@ -6869,7 +6873,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			continue
 		}
 		c.auth = preparedAuth
-		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
+		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
 		models, pooled, aliasResult := m.executionModelCandidatesWithAlias(c.auth, routeModel)
 		if len(models) == 0 {
 			continue
@@ -6917,7 +6921,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 			continue
 		}
 		c.auth = preparedAuth
-		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
+		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
 		models, pooled, aliasResult := m.executionModelCandidatesWithAlias(c.auth, routeModel)
 		if len(models) == 0 {
 			continue
