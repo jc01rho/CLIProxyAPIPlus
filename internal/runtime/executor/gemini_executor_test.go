@@ -91,6 +91,72 @@ func TestGeminiExecutorExecuteCapsMaxOutputTokensBeforeUpstream(t *testing.T) {
 	}
 }
 
+func TestGeminiExecutorExecuteDropsThinkingBudgetForFlashLiteWhenLevelExists(t *testing.T) {
+	var upstreamBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		upstreamBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
+	}))
+	defer server.Close()
+
+	exec := NewGeminiExecutor(&config.Config{
+		Payload: config.PayloadConfig{Override: []config.PayloadRule{{
+			Models: []config.PayloadModelRule{{Name: "gemini-3.1-flash-lite", Protocol: "gemini"}},
+			Params: map[string]any{
+				"generationConfig.thinkingConfig.thinkingLevel":  "high",
+				"generationConfig.thinkingConfig.thinkingBudget": 1024,
+			},
+		}}},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL}}
+	req := cliproxyexecutor.Request{
+		Model:   "gemini-3.1-flash-lite",
+		Payload: []byte(`{"model":"gemini-3.1-flash-lite","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
+	}
+
+	if _, err := exec.Execute(context.Background(), auth, req, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := gjson.GetBytes(upstreamBody, "generationConfig.thinkingConfig.thinkingLevel").String(); got != "high" {
+		t.Fatalf("upstream thinkingLevel = %q, want high. Body: %s", got, string(upstreamBody))
+	}
+	if gjson.GetBytes(upstreamBody, "generationConfig.thinkingConfig.thinkingBudget").Exists() {
+		t.Fatalf("upstream thinkingBudget exists, want removed. Body: %s", string(upstreamBody))
+	}
+}
+
+func TestNormalizeGemini31FlashLiteThinkingIsModelScoped(t *testing.T) {
+	body := []byte(`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high","thinkingBudget":1024}}}`)
+	out := normalizeGemini31FlashLiteThinking(body, "gemini-3.1-pro-preview")
+	if got := gjson.GetBytes(out, "generationConfig.thinkingConfig.thinkingBudget").Int(); got != 1024 {
+		t.Fatalf("thinkingBudget = %d, want 1024 for other model. Body: %s", got, string(out))
+	}
+}
+
+func TestNormalizeGemini31FlashLiteThinkingKeepsBudgetWithoutLevel(t *testing.T) {
+	body := []byte(`{"generationConfig":{"thinkingConfig":{"thinkingBudget":1024}}}`)
+	out := normalizeGemini31FlashLiteThinking(body, "gemini-3.1-flash-lite")
+	if got := gjson.GetBytes(out, "generationConfig.thinkingConfig.thinkingBudget").Int(); got != 1024 {
+		t.Fatalf("thinkingBudget = %d, want 1024 without level. Body: %s", got, string(out))
+	}
+}
+
+func TestNormalizeGemini31FlashLiteThinkingDropsBudgetForSnakeCaseLevel(t *testing.T) {
+	body := []byte(`{"generationConfig":{"thinkingConfig":{"thinking_level":"high","thinkingBudget":1024}}}`)
+	out := normalizeGemini31FlashLiteThinking(body, "gemini-3.1-flash-lite")
+	if gjson.GetBytes(out, "generationConfig.thinkingConfig.thinkingBudget").Exists() {
+		t.Fatalf("thinkingBudget exists with thinking_level, want removed. Body: %s", string(out))
+	}
+	if got := gjson.GetBytes(out, "generationConfig.thinkingConfig.thinking_level").String(); got != "high" {
+		t.Fatalf("thinking_level = %q, want high. Body: %s", got, string(out))
+	}
+}
+
 func TestGeminiExecutorInteractionsWithGeminiAPIKeyUsesGeminiEndpoint(t *testing.T) {
 	var gotPath string
 	var gotRevision string
@@ -442,6 +508,60 @@ func TestGeminiExecutorNativeInteractionsPayloadDefaultsUseTranslatedOpenAIChatS
 	}
 	if got := gjson.GetBytes(upstreamBody, "generation_config.top_p").Float(); got != 0.8 {
 		t.Fatalf("top_p = %v, want default 0.8. Body: %s", got, string(upstreamBody))
+	}
+}
+
+func TestGeminiExecutorNativeInteractionsDropsThinkingBudgetForFlashLiteWhenLevelExists(t *testing.T) {
+	var upstreamBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, errRead := io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Fatalf("read request body: %v", errRead)
+		}
+		upstreamBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"interaction_1","status":"completed","steps":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	exec := NewGeminiInteractionsExecutor(&config.Config{
+		Payload: config.PayloadConfig{Override: []config.PayloadRule{{
+			Models: []config.PayloadModelRule{{Name: "gemini-3.1-flash-lite", Protocol: "interactions"}},
+			Params: map[string]any{
+				"generation_config.thinking_level":  "high",
+				"generation_config.thinking_budget": 1024,
+			},
+		}}},
+	})
+	auth := &cliproxyauth.Auth{Provider: "gemini-interactions", Attributes: map[string]string{
+		"api_key": "test-key", "base_url": server.URL,
+	}}
+	req := cliproxyexecutor.Request{
+		Model:   "gemini-3.1-flash-lite",
+		Payload: []byte(`{"model":"gemini-3.1-flash-lite","input":"hi"}`),
+	}
+
+	if _, errExecute := exec.Execute(context.Background(), auth, req, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatInteractions, ResponseFormat: sdktranslator.FormatInteractions,
+	}); errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+	if got := gjson.GetBytes(upstreamBody, "generation_config.thinking_level").String(); got != "high" {
+		t.Fatalf("upstream thinking_level = %q, want high. Body: %s", got, string(upstreamBody))
+	}
+	if gjson.GetBytes(upstreamBody, "generation_config.thinking_budget").Exists() {
+		t.Fatalf("upstream thinking_budget exists, want removed. Body: %s", string(upstreamBody))
+	}
+}
+
+func TestNormalizeGemini31FlashLiteInteractionsThinkingDropsBudgetForCamelCaseLevel(t *testing.T) {
+	body := []byte(`{"generation_config":{"thinkingLevel":"high","thinkingBudget":1024}}`)
+	out := normalizeGemini31FlashLiteInteractionsThinking(body, "gemini-3.1-flash-lite")
+	if gjson.GetBytes(out, "generation_config.thinkingBudget").Exists() {
+		t.Fatalf("thinkingBudget exists with thinkingLevel, want removed. Body: %s", string(out))
+	}
+	if got := gjson.GetBytes(out, "generation_config.thinkingLevel").String(); got != "high" {
+		t.Fatalf("thinkingLevel = %q, want high. Body: %s", got, string(out))
 	}
 }
 
