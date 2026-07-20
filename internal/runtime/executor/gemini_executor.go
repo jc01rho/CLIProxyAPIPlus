@@ -157,6 +157,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = normalizeGemini31FlashLiteThinking(body, baseModel)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = capGeminiMaxOutputTokens(body, baseModel)
 
@@ -270,6 +271,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = normalizeGemini31FlashLiteThinking(body, baseModel)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = capGeminiMaxOutputTokens(body, baseModel)
 
@@ -399,6 +401,7 @@ func (e *GeminiExecutor) executeInteractions(ctx context.Context, auth *cliproxy
 	fromProtocol := opts.SourceFormat.String()
 	originalTranslated := geminiInteractionsPayloadConfigSource(targetName, req.Payload, opts, false)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = normalizeGemini31FlashLiteInteractionsThinking(body, targetName)
 
 	baseURL := resolveGeminiBaseURL(auth)
 	url := fmt.Sprintf("%s/%s/interactions", baseURL, glAPIVersion)
@@ -475,6 +478,7 @@ func (e *GeminiExecutor) executeInteractionsStream(ctx context.Context, auth *cl
 	fromProtocol := opts.SourceFormat.String()
 	originalTranslated := geminiInteractionsPayloadConfigSource(targetName, req.Payload, opts, true)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = normalizeGemini31FlashLiteInteractionsThinking(body, targetName)
 	body = helps.SetBoolIfDifferent(body, "stream", true)
 	baseURL := resolveGeminiBaseURL(auth)
 	url := fmt.Sprintf("%s/%s/interactions", baseURL, glAPIVersion)
@@ -797,6 +801,34 @@ func isNativeInteractionsAuth(auth *cliproxyauth.Auth) bool {
 
 func applyGeminiInteractionsThinking(body []byte, model string) ([]byte, error) {
 	return thinking.ApplyThinking(body, model, sdktranslator.FormatInteractions.String(), sdktranslator.FormatInteractions.String(), "gemini")
+}
+
+func normalizeGemini31FlashLiteThinking(body []byte, model string) []byte {
+	if !strings.EqualFold(strings.TrimSpace(model), "gemini-3.1-flash-lite") {
+		return body
+	}
+	levelExists := gjson.GetBytes(body, "generationConfig.thinkingConfig.thinkingLevel").Exists() ||
+		gjson.GetBytes(body, "generationConfig.thinkingConfig.thinking_level").Exists()
+	if !levelExists {
+		return body
+	}
+	body, _ = sjson.DeleteBytes(body, "generationConfig.thinkingConfig.thinkingBudget")
+	body, _ = sjson.DeleteBytes(body, "generationConfig.thinkingConfig.thinking_budget")
+	return body
+}
+
+func normalizeGemini31FlashLiteInteractionsThinking(body []byte, model string) []byte {
+	if !strings.EqualFold(strings.TrimSpace(model), "gemini-3.1-flash-lite") {
+		return body
+	}
+	levelExists := gjson.GetBytes(body, "generation_config.thinking_level").Exists() ||
+		gjson.GetBytes(body, "generation_config.thinkingLevel").Exists()
+	if !levelExists {
+		return body
+	}
+	body, _ = sjson.DeleteBytes(body, "generation_config.thinking_budget")
+	body, _ = sjson.DeleteBytes(body, "generation_config.thinkingBudget")
+	return body
 }
 
 func applyGeminiInteractionsRevisionHeader(req *http.Request) {
