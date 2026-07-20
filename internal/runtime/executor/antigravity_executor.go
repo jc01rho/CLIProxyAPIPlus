@@ -3096,8 +3096,8 @@ var (
 
 func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
 	template := payload
-	template, _ = sjson.SetBytes(template, "model", modelName)
-	template, _ = sjson.SetBytes(template, "userAgent", "antigravity")
+	template = helps.SetStringIfDifferent(template, "model", modelName)
+	template = helps.SetStringIfDifferent(template, "userAgent", "antigravity")
 
 	isImageModel := strings.Contains(modelName, "image")
 	reqType := strings.TrimSpace(gjson.GetBytes(template, "requestType").String())
@@ -3111,7 +3111,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 	}
 
 	if projectID != "" {
-		template, _ = sjson.SetBytes(template, "project", projectID)
+		template = helps.SetStringIfDifferent(template, "project", projectID)
 	} else {
 		template, _ = sjson.DeleteBytes(template, "project")
 	}
