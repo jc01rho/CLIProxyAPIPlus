@@ -377,6 +377,13 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	}
 
 	config = normalizeUserDefinedConfig(config, fromFormat, toFormat)
+	// Clamp level-mode configs to the model's declared supported levels. The
+	// user-defined path skips ValidateConfig, so an unsupported level (e.g.
+	// "xhigh" on a low/medium/high model like minimax-m3) would otherwise reach
+	// the upstream verbatim and be rejected as an invalid reasoning enum.
+	if config.Mode == ModeLevel && modelInfo != nil && modelInfo.Thinking != nil && len(modelInfo.Thinking.Levels) > 0 {
+		config.Level = clampLevel(config.Level, modelInfo, toFormat)
+	}
 	log.WithFields(log.Fields{
 		"provider": toFormat,
 		"model":    modelID,
