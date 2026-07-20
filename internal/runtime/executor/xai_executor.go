@@ -914,7 +914,7 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	// Collect before normalizeXAITools flattens namespace wrappers so keys match
 	// the post-restore (namespace, short-name) shape used by the response filter.
 	clientDeclaredTools := collectXAIClientDeclaredToolKeys(body)
-	body = NormalizeXAITools(body)
+	body = normalizeXAITools(body)
 	body = promoteXAIAdditionalTools(body)
 	// Drop choices that point at tools removed by normalizeXAITools before we
 	// inject native x_search, so a surviving allowed_tools / forced choice is not
@@ -1319,15 +1319,6 @@ func xaiMetadataString(meta map[string]any, key string) string {
 }
 
 func sanitizeXAIResponsesBody(body []byte, model string) []byte {
-	name := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
-	if strings.HasPrefix(name, "grok-4.3") {
-		// Force reasoning effort to medium for grok-4.3 per user requirement.
-		body, _ = sjson.SetBytes(body, "reasoning.effort", "medium")
-		body, _ = sjson.DeleteBytes(body, "presence_penalty")
-		body, _ = sjson.DeleteBytes(body, "frequency_penalty")
-		body, _ = sjson.DeleteBytes(body, "stop")
-		return body
-	}
 	if !xaiSupportsReasoningEffort(model) {
 		if gjson.GetBytes(body, "reasoning.effort").Exists() {
 			log.Debugf("xai: stripping reasoning.effort for model %s (no thinking levels in model registry)", model)
@@ -1505,8 +1496,7 @@ func xaiToolChoiceMatchesAvailable(choice gjson.Result, available map[xaiToolCho
 	return ok
 }
 
-// NormalizeXAITools flattens namespace tools and enforces the xAI 200-tool cap.
-func NormalizeXAITools(body []byte) []byte {
+func normalizeXAITools(body []byte) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
 	}
@@ -1647,25 +1637,11 @@ func normalizeXAIToolArray(tools gjson.Result) ([]byte, bool, bool) {
 		}
 		filtered = updated
 	}
-	// xAI limit: max 200 tools (https://docs.x.ai/docs/guides/function-calling)
-	// cap to avoid "Maximum tools limit reached. 247 tools..." error
-	// Always enforce the cap regardless of whether namespace normalization occurred.
-	toolsArr := gjson.GetBytes(filtered, "@this").Array()
-	if len(toolsArr) > 200 {
-		capped := []byte(`[]`)
-		for i := 0; i < 200 && i < len(toolsArr); i++ {
-			updated, _ := sjson.SetRawBytes(capped, "-1", []byte(toolsArr[i].Raw))
-			capped = updated
-		}
-		filtered = capped
-		log.Warnf("xai: capped tools from %d to 200 to satisfy xAI limit", len(toolsArr))
-		changed = true
-	}
 	return filtered, changed, true
 }
 
 // normalizeXAIToolChoiceForTools drops tool_choice and parallel_tool_calls
-// when tools are absent or empty (including after NormalizeXAITools filtering).
+// when tools are absent or empty (including after normalizeXAITools filtering).
 // xAI rejects payloads that include tool_choice without any tools defined.
 // Existence checks avoid unnecessary sjson parse/copy passes.
 func normalizeXAIToolChoiceForTools(body []byte) []byte {
@@ -2478,6 +2454,14 @@ func normalizeXAIInputReasoningItems(body []byte) []byte {
 		contentPath := fmt.Sprintf("input.%d.content", i)
 		if content := gjson.GetBytes(updated, contentPath); content.Exists() && content.Type == gjson.Null {
 			updatedBody, errDel := sjson.DeleteBytes(updated, contentPath)
+			if errDel != nil {
+				return body
+			}
+			updated = updatedBody
+		}
+		encryptedContentPath := fmt.Sprintf("input.%d.encrypted_content", i)
+		if encryptedContent := gjson.GetBytes(updated, encryptedContentPath); encryptedContent.Exists() && encryptedContent.Type == gjson.Null {
+			updatedBody, errDel := sjson.DeleteBytes(updated, encryptedContentPath)
 			if errDel != nil {
 				return body
 			}
