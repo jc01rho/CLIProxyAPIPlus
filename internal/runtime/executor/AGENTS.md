@@ -39,7 +39,7 @@ executor/
 - 4xx/5xx debug logging should include masked raw request and raw response, provider/auth, resolved model, request id.
 - Stream channel sends should respect context cancellation.
 - Usage reporting failures should go through the existing usage reporter paths.
-- XAI `normalizeXAITools` enforces a hard 200 tools cap regardless of namespace normalization; do not bypass.
+- xAI code follows upstream verbatim: on merge conflicts in xai_* files, adopt upstream fully (no local xAI preservation).
 - Ollama Cloud API uses `/v1/tags`; self-hosted Ollama uses `/tags`. `FetchOllamaModels` calls `/v1/tags`.
 - All Ollama requests to `ollama.com` must be logged on failure.
 - CommandCode `content`에 null을 허용하지 않음: null content는 빈 텍스트 배열로 대체.
