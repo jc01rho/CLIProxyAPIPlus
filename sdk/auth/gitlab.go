@@ -180,6 +180,7 @@ waitForCallback:
 	}
 
 	if result.Error != "" {
+		log.WithField("provider", "gitlab").Errorf("provider returned error: %s", result.Error)
 		return nil, fmt.Errorf("gitlab oauth returned error: %s", result.Error)
 	}
 	if result.State != state {
