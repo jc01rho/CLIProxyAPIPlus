@@ -27,8 +27,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	homekv "github.com/router-for-me/CLIProxyAPI/v7/internal/home"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+		"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	antigravityclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/claude"
@@ -2752,31 +2752,23 @@ func resolveHost(base string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(base, "https://"), "http://")
 }
 
-// resolveUserAgent returns the User-Agent header for antigravity upstream requests.
-// Primary source is the antigravity package's randomized headers; local misc-based
-// UA is used as a fallback for backward compatibility.
+// resolveUserAgent returns the agy CLI 1.1.3 User-Agent for content requests.
+// Configured auth UA is honored only when already in antigravity/cli form;
+// otherwise the captured harness identity is used.
 func resolveUserAgent(auth *cliproxyauth.Auth) string {
+	// A configured UA (client-supplied, e.g. the antigravity/hub UA used by the
+	// loadCodeAssist/credits endpoint) is normalized and preserved. Only the
+	// unconfigured default advances to the 1.1.3 aidev_client harness UA.
 	configured := antigravityConfiguredUserAgent(auth)
 	if configured != "" {
 		return misc.AntigravityRequestUserAgent(configured)
 	}
-	if headers := antigravity.GetRandomizedHeaders(antigravity.HeaderStyleAntigravity, ""); headers.UserAgent != "" {
-		return headers.UserAgent
-	}
-	return misc.AntigravityRequestUserAgent(configured)
+	return antigravity.BuildAntigravityHarnessUserAgent("", "", "")
 }
 
-// resolveLoadCodeAssistUserAgent returns the User-Agent header for loadCodeAssist
-// calls. Same fallback strategy as resolveUserAgent.
+// resolveLoadCodeAssistUserAgent returns the same agy CLI User-Agent as content requests.
 func resolveLoadCodeAssistUserAgent(auth *cliproxyauth.Auth) string {
-	configured := antigravityConfiguredUserAgent(auth)
-	if configured != "" {
-		return misc.AntigravityLoadCodeAssistUserAgent(configured)
-	}
-	if headers := antigravity.GetRandomizedHeaders(antigravity.HeaderStyleLoadCodeAssist, ""); headers.UserAgent != "" {
-		return headers.UserAgent
-	}
-	return misc.AntigravityLoadCodeAssistUserAgent(configured)
+	return resolveUserAgent(auth)
 }
 
 func antigravityConfiguredUserAgent(auth *cliproxyauth.Auth) string {
@@ -3096,6 +3088,12 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
+// Test hooks for deterministic agy wire golden tests.
+var (
+	antigravityNowMs   = func() int64 { return time.Now().UnixMilli() }
+	antigravityNewUUID = uuid.NewString
+)
+
 func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
 	template := payload
 	template, _ = sjson.SetBytes(template, "model", modelName)
@@ -3120,34 +3118,40 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 
 	if isImageModel {
 		template, _ = sjson.SetBytes(template, "requestId", generateImageGenRequestID())
-	} else if reqType != "web_search" {
-		template, _ = sjson.SetBytes(template, "requestId", generateRequestID())
-		template, _ = sjson.SetBytes(template, "request.sessionId", generateStableSessionID(payload))
+	} else if reqType == "agent" {
+		// agy CLI 1.1.3 agent wire: requestId/sessionId/labels + field order.
+		// Conversation identity is keyed by the first user message (stable across
+		// turns) so conversationId/trajectoryId are reused, used_* accumulate, and
+		// the request timestamp stays monotonic — matching the reference session store.
+		// sessionId uses projectID as the stable workspace identity.
+		convKey := generateStableSessionID(template)
+		session, ts := antigravity.BeginAgyRequest(convKey, antigravity.Fnv1a64Signed(projectID), antigravityNowMs(), antigravityNewUUID)
+		template = antigravity.ApplyAgyAgentWireMetadata(template, session, modelName, ts)
 	}
+	// web_search: leave requestId/sessionId untouched (existing behavior).
 
 	template, _ = sjson.DeleteBytes(template, "request.safetySettings")
 	if toolConfig := gjson.GetBytes(template, "toolConfig"); toolConfig.Exists() && !gjson.GetBytes(template, "request.toolConfig").Exists() {
 		template, _ = sjson.SetRawBytes(template, "request.toolConfig", []byte(toolConfig.Raw))
 		template, _ = sjson.DeleteBytes(template, "toolConfig")
 	}
+
+	// Re-order after sjson mutations so field order matches agy CLI 1.1.3.
+	if reqType == "agent" && !isImageModel {
+		if req := gjson.GetBytes(template, "request"); req.Exists() {
+			template, _ = sjson.SetRawBytes(template, "request", antigravity.OrderAgyRequestPayload([]byte(req.Raw)))
+		}
+		template = antigravity.OrderAgyEnvelope(template)
+	}
 	return template
 }
 
-func generateRequestID() string {
-	return "agent-" + uuid.NewString()
-}
-
 func generateImageGenRequestID() string {
-	return fmt.Sprintf("image_gen/%d/%s/12", time.Now().UnixMilli(), uuid.NewString())
+	return fmt.Sprintf("image_gen/%d/%s/12", antigravityNowMs(), antigravityNewUUID())
 }
 
-func generateSessionID() string {
-	randSourceMutex.Lock()
-	n := randSource.Int63n(9_000_000_000_000_000_000)
-	randSourceMutex.Unlock()
-	return "-" + strconv.FormatInt(n, 10)
-}
-
+// generateStableSessionID is kept for reasoning-replay scope fallback when the
+// payload has no sessionId yet. Agent wire sessionId uses Fnv1a64Signed(projectID).
 func generateStableSessionID(payload []byte) string {
 	contents := gjson.GetBytes(payload, "request.contents")
 	if contents.IsArray() {
@@ -3155,12 +3159,10 @@ func generateStableSessionID(payload []byte) string {
 			if content.Get("role").String() == "user" {
 				text := content.Get("parts.0.text").String()
 				if text != "" {
-					h := sha256.Sum256([]byte(text))
-					n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
-					return "-" + strconv.FormatInt(n, 10)
+					return antigravity.Fnv1a64Signed(text)
 				}
 			}
 		}
 	}
-	return generateSessionID()
+	return antigravity.Fnv1a64Signed("")
 }

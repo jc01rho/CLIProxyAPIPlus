@@ -212,7 +212,7 @@ func GetRandomizedHeaders(style HeaderStyle, model string) HeaderSet {
 			ClientMetadata: GeminiCLIHeaders.ClientMetadata,
 		}
 	}
-	return HeaderSet{UserAgent: fmt.Sprintf("antigravity/cli/1.0.4 %s", buildAntigravityPlatformArch())}
+	return HeaderSet{UserAgent: BuildAntigravityHarnessUserAgent("", "", "")}
 }
 
 func antigravityMetadataPlatform() string {

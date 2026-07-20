@@ -88,7 +88,7 @@ func BuildAgyCLIHeaderPairs(rawURL string, init AgyRequestInit) ([]HeaderPair, e
 	}
 	userAgent := getHeader(headers, "User-Agent")
 	if userAgent == "" {
-		userAgent = "antigravity/cli/1.0.4 darwin/arm64"
+		userAgent = BuildAntigravityHarnessUserAgent("", "", "")
 	}
 	authorization := getHeader(headers, "Authorization")
 	contentType := getHeader(headers, "Content-Type")
