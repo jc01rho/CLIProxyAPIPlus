@@ -164,12 +164,6 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	}
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
-	// xAI provider: enforce 200 tools cap (https://docs.x.ai/docs/guides/function-calling)
-	// Defensive: applies if xAI auth routes through OpenAICompatExecutor (e.g., compat_name set)
-	if e.provider == "xai" {
-		translated = NormalizeXAITools(translated)
-	}
-
 	// Ensure all tool-related id fields are JSON strings (some clients send
 	// numeric or null ids which upstream providers reject).
 	translated = normalizeToolResultIDsToString(translated)
@@ -405,12 +399,6 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// are captured even when the upstream is an OpenAI-compatible provider.
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
-
-	// xAI provider: enforce 200 tools cap (https://docs.x.ai/docs/guides/function-calling)
-	// Defensive: applies if xAI auth routes through OpenAICompatExecutor (e.g., compat_name set)
-	if e.provider == "xai" {
-		translated = NormalizeXAITools(translated)
-	}
 
 	// Ensure all tool-related id fields are JSON strings (some clients send
 	// numeric or null ids which upstream providers reject).

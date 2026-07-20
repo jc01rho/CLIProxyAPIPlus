@@ -110,8 +110,8 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 	if !gjson.GetBytes(gotBody, "stream").Bool() {
 		t.Fatalf("stream = false, want true; body=%s", string(gotBody))
 	}
-	if gjson.GetBytes(gotBody, "reasoning.effort").String() != "medium" {
-		t.Fatalf("reasoning.effort = %q, want medium (grok-4.3 forced); body=%s", gjson.GetBytes(gotBody, "reasoning.effort").String(), string(gotBody))
+	if gjson.GetBytes(gotBody, "reasoning.effort").String() != "high" {
+		t.Fatalf("reasoning.effort = %q, want high; body=%s", gjson.GetBytes(gotBody, "reasoning.effort").String(), string(gotBody))
 	}
 	if gjson.GetBytes(gotBody, "input.0.content").Exists() {
 		t.Fatalf("input.0.content exists, want removed; body=%s", string(gotBody))
@@ -622,7 +622,7 @@ func TestXAIExecutorPrepareDropsOrphanedToolChoiceBeforeXSearchInject(t *testing
 	exec := NewXAIExecutor(&config.Config{})
 	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
 		Model: "grok-4.5",
-		// image_generation is stripped by NormalizeXAITools; without pruning, the
+		// image_generation is stripped by normalizeXAITools; without pruning, the
 		// forced choice would survive next to the injected x_search tool.
 		Payload: []byte(`{
 			"model":"grok-4.5",
@@ -762,7 +762,7 @@ func TestXAIExecutorPrepareAllowedToolsSyncsInjectedXSearch(t *testing.T) {
 	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
 		Model: "grok-4.5",
 		// Only image_generation remains after client filtering of tool_search-like
-		// tools is not relevant here: NormalizeXAITools drops image_generation and
+		// tools is not relevant here: normalizeXAITools drops image_generation and
 		// we inject x_search, while allowed_tools must be rewritten so Grok can
 		// choose the injected tool and not a deleted one.
 		Payload: []byte(`{
@@ -1957,8 +1957,8 @@ func TestXAIExecutorAppliesThinkingSuffix(t *testing.T) {
 	if got := gjson.GetBytes(gotBody, "model").String(); got != "grok-4.3" {
 		t.Fatalf("model = %q, want grok-4.3; body=%s", got, string(gotBody))
 	}
-	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "medium" {
-		t.Fatalf("reasoning.effort = %q, want medium (grok-4.3 forced); body=%s", got, string(gotBody))
+	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "low" {
+		t.Fatalf("reasoning.effort = %q, want low; body=%s", got, string(gotBody))
 	}
 }
 
@@ -2723,7 +2723,7 @@ func TestNormalizeXAITools_SimplifiesCodexAppAutomationUpdateSchema(t *testing.T
 	// Large oneOf+$ref schema mimicking Codex Desktop codex_app.automation_update.
 	params := `{"type":"object","oneOf":[{"properties":{"mode":{"type":"string"}}}],"$defs":{"a":{"type":"string"}},"x":"` + strings.Repeat("y", 1600) + `"}`
 	body := []byte(`{"model":"grok-4.5","tools":[{"type":"namespace","name":"codex_app","tools":[{"type":"function","name":"automation_update","description":"sched","strict":true,"parameters":` + params + `}]},{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]}`)
-	out := NormalizeXAITools(body)
+	out := normalizeXAITools(body)
 
 	tools := gjson.GetBytes(out, "tools")
 	if !tools.IsArray() {
@@ -2765,7 +2765,7 @@ func TestNormalizeXAITools_SimplifiesCodexAppAutomationUpdateSchema(t *testing.T
 
 func TestNormalizeXAITools_SimplifiesFlattenedAndInvalidRootSchemas(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","name":"codex_app__automation_update","strict":true,"parameters":{"oneOf":[{"type":"object","properties":{"action":{"type":"string"}},"required":["action"]},{"type":"null"}]}},{"type":"function","name":"nullable_lookup","strict":true,"parameters":{"anyOf":[{"type":"object","properties":{"query":{"type":"string"}}},{"type":["object","null"]}]}},{"type":"custom","name":"nullable_custom","strict":true,"parameters":{"oneOf":[{"type":"object"},{"type":"null"}]}},{"type":"function","name":"mixed_nullable","strict":true,"parameters":{"type":"object","oneOf":[{"required":["query"]},{"type":"null"}],"properties":{"query":{"type":"string"}}}},{"type":"function","name":"array_root_union","strict":true,"parameters":{"type":["object"],"anyOf":[{"required":["query"]},{"required":["id"]}],"properties":{"query":{"type":"string"},"id":{"type":"integer"}}}},{"type":"function","name":"echo_tool","strict":true,"parameters":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}}]}`)
-	out := NormalizeXAITools(body)
+	out := normalizeXAITools(body)
 
 	tools := gjson.GetBytes(out, "tools").Array()
 	if len(tools) != 6 {
@@ -2848,7 +2848,7 @@ func TestNormalizeXAITools_AddsObjectTypeToRootUnionBranches(t *testing.T) {
 			}
 		]
 	}`)
-	out := NormalizeXAITools(body)
+	out := normalizeXAITools(body)
 
 	for toolIndex, unionName := range []string{"oneOf", "anyOf"} {
 		tool := gjson.GetBytes(out, fmt.Sprintf("tools.%d", toolIndex))
@@ -2901,7 +2901,7 @@ func TestNormalizeXAITools_QualifiesSameNamedNamespaceTools(t *testing.T) {
 			{"type":"namespace","name":"mcp__docs","tools":[{"type":"function","name":"search","parameters":{"type":"object"}}]}
 		]
 	}`)
-	out := NormalizeXAITools(body)
+	out := normalizeXAITools(body)
 
 	tools := gjson.GetBytes(out, "tools").Array()
 	if len(tools) != 2 {
@@ -2924,7 +2924,7 @@ func TestPromoteXAIAdditionalTools(t *testing.T) {
 			{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"custom_lookup"}]}
 		]
 	}`)
-	out := promoteXAIAdditionalTools(NormalizeXAITools(body))
+	out := promoteXAIAdditionalTools(normalizeXAITools(body))
 
 	input := gjson.GetBytes(out, "input").Array()
 	if len(input) != 1 || input[0].Get("role").String() != "user" {
@@ -2956,7 +2956,7 @@ func TestNormalizeXAINamespaceToolChoice(t *testing.T) {
 		"tools":[{"type":"namespace","name":"mcp__exa","tools":[{"type":"function","name":"search","parameters":{"type":"object"}}]}],
 		"tool_choice":{"type":"function","name":"search","namespace":"mcp__exa"}
 	}`)
-	out := NormalizeXAITools(body)
+	out := normalizeXAITools(body)
 	out = normalizeXAINamespaceToolChoice(out)
 
 	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "mcp__exa__search" {
@@ -3071,7 +3071,7 @@ func TestNormalizeXAITools_PreservesUnrelatedSchemas(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out := NormalizeXAITools(tt.body)
+			out := normalizeXAITools(tt.body)
 			tool := gjson.GetBytes(out, "tools.0")
 			if tool.Get("strict").Type != gjson.True {
 				t.Fatalf("strict changed for unrelated tool: %s", string(out))
