@@ -43,6 +43,7 @@ const (
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
+	codexWSStreamStartMetadata = "client_metadata.x-codex-ws-stream-request-start-ms"
 )
 
 var dataTag = []byte("data:")
@@ -1893,12 +1894,20 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	if identityState.promptCacheKey != "" {
 		cache.ID = identityState.promptCacheKey
 	}
+	// Codex sends the responses-lite header and the websocket-only client_metadata
+	// artifacts on different transports: HTTP carries the real header and never the
+	// ws mirror keys. Set the header the reference sends on HTTP and strip the
+	// ws-only artifacts so they don't reach the /responses upstream.
+	rawJSON, responsesLite := normalizeCodexResponsesLiteHTTP(rawJSON, headers)
 	// Serialize in Codex's exact key order at the final send, matching the
 	// reference client's orderCodexBody() applied in prepareCodexRequest.
 	rawJSON = orderCodexBody(rawJSON)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
 	if err != nil {
 		return nil, nil, codexIdentityConfuseState{}, err
+	}
+	if responsesLite {
+		httpReq.Header.Set(codexResponsesLiteHeader, "true")
 	}
 	if cache.ID != "" {
 		httpReq.Header.Set("Session_id", cache.ID)
@@ -2343,6 +2352,22 @@ func isCodexResponsesLiteRequest(body []byte, headers http.Header) bool {
 		return false
 	}
 	return value.Type == gjson.True || value.Type == gjson.String && strings.EqualFold(strings.TrimSpace(value.String()), "true")
+}
+
+// normalizeCodexResponsesLiteHTTP prepares a Codex request for the plain HTTP
+// /responses upstream. It reports whether the request is a responses-lite request
+// (so the caller sets the real X-OpenAI-Internal-Codex-Responses-Lite header the
+// reference client sends on HTTP) and strips the websocket-only client_metadata
+// artifacts that Codex mirrors onto the frame — reference prepareCodexRequest adds
+// ws_request_header_x_openai_internal_codex_responses_lite and
+// x-codex-ws-stream-request-start-ms only `if (input.websocket)`, so they must
+// never leak into the HTTP request body. Detection runs before the strip because
+// the ws mirror flag is itself a detection signal.
+func normalizeCodexResponsesLiteHTTP(body []byte, headers http.Header) ([]byte, bool) {
+	responsesLite := isCodexResponsesLiteRequest(body, headers)
+	body, _ = sjson.DeleteBytes(body, codexResponsesLiteMetadata)
+	body, _ = sjson.DeleteBytes(body, codexWSStreamStartMetadata)
+	return body, responsesLite
 }
 
 func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header) []byte {
