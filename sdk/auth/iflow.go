@@ -155,6 +155,7 @@ waitForCallback:
 		}
 	}
 	if result.Error != "" {
+		log.WithField("provider", "iflow").Errorf("provider returned error: %s", result.Error)
 		return nil, fmt.Errorf("iflow auth: provider returned error %s", result.Error)
 	}
 	if result.State != state {
