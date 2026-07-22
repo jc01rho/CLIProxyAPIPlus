@@ -347,10 +347,6 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	c.JSON(200, gin.H{"files": files})
 }
 
-<<<<<<< HEAD
-// GetAuthFileModels returns the models supported by a specific auth file,
-// filtered by auth-level excluded_models, Copilot allowlist, and global OAuthExcludedModels.
-=======
 func lockedAuthIndex(auth *coreauth.Auth) string {
 	if auth == nil {
 		return ""
@@ -400,8 +396,8 @@ func (h *Handler) lookupAuthFile(name string, authIndex string) (*coreauth.Auth,
 	return nil, false
 }
 
-// GetAuthFileModels returns the models supported by a specific auth file
->>>>>>> upstream/main
+// GetAuthFileModels returns the models supported by a specific auth file,
+// filtered by auth-level excluded_models, Copilot allowlist, and global OAuthExcludedModels.
 func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	name := c.Query("name")
 	if name == "" {
@@ -519,7 +515,10 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 		return
 	}
 	files := make([]gin.H, 0)
-<<<<<<< HEAD
+	if authIndexFilter != "" {
+		c.JSON(200, gin.H{"files": files})
+		return
+	}
 	type antigravityDiskEntry struct {
 		index     int
 		isPrimary bool
@@ -527,12 +526,6 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 		order     int64
 	}
 	antigravityEntries := make(map[int]antigravityDiskEntry)
-=======
-	if authIndexFilter != "" {
-		c.JSON(200, gin.H{"files": files})
-		return
-	}
->>>>>>> upstream/main
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
