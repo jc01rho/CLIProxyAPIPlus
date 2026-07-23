@@ -30,25 +30,30 @@ const thinkingLevelNone = "none"
 // Ported from antigravity-auth QUOTA_GROUP_BY_MODEL_ID.
 var quotaGroupByModelID = map[string]string{
 	"claude-opus-4-6-thinking":   "claude",
-	"claude-opus-4-6":           "claude",
+	"claude-opus-4-6":            "claude",
 	"claude-sonnet-4-6-thinking": "claude",
-	"claude-sonnet-4-6":         "claude",
-	"gemini-pro-agent":          "gemini-pro",
-	"gemini-3.1-pro":            "gemini-pro",
-	"gemini-3.1-pro-low":        "gemini-pro",
-	"gemini-3.1-pro-high":       "gemini-pro",
-	"gemini-3-flash":            "gemini-flash",
-	"gemini-3-flash-agent":      "gemini-flash",
-	"gemini-3.5-flash-low":      "gemini-flash",
+	"claude-sonnet-4-6":          "claude",
+	"gemini-pro-agent":           "gemini-pro",
+	"gemini-3.1-pro":             "gemini-pro",
+	"gemini-3.1-pro-low":         "gemini-pro",
+	"gemini-3.1-pro-high":        "gemini-pro",
+	"gemini-3-flash":             "gemini-flash",
+	"gemini-3-flash-agent":       "gemini-flash",
+	"gemini-3.5-flash-low":       "gemini-flash",
 	"gemini-3.5-flash-extra-low": "gemini-flash",
-	"gemini-3.1-flash-image":    "gemini-flash",
-	"gpt-oss-120b":              "gpt-oss",
-	"gpt-oss-120b-medium":       "gpt-oss",
+	"gemini-3.6-flash-low":       "gemini-flash",
+	"gemini-3.6-flash-medium":    "gemini-flash",
+	"gemini-3.6-flash-high":      "gemini-flash",
+	"gemini-3.6-flash-tiered":    "gemini-flash",
+	"gemini-3.1-flash-image":     "gemini-flash",
+	"gpt-oss-120b":               "gpt-oss",
+	"gpt-oss-120b-medium":        "gpt-oss",
 }
 
 // antigravityOpenCodeModelIDs are the model IDs exposed by antigravity.
 // Ported from antigravity-auth ANTIGRAVITY_OPENCODE_MODEL_IDS.
 var antigravityOpenCodeModelIDs = []string{
+	"antigravity-gemini-3.6-flash",
 	"antigravity-gemini-3.5-flash",
 	"antigravity-gemini-3.1-pro",
 	"antigravity-claude-sonnet-4-6-thinking",
@@ -68,6 +73,17 @@ const gemini35FlashDefaultModel = "gemini-3-flash-agent"
 
 // gemini35FlashGeminiCliFallback is the Gemini CLI fallback model.
 const gemini35FlashGeminiCliFallback = "gemini-3-flash-preview"
+
+// gemini36FlashAntigravityModelByTier maps thinking tier to Gemini 3.6 Flash wire model.
+// Ported from antigravity-auth GEMINI_36_FLASH_ROUTES.
+var gemini36FlashAntigravityModelByTier = map[string]string{
+	"low":    "gemini-3.6-flash-low",
+	"medium": "gemini-3.6-flash-medium",
+	"high":   "gemini-3.6-flash-high",
+}
+
+// gemini36FlashDefaultModel is the default Gemini 3.6 Flash model when no tier is specified.
+const gemini36FlashDefaultModel = "gemini-3.6-flash-medium"
 
 // GetQuotaGroupForModel returns the quota group for a given model ID.
 // Ported from antigravity-auth getQuotaGroupForModel.
@@ -106,6 +122,17 @@ func GetGemini35FlashAntigravityModel(tier string) string {
 // GetGemini35FlashGeminiCliFallbackModel returns the Gemini CLI fallback model for 3.5 Flash.
 func GetGemini35FlashGeminiCliFallbackModel() string {
 	return gemini35FlashGeminiCliFallback
+}
+
+// GetGemini36FlashAntigravityModel returns the antigravity wire model for a Gemini 3.6 Flash thinking tier.
+// Ported from antigravity-auth getGemini36FlashAntigravityModel.
+func GetGemini36FlashAntigravityModel(tier string) string {
+	if tier != "" {
+		if m := gemini36FlashAntigravityModelByTier[tier]; m != "" {
+			return m
+		}
+	}
+	return gemini36FlashDefaultModel
 }
 
 // getClaudeThinkingMaxOutputTokens is the max output cap for Claude thinking models.
@@ -1983,6 +2010,7 @@ func ResolveModelWithTier(requestedModel string, options ...ModelResolverOptions
 	skipAlias := isAntigravity && isGemini3
 	isGemini31Pro := strings.HasPrefix(strings.ToLower(baseName), "gemini-3.1-pro")
 	isGemini35Flash := isGemini35FlashModelName(baseName)
+	isGemini36Flash := isGemini36FlashModelName(baseName)
 
 	if isGemini31Pro && quotaPreference == HeaderStyleAntigravity {
 		return ResolvedModel{ActualModel: getAgyGemini31ProModel(tier), ThinkingBudget: getAgyGemini31ProThinkingBudget(tier), Tier: tier, IsThinkingModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
@@ -1992,7 +2020,14 @@ func ResolveModelWithTier(requestedModel string, options ...ModelResolverOptions
 		if resolvedTier == "" {
 			resolvedTier = ThinkingTierMedium
 		}
-		return ResolvedModel{ActualModel: GetGemini35FlashAntigravityModel(string(resolvedTier)), ThinkingBudget: getAgyGemini35FlashThinkingBudget(resolvedTier), Tier: resolvedTier, IsThinkingModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+		return ResolvedModel{ActualModel: GetGemini35FlashAntigravityModel(string(resolvedTier)), ThinkingBudget: getAgyGeminiFlashThinkingBudget(resolvedTier), Tier: resolvedTier, IsThinkingModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
+	}
+	if isGemini36Flash && quotaPreference == HeaderStyleAntigravity {
+		resolvedTier := tier
+		if resolvedTier == "" {
+			resolvedTier = ThinkingTierMedium
+		}
+		return ResolvedModel{ActualModel: GetGemini36FlashAntigravityModel(string(resolvedTier)), ThinkingBudget: getAgyGeminiFlashThinkingBudget(resolvedTier), Tier: resolvedTier, IsThinkingModel: true, QuotaPreference: quotaPreference, ExplicitQuota: explicitQuota}
 	}
 
 	antigravityModel := modelWithoutQuota
@@ -2158,7 +2193,13 @@ func isGemini35FlashModelName(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "gemini-3.5-flash")
 }
 
-func getAgyGemini35FlashThinkingBudget(tier ThinkingTier) int {
+func isGemini36FlashModelName(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "gemini-3.6-flash")
+}
+
+// getAgyGeminiFlashThinkingBudget is shared by Gemini 3.5/3.6 Flash antigravity routes.
+// Ported from antigravity-auth getAgyGeminiFlashThinkingBudget.
+func getAgyGeminiFlashThinkingBudget(tier ThinkingTier) int {
 	switch tier {
 	case ThinkingTierLow:
 		return 1000

@@ -12,7 +12,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// Envelope field order for non-image agent requests (agy CLI 1.1.3).
+// Envelope field order for non-image agent requests (agy CLI 1.1.5).
 var agyEnvelopeFieldOrder = []string{
 	"project",
 	"requestId",
@@ -48,6 +48,9 @@ var agyModelEnumByWireModel = map[string]string{
 	"gemini-3.5-flash-extra-low": "MODEL_PLACEHOLDER_M187",
 	"gemini-3.5-flash-low":       "MODEL_PLACEHOLDER_M20",
 	"gemini-3-flash-agent":       "MODEL_PLACEHOLDER_M84",
+	"gemini-3.6-flash-low":       "MODEL_PLACEHOLDER_M266",
+	"gemini-3.6-flash-medium":    "MODEL_PLACEHOLDER_M265",
+	"gemini-3.6-flash-high":      "MODEL_PLACEHOLDER_M264",
 	"gemini-3.1-pro-low":         "MODEL_PLACEHOLDER_M36",
 	"gemini-pro-agent":           "MODEL_PLACEHOLDER_M16",
 	"claude-sonnet-4-6":          "MODEL_PLACEHOLDER_M35",
@@ -210,7 +213,7 @@ func orderObjectFields(body []byte, fieldOrder []string) []byte {
 }
 
 // ApplyAgyAgentWireMetadata injects requestId, labels, sessionId and reorders
-// the agent envelope for agy CLI 1.1.3 wire parity. requestType must already be "agent".
+// the agent envelope for agy CLI 1.1.5 wire parity. requestType must already be "agent".
 func ApplyAgyAgentWireMetadata(body []byte, session *AgyRequestSessionContext, model string, timestampMs int64) []byte {
 	requestRaw := gjson.GetBytes(body, "request")
 	var requestBytes []byte
