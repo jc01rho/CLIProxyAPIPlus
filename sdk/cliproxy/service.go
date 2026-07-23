@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
@@ -37,9 +38,6 @@ import (
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"strings"
-	"sync"
-	"time"
 )
 
 // Service wraps the proxy server lifecycle so external programs can embed the CLI proxy.
@@ -1658,38 +1656,6 @@ func (s *Service) updateServerClientsContext(ctx context.Context, cfg *config.Co
 		return true
 	}
 	return s.server.UpdateClientsContext(ctx, cfg)
-}
-
-func (s *Service) configureCooldownStateStore(cfg *config.Config) {
-	if s == nil || s.coreManager == nil {
-		return
-	}
-	if cfg == nil || !cfg.SaveCooldownStatus || cfg.Home.Enabled {
-		s.coreManager.SetCooldownStateStore(nil)
-		return
-	}
-	authDir, errResolve := resolveCooldownStateAuthDir(cfg)
-	if errResolve != nil {
-		log.Warnf("failed to resolve cooldown state directory: %v", errResolve)
-		s.coreManager.SetCooldownStateStore(nil)
-		return
-	}
-	if authDir == "" {
-		s.coreManager.SetCooldownStateStore(nil)
-		return
-	}
-	s.coreManager.SetCooldownStateStore(coreauth.NewFileCooldownStateStoreWithAuthDir(authDir, authDir))
-}
-
-func resolveCooldownStateAuthDir(cfg *config.Config) (string, error) {
-	if cfg == nil {
-		return "", nil
-	}
-	authDir, errAuthDir := util.ResolveAuthDir(cfg.AuthDir)
-	if errAuthDir != nil {
-		return "", errAuthDir
-	}
-	return authDir, nil
 }
 
 func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Config) {
