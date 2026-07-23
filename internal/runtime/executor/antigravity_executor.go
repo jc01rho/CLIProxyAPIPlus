@@ -2753,13 +2753,13 @@ func resolveHost(base string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(base, "https://"), "http://")
 }
 
-// resolveUserAgent returns the agy CLI 1.1.3 User-Agent for content requests.
+// resolveUserAgent returns the agy CLI 1.1.5 User-Agent for content requests.
 // Configured auth UA is honored only when already in antigravity/cli form;
 // otherwise the captured harness identity is used.
 func resolveUserAgent(auth *cliproxyauth.Auth) string {
 	// A configured UA (client-supplied, e.g. the antigravity/hub UA used by the
 	// loadCodeAssist/credits endpoint) is normalized and preserved. Only the
-	// unconfigured default advances to the 1.1.3 aidev_client harness UA.
+	// unconfigured default advances to the 1.1.5 aidev_client harness UA.
 	configured := antigravityConfiguredUserAgent(auth)
 	if configured != "" {
 		return misc.AntigravityRequestUserAgent(configured)
@@ -3120,7 +3120,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 	if isImageModel {
 		template, _ = sjson.SetBytes(template, "requestId", generateImageGenRequestID())
 	} else if reqType == "agent" {
-		// agy CLI 1.1.3 agent wire: requestId/sessionId/labels + field order.
+		// agy CLI 1.1.5 agent wire: requestId/sessionId/labels + field order.
 		// Conversation identity is keyed by the first user message (stable across
 		// turns) so conversationId/trajectoryId are reused, used_* accumulate, and
 		// the request timestamp stays monotonic — matching the reference session store.
@@ -3137,7 +3137,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 		template, _ = sjson.DeleteBytes(template, "toolConfig")
 	}
 
-	// Re-order after sjson mutations so field order matches agy CLI 1.1.3.
+	// Re-order after sjson mutations so field order matches agy CLI 1.1.5.
 	if reqType == "agent" && !isImageModel {
 		if req := gjson.GetBytes(template, "request"); req.Exists() {
 			template, _ = sjson.SetRawBytes(template, "request", antigravity.OrderAgyRequestPayload([]byte(req.Raw)))

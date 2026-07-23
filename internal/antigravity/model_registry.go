@@ -145,6 +145,16 @@ var allModelDefinitions = OpencodeModelDefinitions{
 			"high": {ThinkingLevel: ModelThinkingLevelHigh},
 		},
 	}),
+	"antigravity-gemini-3.6-flash": defineModel("antigravity-gemini-3.6-flash", opencodeModelDefinitionInput{
+		Name:       "Gemini 3.6 Flash (Antigravity)",
+		Reasoning:  true,
+		Limit:      ModelLimit{Context: 1048576, Output: 65536},
+		Modalities: defaultModalities,
+		Variants: map[string]ModelVariant{
+			"low":  {ThinkingLevel: ModelThinkingLevelLow},
+			"high": {ThinkingLevel: ModelThinkingLevelHigh},
+		},
+	}),
 	"antigravity-claude-sonnet-4-6-thinking": defineModel("antigravity-claude-sonnet-4-6-thinking", opencodeModelDefinitionInput{
 		Name:       "Claude Sonnet 4.6 Thinking (Antigravity)",
 		Reasoning:  true,
@@ -248,6 +258,9 @@ var resolverAliases = map[string]string{
 	"gemini-3.5-flash-low":                       "gemini-3.5-flash",
 	"gemini-3.5-flash-medium":                    "gemini-3.5-flash",
 	"gemini-3.5-flash-high":                      "gemini-3.5-flash",
+	"gemini-3.6-flash-low":                       "gemini-3.6-flash",
+	"gemini-3.6-flash-medium":                    "gemini-3.6-flash",
+	"gemini-3.6-flash-high":                      "gemini-3.6-flash",
 	"gemini-claude-opus-4-6-thinking-low":        "claude-opus-4-6-thinking",
 	"gemini-claude-opus-4-6-thinking-medium":     "claude-opus-4-6-thinking",
 	"gemini-claude-opus-4-6-thinking-high":       "claude-opus-4-6-thinking",
@@ -296,6 +309,7 @@ func GetResolverAliasMap() map[string]string {
 // GetQuotaGroupForModel is implemented in transform.go to reuse the existing quota registry.
 // GetGemini35FlashAntigravityModel is implemented in transform.go to reuse existing Gemini 3.5 Flash routing.
 // GetGemini35FlashGeminiCliFallbackModel is implemented in transform.go to reuse existing Gemini CLI fallback routing.
+// GetGemini36FlashAntigravityModel is implemented in transform.go to reuse existing Gemini 3.6 Flash routing.
 
 func copyModelDefinitions(definitions OpencodeModelDefinitions) OpencodeModelDefinitions {
 	copied := make(OpencodeModelDefinitions, len(definitions))
