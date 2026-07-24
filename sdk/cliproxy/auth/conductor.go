@@ -3715,7 +3715,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		affinityKeys := sessionModelAffinityKeys(routeModel, opts)
 		models = m.applySessionModelAffinityForKeys(affinityKeys, models)
-		entry.Infof("model-resolution: requested=%s actual=%s auth=%s provider=%s", routeModel, models[0], auth.ID, provider)
+		entry.Debugf("model-resolution: requested=%s actual=%s auth=%s provider=%s", routeModel, models[0], auth.ID, provider)
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
@@ -3850,7 +3850,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		affinityKeys := sessionModelAffinityKeys(routeModel, opts)
 		models = m.applySessionModelAffinityForKeys(affinityKeys, models)
-		entry.Infof("model-resolution: requested=%s actual=%s auth=%s provider=%s", routeModel, models[0], auth.ID, provider)
+		entry.Debugf("model-resolution: requested=%s actual=%s auth=%s provider=%s", routeModel, models[0], auth.ID, provider)
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
@@ -4237,7 +4237,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		affinityKeys := sessionModelAffinityKeys(routeModel, opts)
 		models = m.applySessionModelAffinityForKeys(affinityKeys, models)
-		entry.Infof("model-resolution: requested=%s actual=%s auth=%s provider=%s", routeModel, models[0], auth.ID, provider)
+		entry.Debugf("model-resolution: requested=%s actual=%s auth=%s provider=%s", routeModel, models[0], auth.ID, provider)
 		var errPrepare error
 		if selection != nil {
 			auth, errPrepare = m.prepareHomeRequestAuth(execCtx, executor, selection)
