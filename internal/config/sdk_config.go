@@ -55,6 +55,9 @@ type SDKConfig struct {
 	// "summary" restores the previous summarized format using HTML title/JSON error extraction.
 	DetailedAPIErrorBodyLogFormat string `yaml:"detailed-api-error-body-log-format" json:"detailed-api-error-body-log-format"`
 
+	// CodexOptimizeMultiAgentV2 mirrors the provider-wide runtime setting for API handlers.
+	CodexOptimizeMultiAgentV2 bool `yaml:"-" json:"-"`
+
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 
