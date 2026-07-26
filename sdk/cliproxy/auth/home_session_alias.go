@@ -83,6 +83,11 @@ func (c *homeSessionAliasCache) canonical(primary, fallback string, ttl time.Dur
 			aliases = mergeSessionAliases(aliases, existing.aliases...)
 		}
 	}
+	if !canonicalFromLiveAlias {
+		if _, ok := c.groupLocked(canonical, now); ok {
+			return canonical
+		}
+	}
 	aliases = compactHomeSessionAliases(mergeSessionAliases(aliases, canonical))
 	for _, previous := range previousGroups {
 		c.removeGroupLocked(previous)

@@ -268,13 +268,18 @@ func TestHomeSessionAliasCacheDoesNotReconnectCompactedCanonicalAlias(t *testing
 	}
 
 	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	entry, ok := cache.entries[obsoletePrompt]
-	if !ok {
-		t.Fatalf("standalone obsolete prompt %q was not recorded", obsoletePrompt)
+	conversationEntry, conversationOK := cache.entries[conversation]
+	currentEntry, currentOK := cache.entries[currentPrompt]
+	_, obsoleteOK := cache.entries[obsoletePrompt]
+	cache.mu.Unlock()
+	if obsoleteOK {
+		t.Fatalf("stale canonical %q replaced the live group", obsoletePrompt)
 	}
-	if len(entry.aliases) != 1 || entry.aliases[0] != obsoletePrompt {
-		t.Fatalf("obsolete prompt reconnected to compacted aliases: %#v", entry.aliases)
+	if !conversationOK || !currentOK || !sameHomeSessionAliasGroup(conversationEntry, currentEntry) {
+		t.Fatalf("live aliases were disconnected: conversation=%#v current=%#v", conversationEntry, currentEntry)
+	}
+	if got := cache.canonical(conversation, "", time.Minute, now.Add(3*time.Second)); got != obsoletePrompt {
+		t.Fatalf("live conversation canonical = %q, want %q", got, obsoletePrompt)
 	}
 }
 
