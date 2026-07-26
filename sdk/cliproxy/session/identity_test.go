@@ -245,6 +245,14 @@ func TestEnrichDerivesAfterInvalidSessionIdentity(t *testing.T) {
 			payload: []byte(`{"prompt_cache_key":"` + strings.Repeat("x", 257) + `",` + baseMessages + `}`),
 		},
 		{
+			name:    "trailing control character prompt cache key",
+			payload: []byte(`{"prompt_cache_key":"tenant\n",` + baseMessages + `}`),
+		},
+		{
+			name:    "leading control character prompt cache key",
+			payload: []byte(`{"prompt_cache_key":"\ttenant",` + baseMessages + `}`),
+		},
+		{
 			name:    "control character session header",
 			payload: []byte(`{` + baseMessages + `}`),
 			headers: http.Header{"X-Session-Affinity": []string{"bad\nsession"}},

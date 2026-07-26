@@ -42,14 +42,14 @@ type canonicalPart struct {
 // NormalizeExplicitID validates an explicit client-provided session identifier.
 // It preserves opaque printable values while rejecting oversized or control-bearing IDs.
 func NormalizeExplicitID(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || len(raw) > 256 {
-		return ""
-	}
 	for _, r := range raw {
 		if unicode.IsControl(r) {
 			return ""
 		}
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 256 {
+		return ""
 	}
 	return raw
 }
