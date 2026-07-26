@@ -603,18 +603,22 @@ func buildReverseMapFromOriginalOpenAI(original []byte) map[string]string {
 	rev := map[string]string{}
 	if tools.IsArray() && len(tools.Array()) > 0 {
 		var names []string
+		seenNames := map[string]struct{}{}
 		arr := tools.Array()
 		for i := 0; i < len(arr); i++ {
 			t := arr[i]
-			if t.Get("type").String() != "function" {
-				continue
+			var name string
+			switch t.Get("type").String() {
+			case "function":
+				name = t.Get("function.name").String()
+			case "custom":
+				name = t.Get("name").String()
 			}
-			fn := t.Get("function")
-			if !fn.Exists() {
-				continue
-			}
-			if v := fn.Get("name"); v.Exists() {
-				names = append(names, v.String())
+			if name != "" {
+				if _, seen := seenNames[name]; !seen {
+					names = append(names, name)
+					seenNames[name] = struct{}{}
+				}
 			}
 		}
 		if len(names) > 0 {
