@@ -2941,6 +2941,74 @@ func TestRestoreClaudeOAuthToolNamesFromStreamLine_MixedCaseWithPrefix(t *testin
 	}
 }
 
+func TestClaudeExecutor_ExecuteOpenAINonStreamRestoresOAuthToolNames(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":10,"output_tokens":1}}}`,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"Bash","input":{}}}`,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\": \"echo hi\"}"}}`,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":30}}`,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+
+	type upstreamRequest struct {
+		toolName string
+		stream   bool
+	}
+	upstreamRequests := make(chan upstreamRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, errRead := io.ReadAll(r.Body)
+		if errRead != nil {
+			http.Error(w, errRead.Error(), http.StatusBadRequest)
+			return
+		}
+		upstreamRequests <- upstreamRequest{
+			toolName: gjson.GetBytes(body, "tools.0.name").String(),
+			stream:   gjson.GetBytes(body, "stream").Bool(),
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(upstreamBody))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "sk-ant-oat01-test",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"run echo hi"}],` +
+		`"tools":[{"type":"function","function":{"name":"bash","description":"run shell",` +
+		`"parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}]}`)
+
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	upstream := <-upstreamRequests
+	if !upstream.stream {
+		t.Fatal("upstream stream = false, want true")
+	}
+	if upstream.toolName != "Bash" {
+		t.Fatalf("upstream tools.0.name = %q, want %q", upstream.toolName, "Bash")
+	}
+	if got := gjson.GetBytes(resp.Payload, "choices.0.message.tool_calls.0.function.name").String(); got != "bash" {
+		t.Fatalf("tool_calls.0.function.name = %q, want %q; payload=%s", got, "bash", string(resp.Payload))
+	}
+}
+
 func TestEnsureClaudeThinkingDisplay_SetsSummarizedWhenMissing(t *testing.T) {
 	payload := []byte(`{"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`)
 	out := ensureClaudeThinkingDisplay(payload)
