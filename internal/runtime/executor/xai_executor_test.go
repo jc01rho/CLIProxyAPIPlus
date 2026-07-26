@@ -2886,6 +2886,8 @@ func TestXAIExecutorExecuteImagesRewritesImageURLToURL(t *testing.T) {
 }
 
 func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
+	const requestedModel = "grok-imagine-video"
+
 	var gotPath string
 	var gotMethod string
 	var gotAuth string
@@ -2906,6 +2908,12 @@ func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
 	}))
 	defer server.Close()
 
+	plugin := &captureXAIUsagePlugin{
+		model:   requestedModel,
+		records: make(chan usage.Record, 2),
+	}
+	usage.RegisterPlugin(plugin)
+
 	exec := NewXAIExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{
 		Provider:   "xai",
@@ -2914,7 +2922,7 @@ func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
 	}
 
 	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "grok-imagine-video",
+		Model:   requestedModel,
 		Payload: []byte(`{"model":"grok-imagine-video","prompt":"animate","duration":4}`),
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("openai-video"),
@@ -2944,6 +2952,102 @@ func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
 	if gjson.GetBytes(resp.Payload, "request_id").String() != "vid_123" {
 		t.Fatalf("payload = %s", string(resp.Payload))
 	}
+
+	record := waitForXAIUsageRecord(t, plugin.records)
+	if record.Model != requestedModel {
+		t.Fatalf("model = %q, want %q", record.Model, requestedModel)
+	}
+	if record.Failed {
+		t.Fatalf("failed = true, want false; failure=%+v", record.Fail)
+	}
+	if record.Detail != (usage.Detail{}) {
+		t.Fatalf("detail = %+v, want zero token usage", record.Detail)
+	}
+	if record.TTFT <= 0 {
+		t.Fatalf("ttft = %v, want positive duration", record.TTFT)
+	}
+	assertNoAdditionalXAIUsageRecord(t, plugin.records)
+}
+
+func TestXAIExecutorExecuteVideosPublishesFailureUsage(t *testing.T) {
+	const requestedModel = "grok-imagine-video-failure"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer server.Close()
+
+	plugin := &captureXAIUsagePlugin{
+		model:   requestedModel,
+		records: make(chan usage.Record, 2),
+	}
+	usage.RegisterPlugin(plugin)
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "video-model-alias",
+		Payload: []byte(`{"model":"grok-imagine-video-failure","prompt":"animate"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-video"),
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+
+	record := waitForXAIUsageRecord(t, plugin.records)
+	if record.Model != requestedModel {
+		t.Fatalf("model = %q, want %q", record.Model, requestedModel)
+	}
+	if !record.Failed {
+		t.Fatal("failed = false, want true")
+	}
+	if record.Fail.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("failure status = %d, want %d", record.Fail.StatusCode, http.StatusTooManyRequests)
+	}
+	assertNoAdditionalXAIUsageRecord(t, plugin.records)
+}
+
+func TestXAIExecutorExecuteVideosPublishesRequestBuildFailureUsage(t *testing.T) {
+	const requestedModel = "grok-imagine-video-fallback"
+
+	plugin := &captureXAIUsagePlugin{
+		model:   requestedModel,
+		records: make(chan usage.Record, 2),
+	}
+	usage.RegisterPlugin(plugin)
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": "://invalid"},
+	}
+
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   requestedModel,
+		Payload: []byte(`{"prompt":"animate"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-video"),
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+
+	record := waitForXAIUsageRecord(t, plugin.records)
+	if record.Model != requestedModel {
+		t.Fatalf("model = %q, want %q", record.Model, requestedModel)
+	}
+	if !record.Failed {
+		t.Fatal("failed = false, want true")
+	}
+	assertNoAdditionalXAIUsageRecord(t, plugin.records)
 }
 
 func TestXAIExecutorExecuteVideosRetrieve(t *testing.T) {
