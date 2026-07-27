@@ -432,6 +432,19 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 			}
 		}
 
+		// Downstream API key surface: on 4xx/5xx for AI API paths the routing
+		// layer may never have resolved to a provider, so the apiKey context
+		// value can be empty. Always read the Authorization / X-Api-Key
+		// headers from the live request so we can trace which downstream
+		// credential triggered the failure (e.g., "unknown provider for model
+		// glm-5" 502s where glm-5 isn't registered as any provider on the
+		// server, but the client believes it should be).
+		if isAIAPIPath(path) && statusCode >= http.StatusBadRequest && c.Request != nil {
+			if apiKeyValue := extractDownstreamAPIKey(c.Request.Header); apiKeyValue != "" {
+				logLine = logLine + " | downstream_api_key=" + apiKeyValue
+			}
+		}
+
 		entry := log.WithField("request_id", requestID)
 		switch {
 		case statusCode >= http.StatusInternalServerError:
@@ -518,6 +531,7 @@ func GetRequestBody(c *gin.Context) []byte {
 	return nil
 }
 
+// creditsUsed reports whether the request consumed Antigravity credits.
 func creditsUsed(c *gin.Context) bool {
 	if c == nil {
 		return false
@@ -528,6 +542,56 @@ func creditsUsed(c *gin.Context) bool {
 	}
 	flag, ok := val.(bool)
 	return ok && flag
+}
+
+// extractDownstreamAPIKey returns a redacted description of the downstream
+// client's API key so operators can correlate 4xx/5xx responses with the
+// credential the caller presented. We never log the raw secret; we surface
+// the scheme (Bearer / X-Api-Key / Cookie) plus the first 4 chars and total
+// length so misconfigured credentials are still diagnosable without leaking.
+func extractDownstreamAPIKey(h http.Header) string {
+	if len(h) == 0 {
+		return ""
+	}
+	candidates := []struct {
+		header string
+		scheme string
+	}{
+		{"Authorization", "Bearer"},
+		{"X-Api-Key", "X-Api-Key"},
+		{"Api-Key", "X-Api-Key"},
+	}
+	for _, candidate := range candidates {
+		raw := strings.TrimSpace(h.Get(candidate.header))
+		if raw == "" {
+			continue
+		}
+		secret := raw
+		if candidate.scheme == "Bearer" {
+			idx := strings.Index(raw, " ")
+			if idx > 0 {
+				scheme := strings.ToLower(strings.TrimSpace(raw[:idx]))
+				if scheme != "bearer" {
+					return ""
+				}
+				secret = strings.TrimSpace(raw[idx+1:])
+			} else {
+				// "Bearer" without a following space-separated token means the
+				// caller sent a malformed header (e.g., "Bearer " or "Bearer").
+				// Treat as no token to avoid emitting a misleading preview.
+				continue
+			}
+		}
+		if secret == "" {
+			return ""
+		}
+		preview := secret
+		if len(preview) > 4 {
+			preview = preview[:4]
+		}
+		return fmt.Sprintf("%s(%s...%dchars)", candidate.scheme, preview, len(secret))
+	}
+	return ""
 }
 
 // extractUsageFromAPIResponse parses usage information from the API_RESPONSE body

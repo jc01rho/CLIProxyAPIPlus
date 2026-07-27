@@ -66,6 +66,53 @@ func TestApplyOAuthModelAlias_ForkAddsAlias(t *testing.T) {
 	}
 }
 
+// Regression: fork aliases that are also exposed as registered models
+// (e.g. claude/haiku → claude-haiku-4-5-20251001 with fork: true) used to
+// fall through resolveRequestedModelForAuth as a "real registered model"
+// because applyOAuthModelAliasEntries didn't tag the alias clone with an
+// ExecutionTarget. Without ExecutionTarget, the dispatcher kept the bare
+// alias name (haiku) and forwarded it to upstream, which returned
+// not_found_error: model: haiku. Lock the ExecutionTarget assignment so the
+// alias path always rewrites to the upstream model.
+func TestApplyOAuthModelAlias_ForkAliasExposesExecutionTarget(t *testing.T) {
+	cfg := &config.Config{
+		OAuthModelAlias: map[string][]config.OAuthModelAlias{
+			"claude": {
+				{Name: "claude-haiku-4-5-20251001", Alias: "haiku", Fork: true},
+			},
+		},
+	}
+	models := []*ModelInfo{
+		{ID: "claude-haiku-4-5-20251001"},
+	}
+
+	out := applyOAuthModelAlias(cfg, "claude", "oauth", models)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 models (upstream + fork alias), got %d", len(out))
+	}
+	var aliasEntry, upstreamEntry *ModelInfo
+	for _, entry := range out {
+		switch entry.ID {
+		case "haiku":
+			aliasEntry = entry
+		case "claude-haiku-4-5-20251001":
+			upstreamEntry = entry
+		}
+	}
+	if aliasEntry == nil {
+		t.Fatalf("fork alias entry not found in output: %+v", out)
+	}
+	if upstreamEntry == nil {
+		t.Fatalf("upstream entry not found in output: %+v", out)
+	}
+	if aliasEntry.ExecutionTarget != "claude-haiku-4-5-20251001" {
+		t.Fatalf("alias ExecutionTarget = %q, want %q", aliasEntry.ExecutionTarget, "claude-haiku-4-5-20251001")
+	}
+	if upstreamEntry.ExecutionTarget != "" {
+		t.Fatalf("upstream ExecutionTarget = %q, want empty (real registered model)", upstreamEntry.ExecutionTarget)
+	}
+}
+
 func TestApplyOAuthModelAlias_PreservesUpstreamDisplayNameByDefault(t *testing.T) {
 	cfg := &config.Config{
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{
