@@ -153,6 +153,82 @@ func TestRefreshClusterNodesDisabledSkipsRedisCommand(t *testing.T) {
 	}
 }
 
+func TestGetConfigSkipsSecondDialAfterClusterTransportFailure(t *testing.T) {
+	client := New(config.HomeConfig{Enabled: true, Host: "127.0.0.1", Port: 1})
+	var dialMu sync.Mutex
+	dialAttempts := 0
+	options := &redis.Options{
+		Addr:                  "127.0.0.1:1",
+		DialTimeout:           time.Second,
+		MaxRetries:            -1,
+		DialerRetries:         1,
+		ContextTimeoutEnabled: true,
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			dialMu.Lock()
+			dialAttempts++
+			dialMu.Unlock()
+			return nil, errors.New("test Home unavailable")
+		},
+	}
+	client.cmdOptions = cloneRedisOptions(options)
+	client.cmd = redis.NewClient(options)
+	t.Cleanup(client.Close)
+
+	_, errGet := client.GetConfig(context.Background())
+	if !errors.Is(errGet, errClusterDiscoveryTransport) {
+		t.Fatalf("GetConfig() error = %v, want cluster discovery transport error", errGet)
+	}
+	dialMu.Lock()
+	attempts := dialAttempts
+	dialMu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("GetConfig() dial attempts = %d, want 1", attempts)
+	}
+}
+
+func TestGetConfigContinuesAfterClusterDiscoveryResponseError(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+	}{
+		{name: "protocol error", response: "-ERR cluster command unsupported\r\n"},
+		{name: "response type error", response: ":1\r\n"},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			client, commands := newRedisCommandTestClient(t, func(args []string) string {
+				switch {
+				case len(args) >= 2 && strings.EqualFold(args[0], "CLUSTER") && strings.EqualFold(args[1], "NODES"):
+					return testCase.response
+				case len(args) >= 2 && strings.EqualFold(args[0], "GET") && args[1] == redisKeyConfig:
+					payload := "host: 127.0.0.1\n"
+					return fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
+				default:
+					return "-ERR unexpected command\r\n"
+				}
+			})
+			client.mu.Lock()
+			client.homeCfg.DisableClusterDiscovery = false
+			client.mu.Unlock()
+
+			raw, errGet := client.GetConfig(context.Background())
+			if errGet != nil {
+				t.Fatalf("GetConfig() error = %v", errGet)
+			}
+			if string(raw) != "host: 127.0.0.1\n" {
+				t.Fatalf("GetConfig() = %q", raw)
+			}
+			if count := commands.CountCommandKey("CLUSTER", "NODES"); count != 1 {
+				t.Fatalf("CLUSTER NODES count = %d, want 1", count)
+			}
+			if count := commands.CountCommandKey("GET", redisKeyConfig); count != 1 {
+				t.Fatalf("GET config count = %d, want 1", count)
+			}
+		})
+	}
+}
+
 func TestFailoverAfterReconnectFailureDisabledDoesNotSwitchToClusterNode(t *testing.T) {
 	client := New(config.HomeConfig{
 		Enabled:                 true,

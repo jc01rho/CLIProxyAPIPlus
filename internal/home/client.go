@@ -82,6 +82,8 @@ func IsAmbiguousDispatchError(err error) bool {
 	return errors.As(err, &dispatchErr) && dispatchErr.Ambiguous
 }
 
+var errClusterDiscoveryTransport = errors.New("home cluster discovery transport failed")
+
 var (
 	ErrDisabled              = errors.New("home client disabled")
 	ErrNotConnected          = errors.New("home not connected")
@@ -658,20 +660,21 @@ func (c *Client) clusterDiscoveryEnabledLocked() bool {
 	return !c.homeCfg.DisableClusterDiscovery
 }
 
-func (c *Client) refreshBestClusterNode(ctx context.Context) {
+func (c *Client) refreshBestClusterNode(ctx context.Context) error {
 	if !c.clusterDiscoveryEnabled() {
-		return
+		return nil
 	}
 	switched, errRefresh := c.refreshClusterNodes(ctx)
 	if errRefresh != nil {
 		log.Debugf("home cluster nodes unavailable: %v", errRefresh)
-		return
+		return errRefresh
 	}
 	if switched {
 		if addr, ok := c.addr(); ok {
 			log.Infof("home cluster target switched to %s", addr)
 		}
 	}
+	return nil
 }
 
 func (c *Client) refreshClusterNodes(ctx context.Context) (bool, error) {
@@ -683,11 +686,20 @@ func (c *Client) refreshClusterNodes(ctx context.Context) (bool, error) {
 	}
 	cmd, errClient := c.commandClient()
 	if errClient != nil {
-		return false, errClient
+		return false, fmt.Errorf("%w: %w", errClusterDiscoveryTransport, errClient)
 	}
-	raw, errDo := cmd.Do(ctx, "CLUSTER", "NODES").Text()
+	nodesCommand := cmd.Do(ctx, "CLUSTER", "NODES")
+	errDo := nodesCommand.Err()
 	if errDo != nil {
+		var redisErr redis.Error
+		if !errors.As(errDo, &redisErr) {
+			return false, fmt.Errorf("%w: %w", errClusterDiscoveryTransport, errDo)
+		}
 		return false, errDo
+	}
+	raw, errText := nodesCommand.Text()
+	if errText != nil {
+		return false, errText
 	}
 
 	nodes, errParse := parseClusterNodesPayload([]byte(raw))
@@ -844,7 +856,9 @@ func (c *Client) resetReconnectFailures() {
 }
 
 func (c *Client) GetConfig(ctx context.Context) ([]byte, error) {
-	c.refreshBestClusterNode(ctx)
+	if errRefresh := c.refreshBestClusterNode(ctx); errors.Is(errRefresh, errClusterDiscoveryTransport) {
+		return nil, errRefresh
+	}
 	cmd, errClient := c.commandClient()
 	if errClient != nil {
 		return nil, errClient
