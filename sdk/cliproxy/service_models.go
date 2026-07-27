@@ -965,6 +965,12 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			seen[aliasKey] = struct{}{}
 			clone := *model
 			clone.ID = mappedID
+			// ExecutionTarget lets resolveRequestedModelForAuth rewrite the
+			// alias back to its upstream model when the alias is also exposed
+			// as a registered model (fork:true). Without this, the alias falls
+			// through PHASE 0 as a 'real registered model' and is dispatched
+			// as-is, defeating the alias rewrite path entirely.
+			clone.ExecutionTarget = id
 			if entry.displayName != "" {
 				clone.DisplayName = entry.displayName
 			}
