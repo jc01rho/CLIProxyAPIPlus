@@ -1307,7 +1307,7 @@ func (c *Client) concurrencyReleaseClient() (*redis.Client, error) {
 		return nil, ErrDispatchFenced
 	}
 	state := recoveryState(c.recoveryState.Load())
-	if state == recoveryStateSwitching || state == recoveryStateSwitchingTakeover {
+	if state == recoveryStateTakeoverEligible || state == recoveryStateSwitching || state == recoveryStateSwitchingTakeover {
 		return nil, ErrNotConnected
 	}
 	if !c.Enabled() {
@@ -1320,7 +1320,7 @@ func (c *Client) concurrencyReleaseClient() (*redis.Client, error) {
 		return nil, ErrDispatchFenced
 	}
 	state = recoveryState(c.recoveryState.Load())
-	if state == recoveryStateSwitching || state == recoveryStateSwitchingTakeover {
+	if state == recoveryStateTakeoverEligible || state == recoveryStateSwitching || state == recoveryStateSwitchingTakeover {
 		return nil, ErrNotConnected
 	}
 	if c.release != nil {

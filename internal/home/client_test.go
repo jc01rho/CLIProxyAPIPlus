@@ -243,18 +243,31 @@ func TestEnsureClientsWaitsForPreviousTargetClose(t *testing.T) {
 	client.Close()
 }
 
-func TestConcurrencyReleaseDoesNotOpenSwitchingTarget(t *testing.T) {
-	client := New(config.HomeConfig{Enabled: true, Host: "next.example.com", Port: 8327})
-	client.recoveryState.Store(uint32(recoveryStateSwitching))
-	errRelease := client.PushConcurrencyRelease(context.Background(), ConcurrencyReleaseFrame{CredentialID: "cred-a", Model: "model-a", ReleaseSeq: 1})
-	if !errors.Is(errRelease, ErrNotConnected) {
-		t.Fatalf("PushConcurrencyRelease() error = %v, want %v", errRelease, ErrNotConnected)
+func TestConcurrencyReleaseDoesNotOpenBeforeMembershipReady(t *testing.T) {
+	tests := []struct {
+		name  string
+		state recoveryState
+	}{
+		{name: "takeover pending", state: recoveryStateTakeoverEligible},
+		{name: "target switching", state: recoveryStateSwitching},
+		{name: "target switching with takeover", state: recoveryStateSwitchingTakeover},
 	}
-	client.mu.Lock()
-	releaseClient := client.release
-	client.mu.Unlock()
-	if releaseClient != nil {
-		t.Fatal("release client was opened before the switched target became ready")
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			client := New(config.HomeConfig{Enabled: true, Host: "next.example.com", Port: 8327})
+			client.recoveryState.Store(uint32(testCase.state))
+			errRelease := client.PushConcurrencyRelease(context.Background(), ConcurrencyReleaseFrame{CredentialID: "cred-a", Model: "model-a", ReleaseSeq: 1})
+			if !errors.Is(errRelease, ErrNotConnected) {
+				t.Fatalf("PushConcurrencyRelease() error = %v, want %v", errRelease, ErrNotConnected)
+			}
+			client.mu.Lock()
+			releaseClient := client.release
+			client.mu.Unlock()
+			if releaseClient != nil {
+				t.Fatal("release client was opened before the membership became ready")
+			}
+		})
 	}
 }
 
