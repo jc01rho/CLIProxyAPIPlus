@@ -352,6 +352,45 @@ func TestApplyOAuthModelAliasWithResult_ForceMappingUsesConfigAliasNotRequestSuf
 		t.Fatalf("OriginalAlias = %q want gpt-5.4-fast", res.OriginalAlias)
 	}
 }
+func TestApplyOAuthModelAlias_ClaudeHaikuForkAlias(t *testing.T) {
+	t.Parallel()
+
+	aliases := map[string][]internalconfig.OAuthModelAlias{
+		"claude": {{
+			Name:  "claude-haiku-4-5-20251001",
+			Alias: "haiku",
+			Fork:  true,
+		}},
+	}
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+	mgr.SetOAuthModelAlias(aliases)
+
+	auth := &Auth{ID: "claude-oauth-auth", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}}
+
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "haiku")
+	if resolvedModel != "claude-haiku-4-5-20251001" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "claude-haiku-4-5-20251001")
+	}
+
+	resolvedModelWithSuffix := mgr.applyOAuthModelAlias(auth, "haiku(8192)")
+	if resolvedModelWithSuffix != "claude-haiku-4-5-20251001(8192)" {
+		t.Errorf("applyOAuthModelAlias() model with suffix = %q, want %q", resolvedModelWithSuffix, "claude-haiku-4-5-20251001(8192)")
+	}
+
+	res := mgr.applyOAuthModelAliasWithResult(auth, "haiku")
+	if res.UpstreamModel != "claude-haiku-4-5-20251001" {
+		t.Errorf("applyOAuthModelAliasWithResult() UpstreamModel = %q, want %q", res.UpstreamModel, "claude-haiku-4-5-20251001")
+	}
+	if res.ForceMapping {
+		t.Errorf("applyOAuthModelAliasWithResult() ForceMapping = true, want false (no force-mapping in config)")
+	}
+	if res.OriginalAlias != "haiku" {
+		t.Errorf("applyOAuthModelAliasWithResult() OriginalAlias = %q, want %q", res.OriginalAlias, "haiku")
+	}
+}
+
 func TestApplyOAuthModelAliasWithResult_NoForceMappingPreservesRequestedModelInOriginalAlias(t *testing.T) {
 	t.Parallel()
 	mgr := NewManager(nil, nil, nil)
