@@ -332,6 +332,8 @@ func normalizeRoutingStrategy(strategy string) (string, bool) {
 	switch normalized {
 	case "", "round-robin", "roundrobin", "rr":
 		return "round-robin", true
+	case "weighted-round-robin", "weightedroundrobin", "wrr":
+		return "weighted-round-robin", true
 	case "fill-first", "fillfirst", "ff":
 		return "fill-first", true
 	case "weight-robin", "weightrobin", "wr":

@@ -160,6 +160,9 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 	if auth == nil {
 		return "", fmt.Errorf("object store: auth is nil")
 	}
+	if errWeight := cliproxyauth.ValidateAuthWeight(auth); errWeight != nil {
+		return "", fmt.Errorf("object store: %w", errWeight)
+	}
 
 	path, err := s.resolveAuthPath(auth)
 	if err != nil {
@@ -570,6 +573,9 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 	metadata := make(map[string]any)
 	if err = json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("unmarshal auth json: %w", err)
+	}
+	if errWeight := cliproxyauth.ValidateAuthWeight(&cliproxyauth.Auth{Metadata: metadata}); errWeight != nil {
+		return nil, errWeight
 	}
 	provider := canonicalizeAuthProvider(valueAsString(metadata["type"]))
 	info, err := os.Stat(path)
