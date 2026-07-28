@@ -22,10 +22,17 @@ import (
 )
 
 func resetAntigravityCreditsRetryState() {
-	antigravityCreditsFailureByAuth = sync.Map{}
-	antigravityShortCooldownByAuth = sync.Map{}
-	antigravityCreditsBalanceByAuth = sync.Map{}
-	antigravityCreditsHintRefreshByID = sync.Map{}
+	clearSyncMap(&antigravityCreditsFailureByAuth)
+	clearSyncMap(&antigravityShortCooldownByAuth)
+	clearSyncMap(&antigravityCreditsBalanceByAuth)
+	clearSyncMap(&antigravityCreditsHintRefreshByID)
+}
+
+func clearSyncMap(values *sync.Map) {
+	values.Range(func(key, _ any) bool {
+		values.Delete(key)
+		return true
+	})
 }
 
 type closeSignalReadCloser struct {
@@ -507,7 +514,7 @@ func TestAntigravityAuthHasCredits(t *testing.T) {
 func TestAntigravityAuthHasCreditsRequiredHomeBalanceUsesKV(t *testing.T) {
 	resetAntigravityCreditsRetryState()
 	t.Cleanup(resetAntigravityCreditsRetryState)
-	const authID = "home-balance-auth"
+	authID := fmt.Sprintf("home-balance-auth-%d", time.Now().UnixNano())
 	client := newFakeAntigravityKVClient()
 	client.values[antigravityCreditsBalanceKey(authID)] = mustAntigravityJSON(t, antigravityCreditsBalance{
 		CreditAmount:    10,
