@@ -20,7 +20,7 @@ func (h *Handler) GetWeightRobinQueue(c *gin.Context) {
 		return
 	}
 
-	weightedSelector, ok := selector.(*auth.WeightedRobinSelector)
+	weightedSelector, ok := auth.UnwrapWeightedRobin(selector)
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "current selector is not weight-robin"})
 		return

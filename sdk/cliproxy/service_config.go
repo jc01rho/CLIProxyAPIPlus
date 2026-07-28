@@ -42,6 +42,8 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	switch strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy)) {
 	case "fill-first", "fillfirst", "ff":
 		state.strategy = "fill-first"
+	case "weight-robin", "weightrobin", "wr":
+		state.strategy = "weight-robin"
 	}
 	state.sessionAffinity = cfg.Routing.SessionAffinity
 	if ttl := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttl != "" {
@@ -54,9 +56,12 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 
 func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 	var selector coreauth.Selector
-	if state.strategy == "fill-first" {
+	switch state.strategy {
+	case "fill-first":
 		selector = &coreauth.FillFirstSelector{}
-	} else {
+	case "weight-robin":
+		selector = &coreauth.WeightedRobinSelector{}
+	default:
 		selector = &coreauth.RoundRobinSelector{}
 	}
 	if state.sessionAffinity {
