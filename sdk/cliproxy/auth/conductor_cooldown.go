@@ -650,6 +650,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	clearModelQuota := false
 	setModelQuota := false
 	var authSnapshot *Auth
+	var handoffSnapshots []*Auth
 	cooldownStateChanged := false
 
 	m.mu.Lock()
@@ -793,6 +794,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.Status = StatusError
 					auth.UpdatedAt = now
 					updateAggregatedAvailability(auth, now)
+
+					if isAntigravityHandoffError(statusCode) &&
+						strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") &&
+						auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
+						cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+						if cfg != nil && cfg.AntigravityPrimaryHandoff {
+							handoffSnapshots = m.promoteNextAntigravityPrimary(ctx, auth.ID)
+						}
+					}
 				}
 			} else {
 				disableCooling := m.cooldownDisabledForAuth(auth)
@@ -813,6 +823,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	}
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
+	}
+	if m.scheduler != nil {
+		for _, snapshot := range handoffSnapshots {
+			if snapshot == nil {
+				continue
+			}
+			m.scheduler.upsertAuth(snapshot)
+		}
 	}
 
 	if clearModelQuota && result.Model != "" {
@@ -1237,6 +1255,93 @@ func statusCodeFromResult(err *Error) int {
 		return 0
 	}
 	return err.StatusCode()
+}
+
+// isAntigravityHandoffError returns true if the error status code should trigger
+// a primary credential handoff for Antigravity provider.
+func isAntigravityHandoffError(statusCode int) bool {
+	switch statusCode {
+	case 401, 403, 429, 502, 503, 504:
+		return true
+	default:
+		return false
+	}
+}
+
+// promoteNextAntigravityPrimary disables the current primary Antigravity credential
+// and promotes the next standby in ascending order.
+// Must be called with m.mu held.
+func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuthID string) []*Auth {
+	var allAntigravity []*Auth
+	for _, auth := range m.auths {
+		if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") && auth.PrimaryInfo != nil {
+			allAntigravity = append(allAntigravity, auth)
+		}
+	}
+	if len(allAntigravity) == 0 {
+		return nil
+	}
+
+	sort.Slice(allAntigravity, func(i, j int) bool {
+		return allAntigravity[i].PrimaryInfo.Order < allAntigravity[j].PrimaryInfo.Order
+	})
+
+	currentIdx := -1
+	for i, auth := range allAntigravity {
+		if auth.ID == currentAuthID {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx < 0 {
+		return nil
+	}
+
+	nextIdx := -1
+	for i := currentIdx + 1; i < len(allAntigravity); i++ {
+		if allAntigravity[i] == nil || allAntigravity[i].PrimaryInfo == nil {
+			continue
+		}
+		nextIdx = i
+		break
+	}
+	if nextIdx < 0 {
+		return nil
+	}
+
+	current := allAntigravity[currentIdx]
+	now := time.Now()
+	current.Disabled = true
+	current.Status = StatusDisabled
+	current.PrimaryInfo.IsPrimary = false
+	current.UpdatedAt = now
+	SyncPrimaryInfoMetadata(current)
+	_ = m.persist(ctx, current)
+
+	next := allAntigravity[nextIdx]
+	next.Disabled = false
+	next.Status = StatusActive
+	next.StatusMessage = ""
+	next.Unavailable = false
+	next.LastError = nil
+	next.NextRetryAfter = time.Time{}
+	next.Quota = QuotaState{}
+	next.PrimaryInfo.IsPrimary = true
+	next.UpdatedAt = now
+	SyncPrimaryInfoMetadata(next)
+	_ = m.persist(ctx, next)
+
+	log.WithFields(log.Fields{
+		"old_primary": current.ID,
+		"new_primary": next.ID,
+		"old_order":   current.PrimaryInfo.Order,
+		"new_order":   next.PrimaryInfo.Order,
+	}).Info("antigravity primary handoff: promoted next credential")
+
+	if current.ID == next.ID {
+		return []*Auth{current.Clone()}
+	}
+	return []*Auth{current.Clone(), next.Clone()}
 }
 
 func isModelSupportErrorMessage(message string) bool {

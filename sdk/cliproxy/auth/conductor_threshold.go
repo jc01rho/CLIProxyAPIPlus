@@ -79,6 +79,16 @@ func thresholdRuleReason(rule internalconfig.TokenThresholdRule, count int) stri
 	return strings.Join(parts, " ")
 }
 
+func authDecisionLabel(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if label := strings.TrimSpace(auth.Label); label != "" {
+		return label
+	}
+	return strings.TrimSpace(auth.ID)
+}
+
 func matchTokenThresholdRule(rules []internalconfig.TokenThresholdRule, routeModel string, count int) (internalconfig.TokenThresholdRule, bool) {
 	model := strings.TrimSpace(routeModel)
 	for _, rule := range rules {
@@ -132,14 +142,8 @@ func (m *Manager) annotateThresholdDecisionSelected(ctx context.Context, routeMo
 	if provider = strings.TrimSpace(provider); provider != "" {
 		reasonParts = append(reasonParts, fmt.Sprintf("provider=%s", provider))
 	}
-	if auth != nil {
-		authName := strings.TrimSpace(auth.Label)
-		if authName == "" {
-			authName = strings.TrimSpace(auth.ID)
-		}
-		if authName != "" {
-			reasonParts = append(reasonParts, fmt.Sprintf("auth=%s", authName))
-		}
+	if authName := authDecisionLabel(auth); authName != "" {
+		reasonParts = append(reasonParts, fmt.Sprintf("auth=%s", authName))
 	}
 	selectedClass := authBillingClass(auth)
 	if selectedClass != "" {
