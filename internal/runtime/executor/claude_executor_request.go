@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/andybalholm/brotli"
 	"github.com/google/uuid"
@@ -462,6 +463,76 @@ func isClaudeOAuthToken(apiKey string) bool {
 	return strings.Contains(apiKey, "sk-ant-oat")
 }
 
+// stripTrailingClaudeAssistantMessages removes trailing assistant messages from
+// the request body, mirroring cortexkit/anthropic-auth stripTrailingAssistantMessages.
+// Anthropic rejects assistant-message prefill on Claude Code OAuth models with
+// "the conversation must end with a user message"; a resumed/compacted session can
+// end on an assistant turn (e.g. after a failed tool round), so pop those.
+func stripTrailingClaudeAssistantMessages(body []byte) []byte {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return body
+	}
+	arr := messages.Array()
+	n := len(arr)
+	for n > 0 && arr[n-1].Get("role").String() == "assistant" {
+		n--
+	}
+	if n == len(arr) {
+		return body
+	}
+	kept := "[]"
+	for i := 0; i < n; i++ {
+		kept, _ = sjson.SetRaw(kept, "-1", arr[i].Raw)
+	}
+	out, err := sjson.SetRawBytes(body, "messages", []byte(kept))
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// stripClaudeFastSpeed removes a client-supplied speed:"fast" field, mirroring
+// cortexkit/anthropic-auth rewriteRequestBody (959-962): fast mode is not enabled
+// for proxied requests, so speed:"fast" must not reach the upstream.
+func stripClaudeFastSpeed(body []byte) []byte {
+	if gjson.GetBytes(body, "speed").String() != "fast" {
+		return body
+	}
+	out, err := sjson.DeleteBytes(body, "speed")
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// claudeMessagesHaveUserRole reports whether the request body has at least one
+// message with role "user", mirroring cortexkit's billing-header guard in
+// rewriteRequestBody (only inject billing when a user message exists).
+func claudeMessagesHaveUserRole(body []byte) bool {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+	found := false
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		if msg.Get("role").String() == "user" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func orderClaudeCodeBody(body []byte) []byte {
+	ordered, err := helps.OrderClaudeCodeBody(body)
+	if err != nil {
+		return body
+	}
+	return ordered
+}
+
 // prepareClaudeOAuthToolNamesForUpstream applies the Claude OAuth tool-name
 // transforms in the same order across request paths. Remap runs before prefixing
 // so any future non-empty prefix still composes correctly with the per-request
@@ -469,7 +540,7 @@ func isClaudeOAuthToken(apiKey string) bool {
 func prepareClaudeOAuthToolNamesForUpstream(body []byte, prefix string, prefixDisabled bool) ([]byte, map[string]string) {
 	body, reverseMap := remapOAuthToolNames(body)
 	if !prefixDisabled {
-		body = applyClaudeToolPrefix(body, prefix)
+		body = applyClaudeToolPrefix(body, prefix, reverseMap)
 	}
 	return body, reverseMap
 }
@@ -477,19 +548,39 @@ func prepareClaudeOAuthToolNamesForUpstream(body []byte, prefix string, prefixDi
 // restoreClaudeOAuthToolNamesFromResponse undoes the Claude OAuth tool-name
 // transforms for non-stream responses in reverse order.
 func restoreClaudeOAuthToolNamesFromResponse(body []byte, prefix string, prefixDisabled bool, reverseMap map[string]string) []byte {
+	body = reverseRemapOAuthToolNames(body, reverseMap)
 	if !prefixDisabled {
 		body = stripClaudeToolPrefixFromResponse(body, prefix)
 	}
-	return reverseRemapOAuthToolNames(body, reverseMap)
+	return body
 }
 
 // restoreClaudeOAuthToolNamesFromStreamLine undoes the Claude OAuth tool-name
 // transforms for SSE lines in reverse order.
 func restoreClaudeOAuthToolNamesFromStreamLine(line []byte, prefix string, prefixDisabled bool, reverseMap map[string]string) []byte {
+	line = reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
 	if !prefixDisabled {
 		line = stripClaudeToolPrefixFromStreamLine(line, prefix)
 	}
-	return reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
+	return line
+}
+
+func upperFirstToolName(name string) string {
+	if name == "" {
+		return name
+	}
+	runes := []rune(name)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
+}
+
+func lowerFirstToolName(name string) string {
+	if name == "" {
+		return name
+	}
+	runes := []rune(name)
+	runes[0] = unicode.ToLower(runes[0])
+	return string(runes)
 }
 
 // remapOAuthToolNames renames third-party tool names to Claude Code equivalents
@@ -730,7 +821,7 @@ func reverseRemapOAuthToolNamesFromStreamLine(line []byte, reverseMap map[string
 	return updated
 }
 
-func applyClaudeToolPrefix(body []byte, prefix string) []byte {
+func applyClaudeToolPrefix(body []byte, prefix string, reverseMaps ...map[string]string) []byte {
 	if prefix == "" {
 		return body
 	}
@@ -738,6 +829,23 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 	// Collect built-in tool names from the authoritative fallback seed list and
 	// augment it with any typed built-ins present in the current request body.
 	builtinTools := helps.AugmentClaudeBuiltinToolRegistry(body, nil)
+	var reverseMap map[string]string
+	if len(reverseMaps) > 0 {
+		reverseMap = reverseMaps[0]
+	}
+	record := func(original, wireName string) {
+		if reverseMap == nil || original == wireName {
+			return
+		}
+		clientName := original
+		if remapped, ok := reverseMap[original]; ok {
+			clientName = remapped
+		}
+		if _, exists := reverseMap[wireName]; !exists {
+			reverseMap[wireName] = clientName
+		}
+	}
+	prefixed := func(name string) string { return prefix + upperFirstToolName(name) }
 
 	if tools := gjson.GetBytes(body, "tools"); tools.Exists() && tools.IsArray() {
 		tools.ForEach(func(index, tool gjson.Result) bool {
@@ -753,8 +861,10 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 			if name == "" || strings.HasPrefix(name, prefix) {
 				return true
 			}
+			newName := prefixed(name)
 			path := fmt.Sprintf("tools.%d.name", index.Int())
-			body, _ = sjson.SetBytes(body, path, prefix+name)
+			body, _ = sjson.SetBytes(body, path, newName)
+			record(name, newName)
 			return true
 		})
 	}
@@ -762,7 +872,9 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 	if gjson.GetBytes(body, "tool_choice.type").String() == "tool" {
 		name := gjson.GetBytes(body, "tool_choice.name").String()
 		if name != "" && !strings.HasPrefix(name, prefix) && !builtinTools[name] {
-			body, _ = sjson.SetBytes(body, "tool_choice.name", prefix+name)
+			newName := prefixed(name)
+			body, _ = sjson.SetBytes(body, "tool_choice.name", newName)
+			record(name, newName)
 		}
 	}
 
@@ -781,14 +893,18 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 						return true
 					}
 					path := fmt.Sprintf("messages.%d.content.%d.name", msgIndex.Int(), contentIndex.Int())
-					body, _ = sjson.SetBytes(body, path, prefix+name)
+					newName := prefixed(name)
+					body, _ = sjson.SetBytes(body, path, newName)
+					record(name, newName)
 				case "tool_reference":
 					toolName := part.Get("tool_name").String()
 					if toolName == "" || strings.HasPrefix(toolName, prefix) || builtinTools[toolName] {
 						return true
 					}
 					path := fmt.Sprintf("messages.%d.content.%d.tool_name", msgIndex.Int(), contentIndex.Int())
-					body, _ = sjson.SetBytes(body, path, prefix+toolName)
+					newName := prefixed(toolName)
+					body, _ = sjson.SetBytes(body, path, newName)
+					record(toolName, newName)
 				case "tool_result":
 					// Handle nested tool_reference blocks inside tool_result.content[]
 					nestedContent := part.Get("content")
@@ -798,7 +914,9 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 								nestedToolName := nestedPart.Get("tool_name").String()
 								if nestedToolName != "" && !strings.HasPrefix(nestedToolName, prefix) && !builtinTools[nestedToolName] {
 									nestedPath := fmt.Sprintf("messages.%d.content.%d.content.%d.tool_name", msgIndex.Int(), contentIndex.Int(), nestedIndex.Int())
-									body, _ = sjson.SetBytes(body, nestedPath, prefix+nestedToolName)
+									newName := prefixed(nestedToolName)
+									body, _ = sjson.SetBytes(body, nestedPath, newName)
+									record(nestedToolName, newName)
 								}
 							}
 							return true
@@ -831,14 +949,14 @@ func stripClaudeToolPrefixFromResponse(body []byte, prefix string) []byte {
 				return true
 			}
 			path := fmt.Sprintf("content.%d.name", index.Int())
-			body, _ = sjson.SetBytes(body, path, strings.TrimPrefix(name, prefix))
+			body, _ = sjson.SetBytes(body, path, lowerFirstToolName(strings.TrimPrefix(name, prefix)))
 		case "tool_reference":
 			toolName := part.Get("tool_name").String()
 			if !strings.HasPrefix(toolName, prefix) {
 				return true
 			}
 			path := fmt.Sprintf("content.%d.tool_name", index.Int())
-			body, _ = sjson.SetBytes(body, path, strings.TrimPrefix(toolName, prefix))
+			body, _ = sjson.SetBytes(body, path, lowerFirstToolName(strings.TrimPrefix(toolName, prefix)))
 		case "tool_result":
 			// Handle nested tool_reference blocks inside tool_result.content[]
 			nestedContent := part.Get("content")
@@ -848,7 +966,7 @@ func stripClaudeToolPrefixFromResponse(body []byte, prefix string) []byte {
 						nestedToolName := nestedPart.Get("tool_name").String()
 						if strings.HasPrefix(nestedToolName, prefix) {
 							nestedPath := fmt.Sprintf("content.%d.content.%d.tool_name", index.Int(), nestedIndex.Int())
-							body, _ = sjson.SetBytes(body, nestedPath, strings.TrimPrefix(nestedToolName, prefix))
+							body, _ = sjson.SetBytes(body, nestedPath, lowerFirstToolName(strings.TrimPrefix(nestedToolName, prefix)))
 						}
 					}
 					return true
@@ -883,7 +1001,7 @@ func stripClaudeToolPrefixFromStreamLine(line []byte, prefix string) []byte {
 		if !strings.HasPrefix(name, prefix) {
 			return line
 		}
-		updated, err = sjson.SetBytes(payload, "content_block.name", strings.TrimPrefix(name, prefix))
+		updated, err = sjson.SetBytes(payload, "content_block.name", lowerFirstToolName(strings.TrimPrefix(name, prefix)))
 		if err != nil {
 			return line
 		}
@@ -892,7 +1010,7 @@ func stripClaudeToolPrefixFromStreamLine(line []byte, prefix string) []byte {
 		if !strings.HasPrefix(toolName, prefix) {
 			return line
 		}
-		updated, err = sjson.SetBytes(payload, "content_block.tool_name", strings.TrimPrefix(toolName, prefix))
+		updated, err = sjson.SetBytes(payload, "content_block.tool_name", lowerFirstToolName(strings.TrimPrefix(toolName, prefix)))
 		if err != nil {
 			return line
 		}
