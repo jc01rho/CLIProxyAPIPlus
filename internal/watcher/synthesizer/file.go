@@ -88,9 +88,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	}
 	t, _ := metadata["type"].(string)
 	provider := strings.ToLower(strings.TrimSpace(t))
-	if provider == "gemini" {
-		provider = "gemini-cli"
-	}
+	originalProvider := provider
 	if ctx.PluginAuthParser != nil {
 		auths, handled, errParse := parsePluginFileAuths(ctx.PluginAuthParser, pluginapi.AuthParseRequest{
 			Provider: provider,
@@ -140,7 +138,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			return auths, nil
 		}
 	}
-	if provider == "" || provider == "gemini-cli" {
+	if provider == "" || originalProvider == "gemini-cli" {
 		return nil, nil
 	}
 
@@ -272,7 +270,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			out := make([]*coreauth.Auth, 0, 1+len(virtuals))
 			out = append(out, a)
 			out = append(out, virtuals...)
-			return out
+			return out, nil
 		}
 	}
 	return []*coreauth.Auth{a}, nil

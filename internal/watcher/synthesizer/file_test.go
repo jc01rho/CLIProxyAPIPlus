@@ -212,7 +212,10 @@ func TestSynthesizeAuthFileExpandsPluginMultiAuths(t *testing.T) {
 		}),
 	}
 
-	auths := SynthesizeAuthFile(ctx, fullPath, raw)
+	auths, err := SynthesizeAuthFile(ctx, fullPath, raw)
+	if err != nil {
+		t.Fatalf("SynthesizeAuthFile() error = %v", err)
+	}
 	if len(auths) != 2 {
 		t.Fatalf("SynthesizeAuthFile() len = %d, want two plugin auths", len(auths))
 	}
@@ -258,7 +261,10 @@ func TestSynthesizeAuthFileAppliesSourceDisabledToPluginMultiAuths(t *testing.T)
 		}),
 	}
 
-	auths := SynthesizeAuthFile(ctx, fullPath, raw)
+	auths, err := SynthesizeAuthFile(ctx, fullPath, raw)
+	if err != nil {
+		t.Fatalf("SynthesizeAuthFile() error = %v", err)
+	}
 	if len(auths) != 2 {
 		t.Fatalf("SynthesizeAuthFile() len = %d, want two plugin auths", len(auths))
 	}
@@ -286,7 +292,10 @@ func TestSynthesizeAuthFilePluginHandledEmptySuppressesBuiltin(t *testing.T) {
 		}),
 	}
 
-	auths := SynthesizeAuthFile(ctx, fullPath, raw)
+	auths, err := SynthesizeAuthFile(ctx, fullPath, raw)
+	if err != nil {
+		t.Fatalf("SynthesizeAuthFile() error = %v", err)
+	}
 	if len(auths) != 0 {
 		t.Fatalf("SynthesizeAuthFile() len = %d, want plugin-handled empty result", len(auths))
 	}
