@@ -797,7 +797,7 @@ func (s *WeightedRobinSelector) Pick(ctx context.Context, provider, model string
 	return selected, nil
 }
 
-func authWeight(a *Auth) int {
+func legacyAuthWeight(a *Auth) int {
 	w := authPriority(a)
 	if w <= 0 {
 		return 1
@@ -812,7 +812,7 @@ func authWeight(a *Auth) int {
 func calculateWeightGCD(auths []*Auth) int {
 	g := 0
 	for _, a := range auths {
-		w := authWeight(a)
+		w := legacyAuthWeight(a)
 		if w <= 0 {
 			continue
 		}
@@ -863,7 +863,7 @@ func collectAuthModelKeys(a *Auth) []string {
 func calculateTotalWeight(auths []*Auth) int {
 	total := 0
 	for _, a := range auths {
-		total += authWeight(a)
+		total += legacyAuthWeight(a)
 	}
 	return total
 }
@@ -878,7 +878,7 @@ func calculateWeightHash(auths []*Auth) uint64 {
 	var buf [8]byte
 	for _, a := range sorted {
 		h.Write([]byte(a.ID))
-		binary.LittleEndian.PutUint64(buf[:], uint64(authWeight(a)))
+		binary.LittleEndian.PutUint64(buf[:], uint64(legacyAuthWeight(a)))
 		h.Write(buf[:])
 	}
 	return h.Sum64()
@@ -952,7 +952,7 @@ func (s *WeightedRobinSelector) QueueState(provider, model string, allAuths []*A
 				AuthID:      a.ID,
 				Name:        a.Label,
 				Provider:    a.Provider,
-				Weight:      authWeight(a),
+				Weight:      legacyAuthWeight(a),
 				Position:    -1,
 				Available:   !blocked,
 				InCycle:     false,
@@ -1045,7 +1045,7 @@ func (s *WeightedRobinSelector) QueueState(provider, model string, allAuths []*A
 			AuthID:      a.ID,
 			Name:        a.Label,
 			Provider:    a.Provider,
-			Weight:      authWeight(a),
+			Weight:      legacyAuthWeight(a),
 			Position:    pos,
 			Available:   !blocked,
 			InCycle:     inCycle,
@@ -1145,7 +1145,7 @@ func (s *WeightedRobinSelector) rebuildCycle(auths []*Auth, state *aliasCycle) {
 	total := calculateTotalWeight(auths) / gcd
 	cycle := make([]*Auth, 0, total)
 	for _, a := range auths {
-		w := authWeight(a) / gcd
+		w := legacyAuthWeight(a) / gcd
 		for j := 0; j < w; j++ {
 			cycle = append(cycle, a)
 		}
