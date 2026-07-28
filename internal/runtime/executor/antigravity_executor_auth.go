@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	internalantigravity "github.com/router-for-me/CLIProxyAPI/v7/internal/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -50,6 +51,15 @@ func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *clip
 		updated = refreshedAuth
 	}
 	if antigravityProjectIDFromAuth(updated) != "" {
+		return updated, nil
+	}
+	refresh := metaStringValue(updated.Metadata, "refresh_token")
+	parts := internalantigravity.ParseRefreshParts(refresh)
+	if parts.ManagedProjectID != "" {
+		if updated.Metadata == nil {
+			updated.Metadata = make(map[string]any)
+		}
+		updated.Metadata["project_id"] = parts.ManagedProjectID
 		return updated, nil
 	}
 
