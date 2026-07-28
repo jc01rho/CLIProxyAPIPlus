@@ -23,14 +23,68 @@ import (
 )
 
 const (
-	codexUserAgent             = "codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)"
-	codexOriginator            = "codex-tui"
+	codexVersion               = "0.139.0"
+	codexUserAgent             = "codex_exec/" + codexVersion + " (Debian 12.0.0; aarch64) unknown (codex_exec; " + codexVersion + ")"
+	codexOriginator            = "codex_exec"
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
+	codexWSStreamStartMetadata = "client_metadata.x-codex-ws-stream-request-start-ms"
 )
 
 var dataTag = []byte("data:")
+
+// codexBodyKeyOrder mirrors cortexkit/openai-auth ws-pool.ts CODEX_BODY_KEY_ORDER.
+// Codex serializes the response.create body in this exact key order; the reference
+// client applies it on both the HTTP /responses body and the websocket frame.
+var codexBodyKeyOrder = []string{
+	"type",
+	"model",
+	"instructions",
+	"previous_response_id",
+	"input",
+	"tools",
+	"tool_choice",
+	"parallel_tool_calls",
+	"reasoning",
+	"store",
+	"stream",
+	"include",
+	"prompt_cache_key",
+	"text",
+	"generate",
+	"client_metadata",
+}
+
+// orderCodexBody reorders top-level JSON keys to match codexBodyKeyOrder,
+// appending any keys not in the canonical list afterwards (in their original
+// order). Mirrors orderCodexBody() in cortexkit/openai-auth.
+func orderCodexBody(body []byte) []byte {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return body
+	}
+
+	ordered := []byte("{}")
+	seen := make(map[string]bool, len(codexBodyKeyOrder))
+	for _, key := range codexBodyKeyOrder {
+		if v := root.Get(key); v.Exists() {
+			ordered, _ = sjson.SetRawBytes(ordered, key, []byte(v.Raw))
+			seen[key] = true
+		}
+	}
+	root.ForEach(func(k, v gjson.Result) bool {
+		key := k.String()
+		if !seen[key] {
+			ordered, _ = sjson.SetRawBytes(ordered, key, []byte(v.Raw))
+		}
+		return true
+	})
+	return ordered
+}
 
 func translateCodexRequestPair(from, to sdktranslator.Format, model string, originalPayload, payload []byte, stream bool) ([]byte, []byte) {
 	if bytes.Equal(originalPayload, payload) {
@@ -137,9 +191,14 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	if identityState.promptCacheKey != "" {
 		cache.ID = identityState.promptCacheKey
 	}
+	rawJSON, responsesLite := normalizeCodexResponsesLiteHTTP(rawJSON, headers)
+	rawJSON = orderCodexBody(rawJSON)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
 	if err != nil {
 		return nil, nil, codexIdentityConfuseState{}, err
+	}
+	if responsesLite {
+		httpReq.Header.Set(codexResponsesLiteHeader, "true")
 	}
 	if cache.ID != "" {
 		httpReq.Header.Set("Session_id", cache.ID)
@@ -406,6 +465,22 @@ func isCodexResponsesLiteRequest(body []byte, headers http.Header) bool {
 		return false
 	}
 	return value.Type == gjson.True || value.Type == gjson.String && strings.EqualFold(strings.TrimSpace(value.String()), "true")
+}
+
+// normalizeCodexResponsesLiteHTTP prepares a Codex request for the plain HTTP
+// /responses upstream. It reports whether the request is a responses-lite request
+// (so the caller sets the real X-OpenAI-Internal-Codex-Responses-Lite header the
+// reference client sends on HTTP) and strips the websocket-only client_metadata
+// artifacts that Codex mirrors onto the frame — reference prepareCodexRequest adds
+// ws_request_header_x_openai_internal_codex_responses_lite and
+// x-codex-ws-stream-request-start-ms only `if (input.websocket)`, so they must
+// never leak into the HTTP request body. Detection runs before the strip because
+// the ws mirror flag is itself a detection signal.
+func normalizeCodexResponsesLiteHTTP(body []byte, headers http.Header) ([]byte, bool) {
+	responsesLite := isCodexResponsesLiteRequest(body, headers)
+	body, _ = sjson.DeleteBytes(body, codexResponsesLiteMetadata)
+	body, _ = sjson.DeleteBytes(body, codexWSStreamStartMetadata)
+	return body, responsesLite
 }
 
 func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header) []byte {
