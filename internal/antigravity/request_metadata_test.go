@@ -23,13 +23,13 @@ func TestFnv1a64Signed(t *testing.T) {
 }
 
 func TestBuildAntigravityHarnessUserAgentExact(t *testing.T) {
-	got := BuildAntigravityHarnessUserAgent("1.1.5", "darwin", "arm64")
-	want := "antigravity/cli/1.1.5 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"
+	got := BuildAntigravityHarnessUserAgent("1.1.6", "darwin", "arm64")
+	want := "antigravity/cli/1.1.6 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"
 	if got != want {
 		t.Fatalf("UA = %q, want %q", got, want)
 	}
-	gotX64 := BuildAntigravityHarnessUserAgent("1.1.5", "linux", "x64")
-	wantX64 := "antigravity/cli/1.1.5 (aidev_client; os_type=linux; arch=amd64; auth_method=consumer)"
+	gotX64 := BuildAntigravityHarnessUserAgent("1.1.6", "linux", "x64")
+	wantX64 := "antigravity/cli/1.1.6 (aidev_client; os_type=linux; arch=amd64; auth_method=consumer)"
 	if gotX64 != wantX64 {
 		t.Fatalf("UA x64 = %q, want %q", gotX64, wantX64)
 	}
@@ -40,7 +40,7 @@ func TestBuildAgyCLIHeaderPairsStreamExact(t *testing.T) {
 		"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 		AgyRequestInit{
 			Headers: map[string]string{
-				"User-Agent":    "antigravity/cli/1.1.5 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)",
+				"User-Agent":    "antigravity/cli/1.1.6 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)",
 				"Authorization": "Bearer test-token",
 			},
 			Body: []byte(`{"project":"p"}`),
@@ -51,7 +51,7 @@ func TestBuildAgyCLIHeaderPairsStreamExact(t *testing.T) {
 	}
 	want := []HeaderPair{
 		{Key: "Host", Value: "daily-cloudcode-pa.googleapis.com"},
-		{Key: "User-Agent", Value: "antigravity/cli/1.1.5 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"},
+		{Key: "User-Agent", Value: "antigravity/cli/1.1.6 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"},
 		{Key: "Transfer-Encoding", Value: "chunked"},
 		{Key: "Authorization", Value: "Bearer test-token"},
 		{Key: "Content-Type", Value: "application/json"},
@@ -64,6 +64,21 @@ func TestBuildAgyCLIHeaderPairsStreamExact(t *testing.T) {
 		if pairs[i] != want[i] {
 			t.Fatalf("header[%d] = %+v, want %+v", i, pairs[i], want[i])
 		}
+	}
+}
+
+func TestApplyAgyAgentWireMetadataIncludesLastExecutionID(t *testing.T) {
+	input := []byte(`{"project":"p1","model":"gemini-3.6-flash-high","userAgent":"antigravity","requestType":"agent","request":{"contents":[{"role":"user","parts":[{"text":"a"}]}]}}`)
+	session := &AgyRequestSessionContext{
+		ConversationID:   "conversation",
+		TrajectoryID:     "trajectory",
+		NumericSessionID: Fnv1a64Signed("p1"),
+		LastExecutionID:  "execution",
+	}
+	got := string(ApplyAgyAgentWireMetadata(input, session, "gemini-3.6-flash-high", 7))
+	want := `{"project":"p1","requestId":"agent/conversation/7/trajectory/3","request":{"contents":[{"role":"user","parts":[{"text":"a"}]}],"labels":{"last_execution_id":"execution","last_step_index":"2","model_enum":"MODEL_PLACEHOLDER_M71","trajectory_id":"trajectory","used_claude":"false","used_claude_conservative":"false","used_non_gemini_model":"false"},"sessionId":"` + Fnv1a64Signed("p1") + `"},"model":"gemini-3.6-flash-high","userAgent":"antigravity","requestType":"agent"}`
+	if got != want {
+		t.Fatalf("body mismatch\ngot:  %s\nwant: %s", got, want)
 	}
 }
 
