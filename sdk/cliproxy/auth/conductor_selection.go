@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -525,7 +527,128 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 		return true
 	}
 	selectionKey := m.selectionModelKeyForAuth(auth, routeModel)
-	return selectionKey != "" && selectionKey != routeKey && registryRef.ClientSupportsModel(auth.ID, selectionKey)
+	if selectionKey != "" && selectionKey != routeKey && registryRef.ClientSupportsModel(auth.ID, selectionKey) {
+		return true
+	}
+	for _, aliasKey := range m.aliasRegistryModelKeysForAuth(auth, routeModel, routeKey, selectionKey) {
+		if aliasKey != "" && aliasKey != routeKey && aliasKey != selectionKey && registryRef.ClientSupportsModel(auth.ID, aliasKey) {
+			return true
+		}
+	}
+	if m.authSupportsOpenAICompatPoolModel(auth, routeKey) {
+		return true
+	}
+	return false
+}
+
+func (m *Manager) authSupportsOpenAICompatPoolModel(auth *Auth, routeKey string) bool {
+	if m == nil || auth == nil || routeKey == "" || auth.AuthKind() != AuthKindAPIKey {
+		return false
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		return false
+	}
+	entry := resolveOpenAICompatConfig(cfg, strings.TrimSpace(auth.Attributes["provider_key"]), strings.TrimSpace(auth.Attributes["compat_name"]), auth.Provider)
+	if entry == nil {
+		return false
+	}
+	for _, model := range entry.Models {
+		if canonicalModelKey(model.GetName()) == routeKey || canonicalModelKey(model.GetAlias()) == routeKey {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) aliasRegistryModelKeysForAuth(auth *Auth, routeModel, routeKey, selectionKey string) []string {
+	if m == nil || auth == nil || auth.AuthKind() != AuthKindAPIKey {
+		return nil
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg != nil {
+		var models []modelAliasEntry
+		switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
+		case "gemini":
+			if entry := resolveGeminiAPIKeyConfig(cfg, auth); entry != nil {
+				models = asModelAliasEntries(entry.Models)
+			}
+		case "gemini-interactions":
+			if entry := resolveInteractionsAPIKeyConfig(cfg, auth); entry != nil {
+				models = asModelAliasEntries(entry.Models)
+			}
+		case "claude":
+			if entry := resolveClaudeAPIKeyConfig(cfg, auth); entry != nil {
+				models = asModelAliasEntries(entry.Models)
+			}
+		case "codex":
+			if entry := resolveCodexAPIKeyConfig(cfg, auth); entry != nil {
+				models = asModelAliasEntries(entry.Models)
+			}
+		case "xai":
+			if entry := resolveXAIAPIKeyConfig(cfg, auth); entry != nil {
+				models = asModelAliasEntries(entry.Models)
+			}
+		case "vertex":
+			if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
+				models = asModelAliasEntries(entry.Models)
+			}
+		default:
+			if entry := resolveOpenAICompatConfig(cfg, strings.TrimSpace(auth.Attributes["provider_key"]), strings.TrimSpace(auth.Attributes["compat_name"]), auth.Provider); entry != nil {
+				models = asModelAliasEntries(entry.Models)
+			}
+		}
+		if keys := configModelAliasKeysMatchingUpstream(models, routeKey, selectionKey); len(keys) > 0 {
+			return keys
+		}
+	}
+	if upstream := m.lookupAPIKeyUpstreamModel(auth.ID, routeModel); upstream != "" {
+		upstreamKey := canonicalModelKey(upstream)
+		if upstreamKey != "" && upstreamKey != routeKey && upstreamKey != selectionKey {
+			return []string{upstreamKey}
+		}
+	}
+	rewrittenKey := canonicalModelKey(rewriteModelForAuth(routeModel, auth))
+	if rewrittenKey == "" {
+		return nil
+	}
+	return []string{rewrittenKey}
+}
+
+func configModelAliasKeysMatchingUpstream(models []modelAliasEntry, targets ...string) []string {
+	if len(models) == 0 || len(targets) == 0 {
+		return nil
+	}
+	targetSet := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		if key := canonicalModelKey(target); key != "" {
+			targetSet[key] = struct{}{}
+		}
+	}
+	keys := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, model := range models {
+		nameKey := canonicalModelKey(model.GetName())
+		aliasKey := canonicalModelKey(model.GetAlias())
+		_, nameMatch := targetSet[nameKey]
+		_, aliasMatch := targetSet[aliasKey]
+		if !nameMatch && !aliasMatch {
+			continue
+		}
+		registryKey := aliasKey
+		if registryKey == "" {
+			registryKey = nameKey
+		}
+		if registryKey == "" {
+			continue
+		}
+		if _, duplicate := seen[registryKey]; duplicate {
+			continue
+		}
+		seen[registryKey] = struct{}{}
+		keys = append(keys, registryKey)
+	}
+	return keys
 }
 
 func (m *Manager) normalizeProviders(providers []string) []string {
@@ -854,6 +977,9 @@ func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
 			executor, okExecutor = m.executors[lowerProvider]
 		}
 	}
+	if !okExecutor && strings.HasPrefix(provider, "openai-compatible-") {
+		executor, okExecutor = m.executors[strings.TrimPrefix(provider, "openai-compatible-")]
+	}
 	m.mu.RUnlock()
 
 	if !okExecutor || executor == nil {
@@ -962,6 +1088,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if disallowFreeAuth && isFreeCodexAuth(candidate) {
 			continue
 		}
+		if !m.authMatchesThresholdRule(candidate, model, opts) {
+			continue
+		}
 		if _, used := tried[candidate.ID]; used {
 			continue
 		}
@@ -971,6 +1100,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		candidates = append(candidates, candidate)
 	}
 	if len(candidates) == 0 {
+		m.annotateThresholdDecisionNoMatch(ctx, model, opts, "result=no_matching_auth_for_billing_class")
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
@@ -995,6 +1125,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	m.annotateThresholdDecisionSelected(ctx, model, opts, provider, selected)
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()
@@ -1183,10 +1314,15 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			continue
 		}
 		providerSet[p] = struct{}{}
+		compatProvider := util.OpenAICompatibleProviderKey(p)
+		if compatProvider != p && m.hasOpenAICompatAuthProvider([]string{compatProvider}) {
+			providerSet[compatProvider] = struct{}{}
+		}
 	}
 	if len(providerSet) == 0 {
 		return nil, nil, "", &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	weightedRobin := isWeightedRobinSelector(m.selector)
 
 	m.mu.RLock()
 	selector := m.selector
@@ -1211,17 +1347,20 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if disallowFreeAuth && isFreeCodexAuth(candidate) {
 			continue
 		}
+		if !m.authMatchesThresholdRule(candidate, model, opts) {
+			continue
+		}
 		providerKey := executorKeyFromAuth(candidate)
 		if providerKey == "" {
 			continue
 		}
-		if _, ok := providerSet[providerKey]; !ok {
+		if _, ok := providerSet[providerKey]; !ok && !weightedRobin {
 			continue
 		}
 		if _, used := tried[candidate.ID]; used {
 			continue
 		}
-		if _, ok := m.executors[providerKey]; !ok {
+		if _, ok := m.Executor(providerKey); !ok {
 			continue
 		}
 		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
@@ -1230,6 +1369,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		candidates = append(candidates, candidate)
 	}
 	if len(candidates) == 0 {
+		m.annotateThresholdDecisionNoMatch(ctx, model, opts, "result=no_matching_auth_for_billing_class")
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
@@ -1255,6 +1395,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
 	providerKey := executorKeyFromAuth(selected)
+	m.annotateThresholdDecisionSelected(ctx, model, opts, providerKey, selected)
 	executor, okExecutor := m.Executor(providerKey)
 	if !okExecutor {
 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
@@ -1279,6 +1420,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
+	if _, ok := m.thresholdRuleForRequest(model, opts); ok {
+		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
+	}
 
 	eligibleProviders := make([]string, 0, len(providers))
 	seenProviders := make(map[string]struct{}, len(providers))
@@ -1287,14 +1431,21 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		if providerKey == "" {
 			continue
 		}
-		if _, seen := seenProviders[providerKey]; seen {
-			continue
+		providerKeys := []string{providerKey}
+		compatProvider := util.OpenAICompatibleProviderKey(providerKey)
+		if compatProvider != providerKey && m.hasOpenAICompatAuthProvider([]string{compatProvider}) {
+			providerKeys = append(providerKeys, compatProvider)
 		}
-		if _, okExecutor := m.Executor(providerKey); !okExecutor {
-			continue
+		for _, key := range providerKeys {
+			if _, seen := seenProviders[key]; seen {
+				continue
+			}
+			if _, okExecutor := m.Executor(key); !okExecutor {
+				continue
+			}
+			seenProviders[key] = struct{}{}
+			eligibleProviders = append(eligibleProviders, key)
 		}
-		seenProviders[providerKey] = struct{}{}
-		eligibleProviders = append(eligibleProviders, providerKey)
 	}
 	if len(eligibleProviders) == 0 {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -1331,6 +1482,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			selected, providerKey, errPick = m.scheduler.pickMixed(ctx, eligibleProviders, model, opts, tried)
 		}
 		if errPick != nil {
+			if shouldRetrySchedulerPick(errPick) && m.hasOpenAICompatAuthProvider(eligibleProviders) {
+				return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
+			}
 			return nil, nil, "", errPick
 		}
 		if selected == nil {
@@ -1358,4 +1512,35 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		}
 		return authCopy, executor, providerKey, nil
 	}
+}
+
+func (m *Manager) hasOpenAICompatAuthProvider(providers []string) bool {
+	if m == nil || len(providers) == 0 {
+		return false
+	}
+	providerSet := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		if providerKey := strings.TrimSpace(strings.ToLower(provider)); providerKey != "" {
+			providerSet[providerKey] = struct{}{}
+		}
+	}
+	if len(providerSet) == 0 {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, auth := range m.auths {
+		if auth == nil || (!strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") && strings.TrimSpace(auth.Attributes["compat_name"]) == "") {
+			continue
+		}
+		if _, ok := providerSet[executorKeyFromAuth(auth)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isWeightedRobinSelector(selector Selector) bool {
+	_, ok := selector.(*WeightedRobinSelector)
+	return ok
 }

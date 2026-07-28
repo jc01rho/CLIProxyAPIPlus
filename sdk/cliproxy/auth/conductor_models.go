@@ -185,7 +185,30 @@ func (m *Manager) selectionModelForAuth(auth *Auth, routeModel string) string {
 	if strings.TrimSpace(resolvedModel) == "" {
 		resolvedModel = requestedModel
 	}
+	if canonicalModelKey(resolvedModel) == canonicalModelKey(requestedModel) {
+		if blocked, _, _ := isAuthBlockedForModel(auth, requestedModel, time.Now()); blocked {
+			if fallback := m.resolveBlockedForkAliasTarget(auth, requestedModel); strings.TrimSpace(fallback) != "" {
+				resolvedModel = fallback
+			}
+		}
+	}
 	return resolvedModel
+}
+
+func (m *Manager) oauthExecutionModelForRequest(auth *Auth, routeModel, upstreamModel string) string {
+	if m == nil || auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
+		return ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(routeModel), strings.TrimSpace(upstreamModel)) {
+		return ""
+	}
+	requestResult, candidates := modelAliasLookupCandidates(routeModel)
+	for _, candidate := range candidates {
+		if resolved := configuredAliasTargetForCandidate(m, modelAliasChannel(auth), candidate, requestResult); resolved != "" {
+			return resolved
+		}
+	}
+	return ""
 }
 
 func (m *Manager) selectionModelKeyForAuth(auth *Auth, routeModel string) string {
@@ -249,9 +272,111 @@ func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string
 	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled, aliasResult
 }
 
+const sessionModelAffinityTTL = time.Hour
+
+func sessionModelAffinityKeyFromParts(sessionID, routeModel string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	routeModel = strings.TrimSpace(routeModel)
+	if sessionID == "" || routeModel == "" {
+		return ""
+	}
+	return sessionID + "::" + routeModel
+}
+
+func sessionModelAffinityKeys(routeModel string, opts cliproxyexecutor.Options) []string {
+	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	if primaryID == "" {
+		if executionSessionID := homeExecutionSessionIDFromMetadata(opts.Metadata); executionSessionID != "" {
+			primaryID = "exec:" + executionSessionID
+		}
+	}
+	keys := make([]string, 0, 2)
+	if key := sessionModelAffinityKeyFromParts(primaryID, routeModel); key != "" {
+		keys = append(keys, key)
+	}
+	if fallbackID != "" && fallbackID != primaryID {
+		if key := sessionModelAffinityKeyFromParts(fallbackID, routeModel); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func moveModelToFront(models []string, preferred string) []string {
+	if len(models) < 2 || strings.TrimSpace(preferred) == "" {
+		return models
+	}
+	index := -1
+	for i, model := range models {
+		if model == preferred {
+			index = i
+			break
+		}
+	}
+	if index <= 0 {
+		return models
+	}
+	out := make([]string, 0, len(models))
+	out = append(out, models[index])
+	out = append(out, models[:index]...)
+	out = append(out, models[index+1:]...)
+	return out
+}
+
+func (m *Manager) applySessionModelAffinityForKeys(keys []string, models []string) []string {
+	if m == nil || len(keys) == 0 || len(models) < 2 {
+		return models
+	}
+	now := time.Now()
+	m.mu.Lock()
+	var binding sessionModelBinding
+	found := false
+	for _, key := range keys {
+		candidate, ok := m.sessionModelBindings[key]
+		if ok && now.After(candidate.expiresAt) {
+			delete(m.sessionModelBindings, key)
+			continue
+		}
+		if ok {
+			candidate.expiresAt = now.Add(sessionModelAffinityTTL)
+			m.sessionModelBindings[key] = candidate
+			binding = candidate
+			found = true
+			break
+		}
+	}
+	m.mu.Unlock()
+	if !found {
+		return models
+	}
+	return moveModelToFront(models, binding.upstreamModel)
+}
+
+func (m *Manager) rememberSessionModelAffinityForKeys(keys []string, upstreamModel string, pooled bool) {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if m == nil || len(keys) == 0 || upstreamModel == "" || !pooled {
+		return
+	}
+	binding := sessionModelBinding{upstreamModel: upstreamModel, expiresAt: time.Now().Add(sessionModelAffinityTTL)}
+	m.mu.Lock()
+	for _, key := range keys {
+		if key != "" {
+			m.sessionModelBindings[key] = binding
+		}
+	}
+	m.mu.Unlock()
+}
+
 func (m *Manager) executionModelCandidatesWithAlias(auth *Auth, routeModel string) ([]string, bool, OAuthModelAliasResult) {
 	requestedModel := rewriteModelForAuth(routeModel, auth)
 	aliasResult := m.resolveExecutionAliasResultForRequested(auth, requestedModel)
+	if canonicalModelKey(aliasResult.UpstreamModel) == canonicalModelKey(requestedModel) {
+		if blocked, _, _ := isAuthBlockedForModel(auth, requestedModel, time.Now()); blocked {
+			if fallback := m.resolveBlockedForkAliasTarget(auth, requestedModel); strings.TrimSpace(fallback) != "" {
+				aliasResult.UpstreamModel = fallback
+			}
+		}
+	}
 	if aliasResult.ForceMapping && auth != nil && auth.Attributes != nil && strings.EqualFold(strings.TrimSpace(auth.Attributes[homeForceMappingAttributeKey]), "true") {
 		aliasResult.OriginalAlias = strings.TrimSpace(routeModel)
 	}

@@ -114,7 +114,7 @@ func TestApplyAuthFailureStateQuotaBackoffOncePerWindow(t *testing.T) {
 	quotaErr := &Error{Code: "rate_limit", Message: "quota", HTTPStatus: http.StatusTooManyRequests}
 	auth := &Auth{ID: "auth-level-quota"}
 
-	applyAuthFailureState(auth, quotaErr, nil, now)
+	applyAuthFailureState(auth, quotaErr, nil, now, false)
 	if auth.Quota.BackoffLevel != 1 {
 		t.Fatalf("expected BackoffLevel 1 after first failure, got %d", auth.Quota.BackoffLevel)
 	}
@@ -124,7 +124,7 @@ func TestApplyAuthFailureStateQuotaBackoffOncePerWindow(t *testing.T) {
 	}
 
 	// In-window failure keeps the current window and level.
-	applyAuthFailureState(auth, quotaErr, nil, now.Add(100*time.Millisecond))
+	applyAuthFailureState(auth, quotaErr, nil, now.Add(100*time.Millisecond), false)
 	if auth.Quota.BackoffLevel != 1 {
 		t.Fatalf("expected BackoffLevel to stay 1 for in-window failure, got %d", auth.Quota.BackoffLevel)
 	}
@@ -134,7 +134,7 @@ func TestApplyAuthFailureStateQuotaBackoffOncePerWindow(t *testing.T) {
 
 	// A failure after the window expired escalates to the next level.
 	secondFailureAt := now.Add(quotaBackoffBase + time.Second)
-	applyAuthFailureState(auth, quotaErr, nil, secondFailureAt)
+	applyAuthFailureState(auth, quotaErr, nil, secondFailureAt, false)
 	if auth.Quota.BackoffLevel != 2 {
 		t.Fatalf("expected BackoffLevel 2 after post-window failure, got %d", auth.Quota.BackoffLevel)
 	}
@@ -146,7 +146,7 @@ func TestApplyAuthFailureStateQuotaBackoffOncePerWindow(t *testing.T) {
 	// A provider supplied retry hint always takes effect, even in-window.
 	retryAfter := 10 * time.Second
 	thirdFailureAt := secondFailureAt.Add(time.Second)
-	applyAuthFailureState(auth, quotaErr, &retryAfter, thirdFailureAt)
+	applyAuthFailureState(auth, quotaErr, &retryAfter, thirdFailureAt, false)
 	if auth.Quota.BackoffLevel != 2 {
 		t.Fatalf("expected BackoffLevel to stay 2 with retry hint, got %d", auth.Quota.BackoffLevel)
 	}

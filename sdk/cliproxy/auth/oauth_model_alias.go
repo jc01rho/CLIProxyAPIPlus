@@ -66,8 +66,8 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 			}
 			rev[aliasKey] = oauthModelAliasEntry{
 				upstreamModel: name,
-			fork:          entry.Fork,
-			configAlias:   alias,
+				fork:          entry.Fork,
+				configAlias:   alias,
 				forceMapping:  entry.ForceMapping,
 			}
 		}
@@ -448,7 +448,7 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 		return OAuthModelAliasResult{
 			UpstreamModel: preserveResolvedModelSuffix(targetModel, requestResult),
 			ForceMapping:  entry.forceMapping,
-			OriginalAlias: requestedModel,
+			OriginalAlias: oauthModelAliasForceMappingResponseModel(entry.configAlias),
 		}
 	}
 
