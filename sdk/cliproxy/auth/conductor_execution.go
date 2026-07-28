@@ -236,7 +236,7 @@ func countRemainingProviderOptions(currentProvider string, providers []string, t
 		if _, used := tried[auth.ID]; used {
 			continue
 		}
-		providerKey := executorKeyFromAuth(auth)
+		providerKey := effectiveProviderKey(auth)
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}

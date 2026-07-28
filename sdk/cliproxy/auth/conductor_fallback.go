@@ -123,7 +123,7 @@ func (m *Manager) ProvidersForRouteModel(routeModel string) []string {
 		if auth == nil || auth.Disabled || auth.Status == StatusDisabled || !m.AuthSupportsRouteModel(auth, routeModel) {
 			continue
 		}
-		providerKey := executorKeyFromAuth(auth)
+		providerKey := effectiveProviderKey(auth)
 		if providerKey == "" {
 			continue
 		}
@@ -160,7 +160,7 @@ func (m *Manager) ProvidersForOAuthAliasWithoutRegisteredModels(routeModel strin
 		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
 			continue
 		}
-		providerKey := executorKeyFromAuth(auth)
+		providerKey := effectiveProviderKey(auth)
 		if providerKey == "" {
 			continue
 		}

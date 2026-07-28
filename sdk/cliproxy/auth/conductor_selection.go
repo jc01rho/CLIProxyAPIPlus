@@ -117,7 +117,11 @@ func (m *Manager) RefreshSchedulerAll() {
 // Supported models are reset to a clean state because re-registration already
 // cleared the registry-side cooldown/suspension snapshot. ModelStates for
 // models that are no longer present in the registry are pruned entirely so
-// renamed/removed models cannot keep auth-level status stale.
+// renamed/removed models cannot keep auth-level status stale. When the stored
+// auth has no ModelStates at all, seed entries are inserted for every model
+// the registry currently advertises (both canonical ID and alias) so
+// downstream consumers (e.g. weight-robin QueueState) can group by
+// alias/model from the first request instead of falling back to provider.
 func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID string) {
 	if m == nil || authID == "" {
 		return
@@ -141,32 +145,54 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 
 	m.mu.Lock()
 	auth, ok := m.auths[authID]
-	if ok && auth != nil && len(auth.ModelStates) > 0 {
+	if ok && auth != nil {
 		changed := false
-		for modelKey, state := range auth.ModelStates {
-			baseModel := canonicalModelKey(modelKey)
-			if baseModel == "" {
-				baseModel = strings.TrimSpace(modelKey)
-			}
-			if _, supportedModel := supported[baseModel]; !supportedModel {
-				// Drop state for models that disappeared from the current registry
-				// snapshot. Keeping them around leaks stale errors into auth-level
-				// status, management output, and websocket fallback checks.
-				delete(auth.ModelStates, modelKey)
+		if len(auth.ModelStates) > 0 {
+			for modelKey, state := range auth.ModelStates {
+				baseModel := canonicalModelKey(modelKey)
+				if baseModel == "" {
+					baseModel = strings.TrimSpace(modelKey)
+				}
+				if _, supportedModel := supported[baseModel]; !supportedModel {
+					// Drop state for models that disappeared from the current registry
+					// snapshot. Keeping them around leaks stale errors into auth-level
+					// status, management output, and websocket fallback checks.
+					delete(auth.ModelStates, modelKey)
+					changed = true
+					continue
+				}
+				if state == nil {
+					continue
+				}
+				if modelStateIsClean(state) {
+					continue
+				}
+				resetModelState(state, now)
 				changed = true
-				continue
 			}
-			if state == nil {
-				continue
+			if len(auth.ModelStates) == 0 {
+				auth.ModelStates = nil
 			}
-			if modelStateIsClean(state) {
-				continue
-			}
-			resetModelState(state, now)
-			changed = true
 		}
-		if len(auth.ModelStates) == 0 {
-			auth.ModelStates = nil
+		// Seed ModelStates for every supported model so management UIs can
+		// group by alias/model from the first request. ensureModelState
+		// returns the existing entry when present, so runtime state
+		// (cooldown/quota/availability) will overlay on top of these seeds
+		// without losing them. Only insert when the key is missing so a
+		// pre-existing runtime entry (e.g. a cooldown captured at runtime)
+		// is not overwritten.
+		if auth.ModelStates == nil && len(supportedModels) > 0 {
+			auth.ModelStates = make(map[string]*ModelState, len(supportedModels)*2)
+		}
+		for _, model := range supportedModels {
+			if model == nil {
+				continue
+			}
+			seedModelStateKey(auth.ModelStates, model.ID, now)
+			seedModelStateKey(auth.ModelStates, model.Alias, now)
+			if len(supportedModels) > 0 {
+				changed = true
+			}
 		}
 		if changed {
 			updateAggregatedAvailability(auth, now)
@@ -187,6 +213,21 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
 	}
+}
+
+// seedModelStateKey inserts a clean StatusActive ModelState under the given
+// key when it is non-empty and not already present. Used to pre-populate
+// alias/model support so QueueState can group entries by alias/model from
+// the first request instead of falling back to the provider name.
+func seedModelStateKey(states map[string]*ModelState, key string, now time.Time) {
+	key = strings.TrimSpace(key)
+	if key == "" || states == nil {
+		return
+	}
+	if _, ok := states[key]; ok {
+		return
+	}
+	states[key] = &ModelState{Status: StatusActive, UpdatedAt: now}
 }
 
 func (m *Manager) SetSelector(selector Selector) {
@@ -250,6 +291,9 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 	cooldownCount := 0
 	var earliest time.Time
 	for _, candidate := range auths {
+		if m.shouldExcludeAntigravityNonPrimary(provider, candidate) {
+			continue
+		}
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
 		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
 		if !blocked {
@@ -294,6 +338,16 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
 	}
 	return available, nil
+}
+
+func (m *Manager) shouldExcludeAntigravityNonPrimary(provider string, auth *Auth) bool {
+	if !strings.EqualFold(strings.TrimSpace(provider), "antigravity") {
+		return false
+	}
+	if auth == nil || auth.PrimaryInfo == nil {
+		return false
+	}
+	return !auth.PrimaryInfo.IsPrimary
 }
 
 func selectionArgForSelector(selector Selector, routeModel string) string {
@@ -535,8 +589,61 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 			return true
 		}
 	}
+	if m.authSupportsExplicitOAuthAliasWithoutRegistry(registryRef, auth, routeModel) {
+		return true
+	}
 	if m.authSupportsOpenAICompatPoolModel(auth, routeKey) {
 		return true
+	}
+	return false
+}
+
+func (m *Manager) authSupportsExplicitOAuthAliasWithoutRegistry(registryRef *registry.ModelRegistry, auth *Auth, routeModel string) bool {
+	if m == nil || registryRef == nil || auth == nil {
+		return false
+	}
+	authID := strings.TrimSpace(auth.ID)
+	if authID == "" {
+		return false
+	}
+	// Attempt to resolve the route model via the OAuth alias table first.
+	// Even if the auth has registered models, the route model may be a cross-provider
+	// alias (e.g., "higher-coding") that resolves to one of this auth's models.
+	oauthResolved := strings.TrimSpace(m.resolveOAuthUpstreamModel(auth, routeModel))
+	if oauthResolved != "" {
+		providerKey := effectiveProviderKey(auth)
+		if providerKey != "" {
+			providers := util.GetProviderName(strings.TrimSpace(thinking.ParseSuffix(oauthResolved).ModelName))
+			if len(providers) == 0 {
+				providers = util.GetProviderName(oauthResolved)
+			}
+			for _, provider := range providers {
+				if strings.EqualFold(strings.TrimSpace(provider), providerKey) {
+					return true
+				}
+			}
+		}
+	}
+	// If the auth has no registered models, fall back to the original check:
+	// see if the route model resolves to any known provider.
+	if models := registryRef.GetModelsForClient(authID); len(models) > 0 {
+		return false
+	}
+	if oauthResolved == "" {
+		return false
+	}
+	providerKey := effectiveProviderKey(auth)
+	if providerKey == "" {
+		return false
+	}
+	providers := util.GetProviderName(strings.TrimSpace(thinking.ParseSuffix(oauthResolved).ModelName))
+	if len(providers) == 0 {
+		providers = util.GetProviderName(oauthResolved)
+	}
+	for _, provider := range providers {
+		if strings.EqualFold(strings.TrimSpace(provider), providerKey) {
+			return true
+		}
 	}
 	return false
 }
@@ -1063,8 +1170,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	m.mu.RLock()
 	selector := m.selector
 	pluginScheduler := m.pluginScheduler
+	isWeightedRobin := isWeightedRobinSelector(selector)
 	executor, okExecutor := m.executors[provider]
-	if !okExecutor {
+	if !okExecutor && !isWeightedRobin {
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
@@ -1079,7 +1187,10 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
-		if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.Disabled {
+		if candidate == nil || candidate.Disabled {
+			continue
+		}
+		if !isWeightedRobin && executorKeyFromAuth(candidate) != provider {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -1104,26 +1215,50 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, errAvailable := m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
+	var available []*Auth
+	var errAvailable error
+	if isWeightedRobin {
+		checkModel := modelKey
+		if checkModel == "" {
+			checkModel = model
+		}
+		available = getAllAvailableAuths(candidates, checkModel, time.Now())
+		if len(available) == 0 {
+			errAvailable = &Error{Code: "auth_unavailable", Message: "no auth available for weight-robin"}
+		}
+	} else {
+		available, errAvailable = m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
+	}
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		return nil, nil, errAvailable
 	}
 	available = cloneAuthSlice(available)
 	m.mu.RUnlock()
+	selectorOpts := opts
+	if isWeightedRobin {
+		selectorOpts = markAuthCandidatesPrefiltered(opts)
+	}
 
 	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available)
 	if errPick != nil {
 		return nil, nil, errPick
 	}
 	if !handled {
-		selected, errPick = selector.Pick(ctx, provider, selectionArgForSelector(selector, model), opts, available)
+		selected, errPick = selector.Pick(ctx, provider, selectionArgForSelector(selector, model), selectorOpts, available)
 		if errPick != nil {
 			return nil, nil, errPick
 		}
 	}
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+	}
+	if isWeightedRobin {
+		if pickedExecutor, ok := m.Executor(effectiveProviderKey(selected)); ok {
+			executor = pickedExecutor
+		} else if executor == nil {
+			return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered for selected auth's provider"}
+		}
 	}
 	m.annotateThresholdDecisionSelected(ctx, model, opts, provider, selected)
 	authCopy := selected.Clone()
@@ -1373,20 +1508,37 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	var available []*Auth
+	var errAvailable error
+	if weightedRobin {
+		checkModel := modelKey
+		if checkModel == "" {
+			checkModel = model
+		}
+		available = getAllAvailableAuths(candidates, checkModel, time.Now())
+		if len(available) == 0 {
+			errAvailable = &Error{Code: "auth_unavailable", Message: "no auth available for weight-robin"}
+		}
+	} else {
+		available, errAvailable = m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	}
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		return nil, nil, "", errAvailable
 	}
 	available = cloneAuthSlice(available)
 	m.mu.RUnlock()
+	selectorOpts := opts
+	if weightedRobin {
+		selectorOpts = markAuthCandidatesPrefiltered(opts)
+	}
 
 	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)
 	if errPick != nil {
 		return nil, nil, "", errPick
 	}
 	if !handled {
-		selected, errPick = selector.Pick(ctx, "mixed", selectionArgForSelector(selector, model), opts, available)
+		selected, errPick = selector.Pick(ctx, "mixed", selectionArgForSelector(selector, model), selectorOpts, available)
 		if errPick != nil {
 			return nil, nil, "", errPick
 		}
@@ -1541,6 +1693,6 @@ func (m *Manager) hasOpenAICompatAuthProvider(providers []string) bool {
 }
 
 func isWeightedRobinSelector(selector Selector) bool {
-	_, ok := selector.(*WeightedRobinSelector)
+	_, ok := UnwrapWeightedRobin(selector)
 	return ok
 }

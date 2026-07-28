@@ -77,6 +77,16 @@ func openAICompatProviderKey(auth *Auth) string {
 	return util.OpenAICompatibleProviderKey(auth.Provider)
 }
 
+func effectiveProviderKey(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if isOpenAICompatAPIKeyAuth(auth) {
+		return openAICompatProviderKey(auth)
+	}
+	return strings.ToLower(strings.TrimSpace(auth.Provider))
+}
+
 func openAICompatModelPoolKey(auth *Auth, requestedModel string) string {
 	base := strings.TrimSpace(thinking.ParseSuffix(requestedModel).ModelName)
 	if base == "" {
