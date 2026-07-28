@@ -955,9 +955,9 @@ func (s *WeightedRobinSelector) ResetCycles() {
 	s.lastUsed = make(map[string]time.Time)
 }
 
-// unwrapWeightedRobin extracts a WeightedRobinSelector whether it is the
+// UnwrapWeightedRobin extracts a WeightedRobinSelector whether it is the
 // top-level selector or wrapped inside a SessionAffinitySelector.
-func unwrapWeightedRobin(selector Selector) (*WeightedRobinSelector, bool) {
+func UnwrapWeightedRobin(selector Selector) (*WeightedRobinSelector, bool) {
 	switch s := selector.(type) {
 	case *WeightedRobinSelector:
 		return s, true
