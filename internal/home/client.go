@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -100,8 +101,17 @@ func IsMembershipTakeoverUnavailableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "membership_takeover_unavailable") || strings.Contains(message, "wrong number of arguments for 'subscribe' command")
+	message := strings.TrimSpace(strings.ToLower(err.Error()))
+	return message == "membership_takeover_unavailable" || message == "err membership_takeover_unavailable"
+}
+
+// IsLegacyMembershipProtocolError reports whether Home rejected the secure subscription argument count.
+func IsLegacyMembershipProtocolError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.TrimSpace(strings.ToLower(err.Error()))
+	return message == "wrong number of arguments for 'subscribe' command" || message == "err wrong number of arguments for 'subscribe' command"
 }
 
 type clusterNode struct {
@@ -168,15 +178,18 @@ type Client struct {
 	dispatchFenced    atomic.Bool
 	ambiguousDispatch atomic.Bool
 	recoveryState     atomic.Uint32
+	instanceID        string
+	legacyMembership  bool
 	clusterNodes      []clusterNode
 	reconnectFailures int
 }
 
 func New(homeCfg config.HomeConfig) *Client {
 	return &Client{
-		homeCfg:  homeCfg,
-		seedHost: strings.TrimSpace(homeCfg.Host),
-		seedPort: homeCfg.Port,
+		homeCfg:    homeCfg,
+		seedHost:   strings.TrimSpace(homeCfg.Host),
+		seedPort:   homeCfg.Port,
+		instanceID: uuid.NewString(),
 	}
 }
 
@@ -193,9 +206,42 @@ func (c *Client) NewLifetime() *Client {
 		seedPort:          c.seedPort,
 		clusterNodes:      append([]clusterNode(nil), c.clusterNodes...),
 		reconnectFailures: c.reconnectFailures,
+		instanceID:        c.instanceID,
+		legacyMembership:  c.legacyMembership,
 	}
 	next.recoveryState.Store(c.recoveryState.Load())
 	return next
+}
+
+// MembershipInstanceID returns the process-scoped Home membership identity.
+func (c *Client) MembershipInstanceID() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.instanceID
+}
+
+// LegacyMembership reports whether this subscriber has downgraded to the legacy protocol.
+func (c *Client) LegacyMembership() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.legacyMembership
+}
+
+// EnableLegacyMembership permanently downgrades this subscriber lifetime chain.
+func (c *Client) EnableLegacyMembership() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.legacyMembership = true
+	c.mu.Unlock()
+	c.SuppressTakeover()
 }
 
 func (c *Client) Enabled() bool {
@@ -1615,15 +1661,21 @@ func (c *Client) subscriptionParameters() ([]string, time.Duration) {
 	}
 	c.mu.Lock()
 	cfg := c.lifecycle.WithDefaults()
+	instanceID := c.instanceID
+	legacyMembership := c.legacyMembership
 	c.mu.Unlock()
 
 	args := []string{redisChannelConfig}
 	if cfg.LifecycleConfigRevision > 0 {
 		args = append(args, strconv.FormatInt(cfg.LifecycleConfigRevision, 10))
+		if legacyMembership {
+			return args, cfg.CPAHeartbeatTimeout
+		}
 		state := recoveryState(c.recoveryState.Load())
 		if state == recoveryStateTakeoverEligible || state == recoveryStateSwitchingTakeover {
 			args = append(args, "takeover")
 		}
+		args = append(args, instanceID)
 	}
 	return args, cfg.CPAHeartbeatTimeout
 }

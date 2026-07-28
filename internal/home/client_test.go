@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
@@ -252,6 +253,11 @@ func TestFailoverAfterReconnectFailureDisabledDoesNotSwitchToClusterNode(t *test
 
 func TestNewLifetimePreservesClusterFailoverState(t *testing.T) {
 	client := New(config.HomeConfig{Enabled: true, Host: "seed.example.com", Port: 8327})
+	instanceID := client.MembershipInstanceID()
+	if _, errParse := uuid.Parse(instanceID); errParse != nil {
+		t.Fatalf("membership instance ID = %q: %v", instanceID, errParse)
+	}
+	client.EnableLegacyMembership()
 	client.mu.Lock()
 	client.homeCfg.Host = "failed.example.com"
 	client.clusterNodes = []clusterNode{
@@ -265,6 +271,12 @@ func TestNewLifetimePreservesClusterFailoverState(t *testing.T) {
 	next := client.NewLifetime()
 	if next == nil {
 		t.Fatal("NewLifetime() = nil")
+	}
+	if next.MembershipInstanceID() != instanceID || !next.LegacyMembership() {
+		t.Fatalf("membership state = instance %q legacy %t, want %q true", next.MembershipInstanceID(), next.LegacyMembership(), instanceID)
+	}
+	if fresh := New(config.HomeConfig{}); fresh.MembershipInstanceID() == instanceID || fresh.LegacyMembership() {
+		t.Fatalf("fresh membership state = instance %q legacy %t", fresh.MembershipInstanceID(), fresh.LegacyMembership())
 	}
 	if got, _ := next.addr(); got != "failed.example.com:8327" {
 		t.Fatalf("addr() = %q, want failed.example.com:8327", got)
@@ -362,16 +374,19 @@ func TestAmbiguousDispatchSuppressesTakeoverForNextLifetime(t *testing.T) {
 }
 
 func TestMembershipTakeoverUnavailableError(t *testing.T) {
-	for _, message := range []string{
-		"ERR membership_takeover_unavailable",
-		"ERR wrong number of arguments for 'subscribe' command",
-	} {
-		if !IsMembershipTakeoverUnavailableError(errors.New(message)) {
-			t.Fatalf("takeover unavailable error %q was not recognized", message)
-		}
+	if !IsMembershipTakeoverUnavailableError(errors.New("ERR membership_takeover_unavailable")) {
+		t.Fatal("takeover unavailable error was not recognized")
 	}
-	if IsMembershipTakeoverUnavailableError(errors.New("ERR connection refused")) {
-		t.Fatal("unrelated error was recognized as takeover unavailable")
+	if IsMembershipTakeoverUnavailableError(errors.New("ERR wrong number of arguments for 'subscribe' command")) {
+		t.Fatal("legacy protocol error was recognized as takeover unavailable")
+	}
+	if !IsLegacyMembershipProtocolError(errors.New("ERR wrong number of arguments for 'subscribe' command")) {
+		t.Fatal("legacy protocol error was not recognized")
+	}
+	for _, errUnrelated := range []error{errors.New("ERR connection refused"), errors.New("ERR duplicate certificate"), context.DeadlineExceeded} {
+		if IsMembershipTakeoverUnavailableError(errUnrelated) || IsLegacyMembershipProtocolError(errUnrelated) {
+			t.Fatalf("unrelated error %q was classified as a membership protocol error", errUnrelated)
+		}
 	}
 }
 
@@ -1257,7 +1272,7 @@ func TestConfigSubscriberUsesAppliedLifecycleRevisionAndRebuildsCommands(t *test
 		t.Fatalf("SetLifecycleConfig() error = %v", errSet)
 	}
 	args, timeout := client.subscriptionParameters()
-	if !reflect.DeepEqual(args, []string{"config", "9"}) {
+	if !reflect.DeepEqual(args, []string{"config", "9", client.MembershipInstanceID()}) {
 		t.Fatalf("subscribe args = %#v", args)
 	}
 	if timeout != 4*time.Second {
@@ -1265,8 +1280,13 @@ func TestConfigSubscriberUsesAppliedLifecycleRevisionAndRebuildsCommands(t *test
 	}
 	client.recoveryState.Store(uint32(recoveryStateSwitchingTakeover))
 	args, _ = client.subscriptionParameters()
-	if !reflect.DeepEqual(args, []string{"config", "9", "takeover"}) {
+	if !reflect.DeepEqual(args, []string{"config", "9", "takeover", client.MembershipInstanceID()}) {
 		t.Fatalf("takeover subscribe args = %#v", args)
+	}
+	client.EnableLegacyMembership()
+	args, _ = client.subscriptionParameters()
+	if !reflect.DeepEqual(args, []string{"config", "9"}) {
+		t.Fatalf("legacy subscribe args = %#v", args)
 	}
 	client.recoveryState.Store(uint32(recoveryStateStable))
 	client.promoteSubscription()
@@ -1386,8 +1406,8 @@ func TestRunConfigSubscriberLifetimeReturnsAfterHeartbeatLoss(t *testing.T) {
 	if count := commands.CountCommandKey("SUBSCRIBE", redisChannelConfig); count != 1 {
 		t.Fatalf("SUBSCRIBE config count = %d, want 1", count)
 	}
-	if got := findRedisCommand(commands.All(), "SUBSCRIBE"); !reflect.DeepEqual(got, []string{"subscribe", "config", "1", "takeover"}) {
-		t.Fatalf("SUBSCRIBE wire command = %#v, want []string{\"subscribe\", \"config\", \"1\", \"takeover\"}", got)
+	if got := findRedisCommand(commands.All(), "SUBSCRIBE"); !reflect.DeepEqual(got, []string{"subscribe", "config", "1", "takeover", client.MembershipInstanceID()}) {
+		t.Fatalf("SUBSCRIBE wire command = %#v", got)
 	}
 }
 
@@ -2007,8 +2027,8 @@ func TestRunConfigSubscriberLifetimePreservesTakeoverWhenFreshCommandProbeFails(
 	if got := recoveryState(client.recoveryState.Load()); got != recoveryStateTakeoverEligible {
 		t.Fatalf("recovery state = %d, want %d", got, recoveryStateTakeoverEligible)
 	}
-	if got := findRedisCommand(commands.All(), "SUBSCRIBE"); !reflect.DeepEqual(got, []string{"subscribe", "config", "9"}) {
-		t.Fatalf("initial SUBSCRIBE wire command = %#v, want []string{\"subscribe\", \"config\", \"9\"}", got)
+	if got := findRedisCommand(commands.All(), "SUBSCRIBE"); !reflect.DeepEqual(got, []string{"subscribe", "config", "9", client.MembershipInstanceID()}) {
+		t.Fatalf("initial SUBSCRIBE wire command = %#v", got)
 	}
 
 	next := client.NewLifetime()
@@ -2016,7 +2036,7 @@ func TestRunConfigSubscriberLifetimePreservesTakeoverWhenFreshCommandProbeFails(
 		t.Fatal(errSet)
 	}
 	args, _ := next.subscriptionParameters()
-	if !reflect.DeepEqual(args, []string{"config", "9", "takeover"}) {
+	if !reflect.DeepEqual(args, []string{"config", "9", "takeover", client.MembershipInstanceID()}) {
 		t.Fatalf("replacement SUBSCRIBE args = %#v, want takeover", args)
 	}
 }
