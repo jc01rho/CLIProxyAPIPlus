@@ -583,7 +583,11 @@ func (s *Service) runHomeSubscriber(homeCtx context.Context, parentCtx context.C
 				s.cancelServiceRun()
 				return
 			}
-			if client.AmbiguousDispatch() || home.IsMembershipTakeoverUnavailableError(errRun) {
+			legacyProtocol := home.IsLegacyMembershipProtocolError(errRun)
+			if legacyProtocol {
+				client.EnableLegacyMembership()
+			}
+			if client.AmbiguousDispatch() || home.IsMembershipTakeoverUnavailableError(errRun) || legacyProtocol || client.LegacyMembership() {
 				registry.SetReleaseSink(nil)
 				drainCtx, cancelDrain := context.WithTimeout(context.WithoutCancel(parentCtx), settleBound)
 				errDrain := registry.Drain(drainCtx)
