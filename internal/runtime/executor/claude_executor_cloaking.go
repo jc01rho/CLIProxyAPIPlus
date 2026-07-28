@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	internalantigravity "github.com/router-for-me/CLIProxyAPI/v7/internal/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -161,7 +162,7 @@ func generateBillingHeader(payload []byte, experimentalCCHSigning bool, version,
 	if entrypoint == "" {
 		entrypoint = "cli"
 	}
-	buildHash := computeFingerprint(messageText, version)
+	buildHash := internalantigravity.ComputeVersionSuffix(version)
 	workloadPart := ""
 	if workload != "" {
 		workloadPart = fmt.Sprintf(" cc_workload=%s;", workload)
@@ -212,9 +213,41 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, exp
 	if strings.HasPrefix(firstText, "x-anthropic-billing-header:") {
 		return payload
 	}
+	if oauthMode {
+		withIdentity := prependClaudeCodeIdentityToSystem(payload)
+		identitySystem := gjson.GetBytes(withIdentity, "system")
+		includeBilling := claudeMessagesHaveUserRole(withIdentity)
+		systemResult := "["
+		first := true
+		if includeBilling {
+			billingText := generateBillingHeader(payload, experimentalCCHSigning, version, messageText, entrypoint, workload)
+			systemResult += buildTextBlock(billingText, nil)
+			first = false
+		}
+		if identitySystem.IsArray() {
+			identitySystem.ForEach(func(_, block gjson.Result) bool {
+				if !first {
+					systemResult += ","
+				}
+				systemResult += block.Raw
+				first = false
+				return true
+			})
+		}
+		systemResult += "]"
+		out, err := sjson.SetRawBytes(withIdentity, "system", []byte(systemResult))
+		if err != nil {
+			return withIdentity
+		}
+		return out
+	}
 
-	billingText := generateBillingHeader(payload, experimentalCCHSigning, version, messageText, entrypoint, workload)
-	billingBlock := buildTextBlock(billingText, nil)
+	includeBilling := claudeMessagesHaveUserRole(payload)
+	billingBlock := ""
+	if includeBilling {
+		billingText := generateBillingHeader(payload, experimentalCCHSigning, version, messageText, entrypoint, workload)
+		billingBlock = buildTextBlock(billingText, nil)
+	}
 
 	// Build system blocks matching real Claude Code structure.
 	// Important: Claude Code's internal cacheScope='org' does NOT serialize to
@@ -230,7 +263,11 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, exp
 	}, "\n\n")
 	staticBlock := buildTextBlock(staticPrompt, nil)
 
-	systemResult := "[" + billingBlock + "," + agentBlock + "," + staticBlock + "]"
+	systemResult := "["
+	if includeBilling {
+		systemResult += billingBlock + ","
+	}
+	systemResult += agentBlock + "," + staticBlock + "]"
 	payload, _ = sjson.SetRawBytes(payload, "system", []byte(systemResult))
 
 	// Collect user system instructions and prepend to first user message
