@@ -82,6 +82,8 @@ func IsAmbiguousDispatchError(err error) bool {
 	return errors.As(err, &dispatchErr) && dispatchErr.Ambiguous
 }
 
+var errClusterDiscoveryTransport = errors.New("home cluster discovery transport failed")
+
 var (
 	ErrDisabled              = errors.New("home client disabled")
 	ErrNotConnected          = errors.New("home not connected")
@@ -92,6 +94,15 @@ var (
 	ErrPluginSyncUnsupported = errors.New("home plugin sync is unsupported")
 	ErrDispatchFenced        = errors.New("home auth dispatch is fenced")
 )
+
+// IsMembershipTakeoverUnavailableError reports whether Home cannot preserve the previous membership state.
+func IsMembershipTakeoverUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "membership_takeover_unavailable") || strings.Contains(message, "wrong number of arguments for 'subscribe' command")
+}
 
 type clusterNode struct {
 	IP          string    `json:"ip"`
@@ -127,6 +138,15 @@ type subscriptionCloser interface {
 	Close() error
 }
 
+type recoveryState uint32
+
+const (
+	recoveryStateStable recoveryState = iota
+	recoveryStateTakeoverEligible
+	recoveryStateSwitching
+	recoveryStateSwitchingTakeover
+)
+
 type Client struct {
 	mu sync.Mutex
 
@@ -139,12 +159,15 @@ type Client struct {
 	sub         *redis.Client
 	release     *redis.Client
 	connections map[*homeDispatchConn]struct{}
+	closing     chan struct{}
 	lifecycle   config.CredentialConcurrencyConfig
 	limiter     atomic.Pointer[config.CredentialConcurrencyConfig]
 	managed     bool
 
 	heartbeatOK       atomic.Bool
 	dispatchFenced    atomic.Bool
+	ambiguousDispatch atomic.Bool
+	recoveryState     atomic.Uint32
 	clusterNodes      []clusterNode
 	reconnectFailures int
 }
@@ -164,13 +187,15 @@ func (c *Client) NewLifetime() *Client {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return &Client{
+	next := &Client{
 		homeCfg:           c.homeCfg,
 		seedHost:          c.seedHost,
 		seedPort:          c.seedPort,
 		clusterNodes:      append([]clusterNode(nil), c.clusterNodes...),
 		reconnectFailures: c.reconnectFailures,
 	}
+	next.recoveryState.Store(c.recoveryState.Load())
+	return next
 }
 
 func (c *Client) Enabled() bool {
@@ -203,10 +228,14 @@ func (c *Client) Close() {
 	commandClient, subscriptionClient, connections := c.detachClientsLocked()
 	releaseClient := c.release
 	c.release = nil
+	closing := c.closing
 	c.mu.Unlock()
 	closeDetachedClients(commandClient, subscriptionClient, connections)
 	if releaseClient != nil {
 		_ = releaseClient.Close()
+	}
+	if closing != nil {
+		<-closing
 	}
 }
 
@@ -227,6 +256,7 @@ func (c *Client) AbortAmbiguousDispatch() {
 	if c == nil {
 		return
 	}
+	c.ambiguousDispatch.Store(true)
 	c.dispatchFenced.Store(true)
 	c.heartbeatOK.Store(false)
 	c.mu.Lock()
@@ -251,6 +281,21 @@ func (c *Client) AbortAmbiguousDispatch() {
 		go func() {
 			_ = releaseClient.Close()
 		}()
+	}
+}
+
+// AmbiguousDispatch reports whether this lifetime observed an issued dispatch with an unknown delivery result.
+func (c *Client) AmbiguousDispatch() bool {
+	return c != nil && c.ambiguousDispatch.Load()
+}
+
+// SuppressTakeover forces the next subscriber lifetime through normal membership recovery.
+func (c *Client) SuppressTakeover() {
+	if c == nil {
+		return
+	}
+	if !c.recoveryState.CompareAndSwap(uint32(recoveryStateTakeoverEligible), uint32(recoveryStateStable)) {
+		c.recoveryState.CompareAndSwap(uint32(recoveryStateSwitchingTakeover), uint32(recoveryStateSwitching))
 	}
 }
 
@@ -284,12 +329,38 @@ func (c *Client) closeClientsLocked() {
 	commandClient, subscriptionClient, connections := c.detachClientsLocked()
 	releaseClient := c.release
 	c.release = nil
+	previousClosing := c.closing
+	done := make(chan struct{})
+	c.closing = done
 	go func() {
+		defer close(done)
+		if previousClosing != nil {
+			<-previousClosing
+		}
 		closeDetachedClients(commandClient, subscriptionClient, connections)
 		if releaseClient != nil {
 			_ = releaseClient.Close()
 		}
 	}()
+}
+
+func (c *Client) waitForClientsClosed() {
+	for {
+		c.mu.Lock()
+		closing := c.closing
+		c.mu.Unlock()
+		if closing == nil {
+			return
+		}
+		<-closing
+		c.mu.Lock()
+		if c.closing == closing {
+			c.closing = nil
+			c.mu.Unlock()
+			return
+		}
+		c.mu.Unlock()
+	}
 }
 
 // SetManagedLifetime defers client shutdown to the Service lifetime owner.
@@ -341,6 +412,7 @@ func (c *Client) ensureClients() error {
 	if !c.Enabled() {
 		return ErrDisabled
 	}
+	c.waitForClientsClosed()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.dispatchFenced.Load() {
@@ -588,20 +660,21 @@ func (c *Client) clusterDiscoveryEnabledLocked() bool {
 	return !c.homeCfg.DisableClusterDiscovery
 }
 
-func (c *Client) refreshBestClusterNode(ctx context.Context) {
+func (c *Client) refreshBestClusterNode(ctx context.Context) error {
 	if !c.clusterDiscoveryEnabled() {
-		return
+		return nil
 	}
 	switched, errRefresh := c.refreshClusterNodes(ctx)
 	if errRefresh != nil {
 		log.Debugf("home cluster nodes unavailable: %v", errRefresh)
-		return
+		return errRefresh
 	}
 	if switched {
 		if addr, ok := c.addr(); ok {
 			log.Infof("home cluster target switched to %s", addr)
 		}
 	}
+	return nil
 }
 
 func (c *Client) refreshClusterNodes(ctx context.Context) (bool, error) {
@@ -613,11 +686,20 @@ func (c *Client) refreshClusterNodes(ctx context.Context) (bool, error) {
 	}
 	cmd, errClient := c.commandClient()
 	if errClient != nil {
-		return false, errClient
+		return false, fmt.Errorf("%w: %w", errClusterDiscoveryTransport, errClient)
 	}
-	raw, errDo := cmd.Do(ctx, "CLUSTER", "NODES").Text()
+	nodesCommand := cmd.Do(ctx, "CLUSTER", "NODES")
+	errDo := nodesCommand.Err()
 	if errDo != nil {
+		var redisErr redis.Error
+		if !errors.As(errDo, &redisErr) {
+			return false, fmt.Errorf("%w: %w", errClusterDiscoveryTransport, errDo)
+		}
 		return false, errDo
+	}
+	raw, errText := nodesCommand.Text()
+	if errText != nil {
+		return false, errText
 	}
 
 	nodes, errParse := parseClusterNodesPayload([]byte(raw))
@@ -685,6 +767,9 @@ func (c *Client) switchToNodeLocked(node clusterNode) bool {
 	}
 	c.homeCfg.Host = host
 	c.homeCfg.Port = node.Port
+	if !c.recoveryState.CompareAndSwap(uint32(recoveryStateStable), uint32(recoveryStateSwitching)) {
+		c.recoveryState.CompareAndSwap(uint32(recoveryStateTakeoverEligible), uint32(recoveryStateSwitchingTakeover))
+	}
 	c.closeClientsLocked()
 	return true
 }
@@ -771,7 +856,9 @@ func (c *Client) resetReconnectFailures() {
 }
 
 func (c *Client) GetConfig(ctx context.Context) ([]byte, error) {
-	c.refreshBestClusterNode(ctx)
+	if errRefresh := c.refreshBestClusterNode(ctx); errors.Is(errRefresh, errClusterDiscoveryTransport) {
+		return nil, errRefresh
+	}
 	cmd, errClient := c.commandClient()
 	if errClient != nil {
 		return nil, errClient
@@ -1233,6 +1320,10 @@ func (c *Client) concurrencyReleaseClient() (*redis.Client, error) {
 	if c == nil || c.dispatchFenced.Load() {
 		return nil, ErrDispatchFenced
 	}
+	state := recoveryState(c.recoveryState.Load())
+	if state == recoveryStateTakeoverEligible || state == recoveryStateSwitching || state == recoveryStateSwitchingTakeover {
+		return nil, ErrNotConnected
+	}
 	if !c.Enabled() {
 		return nil, ErrDisabled
 	}
@@ -1241,6 +1332,10 @@ func (c *Client) concurrencyReleaseClient() (*redis.Client, error) {
 	defer c.mu.Unlock()
 	if c.dispatchFenced.Load() {
 		return nil, ErrDispatchFenced
+	}
+	state = recoveryState(c.recoveryState.Load())
+	if state == recoveryStateTakeoverEligible || state == recoveryStateSwitching || state == recoveryStateSwitchingTakeover {
+		return nil, ErrNotConnected
 	}
 	if c.release != nil {
 		return c.release, nil
@@ -1525,13 +1620,30 @@ func (c *Client) subscriptionParameters() ([]string, time.Duration) {
 	args := []string{redisChannelConfig}
 	if cfg.LifecycleConfigRevision > 0 {
 		args = append(args, strconv.FormatInt(cfg.LifecycleConfigRevision, 10))
+		state := recoveryState(c.recoveryState.Load())
+		if state == recoveryStateTakeoverEligible || state == recoveryStateSwitchingTakeover {
+			args = append(args, "takeover")
+		}
 	}
 	return args, cfg.CPAHeartbeatTimeout
 }
 
+func (c *Client) markMembershipTakeoverEligible() {
+	if c == nil {
+		return
+	}
+	if !c.recoveryState.CompareAndSwap(uint32(recoveryStateStable), uint32(recoveryStateTakeoverEligible)) {
+		c.recoveryState.CompareAndSwap(uint32(recoveryStateSwitching), uint32(recoveryStateSwitchingTakeover))
+	}
+}
+
 func (c *Client) rebuildCommandPoolAndProbe(ctx context.Context) error {
 	c.promoteSubscription()
-	return c.Ping(ctx)
+	if errPing := c.Ping(ctx); errPing != nil {
+		return errPing
+	}
+	c.recoveryState.Store(uint32(recoveryStateStable))
+	return nil
 }
 
 func (c *Client) promoteSubscription() {
@@ -1623,6 +1735,10 @@ func (c *Client) RunConfigSubscriberLifetime(ctx context.Context, onConfig func(
 		}
 		return c.endConfigSubscriberLifetimeWithSubscription(errACK, pubsub, "failed ACK")
 	}
+	// A protocol-one ACK means Home already committed this membership. Preserve it if the command probe fails.
+	if len(args) > 1 {
+		c.markMembershipTakeoverEligible()
+	}
 
 	if errProbe := c.rebuildCommandPoolAndProbe(ctx); errProbe != nil {
 		if ctx.Err() == nil {
@@ -1641,6 +1757,9 @@ func (c *Client) RunConfigSubscriberLifetime(ctx context.Context, onConfig func(
 		event, errReceive := pubsub.ReceiveTimeout(ctx, receiveTimeout)
 		if errReceive != nil {
 			if ctx.Err() == nil {
+				if c.heartbeatOK.Load() {
+					c.markMembershipTakeoverEligible()
+				}
 				if isTimeoutError(errReceive) {
 					c.markSubscriptionTimeout()
 				} else {

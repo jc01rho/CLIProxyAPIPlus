@@ -153,6 +153,82 @@ func TestRefreshClusterNodesDisabledSkipsRedisCommand(t *testing.T) {
 	}
 }
 
+func TestGetConfigSkipsSecondDialAfterClusterTransportFailure(t *testing.T) {
+	client := New(config.HomeConfig{Enabled: true, Host: "127.0.0.1", Port: 1})
+	var dialMu sync.Mutex
+	dialAttempts := 0
+	options := &redis.Options{
+		Addr:                  "127.0.0.1:1",
+		DialTimeout:           time.Second,
+		MaxRetries:            -1,
+		DialerRetries:         1,
+		ContextTimeoutEnabled: true,
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			dialMu.Lock()
+			dialAttempts++
+			dialMu.Unlock()
+			return nil, errors.New("test Home unavailable")
+		},
+	}
+	client.cmdOptions = cloneRedisOptions(options)
+	client.cmd = redis.NewClient(options)
+	t.Cleanup(client.Close)
+
+	_, errGet := client.GetConfig(context.Background())
+	if !errors.Is(errGet, errClusterDiscoveryTransport) {
+		t.Fatalf("GetConfig() error = %v, want cluster discovery transport error", errGet)
+	}
+	dialMu.Lock()
+	attempts := dialAttempts
+	dialMu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("GetConfig() dial attempts = %d, want 1", attempts)
+	}
+}
+
+func TestGetConfigContinuesAfterClusterDiscoveryResponseError(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+	}{
+		{name: "protocol error", response: "-ERR cluster command unsupported\r\n"},
+		{name: "response type error", response: ":1\r\n"},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			client, commands := newRedisCommandTestClient(t, func(args []string) string {
+				switch {
+				case len(args) >= 2 && strings.EqualFold(args[0], "CLUSTER") && strings.EqualFold(args[1], "NODES"):
+					return testCase.response
+				case len(args) >= 2 && strings.EqualFold(args[0], "GET") && args[1] == redisKeyConfig:
+					payload := "host: 127.0.0.1\n"
+					return fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
+				default:
+					return "-ERR unexpected command\r\n"
+				}
+			})
+			client.mu.Lock()
+			client.homeCfg.DisableClusterDiscovery = false
+			client.mu.Unlock()
+
+			raw, errGet := client.GetConfig(context.Background())
+			if errGet != nil {
+				t.Fatalf("GetConfig() error = %v", errGet)
+			}
+			if string(raw) != "host: 127.0.0.1\n" {
+				t.Fatalf("GetConfig() = %q", raw)
+			}
+			if count := commands.CountCommandKey("CLUSTER", "NODES"); count != 1 {
+				t.Fatalf("CLUSTER NODES count = %d, want 1", count)
+			}
+			if count := commands.CountCommandKey("GET", redisKeyConfig); count != 1 {
+				t.Fatalf("GET config count = %d, want 1", count)
+			}
+		})
+	}
+}
+
 func TestFailoverAfterReconnectFailureDisabledDoesNotSwitchToClusterNode(t *testing.T) {
 	client := New(config.HomeConfig{
 		Enabled:                 true,
@@ -214,6 +290,88 @@ func TestNewLifetimePreservesClusterFailoverState(t *testing.T) {
 	switched, addr := next.failoverAfterReconnectFailure()
 	if !switched || addr != "healthy.example.com:8327" {
 		t.Fatalf("failover = %t, %q, want true, healthy.example.com:8327", switched, addr)
+	}
+}
+
+func TestEnsureClientsWaitsForPreviousTargetClose(t *testing.T) {
+	client := New(config.HomeConfig{Enabled: true, Host: "next.example.com", Port: 8327})
+	closing := make(chan struct{})
+	client.closing = closing
+	done := make(chan error, 1)
+	go func() {
+		done <- client.ensureClients()
+	}()
+
+	select {
+	case errEnsure := <-done:
+		t.Fatalf("ensureClients() returned before previous target closed: %v", errEnsure)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(closing)
+	select {
+	case errEnsure := <-done:
+		if errEnsure != nil {
+			t.Fatal(errEnsure)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ensureClients() did not continue after previous target closed")
+	}
+	client.Close()
+}
+
+func TestConcurrencyReleaseDoesNotOpenBeforeMembershipReady(t *testing.T) {
+	tests := []struct {
+		name  string
+		state recoveryState
+	}{
+		{name: "takeover pending", state: recoveryStateTakeoverEligible},
+		{name: "target switching", state: recoveryStateSwitching},
+		{name: "target switching with takeover", state: recoveryStateSwitchingTakeover},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			client := New(config.HomeConfig{Enabled: true, Host: "next.example.com", Port: 8327})
+			client.recoveryState.Store(uint32(testCase.state))
+			errRelease := client.PushConcurrencyRelease(context.Background(), ConcurrencyReleaseFrame{CredentialID: "cred-a", Model: "model-a", ReleaseSeq: 1})
+			if !errors.Is(errRelease, ErrNotConnected) {
+				t.Fatalf("PushConcurrencyRelease() error = %v, want %v", errRelease, ErrNotConnected)
+			}
+			client.mu.Lock()
+			releaseClient := client.release
+			client.mu.Unlock()
+			if releaseClient != nil {
+				t.Fatal("release client was opened before the membership became ready")
+			}
+		})
+	}
+}
+
+func TestAmbiguousDispatchSuppressesTakeoverForNextLifetime(t *testing.T) {
+	client := New(config.HomeConfig{Enabled: true, Host: "next.example.com", Port: 8327})
+	client.recoveryState.Store(uint32(recoveryStateSwitchingTakeover))
+	client.AbortAmbiguousDispatch()
+	if !client.AmbiguousDispatch() {
+		t.Fatal("ambiguous dispatch was not recorded")
+	}
+	client.SuppressTakeover()
+	next := client.NewLifetime()
+	if got := recoveryState(next.recoveryState.Load()); got != recoveryStateSwitching {
+		t.Fatalf("next recovery state = %d, want %d", got, recoveryStateSwitching)
+	}
+}
+
+func TestMembershipTakeoverUnavailableError(t *testing.T) {
+	for _, message := range []string{
+		"ERR membership_takeover_unavailable",
+		"ERR wrong number of arguments for 'subscribe' command",
+	} {
+		if !IsMembershipTakeoverUnavailableError(errors.New(message)) {
+			t.Fatalf("takeover unavailable error %q was not recognized", message)
+		}
+	}
+	if IsMembershipTakeoverUnavailableError(errors.New("ERR connection refused")) {
+		t.Fatal("unrelated error was recognized as takeover unavailable")
 	}
 }
 
@@ -1105,6 +1263,12 @@ func TestConfigSubscriberUsesAppliedLifecycleRevisionAndRebuildsCommands(t *test
 	if timeout != 4*time.Second {
 		t.Fatalf("receive timeout = %s", timeout)
 	}
+	client.recoveryState.Store(uint32(recoveryStateSwitchingTakeover))
+	args, _ = client.subscriptionParameters()
+	if !reflect.DeepEqual(args, []string{"config", "9", "takeover"}) {
+		t.Fatalf("takeover subscribe args = %#v", args)
+	}
+	client.recoveryState.Store(uint32(recoveryStateStable))
 	client.promoteSubscription()
 	client.mu.Lock()
 	commandClient := client.cmd
@@ -1177,8 +1341,9 @@ func TestRunConfigSubscriberLifetimeReturnsAfterHeartbeatLoss(t *testing.T) {
 	client.mu.Lock()
 	client.clusterNodes = []clusterNode{{IP: "failover.example.com", Port: 8327}}
 	client.mu.Unlock()
+	client.recoveryState.Store(uint32(recoveryStateSwitchingTakeover))
 
-	ready := make(chan struct{}, 1)
+	ready := make(chan bool, 1)
 	errRun := client.RunConfigSubscriberLifetime(context.Background(), func(raw []byte) error {
 		parsed, errParse := config.ParseConfigBytes(raw)
 		if errParse != nil {
@@ -1188,12 +1353,15 @@ func TestRunConfigSubscriberLifetimeReturnsAfterHeartbeatLoss(t *testing.T) {
 			return errSet
 		}
 		return nil
-	}, func() { ready <- struct{}{} })
+	}, func() { ready <- recoveryState(client.recoveryState.Load()) == recoveryStateStable })
 	if errRun == nil {
 		t.Fatal("RunConfigSubscriberLifetime() error = nil after heartbeat loss")
 	}
 	select {
-	case <-ready:
+	case cleared := <-ready:
+		if !cleared {
+			t.Fatal("successful subscription ACK and command probe did not clear takeover state")
+		}
 	default:
 		t.Fatalf("RunConfigSubscriberLifetime() did not invoke onReady after subscription ACK: %v; commands=%#v", errRun, commands.All())
 	}
@@ -1202,6 +1370,9 @@ func TestRunConfigSubscriberLifetimeReturnsAfterHeartbeatLoss(t *testing.T) {
 	}
 	if got, _ := client.addr(); got != "failover.example.com:8327" {
 		t.Fatalf("addr() = %q, want failover.example.com:8327 after heartbeat timeout", got)
+	}
+	if got := recoveryState(client.recoveryState.Load()); got != recoveryStateSwitchingTakeover {
+		t.Fatalf("recovery state = %d, want %d", got, recoveryStateSwitchingTakeover)
 	}
 	client.mu.Lock()
 	commandClient, subscriptionClient := client.cmd, client.sub
@@ -1215,8 +1386,8 @@ func TestRunConfigSubscriberLifetimeReturnsAfterHeartbeatLoss(t *testing.T) {
 	if count := commands.CountCommandKey("SUBSCRIBE", redisChannelConfig); count != 1 {
 		t.Fatalf("SUBSCRIBE config count = %d, want 1", count)
 	}
-	if got := findRedisCommand(commands.All(), "SUBSCRIBE"); !reflect.DeepEqual(got, []string{"subscribe", "config", "1"}) {
-		t.Fatalf("SUBSCRIBE wire command = %#v, want []string{\"subscribe\", \"config\", \"1\"}", got)
+	if got := findRedisCommand(commands.All(), "SUBSCRIBE"); !reflect.DeepEqual(got, []string{"subscribe", "config", "1", "takeover"}) {
+		t.Fatalf("SUBSCRIBE wire command = %#v, want []string{\"subscribe\", \"config\", \"1\", \"takeover\"}", got)
 	}
 }
 
@@ -1797,9 +1968,9 @@ func TestRunConfigSubscriberLifetimeRebuildsFreshCommandPoolBeforeReady(t *testi
 	}
 }
 
-func TestRunConfigSubscriberLifetimeDoesNotReadyWhenFreshCommandProbeFails(t *testing.T) {
+func TestRunConfigSubscriberLifetimePreservesTakeoverWhenFreshCommandProbeFails(t *testing.T) {
 	configPayload := "host: 127.0.0.1\n"
-	client, _ := newRedisCommandTestClient(t, func(args []string) string {
+	client, commands := newRedisCommandTestClient(t, func(args []string) string {
 		switch {
 		case len(args) >= 1 && strings.EqualFold(args[0], "HELLO"):
 			return "%6\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n"
@@ -1813,6 +1984,10 @@ func TestRunConfigSubscriberLifetimeDoesNotReadyWhenFreshCommandProbeFails(t *te
 			return "+OK\r\n"
 		}
 	})
+	lifecycle := config.CredentialConcurrencyConfig{LifecycleConfigRevision: 9}
+	if errSet := client.SetLifecycleConfig(lifecycle); errSet != nil {
+		t.Fatal(errSet)
+	}
 	ready := make(chan struct{}, 1)
 	errRun := client.RunConfigSubscriberLifetime(context.Background(), func([]byte) error { return nil }, func() { ready <- struct{}{} })
 	if errRun == nil {
@@ -1828,6 +2003,21 @@ func TestRunConfigSubscriberLifetimeDoesNotReadyWhenFreshCommandProbeFails(t *te
 	client.mu.Unlock()
 	if commandClient != nil || subscriptionClient != nil {
 		t.Fatalf("clients retained after fresh command probe failure: command=%v subscription=%v", commandClient != nil, subscriptionClient != nil)
+	}
+	if got := recoveryState(client.recoveryState.Load()); got != recoveryStateTakeoverEligible {
+		t.Fatalf("recovery state = %d, want %d", got, recoveryStateTakeoverEligible)
+	}
+	if got := findRedisCommand(commands.All(), "SUBSCRIBE"); !reflect.DeepEqual(got, []string{"subscribe", "config", "9"}) {
+		t.Fatalf("initial SUBSCRIBE wire command = %#v, want []string{\"subscribe\", \"config\", \"9\"}", got)
+	}
+
+	next := client.NewLifetime()
+	if errSet := next.SetLifecycleConfig(lifecycle); errSet != nil {
+		t.Fatal(errSet)
+	}
+	args, _ := next.subscriptionParameters()
+	if !reflect.DeepEqual(args, []string{"config", "9", "takeover"}) {
+		t.Fatalf("replacement SUBSCRIBE args = %#v, want takeover", args)
 	}
 }
 
