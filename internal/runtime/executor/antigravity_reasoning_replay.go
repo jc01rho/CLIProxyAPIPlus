@@ -1000,10 +1000,12 @@ func antigravitySyntheticToolCallID(reservedID string) string {
 // ledger miss instead of failing closed forever.
 //
 // The same reserved ID always maps to the same synthetic ID, so functionCall and
-// functionResponse stay paired. Signatures on a rewritten call are dropped because
-// they can no longer correspond to it; callers restore the leading call's bypass
-// sentinel via antigravityRepairUnsignedFirstFunctionCalls. Every other part is
-// left alone, preserving the native "1 signed + N unsigned" parallel-call shape.
+// functionResponse stay paired. Whatever signature the client carried in-band is
+// kept: Gemini validates a thought signature's own integrity, not its binding to
+// the call ID or the surrounding history, so rewriting the ID does not invalidate
+// it. Calls left with no signature at all get the leading bypass sentinel from
+// antigravityRepairUnsignedFirstFunctionCalls. Every other part is left alone,
+// preserving the native "1 signed + N unsigned" parallel-call shape.
 func degradeAntigravityClaudeToolProvenanceIDs(payload []byte) ([]byte, int) {
 	contents := gjson.GetBytes(payload, "request.contents")
 	if !contents.IsArray() {
@@ -1024,9 +1026,6 @@ func degradeAntigravityClaudeToolProvenanceIDs(payload []byte) ([]byte, int) {
 					continue
 				}
 				out, _ = sjson.SetBytes(out, partPath+".functionCall.id", antigravitySyntheticToolCallID(id))
-				for _, field := range []string{"thoughtSignature", "thought_signature", "extra_content.google.thought_signature"} {
-					out, _ = sjson.DeleteBytes(out, partPath+"."+field)
-				}
 				degraded++
 				continue
 			}
@@ -1373,10 +1372,11 @@ func mergeAntigravityFunctionCallPartReplayWithSchemas(payload []byte, itemResul
 		return restoreAntigravityNativeFunctionCallReplay(payload, ci, pi, itemResult, allowLegacyIDRestore, true)
 	}
 	// The context drifted, but an exact opaque ID match still proves this call's
-	// identity. Restore the native call so the request stays replayable, and leave
-	// it unsigned rather than replaying a signature issued for a different history.
+	// identity. Gemini validates a thought signature's own integrity and nothing
+	// about the history around it, so the drift costs the signature nothing: restore
+	// the native call and its signature rather than making the model re-reason.
 	if ci, pi, exists := antigravityFunctionCallProvenanceLocation(payload, itemResult, toolSchemas); exists {
-		return restoreAntigravityNativeFunctionCallReplay(payload, ci, pi, itemResult, false, false)
+		return restoreAntigravityNativeFunctionCallReplay(payload, ci, pi, itemResult, false, true)
 	}
 	if callID != "" {
 		stableID := util.GeminiClaudeToolUseID(callID, name, args.Raw)

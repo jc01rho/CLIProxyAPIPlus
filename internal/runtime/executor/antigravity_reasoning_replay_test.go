@@ -1670,8 +1670,8 @@ func TestPrepareAntigravityGeminiReasoningReplayRestoresIdentityOnContextDrift(t
 	if got := gjson.GetBytes(out, "request.contents.1.parts.0.functionResponse.id").String(); got != "native-drift" {
 		t.Fatalf("functionResponse.id = %q, want native identity restored", got)
 	}
-	if got := call.Get("thoughtSignature").String(); antigravityHasNativeThoughtSignature(got) {
-		t.Fatalf("thoughtSignature = %q, want no native signature replayed on drifted context", got)
+	if got := call.Get("thoughtSignature").String(); !antigravityHasNativeThoughtSignature(got) {
+		t.Fatalf("thoughtSignature = %q, want the native signature replayed even though the context drifted", got)
 	}
 	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(out); errPairing != nil {
 		t.Fatalf("restored history is invalid: %v", errPairing)
@@ -1713,8 +1713,8 @@ func TestDegradeAntigravityClaudeToolProvenanceIDsKeepsParallelShape(t *testing.
 		if signature != "" {
 			signed++
 		}
-		if i == 0 && signature != internalsignature.GeminiSkipThoughtSignatureValidator {
-			t.Fatalf("first call thoughtSignature = %q, want bypass sentinel", signature)
+		if i == 0 && !antigravityHasNativeThoughtSignature(signature) {
+			t.Fatalf("first call thoughtSignature = %q, want the in-band signature kept through degradation", signature)
 		}
 		if i > 0 && signature != "" {
 			t.Fatalf("sibling call %d gained a signature %q, want unsigned", i, signature)
@@ -1725,9 +1725,6 @@ func TestDegradeAntigravityClaudeToolProvenanceIDsKeepsParallelShape(t *testing.
 	}
 	if signed != 1 {
 		t.Fatalf("signed calls = %d, want exactly 1 signed + 2 unsigned native parallel shape", signed)
-	}
-	if strings.Contains(string(out), "EsMTCsATARFNMg/XNVix5lDpkKaHR7Xg") {
-		t.Fatalf("stale native signature leaked after degradation: %s", out)
 	}
 	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(out); errPairing != nil {
 		t.Fatalf("degraded history is invalid: %v", errPairing)
