@@ -12,7 +12,7 @@ import (
 
 const (
 	// AgyCLIVersion is the captured agy CLI version used for content-request identity.
-	AgyCLIVersion = "1.1.5"
+	AgyCLIVersion = "1.1.6"
 
 	antigravityAPIClient = "antigravity-cli"
 
@@ -79,7 +79,7 @@ func BuildAntigravityHarnessPlatformArch(platform, arch string) string {
 }
 
 // BuildAntigravityHarnessUserAgent returns the captured agy CLI User-Agent with
-// explicit client, OS, architecture, and auth metadata (agy CLI 1.1.5 form).
+// explicit client, OS, architecture, and auth metadata (agy CLI 1.1.6 form).
 func BuildAntigravityHarnessUserAgent(version, platform, arch string) string {
 	if version == "" {
 		version = AgyCLIVersion

@@ -12,7 +12,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// Envelope field order for non-image agent requests (agy CLI 1.1.5).
+// Envelope field order for non-image agent requests (agy CLI 1.1.6).
 var agyEnvelopeFieldOrder = []string{
 	"project",
 	"requestId",
@@ -35,6 +35,7 @@ var agyRequestFieldOrder = []string{
 
 // Labels field order (optional model_enum omitted when absent).
 var agyLabelsFieldOrder = []string{
+	"last_execution_id",
 	"last_step_index",
 	"model_enum",
 	"trajectory_id",
@@ -48,9 +49,9 @@ var agyModelEnumByWireModel = map[string]string{
 	"gemini-3.5-flash-extra-low": "MODEL_PLACEHOLDER_M187",
 	"gemini-3.5-flash-low":       "MODEL_PLACEHOLDER_M20",
 	"gemini-3-flash-agent":       "MODEL_PLACEHOLDER_M84",
-	"gemini-3.6-flash-low":       "MODEL_PLACEHOLDER_M266",
-	"gemini-3.6-flash-medium":    "MODEL_PLACEHOLDER_M265",
-	"gemini-3.6-flash-high":      "MODEL_PLACEHOLDER_M264",
+	"gemini-3.6-flash-low":       "MODEL_PLACEHOLDER_M73",
+	"gemini-3.6-flash-medium":    "MODEL_PLACEHOLDER_M72",
+	"gemini-3.6-flash-high":      "MODEL_PLACEHOLDER_M71",
 	"gemini-3.1-pro-low":         "MODEL_PLACEHOLDER_M36",
 	"gemini-pro-agent":           "MODEL_PLACEHOLDER_M16",
 	"claude-sonnet-4-6":          "MODEL_PLACEHOLDER_M35",
@@ -69,6 +70,7 @@ type AgyRequestSessionContext struct {
 	NumericSessionID   string
 	UsedClaude         bool
 	UsedNonGeminiModel bool
+	LastExecutionID    string
 }
 
 // AgyAgentRequestMetadata is the agent envelope metadata applied to one request.
@@ -122,6 +124,9 @@ func BuildAgyAgentRequestMetadata(session *AgyRequestSessionContext, requestPayl
 		session = &AgyRequestSessionContext{}
 	}
 	lastStep := CountAgyRequestSteps(requestPayload)
+	if session.LastExecutionID != "" {
+		lastStep++
+	}
 	lower := strings.ToLower(strings.TrimSpace(model))
 	isClaude := strings.HasPrefix(lower, "claude-")
 	isNonGemini := isClaude || strings.HasPrefix(lower, "gpt-")
@@ -134,6 +139,9 @@ func BuildAgyAgentRequestMetadata(session *AgyRequestSessionContext, requestPayl
 		"used_claude":              boolStr(session.UsedClaude),
 		"used_claude_conservative": boolStr(session.UsedClaude),
 		"used_non_gemini_model":    boolStr(session.UsedNonGeminiModel),
+	}
+	if session.LastExecutionID != "" {
+		labels["last_execution_id"] = session.LastExecutionID
 	}
 	if modelEnum, ok := GetAgyModelEnum(model); ok {
 		labels["model_enum"] = modelEnum
@@ -174,7 +182,7 @@ func OrderAgyLabels(labels map[string]string) []byte {
 		}
 	}
 	known := map[string]struct{}{
-		"last_step_index": {}, "model_enum": {}, "trajectory_id": {},
+		"last_execution_id": {}, "last_step_index": {}, "model_enum": {}, "trajectory_id": {},
 		"used_claude": {}, "used_claude_conservative": {}, "used_non_gemini_model": {},
 	}
 	for k, v := range labels {
@@ -213,7 +221,7 @@ func orderObjectFields(body []byte, fieldOrder []string) []byte {
 }
 
 // ApplyAgyAgentWireMetadata injects requestId, labels, sessionId and reorders
-// the agent envelope for agy CLI 1.1.5 wire parity. requestType must already be "agent".
+// the agent envelope for agy CLI 1.1.6 wire parity. requestType must already be "agent".
 func ApplyAgyAgentWireMetadata(body []byte, session *AgyRequestSessionContext, model string, timestampMs int64) []byte {
 	requestRaw := gjson.GetBytes(body, "request")
 	var requestBytes []byte
@@ -301,6 +309,23 @@ func BeginAgyRequest(convKey, numericSessionID string, nowMs int64, newUUID func
 	}
 	e.lastReqMs = ts
 	return e.ctx, ts
+}
+
+func CompleteAgyExecution(convKey string, newUUID func() string) {
+	if strings.TrimSpace(convKey) == "" || newUUID == nil {
+		return
+	}
+	agySessionMu.Lock()
+	defer agySessionMu.Unlock()
+	if e := agySessions[convKey]; e != nil && e.ctx != nil {
+		e.ctx.LastExecutionID = newUUID()
+	}
+}
+
+func DeleteAgySession(convKey string) {
+	agySessionMu.Lock()
+	defer agySessionMu.Unlock()
+	delete(agySessions, convKey)
 }
 
 // compactJSON removes insignificant whitespace while preserving key order
