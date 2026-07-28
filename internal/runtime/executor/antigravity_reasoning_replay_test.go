@@ -759,8 +759,10 @@ func TestAntigravityReasoningReplayAccumulatorCountsExistingFunctionOccurrenceTh
 	if errPrepare != nil {
 		t.Fatal(errPrepare)
 	}
+	// The leading call gets Gemini's bypass sentinel (it carries no native
+	// signature); only the second occurrence may receive the replayed one.
 	parts := gjson.GetBytes(prepared, "request.contents.0.parts").Array()
-	if len(parts) != 2 || parts[0].Get("thoughtSignature").String() != "" || parts[1].Get("thoughtSignature").String() != signature {
+	if len(parts) != 2 || antigravityHasNativeThoughtSignature(parts[0].Get("thoughtSignature").String()) || parts[1].Get("thoughtSignature").String() != signature {
 		t.Fatalf("function occurrence replay targeted the wrong call: %s", prepared)
 	}
 }
@@ -843,7 +845,7 @@ func TestPrepareAntigravityGeminiReasoningReplayRejectsReusedIDWithChangedCall(t
 	if errPrepare != nil {
 		t.Fatal(errPrepare)
 	}
-	if got := gjson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").String(); got != "" {
+	if got := gjson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").String(); antigravityHasNativeThoughtSignature(got) {
 		t.Fatalf("changed call with reused ID received stale signature %q; body=%s", got, out)
 	}
 	if got := gjson.GetBytes(out, "request.contents.1.parts.1.thoughtSignature").String(); got != "" {
@@ -875,7 +877,7 @@ func TestPrepareAntigravityGeminiReasoningReplayRejectsChangedIDLessCallAtSamePo
 	if errPrepare != nil {
 		t.Fatal(errPrepare)
 	}
-	if got := gjson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").String(); got != "" {
+	if got := gjson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").String(); antigravityHasNativeThoughtSignature(got) {
 		t.Fatalf("changed ID-less call received stale signature %q; body=%s", got, out)
 	}
 }
@@ -1469,7 +1471,7 @@ func TestPrepareAntigravityGeminiReasoningReplayRestoresLegacyClaudeToolIDWithSc
 	}
 }
 
-func TestPrepareAntigravityGeminiReasoningReplayFailsClosedWithoutClaudeToolProvenance(t *testing.T) {
+func TestPrepareAntigravityGeminiReasoningReplayDegradesWithoutClaudeToolProvenance(t *testing.T) {
 	internalcache.ClearAntigravityReasoningReplayCache()
 	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
 
@@ -1478,9 +1480,26 @@ func TestPrepareAntigravityGeminiReasoningReplayFailsClosedWithoutClaudeToolProv
 	payload := []byte(`{"sessionId":"sess-missing-provenance","request":{"contents":[{"role":"model","parts":[{"thoughtSignature":"skip_thought_signature_validator","functionCall":{"id":"` + clientID + `","name":"Read","args":{"file_path":"/tmp/a"}}}]},{"role":"user","parts":[{"functionResponse":{"id":"` + clientID + `","name":"Read","response":{"result":"ok"}}}]}]}}`)
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}
 
-	_, _, errPrepare := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), model, cliproxyexecutor.Request{Model: model, Payload: payload}, opts, payload)
-	if errPrepare == nil || !strings.Contains(errPrepare.Error(), "missing Claude tool provenance") {
-		t.Fatalf("error = %v, want fail-closed missing provenance", errPrepare)
+	// An empty ledger must not kill the conversation: the reserved IDs are
+	// rewritten to neutral synthetic IDs and the request stays valid.
+	out, _, errPrepare := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), model, cliproxyexecutor.Request{Model: model, Payload: payload}, opts, payload)
+	if errPrepare != nil {
+		t.Fatalf("prepare failed: %v", errPrepare)
+	}
+	if antigravityPayloadHasClaudeToolProvenanceID(out) {
+		t.Fatalf("reserved provenance IDs leaked upstream: %s", out)
+	}
+	call := gjson.GetBytes(out, "request.contents.0.parts.0")
+	response := gjson.GetBytes(out, "request.contents.1.parts.0.functionResponse")
+	callID := call.Get("functionCall.id").String()
+	if callID == "" || callID != response.Get("id").String() {
+		t.Fatalf("degraded call/response pairing broken: call=%q response=%q", callID, response.Get("id").String())
+	}
+	if got := call.Get("thoughtSignature").String(); got != internalsignature.GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("first degraded call thoughtSignature = %q, want bypass sentinel", got)
+	}
+	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(out); errPairing != nil {
+		t.Fatalf("degraded history is invalid: %v", errPairing)
 	}
 }
 
@@ -1539,9 +1558,28 @@ func TestPrepareAntigravityGeminiReasoningReplayRejectsChangedClaudeToolArgument
 	original := []byte(`{"tools":[{"name":"Edit","input_schema":{"type":"object","properties":{"replace_all":{"type":"boolean","default":false}}}}]}`)
 	opts := cliproxyexecutor.Options{OriginalRequest: original, SourceFormat: sdktranslator.FromString("claude")}
 
-	_, _, errPrepare := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), model, cliproxyexecutor.Request{Model: model, Payload: payload}, opts, payload)
-	if errPrepare == nil || !strings.Contains(errPrepare.Error(), "missing Claude tool provenance") {
-		t.Fatalf("error = %v, want fail-closed changed arguments", errPrepare)
+	// The client changed the arguments, so the native call must NOT be restored.
+	// The request still goes through, but only with a neutral synthetic ID and
+	// without the native identity or the cached signature.
+	out, _, errPrepare := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), model, cliproxyexecutor.Request{Model: model, Payload: payload}, opts, payload)
+	if errPrepare != nil {
+		t.Fatalf("prepare failed: %v", errPrepare)
+	}
+	if antigravityPayloadHasClaudeToolProvenanceID(out) {
+		t.Fatalf("reserved provenance IDs leaked upstream: %s", out)
+	}
+	call := gjson.GetBytes(out, "request.contents.0.parts.0")
+	if got := call.Get("functionCall.id").String(); got == "native-edit-changed" {
+		t.Fatalf("native call ID was restored onto changed arguments: %s", out)
+	}
+	if got := call.Get("thoughtSignature").String(); got != internalsignature.GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("changed call thoughtSignature = %q, want bypass sentinel and no native signature", got)
+	}
+	if !call.Get("functionCall.args.replace_all").Bool() {
+		t.Fatalf("client arguments were rewritten by replay: %s", call.Raw)
+	}
+	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(out); errPairing != nil {
+		t.Fatalf("degraded history is invalid: %v", errPairing)
 	}
 }
 
@@ -1597,5 +1635,118 @@ func TestPrepareAntigravityGeminiReasoningReplayRejectsUnmatchedNonPlaceholderRe
 	}
 	if !strings.Contains(errPrepare.Error(), "invalid Gemini function call history") {
 		t.Fatalf("error = %v, want invalid Gemini function call history", errPrepare)
+	}
+}
+
+func TestPrepareAntigravityGeminiReasoningReplayRestoresIdentityOnContextDrift(t *testing.T) {
+	internalcache.ClearAntigravityReasoningReplayCache()
+	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
+
+	const model = "gemini-3.6-flash-high"
+	const args = `{"file_path":"/tmp/a"}`
+	clientID := util.GeminiClaudeToolUseID("native-drift", "Read", args)
+	payload := []byte(`{"sessionId":"sess-context-drift","request":{"contents":[{"role":"model","parts":[{"thoughtSignature":"skip_thought_signature_validator","functionCall":{"id":"` + clientID + `","name":"Read","args":` + args + `}}]},{"role":"user","parts":[{"functionResponse":{"id":"` + clientID + `","name":"Read","response":{"result":"ok"}}}]}]}}`)
+	// A stale contextHash stands in for compacted or rewritten history: the tool
+	// identity is still provable from the opaque ID, but the cached signature is
+	// no longer valid for this conversation.
+	item := []byte(`{"type":"function_call_part","contentIndex":0,"partIndex":0,"targetOccurrence":0,"name":"Read","call_id":"native-drift","args":` + args + `,"thoughtSignature":"EsMTCsATARFNMg/XNVix5lDpkKaHR7Xg","contextHash":"0000000000000000000000000000000000000000000000000000000000000000"}`)
+	sessionKey := antigravityReasoningReplayScopeFromPayload(model, payload).sessionKey
+	if !internalcache.CacheAntigravityReasoningReplayItems(model, sessionKey, [][]byte{item}) {
+		t.Fatal("failed to cache drifted provenance")
+	}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}
+
+	out, _, errPrepare := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), model, cliproxyexecutor.Request{Model: model, Payload: payload}, opts, payload)
+	if errPrepare != nil {
+		t.Fatalf("prepare failed: %v", errPrepare)
+	}
+	if antigravityPayloadHasClaudeToolProvenanceID(out) {
+		t.Fatalf("reserved provenance IDs leaked upstream: %s", out)
+	}
+	call := gjson.GetBytes(out, "request.contents.0.parts.0")
+	if got := call.Get("functionCall.id").String(); got != "native-drift" {
+		t.Fatalf("functionCall.id = %q, want native identity restored despite context drift", got)
+	}
+	if got := gjson.GetBytes(out, "request.contents.1.parts.0.functionResponse.id").String(); got != "native-drift" {
+		t.Fatalf("functionResponse.id = %q, want native identity restored", got)
+	}
+	if got := call.Get("thoughtSignature").String(); antigravityHasNativeThoughtSignature(got) {
+		t.Fatalf("thoughtSignature = %q, want no native signature replayed on drifted context", got)
+	}
+	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(out); errPairing != nil {
+		t.Fatalf("restored history is invalid: %v", errPairing)
+	}
+}
+
+func TestDegradeAntigravityClaudeToolProvenanceIDsKeepsParallelShape(t *testing.T) {
+	ids := make([]string, 3)
+	for i := range ids {
+		ids[i] = util.GeminiClaudeToolUseID(fmt.Sprintf("native-%d", i), "Read", `{"file_path":"/tmp/a"}`)
+	}
+	payload := []byte(`{"request":{"contents":[{"role":"model","parts":[` +
+		`{"thoughtSignature":"EsMTCsATARFNMg/XNVix5lDpkKaHR7Xg","functionCall":{"id":"` + ids[0] + `","name":"Read","args":{"file_path":"/tmp/a"}}},` +
+		`{"functionCall":{"id":"` + ids[1] + `","name":"Read","args":{"file_path":"/tmp/b"}}},` +
+		`{"functionCall":{"id":"` + ids[2] + `","name":"Read","args":{"file_path":"/tmp/c"}}}` +
+		`]},{"role":"user","parts":[` +
+		`{"functionResponse":{"id":"` + ids[0] + `","name":"Read","response":{"result":"a"}}},` +
+		`{"functionResponse":{"id":"` + ids[1] + `","name":"Read","response":{"result":"b"}}},` +
+		`{"functionResponse":{"id":"` + ids[2] + `","name":"Read","response":{"result":"c"}}}` +
+		`]}]}}`)
+
+	out, degraded := degradeAntigravityClaudeToolProvenanceIDs(payload)
+	out = antigravityRepairUnsignedFirstFunctionCalls(out)
+	if degraded != 6 {
+		t.Fatalf("degraded = %d, want 6 (3 calls + 3 responses)", degraded)
+	}
+	if antigravityPayloadHasClaudeToolProvenanceID(out) {
+		t.Fatalf("reserved provenance IDs leaked upstream: %s", out)
+	}
+
+	calls := gjson.GetBytes(out, "request.contents.0.parts").Array()
+	responses := gjson.GetBytes(out, "request.contents.1.parts").Array()
+	if len(calls) != 3 || len(responses) != 3 {
+		t.Fatalf("part counts changed: %d calls, %d responses", len(calls), len(responses))
+	}
+	signed := 0
+	for i, call := range calls {
+		signature := call.Get("thoughtSignature").String()
+		if signature != "" {
+			signed++
+		}
+		if i == 0 && signature != internalsignature.GeminiSkipThoughtSignatureValidator {
+			t.Fatalf("first call thoughtSignature = %q, want bypass sentinel", signature)
+		}
+		if i > 0 && signature != "" {
+			t.Fatalf("sibling call %d gained a signature %q, want unsigned", i, signature)
+		}
+		if got := call.Get("functionCall.id").String(); got != responses[i].Get("functionResponse.id").String() {
+			t.Fatalf("call/response pairing broken at %d: %q vs %q", i, got, responses[i].Get("functionResponse.id").String())
+		}
+	}
+	if signed != 1 {
+		t.Fatalf("signed calls = %d, want exactly 1 signed + 2 unsigned native parallel shape", signed)
+	}
+	if strings.Contains(string(out), "EsMTCsATARFNMg/XNVix5lDpkKaHR7Xg") {
+		t.Fatalf("stale native signature leaked after degradation: %s", out)
+	}
+	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(out); errPairing != nil {
+		t.Fatalf("degraded history is invalid: %v", errPairing)
+	}
+}
+
+func TestPrepareAntigravityGeminiReasoningReplayStillRejectsBrokenPairing(t *testing.T) {
+	internalcache.ClearAntigravityReasoningReplayCache()
+	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
+
+	const model = "gemini-3.6-flash-high"
+	clientID := util.GeminiClaudeToolUseID("native-orphan", "Read", `{"file_path":"/tmp/a"}`)
+	// A functionResponse with no preceding functionCall is structurally invalid and
+	// must keep failing even though provenance degradation is now in play.
+	payload := []byte(`{"sessionId":"sess-orphan","request":{"contents":[{"role":"user","parts":[{"functionResponse":{"id":"` + clientID + `","name":"Read","response":{"result":"ok"}}}]}]}}`)
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}
+
+	_, _, errPrepare := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), model, cliproxyexecutor.Request{Model: model, Payload: payload}, opts, payload)
+	if errPrepare == nil || !strings.Contains(errPrepare.Error(), "invalid Gemini function call history") {
+		t.Fatalf("error = %v, want structural pairing rejection", errPrepare)
 	}
 }
