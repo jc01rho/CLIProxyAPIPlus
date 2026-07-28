@@ -1115,9 +1115,6 @@ func antigravityThoughtSignatureReplayPartPath(payload []byte, itemResult gjson.
 	if ci < 0 || ci >= len(contentArr) || !strings.EqualFold(strings.TrimSpace(contentArr[ci].Get("role").String()), "model") {
 		return "", false
 	}
-	if !antigravityReplayItemContextMatches(payload, itemResult, ci) {
-		return "", false
-	}
 	parts := contentArr[ci].Get("parts")
 	if !parts.IsArray() {
 		return "", false
@@ -1125,6 +1122,12 @@ func antigravityThoughtSignatureReplayPartPath(payload []byte, itemResult gjson.
 	partArr := parts.Array()
 	targetKind := strings.TrimSpace(itemResult.Get("targetKind").String())
 	targetHash := strings.TrimSpace(itemResult.Get("targetHash").String())
+	// A target hash pins the signature to a part whose own bytes are unchanged,
+	// which is all Gemini validates: the signature's own integrity, never its
+	// binding to the surrounding history. Drift elsewhere in the conversation
+	// therefore costs this signature nothing, so it is deliberately not gated on
+	// the context fingerprint. The fallback below has no such proof and stays
+	// gated.
 	if targetHash != "" {
 		if targetOccurrence := itemResult.Get("targetOccurrence"); targetOccurrence.Exists() {
 			wanted := int(targetOccurrence.Int())
@@ -1157,6 +1160,11 @@ func antigravityThoughtSignatureReplayPartPath(payload []byte, itemResult gjson.
 		return "", false
 	}
 
+	// No target hash: nothing proves which part this signature belongs to, so
+	// only a matching context fingerprint makes the positional guess safe.
+	if !antigravityReplayItemContextMatches(payload, itemResult, ci) {
+		return "", false
+	}
 	pi := int(itemResult.Get("partIndex").Int())
 	if pi >= 0 && pi < len(partArr) && partArr[pi].Type != gjson.Null {
 		if kind, _ := antigravityReplayPartFingerprint(partArr[pi]); kind != "" {

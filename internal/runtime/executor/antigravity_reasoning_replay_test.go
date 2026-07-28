@@ -1016,7 +1016,7 @@ func TestAntigravityReasoningReplayDoesNotCommitPartialResponse(t *testing.T) {
 	}
 }
 
-func TestPrepareAntigravityGeminiReasoningReplayRejectsFingerprintMismatch(t *testing.T) {
+func TestPrepareAntigravityGeminiReasoningReplayKeepsTextSignatureOnContextDrift(t *testing.T) {
 	internalcache.ClearAntigravityReasoningReplayCache()
 	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
 
@@ -1031,8 +1031,31 @@ func TestPrepareAntigravityGeminiReasoningReplayRejectsFingerprintMismatch(t *te
 	if errPrepare != nil {
 		t.Fatal(errPrepare)
 	}
+	// The signed part itself is byte-identical, so the signature still describes
+	// it exactly. Only the surrounding turns drifted, which Gemini does not bind
+	// signatures to, so dropping it here would only force needless re-reasoning.
+	if got := gjson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").String(); got != "fingerprinted-signature-123456" {
+		t.Fatalf("signature = %q, want the signature replayed even though the surrounding context drifted; body=%s", got, out)
+	}
+}
+
+func TestPrepareAntigravityGeminiReasoningReplayRejectsFingerprintMismatch(t *testing.T) {
+	internalcache.ClearAntigravityReasoningReplayCache()
+	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
+
+	kind, fingerprint := antigravityReplayPartFingerprint(gjson.Parse(`{"text":"original answer"}`))
+	item := buildAntigravityThoughtSignatureItem(1, 0, "fingerprinted-signature-123456", kind, fingerprint)
+	internalcache.CacheAntigravityReasoningReplayItems("gemini-3.6-flash-high", "session:edited", [][]byte{item})
+
+	// The client rewrote the signed part, so the cached signature describes text
+	// that is no longer in the request and must not be attached to the new text.
+	payload := []byte(`{"sessionId":"edited","request":{"contents":[{"role":"user","parts":[{"text":"turn"}]},{"role":"model","parts":[{"text":"edited answer"}]},{"role":"user","parts":[{"text":"next"}]}]}}`)
+	out, _, errPrepare := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), "gemini-3.6-flash-high", cliproxyexecutor.Request{}, cliproxyexecutor.Options{}, payload)
+	if errPrepare != nil {
+		t.Fatal(errPrepare)
+	}
 	if got := gjson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").String(); got != "" {
-		t.Fatalf("mismatched rebuilt context received stale signature %q; body=%s", got, out)
+		t.Fatalf("edited part received stale signature %q; body=%s", got, out)
 	}
 }
 
