@@ -12,6 +12,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+type requestPathContextKey struct{}
+
 // ProviderExecutor defines the contract required by Manager to execute provider calls.
 type ProviderExecutor interface {
 	// Identifier returns the provider key handled by this executor.
@@ -56,6 +58,11 @@ type Result struct {
 	RetryAfter *time.Duration
 	// Error describes the failure when Success is false.
 	Error *Error
+}
+
+type sessionModelBinding struct {
+	upstreamModel string
+	expiresAt     time.Time
 }
 
 // Selector chooses an auth candidate for execution.
@@ -143,7 +150,8 @@ type Manager struct {
 	apiKeyModelAlias atomic.Value
 
 	// modelPoolOffsets tracks per-auth alias pool rotation state.
-	modelPoolOffsets map[string]int
+	modelPoolOffsets     map[string]int
+	sessionModelBindings map[string]sessionModelBinding
 
 	// runtimeConfig stores the latest application config for request-time decisions.
 	// It is initialized in NewManager; never Load() before first Store().
@@ -181,6 +189,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		homeSessionSelections: make(map[string]map[homeSessionSelectionKey]*HomeDispatchSelection),
 		providerOffsets:       make(map[string]int),
 		modelPoolOffsets:      make(map[string]int),
+		sessionModelBindings:  make(map[string]sessionModelBinding),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})

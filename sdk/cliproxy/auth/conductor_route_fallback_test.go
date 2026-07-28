@@ -10,7 +10,6 @@ import (
 )
 
 func TestManagerExecuteStreamWithRouteFallback_returnsCancellationWithoutTryingFallbackModel(t *testing.T) {
-	// Given
 	manager := NewManager(nil, nil, nil)
 	manager.SetFallbackChain([]string{"lower-coding"}, 1)
 	request := cliproxyexecutor.Request{Model: "gpt-5.5"}
@@ -27,7 +26,6 @@ func TestManagerExecuteStreamWithRouteFallback_returnsCancellationWithoutTryingF
 		return nil, context.Canceled
 	}
 
-	// When
 	_, err := manager.executeStreamWithRouteFallback(
 		context.Background(),
 		[]string{"codex"},
@@ -36,7 +34,6 @@ func TestManagerExecuteStreamWithRouteFallback_returnsCancellationWithoutTryingF
 		execOnce,
 	)
 
-	// Then
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("executeStreamWithRouteFallback() error = %v, want context.Canceled", err)
 	}
@@ -62,10 +59,6 @@ func TestManagerExecuteWithRouteFallback_AllowsConsoleUpstreamRequestFailed(t *t
 		opts cliproxyexecutor.Options,
 		maxRetryCredentials int,
 	) (cliproxyexecutor.Response, error) {
-		_ = ctx
-		_ = providers
-		_ = opts
-		_ = maxRetryCredentials
 		attemptedModels = append(attemptedModels, req.Model)
 		if req.Model == "deepseek-v4-flash-free" {
 			return cliproxyexecutor.Response{}, upstreamErr

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -13,8 +14,12 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/requestmeta"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	log "github.com/sirupsen/logrus"
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -656,6 +661,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 		}
 		auth.recordRecentRequest(now, result.Success, resultFailureReason(result))
+		if !result.Success && result.Error != nil {
+			logEntryWithRequestID(ctx).WithFields(resultFailureLogFields(ctx, result, auth)).WithError(result.Error).Warn("request failed")
+		}
 		if result.Success {
 			auth.Success++
 		} else {
@@ -821,6 +829,88 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)
+}
+
+func resultFailureLogFields(ctx context.Context, result Result, auth *Auth) log.Fields {
+	fields := log.Fields{
+		"auth_id":        result.AuthID,
+		"provider":       result.Provider,
+		"model":          result.Model,
+		"selected_model": result.Model,
+		"code":           result.Error.Code,
+		"status":         result.Error.HTTPStatus,
+	}
+	addAuthCredentialLogFields(fields, auth)
+	if requestedModel := coreusage.RequestedModelAliasFromContext(ctx); requestedModel != "" {
+		fields["requested_model"] = requestedModel
+	}
+	if requestPath, ok := requestPathFromContext(ctx); ok {
+		fields["request_path"] = requestPath
+	}
+	if upstream, ok := requestmeta.LatestUpstreamRequest(ctx); ok {
+		if upstream.URL != "" {
+			fields["upstream_url"] = upstream.URL
+			fields["endpoint"] = upstream.URL
+		}
+		if upstream.Method != "" {
+			fields["upstream_method"] = upstream.Method
+		}
+		if upstream.Provider != "" && upstream.Provider != result.Provider {
+			fields["upstream_provider"] = upstream.Provider
+		}
+		if upstream.AuthID != "" && upstream.AuthID != result.AuthID {
+			fields["upstream_auth_id"] = upstream.AuthID
+		}
+		if upstream.Model != "" && upstreamSummaryMatchesResult(upstream, result) {
+			fields["selected_model"] = upstream.Model
+			fields["upstream_model"] = upstream.Model
+		}
+	}
+	return fields
+}
+
+func addAuthCredentialLogFields(fields log.Fields, auth *Auth) {
+	if fields == nil || auth == nil {
+		return
+	}
+	if kind, credential := auth.AccountInfo(); kind != "" {
+		fields["auth_kind"] = kind
+		if credential != "" {
+			if kind == "api_key" {
+				credential = util.HideAPIKey(credential)
+			}
+			fields["credential"] = credential
+		}
+	}
+	if label := strings.TrimSpace(auth.Label); label != "" {
+		fields["auth_label"] = label
+	}
+	if authFile := strings.TrimSpace(auth.FileName); authFile != "" {
+		fields["auth_file"] = filepath.Base(authFile)
+	}
+}
+
+func upstreamSummaryMatchesResult(upstream requestmeta.UpstreamRequestSummary, result Result) bool {
+	if upstream.AuthID != "" && upstream.AuthID != result.AuthID {
+		return false
+	}
+	return upstream.Provider == "" || upstream.Provider == result.Provider
+}
+
+func requestPathFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	switch typed := ctx.Value(requestPathContextKey{}).(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		return trimmed, trimmed != ""
+	case []byte:
+		trimmed := strings.TrimSpace(string(typed))
+		return trimmed, trimmed != ""
+	default:
+		return "", false
+	}
 }
 
 func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth *Auth, ephemeral bool) {
@@ -1474,11 +1564,11 @@ func isMissingModelPhrase(value string) bool {
 }
 
 // isRequestInvalidError returns true if the error represents a client request
-// error that should not be retried. Specifically, it treats 400 responses with
-// "invalid_request_error", request-scoped 404 item misses caused by `store=false`,
-// and all 422 responses as request-shape failures, where switching auths or
-// pooled upstream models will not help. Model-support errors are excluded so
-// routing can fall through to another auth or upstream.
+// error that should not be retried. Specifically, it treats request-scoped 404
+// item misses caused by `store=false`, and all 422 responses as request-shape
+// failures, where switching auths or pooled upstream models will not help.
+// Model-support errors are excluded so routing can fall through to another auth
+// or upstream. 400 errors are allowed to trigger fallback chains.
 func isRequestInvalidError(err error) bool {
 	if err == nil {
 		return false
@@ -1498,11 +1588,7 @@ func isRequestInvalidError(err error) bool {
 	status := statusCodeFromError(err)
 	switch status {
 	case http.StatusBadRequest:
-		msg := err.Error()
-		return strings.Contains(msg, "invalid_request_error") ||
-			strings.Contains(msg, "bad_request_error") ||
-			strings.Contains(msg, "INVALID_ARGUMENT") ||
-			strings.Contains(msg, "FAILED_PRECONDITION")
+		return false
 	case http.StatusNotFound:
 		return isRequestScopedNotFoundMessage(err.Error())
 	case http.StatusUnprocessableEntity:
@@ -1634,6 +1720,9 @@ func nextQuotaCooldown(prevLevel int, disableCooling bool) (time.Duration, int) 
 		cooldown = quotaBackoffBase
 	}
 	if cooldown >= quotaBackoffMax {
+		if prevLevel < maxQuotaBackoffLevel {
+			return quotaBackoffMax, prevLevel + 1
+		}
 		return quotaBackoffMax, prevLevel
 	}
 	return cooldown, prevLevel + 1

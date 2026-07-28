@@ -32,26 +32,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return m.executeHome(ctx, normalized, req, opts, false)
 	}
 
-	_, maxRetryCredentials, maxWait := m.retrySettings()
-
-	var lastErr error
-	retryModel := authSelectionModelFromOptions(opts, req.Model)
-	for attempt := 0; ; attempt++ {
-		resp, errExec := m.executeMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
-		if errExec == nil {
-			return resp, nil
-		}
-		if isRequestTerminatedError(errExec) {
-			return cliproxyexecutor.Response{}, errExec
-		}
-		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, retryModel, maxWait)
-		if !shouldRetry {
-			break
-		}
-		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
-			return cliproxyexecutor.Response{}, errWait
-		}
+	resp, lastErr := m.executeWithRouteFallback(ctx, normalized, req, opts, m.executeMixedOnce)
+	if lastErr == nil {
+		return resp, nil
 	}
 	if lastErr != nil {
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
@@ -77,26 +60,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		return m.executeHome(ctx, normalized, req, opts, true)
 	}
 
-	_, maxRetryCredentials, maxWait := m.retrySettings()
-
-	var lastErr error
-	retryModel := authSelectionModelFromOptions(opts, req.Model)
-	for attempt := 0; ; attempt++ {
-		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
-		if errExec == nil {
-			return resp, nil
-		}
-		if isRequestTerminatedError(errExec) {
-			return cliproxyexecutor.Response{}, errExec
-		}
-		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, retryModel, maxWait)
-		if !shouldRetry {
-			break
-		}
-		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
-			return cliproxyexecutor.Response{}, errWait
-		}
+	resp, lastErr := m.executeWithRouteFallback(ctx, normalized, req, opts, m.executeCountMixedOnce)
+	if lastErr == nil {
+		return resp, nil
 	}
 	if lastErr != nil {
 		return cliproxyexecutor.Response{}, lastErr
@@ -118,26 +84,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
-	_, maxRetryCredentials, maxWait := m.retrySettings()
-
-	var lastErr error
-	retryModel := authSelectionModelFromOptions(opts, req.Model)
-	for attempt := 0; ; attempt++ {
-		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
-		if errStream == nil {
-			return result, nil
-		}
-		if isRequestTerminatedError(errStream) {
-			return nil, errStream
-		}
-		lastErr = errStream
-		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, normalized, retryModel, maxWait)
-		if !shouldRetry {
-			break
-		}
-		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
-			return nil, errWait
-		}
+	result, lastErr := m.executeStreamWithRouteFallback(ctx, normalized, req, opts, m.executeStreamMixedOnce)
+	if lastErr == nil {
+		return result, nil
 	}
 	if lastErr != nil {
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
@@ -259,6 +208,72 @@ func mergeRequestHeaders(current, updates http.Header, clear []string) http.Head
 	return out
 }
 
+func countRemainingProviderOptions(currentProvider string, providers []string, tried map[string]struct{}, auths map[string]*Auth) int {
+	if len(providers) == 0 || len(auths) == 0 {
+		return 0
+	}
+	currentProvider = strings.TrimSpace(strings.ToLower(currentProvider))
+	providerSet := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		providerKey := strings.TrimSpace(strings.ToLower(provider))
+		if providerKey == "" || providerKey == currentProvider {
+			continue
+		}
+		providerSet[providerKey] = struct{}{}
+		compatProvider := util.OpenAICompatibleProviderKey(providerKey)
+		if compatProvider != providerKey && compatProvider != currentProvider {
+			providerSet[compatProvider] = struct{}{}
+		}
+	}
+	if len(providerSet) == 0 {
+		return 0
+	}
+	remaining := make(map[string]struct{}, len(providerSet))
+	for _, auth := range auths {
+		if auth == nil || auth.Disabled {
+			continue
+		}
+		if _, used := tried[auth.ID]; used {
+			continue
+		}
+		providerKey := executorKeyFromAuth(auth)
+		if _, ok := providerSet[providerKey]; !ok {
+			continue
+		}
+		remaining[providerKey] = struct{}{}
+	}
+	return len(remaining)
+}
+
+func shouldPreserveAttemptBudgetForStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusServiceUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) shouldCountAttemptBudget(err error, currentProvider string, providers []string, tried map[string]struct{}) bool {
+	if err == nil || !shouldPreserveAttemptBudgetForStatus(statusCodeFromError(err)) {
+		return true
+	}
+	m.mu.RLock()
+	remainingProviders := countRemainingProviderOptions(currentProvider, providers, tried, m.auths)
+	m.mu.RUnlock()
+	return remainingProviders == 0
+}
+
+func logProviderFallbackRetry(ctx context.Context, provider, model string, err error) {
+	statusCode := statusCodeFromError(err)
+	if !shouldPreserveAttemptBudgetForStatus(statusCode) {
+		return
+	}
+	entry := logEntryWithRequestID(ctx)
+	provider = strings.TrimPrefix(provider, "openai-compatible-")
+	entry.Warnf("provider %s failed with upstream status %d for model %s; retrying with another untried provider", provider, statusCode, strings.TrimSpace(model))
+}
+
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (cliproxyexecutor.Response, error) {
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -306,7 +321,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if len(models) == 0 {
 			continue
 		}
-		attempted[auth.ID] = struct{}{}
+		affinityKeys := sessionModelAffinityKeys(routeModel, opts)
+		models = m.applySessionModelAffinityForKeys(affinityKeys, models)
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
@@ -323,6 +339,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execReq.Model = upstreamModel
 			if restoreExecutionModel {
 				execReq.Model = executionModel
+			}
+			if resolvedExecutionModel := m.oauthExecutionModelForRequest(auth, routeModel, upstreamModel); resolvedExecutionModel != "" {
+				execReq.Model = resolvedExecutionModel
 			}
 			execOpts := opts
 			var errIntercept error
@@ -360,12 +379,20 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				continue
 			}
 			m.MarkResult(execCtx, result)
+			m.rememberSessionModelAffinityForKeys(affinityKeys, upstreamModel, pooled)
 			rewriteForceMappedResponse(&resp, aliasResult)
 			return resp, nil
+		}
+		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
+		if countBudget {
+			attempted[auth.ID] = struct{}{}
 		}
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
+			}
+			if !countBudget {
+				logProviderFallbackRetry(execCtx, provider, routeModel, authErr)
 			}
 			lastErr = authErr
 			if homeMode {
@@ -423,7 +450,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		if len(models) == 0 {
 			continue
 		}
-		attempted[auth.ID] = struct{}{}
+		affinityKeys := sessionModelAffinityKeys(routeModel, opts)
+		models = m.applySessionModelAffinityForKeys(affinityKeys, models)
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
@@ -440,6 +468,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execReq.Model = upstreamModel
 			if restoreExecutionModel {
 				execReq.Model = executionModel
+			}
+			if resolvedExecutionModel := m.oauthExecutionModelForRequest(auth, routeModel, upstreamModel); resolvedExecutionModel != "" {
+				execReq.Model = resolvedExecutionModel
 			}
 			execOpts := opts
 			var errIntercept error
@@ -485,12 +516,20 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				continue
 			}
 			m.MarkResult(execCtx, result)
+			m.rememberSessionModelAffinityForKeys(affinityKeys, upstreamModel, pooled)
 			rewriteForceMappedResponse(&resp, aliasResult)
 			return resp, nil
+		}
+		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
+		if countBudget {
+			attempted[auth.ID] = struct{}{}
 		}
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
+			}
+			if !countBudget {
+				logProviderFallbackRetry(execCtx, provider, routeModel, authErr)
 			}
 			lastErr = authErr
 			if homeMode {
@@ -592,7 +631,8 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			continue
 		}
-		attempted[auth.ID] = struct{}{}
+		affinityKeys := sessionModelAffinityKeys(routeModel, opts)
+		models = m.applySessionModelAffinityForKeys(affinityKeys, models)
 		var errPrepare error
 		if selection != nil {
 			auth, errPrepare = m.prepareHomeRequestAuth(execCtx, executor, selection)
@@ -642,6 +682,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
 			}
+			countBudget := m.shouldCountAttemptBudget(errStream, provider, providers, tried)
+			if countBudget {
+				attempted[auth.ID] = struct{}{}
+			} else {
+				logProviderFallbackRetry(execCtx, provider, routeModel, errStream)
+			}
 			lastErr = errStream
 			if homeMode {
 				homeAuthCount++
@@ -653,6 +699,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				return wrapHomeStream(ctx, streamResult, nil, releaseAttempt), nil
 			}
 			return wrapHomeStream(ctx, streamResult, selection, releaseAttempt), nil
+		}
+		if len(models) > 0 {
+			m.rememberSessionModelAffinityForKeys(affinityKeys, models[0], pooled)
 		}
 		return streamResult, nil
 	}
@@ -867,6 +916,9 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.Options, fallback string) context.Context {
 	alias := requestedModelAliasFromOptions(opts, fallback)
 	ctx = coreusage.WithRequestedModelAlias(ctx, alias)
+	if requestPath := requestPathFromOptions(opts); requestPath != "" {
+		ctx = context.WithValue(ctx, requestPathContextKey{}, requestPath)
+	}
 	effort := reasoningEffortFromOptions(opts)
 	if effort != "" {
 		ctx = coreusage.WithReasoningEffort(ctx, effort)
@@ -879,6 +931,24 @@ func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.O
 		ctx = coreusage.WithGenerate(ctx, generate)
 	}
 	return ctx
+}
+
+func requestPathFromOptions(opts cliproxyexecutor.Options) string {
+	if len(opts.Metadata) == 0 {
+		return ""
+	}
+	raw, ok := opts.Metadata[cliproxyexecutor.RequestPathMetadataKey]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
+	default:
+		return ""
+	}
 }
 
 func requestedModelAliasFromOptions(opts cliproxyexecutor.Options, fallback string) string {

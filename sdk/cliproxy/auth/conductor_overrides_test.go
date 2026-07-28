@@ -1040,43 +1040,66 @@ func TestManagerExecute_ThresholdRouting_AliasBillingClassAcrossAPIKeyAndAuthFil
 	}
 }
 
-func TestConfigModelAliasKeysMatchingUpstream_DeduplicatesSharedAliasPool(t *testing.T) {
+func TestResolveOpenAICompatUpstreamModelPool_ReturnsSharedAliasPool(t *testing.T) {
 	t.Parallel()
 
-	models := []internalconfig.OpenAICompatibilityModel{
-		{Name: "qwen3.5-plus", Alias: "claude-opus-4.66"},
-		{Name: "glm-5", Alias: "claude-opus-4.66"},
-		{Name: "kimi-k2.5", Alias: "claude-opus-4.66"},
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
+			Name: "pool",
+			Models: []internalconfig.OpenAICompatibilityModel{
+				{Name: "qwen3.5-plus", Alias: "claude-opus-4.66"},
+				{Name: "glm-5", Alias: "claude-opus-4.66"},
+				{Name: "kimi-k2.5", Alias: "claude-opus-4.66"},
+			},
+		}},
+	})
+	auth := &Auth{
+		ID:       "shared-alias-pool-auth",
+		Provider: "pool",
+		Attributes: map[string]string{
+			"api_key":      "pool-key",
+			"compat_name":  "pool",
+			"provider_key": "pool",
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
 	}
 
-	got := configModelAliasKeysMatchingUpstream(models, "qwen3.5-plus", "glm-5")
-	want := []string{"claude-opus-4.66"}
+	got := manager.resolveOpenAICompatUpstreamModelPool(auth, "claude-opus-4.66")
+	want := []string{"qwen3.5-plus", "glm-5", "kimi-k2.5"}
 	if len(got) != len(want) {
-		t.Fatalf("alias keys len = %d, want %d (%v)", len(got), len(want), got)
+		t.Fatalf("upstream pool len = %d, want %d (%v)", len(got), len(want), got)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("alias key[%d] = %q, want %q", i, got[i], want[i])
+			t.Fatalf("upstream pool[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
 }
 
-func TestConfigModelAliasKeysMatchingUpstream_ReturnsAllAliasesForSameUpstream(t *testing.T) {
+func TestLookupAPIKeyUpstreamModel_ReturnsAllAliasesForSameUpstream(t *testing.T) {
 	t.Parallel()
 
-	models := []internalconfig.GeminiModel{
-		{Name: "gemini-2.5-pro-exp-03-25", Alias: "g25p"},
-		{Name: "gemini-2.5-pro-exp-03-25", Alias: "gemini-pro"},
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		GeminiKey: []internalconfig.GeminiKey{{
+			APIKey: "gemini-key",
+			Models: []internalconfig.GeminiModel{
+				{Name: "gemini-2.5-pro-exp-03-25", Alias: "g25p"},
+				{Name: "gemini-2.5-pro-exp-03-25", Alias: "gemini-pro"},
+			},
+		}},
+	})
+	auth := &Auth{ID: "same-upstream-auth", Provider: "gemini", Attributes: map[string]string{"api_key": "gemini-key"}}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
 	}
 
-	got := configModelAliasKeysMatchingUpstream(models, "gemini-2.5-pro-exp-03-25")
-	want := []string{"g25p", "gemini-pro"}
-	if len(got) != len(want) {
-		t.Fatalf("alias keys len = %d, want %d (%v)", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("alias key[%d] = %q, want %q", i, got[i], want[i])
+	for _, alias := range []string{"g25p", "gemini-pro"} {
+		if got := manager.lookupAPIKeyUpstreamModel(auth.ID, alias); got != "gemini-2.5-pro-exp-03-25" {
+			t.Fatalf("lookupAPIKeyUpstreamModel(%q) = %q, want %q", alias, got, "gemini-2.5-pro-exp-03-25")
 		}
 	}
 }
@@ -1109,10 +1132,7 @@ func TestMatchTokenThresholdRule_SupportsUpperLowerAndBounded(t *testing.T) {
 			if ok != tc.wantMatch {
 				t.Fatalf("matchTokenThresholdRule() match = %v, want %v", ok, tc.wantMatch)
 			}
-			if !tc.wantMatch {
-				return
-			}
-			if rule.BillingClass != tc.want {
+			if tc.wantMatch && rule.BillingClass != tc.want {
 				t.Fatalf("billing class = %q, want %q", rule.BillingClass, tc.want)
 			}
 		})

@@ -30,8 +30,9 @@ const (
 	// wasn't updated). Without this guard, the auto-refresh loop can tight-loop and
 	// burn CPU at idle.
 	refreshIneffectiveBackoff = 30 * time.Second
-	quotaBackoffBase          = time.Second
-	quotaBackoffMax           = 30 * time.Minute
+	quotaBackoffBase          = 5 * time.Minute
+	quotaBackoffMax           = 24 * time.Hour
+	maxQuotaBackoffLevel      = 9
 	transientErrorCooldown    = time.Minute
 )
 
