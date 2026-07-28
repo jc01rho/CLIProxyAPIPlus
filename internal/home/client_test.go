@@ -1968,9 +1968,9 @@ func TestRunConfigSubscriberLifetimeRebuildsFreshCommandPoolBeforeReady(t *testi
 	}
 }
 
-func TestRunConfigSubscriberLifetimeDoesNotReadyWhenFreshCommandProbeFails(t *testing.T) {
+func TestRunConfigSubscriberLifetimePreservesTakeoverWhenFreshCommandProbeFails(t *testing.T) {
 	configPayload := "host: 127.0.0.1\n"
-	client, _ := newRedisCommandTestClient(t, func(args []string) string {
+	client, commands := newRedisCommandTestClient(t, func(args []string) string {
 		switch {
 		case len(args) >= 1 && strings.EqualFold(args[0], "HELLO"):
 			return "%6\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n"
@@ -1984,6 +1984,10 @@ func TestRunConfigSubscriberLifetimeDoesNotReadyWhenFreshCommandProbeFails(t *te
 			return "+OK\r\n"
 		}
 	})
+	lifecycle := config.CredentialConcurrencyConfig{LifecycleConfigRevision: 9}
+	if errSet := client.SetLifecycleConfig(lifecycle); errSet != nil {
+		t.Fatal(errSet)
+	}
 	ready := make(chan struct{}, 1)
 	errRun := client.RunConfigSubscriberLifetime(context.Background(), func([]byte) error { return nil }, func() { ready <- struct{}{} })
 	if errRun == nil {
@@ -1999,6 +2003,21 @@ func TestRunConfigSubscriberLifetimeDoesNotReadyWhenFreshCommandProbeFails(t *te
 	client.mu.Unlock()
 	if commandClient != nil || subscriptionClient != nil {
 		t.Fatalf("clients retained after fresh command probe failure: command=%v subscription=%v", commandClient != nil, subscriptionClient != nil)
+	}
+	if got := recoveryState(client.recoveryState.Load()); got != recoveryStateTakeoverEligible {
+		t.Fatalf("recovery state = %d, want %d", got, recoveryStateTakeoverEligible)
+	}
+	if got := findRedisCommand(commands.All(), "SUBSCRIBE"); !reflect.DeepEqual(got, []string{"subscribe", "config", "9"}) {
+		t.Fatalf("initial SUBSCRIBE wire command = %#v, want []string{\"subscribe\", \"config\", \"9\"}", got)
+	}
+
+	next := client.NewLifetime()
+	if errSet := next.SetLifecycleConfig(lifecycle); errSet != nil {
+		t.Fatal(errSet)
+	}
+	args, _ := next.subscriptionParameters()
+	if !reflect.DeepEqual(args, []string{"config", "9", "takeover"}) {
+		t.Fatalf("replacement SUBSCRIBE args = %#v, want takeover", args)
 	}
 }
 

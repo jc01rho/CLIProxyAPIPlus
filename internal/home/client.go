@@ -1628,6 +1628,15 @@ func (c *Client) subscriptionParameters() ([]string, time.Duration) {
 	return args, cfg.CPAHeartbeatTimeout
 }
 
+func (c *Client) markMembershipTakeoverEligible() {
+	if c == nil {
+		return
+	}
+	if !c.recoveryState.CompareAndSwap(uint32(recoveryStateStable), uint32(recoveryStateTakeoverEligible)) {
+		c.recoveryState.CompareAndSwap(uint32(recoveryStateSwitching), uint32(recoveryStateSwitchingTakeover))
+	}
+}
+
 func (c *Client) rebuildCommandPoolAndProbe(ctx context.Context) error {
 	c.promoteSubscription()
 	if errPing := c.Ping(ctx); errPing != nil {
@@ -1726,6 +1735,10 @@ func (c *Client) RunConfigSubscriberLifetime(ctx context.Context, onConfig func(
 		}
 		return c.endConfigSubscriberLifetimeWithSubscription(errACK, pubsub, "failed ACK")
 	}
+	// A protocol-one ACK means Home already committed this membership. Preserve it if the command probe fails.
+	if len(args) > 1 {
+		c.markMembershipTakeoverEligible()
+	}
 
 	if errProbe := c.rebuildCommandPoolAndProbe(ctx); errProbe != nil {
 		if ctx.Err() == nil {
@@ -1745,9 +1758,7 @@ func (c *Client) RunConfigSubscriberLifetime(ctx context.Context, onConfig func(
 		if errReceive != nil {
 			if ctx.Err() == nil {
 				if c.heartbeatOK.Load() {
-					if !c.recoveryState.CompareAndSwap(uint32(recoveryStateStable), uint32(recoveryStateTakeoverEligible)) {
-						c.recoveryState.CompareAndSwap(uint32(recoveryStateSwitching), uint32(recoveryStateSwitchingTakeover))
-					}
+					c.markMembershipTakeoverEligible()
 				}
 				if isTimeoutError(errReceive) {
 					c.markSubscriptionTimeout()
