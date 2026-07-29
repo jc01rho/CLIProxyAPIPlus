@@ -1660,8 +1660,8 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			name:        "31B",
 			from:        "openai",
 			to:          "gemini-cli",
-			model:       "gemini-zero-mixed-model",
-			inputJSON:   `{"model":"gemini-zero-mixed-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`,
+			model:       "gemini-toggle-mixed-model",
+			inputJSON:   `{"model":"gemini-toggle-mixed-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`,
 			expectField: "",
 			expectErr:   false,
 		},
@@ -1690,8 +1690,8 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			name:        "31D",
 			from:        "openai-response",
 			to:          "gemini",
-			model:       "gemini-zero-mixed-model",
-			inputJSON:   `{"model":"gemini-zero-mixed-model","input":[{"role":"user","content":"hi"}],"reasoning":{"effort":"none"}}`,
+			model:       "gemini-toggle-mixed-model",
+			inputJSON:   `{"model":"gemini-toggle-mixed-model","input":[{"role":"user","content":"hi"}],"reasoning":{"effort":"none"}}`,
 			expectField: "",
 			expectErr:   false,
 		},
@@ -1700,8 +1700,8 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			name:        "31E",
 			from:        "openai-response",
 			to:          "gemini-cli",
-			model:       "gemini-zero-mixed-model",
-			inputJSON:   `{"model":"gemini-zero-mixed-model","input":[{"role":"user","content":"hi"}],"reasoning":{"effort":"none"}}`,
+			model:       "gemini-toggle-mixed-model",
+			inputJSON:   `{"model":"gemini-toggle-mixed-model","input":[{"role":"user","content":"hi"}],"reasoning":{"effort":"none"}}`,
 			expectField: "",
 			expectErr:   false,
 		},
@@ -3616,7 +3616,7 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				body, _ = sjson.SetBytes(body, "max_tokens", 200000)
 			}
 
-			body, err := thinking.ApplyThinking(body, tc.model, tc.from, applyTo, applyTo)
+			body, err := thinking.ApplyThinking(body, tc.model, tc.from, applyTo, tc.to)
 
 			if tc.expectErr {
 				if err == nil {

@@ -29,7 +29,8 @@ func TestTruncateCallID(t *testing.T) {
 				t.Errorf("TruncateCallID(%q, %d) = %q; want %q", tt.id, tt.maxLen, got, tt.want)
 			}
 		})
-import "testing"
+	}
+}
 
 func TestGeminiClaudeToolUseIDStableAndBound(t *testing.T) {
 	args := `{"file_path":"/tmp/a","old_string":"x","new_string":"y"}`
