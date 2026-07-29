@@ -3,18 +3,40 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 )
 
+const (
+	// MaxEncodedRequestBodyBytes bounds compressed or identity request bodies
+	// read by SDK handlers before provider-specific parsing.
+	MaxEncodedRequestBodyBytes int64 = 32 << 20 // 32 MiB
+	// MaxDecodedRequestBodyBytes bounds decoded request bodies after applying
+	// supported Content-Encoding values.
+	MaxDecodedRequestBodyBytes int64 = 32 << 20 // 32 MiB
+)
+
+var ErrRequestBodyTooLarge = errors.New("request body too large")
+
+// RequestBodyErrorStatus maps oversized request bodies to HTTP 413 while
+// preserving the existing HTTP 400 response for malformed or unreadable bodies.
+func RequestBodyErrorStatus(err error) int {
+	if errors.Is(err, ErrRequestBodyTooLarge) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
+}
+
 // ReadRequestBody reads the incoming request body and decodes supported
 // Content-Encoding values before handlers inspect JSON fields.
 func ReadRequestBody(c *gin.Context) ([]byte, error) {
-	raw, err := c.GetRawData()
+	raw, err := readEncodedRequestBody(c)
 	if err != nil {
 		return nil, err
 	}
@@ -35,6 +57,17 @@ func ReadRequestBody(c *gin.Context) ([]byte, error) {
 		return nil, err
 	}
 	return decoded, nil
+}
+
+func readEncodedRequestBody(c *gin.Context) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, MaxEncodedRequestBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > MaxEncodedRequestBodyBytes {
+		return nil, fmt.Errorf("encoded request body exceeds %d bytes: %w", MaxEncodedRequestBodyBytes, ErrRequestBodyTooLarge)
+	}
+	return raw, nil
 }
 
 func decodeRequestBody(raw []byte, encoding string) ([]byte, error) {
@@ -65,9 +98,12 @@ func decodeZstdRequestBody(raw []byte) ([]byte, error) {
 	}
 	defer decoder.Close()
 
-	decoded, err := io.ReadAll(decoder)
+	decoded, err := io.ReadAll(io.LimitReader(decoder, MaxDecodedRequestBodyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode zstd request body: %w", err)
+	}
+	if int64(len(decoded)) > MaxDecodedRequestBodyBytes {
+		return nil, fmt.Errorf("decoded request body exceeds %d bytes: %w", MaxDecodedRequestBodyBytes, ErrRequestBodyTooLarge)
 	}
 	return decoded, nil
 }
