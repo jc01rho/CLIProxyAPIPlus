@@ -36,17 +36,18 @@ var aiAPIPrefixes = []string{
 }
 
 const (
-	skipGinLogKey                  = "__gin_skip_request_logging__"
-	requestBodyKey                 = "__gin_request_body__"
-	creditsUsedKey                 = "__antigravity_credits_used__"
-	providerAuthContextKey         = "cliproxy.provider_auth"
-	ginProviderAuthKey             = "providerAuth"
-	fallbackInfoContextKey         = "cliproxy.fallback_info"
-	ginFallbackInfoKey             = "fallbackInfo"
-	billingDecisionContextKey      = "cliproxy.billing_decision"
-	ginBillingDecisionKey          = "billingClassDecision"
-	ginAPIRequestSummaryKey        = "API_REQUEST_SUMMARY"
-	defaultDetailedAPILogBodyLimit = 4096
+	skipGinLogKey                    = "__gin_skip_request_logging__"
+	requestBodyKey                   = "__gin_request_body__"
+	creditsUsedKey                   = "__antigravity_credits_used__"
+	providerAuthContextKey           = "cliproxy.provider_auth"
+	ginProviderAuthKey               = "providerAuth"
+	fallbackInfoContextKey           = "cliproxy.fallback_info"
+	ginFallbackInfoKey               = "fallbackInfo"
+	billingDecisionContextKey        = "cliproxy.billing_decision"
+	ginBillingDecisionKey            = "billingClassDecision"
+	ginAPIRequestSummaryKey          = "API_REQUEST_SUMMARY"
+	defaultDetailedAPILogBodyLimit   = 4096
+	maxGinCapturedAIRequestBodyBytes = 32 << 20
 )
 
 func detailedAPILogBodyLimit(cfg *config.Config) int {
@@ -244,7 +245,9 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 
 		var requestBody []byte
 		if isAIAPIPath(path) && c.Request.Body != nil {
-			requestBody, _ = io.ReadAll(c.Request.Body)
+			originalBody := c.Request.Body
+			requestBody, _ = io.ReadAll(io.LimitReader(originalBody, maxGinCapturedAIRequestBodyBytes+1))
+			_ = originalBody.Close()
 			c.Request.Body = io.NopCloser(bytes.NewReader(requestBody))
 			c.Set(requestBodyKey, requestBody)
 		}

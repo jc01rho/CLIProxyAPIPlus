@@ -16,6 +16,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	sdkhandlers "github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -329,7 +330,9 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	var body []byte
 	if captureBody && c.Request.Body != nil {
 		// Read the body
-		bodyBytes, err := io.ReadAll(c.Request.Body)
+		originalBody := c.Request.Body
+		bodyBytes, err := io.ReadAll(io.LimitReader(originalBody, sdkhandlers.MaxEncodedRequestBodyBytes+1))
+		_ = originalBody.Close()
 		if err != nil {
 			return nil, err
 		}
@@ -350,15 +353,7 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 }
 
 func decodeCapturedRequestBodyForLog(raw []byte, encoding string) []byte {
-	if len(raw) == 0 {
-		return raw
-	}
-
-	decoded, errDecode := decodeCapturedRequestBody(raw, encoding)
-	if errDecode != nil {
-		return raw
-	}
-	return decoded
+	return decodeCapturedRequestBodyForLogWithLimit(raw, encoding, sdkhandlers.MaxDecodedRequestBodyBytes)
 }
 
 func decodeCapturedRequestBodyForLogWithLimit(raw []byte, encoding string, limit int64) []byte {

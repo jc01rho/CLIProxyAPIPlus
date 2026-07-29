@@ -3,6 +3,7 @@ package logging
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,50 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	log "github.com/sirupsen/logrus"
 )
+
+type closeTrackingRequestBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingRequestBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestGinLogrusLoggerBoundsCapturedAIRequestBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const maxExpectedBodyBytes = 32 << 20
+
+	var logBuffer bytes.Buffer
+	log.SetOutput(&logBuffer)
+	log.SetLevel(log.ErrorLevel)
+
+	var capturedBytes int
+	engine := gin.New()
+	engine.Use(GinLogrusLogger(&config.Config{SDKConfig: config.SDKConfig{DetailedAPIErrorBodyLogLimit: 80}}))
+	engine.POST("/v1/chat/completions", func(c *gin.Context) {
+		body, errRead := io.ReadAll(c.Request.Body)
+		if errRead != nil {
+			t.Fatalf("read request body: %v", errRead)
+		}
+		capturedBytes = len(body)
+		c.Status(http.StatusRequestEntityTooLarge)
+	})
+
+	payload := bytes.Repeat([]byte("x"), maxExpectedBodyBytes+2)
+	originalBody := &closeTrackingRequestBody{Reader: bytes.NewReader(payload)}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", originalBody)
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, req)
+
+	if capturedBytes != maxExpectedBodyBytes+1 {
+		t.Fatalf("captured request bytes = %d, want %d", capturedBytes, maxExpectedBodyBytes+1)
+	}
+	if !originalBody.closed {
+		t.Fatal("original request body was not closed after middleware replaced it")
+	}
+}
 
 func TestGinLogrusLoggerIncludesRequestAndResponseOnBadRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
