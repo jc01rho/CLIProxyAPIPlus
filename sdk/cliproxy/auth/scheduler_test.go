@@ -549,8 +549,6 @@ func TestSchedulerPick_MixedProvidersResetsCreditsWhenWeightsChange(t *testing.T
 }
 
 func TestSchedulerPick_MixedProvidersPrefersHighestPriorityTier(t *testing.T) {
-	t.Parallel()
-
 	model := "gpt-default"
 	registerSchedulerModels(t, "provider-low", model, "low")
 	registerSchedulerModels(t, "provider-high-a", model, "high-a")

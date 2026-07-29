@@ -462,8 +462,6 @@ func TestManager_MaxRetryCredentials_LimitsCrossCredentialRetries(t *testing.T) 
 }
 
 func TestManagerExecute_FallsBackToLowerPriorityBucketAfterHigherPriorityExhausted(t *testing.T) {
-	t.Parallel()
-
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.SetRetryConfig(0, 0, 0)
 
@@ -791,8 +789,6 @@ func TestManagerExecute_ThresholdRouting_OpusBoundarySelectsBillingClass(t *test
 }
 
 func TestManagerExecute_ThresholdRouting_ClaudeAPIKeyAliasSupportsUpstreamRouteModel(t *testing.T) {
-	t.Parallel()
-
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.SetRetryConfig(0, 0, 0)
 	manager.SetConfig(&internalconfig.Config{
@@ -945,8 +941,6 @@ func TestManagerExecute_ThresholdRouting_OpenAICompatPoolSupportsDirectUpstreamR
 }
 
 func TestManagerExecute_ThresholdRouting_AliasBillingClassAcrossAPIKeyAndAuthFileCredentials(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
 		name       string
 		routeModel string
