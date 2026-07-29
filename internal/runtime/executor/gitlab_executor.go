@@ -177,7 +177,9 @@ func (e *GitLabExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				&param,
 			)
 			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+				if !sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}) {
+					return
+				}
 			}
 		}
 	}()
@@ -428,14 +430,18 @@ func (e *GitLabExecutor) requestCodeSuggestionsStream(
 					&param,
 				)
 				for i := range chunks {
-					out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+					if !sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}) {
+						return
+					}
 				}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			recordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			if !sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errScan}) {
+				return
+			}
 			return
 		}
 		if !state.Finished {
@@ -451,7 +457,9 @@ func (e *GitLabExecutor) requestCodeSuggestionsStream(
 					&param,
 				)
 				for i := range chunks {
-					out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+					if !sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}) {
+						return
+					}
 				}
 			}
 		}
