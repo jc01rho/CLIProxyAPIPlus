@@ -271,6 +271,9 @@ func TestBuildXAIVideosCreateRequestAllowsVideo15Model(t *testing.T) {
 	if meta.Model != xaiVideos15Model {
 		t.Fatalf("meta model = %q, want %s", meta.Model, xaiVideos15Model)
 	}
+	if meta.RoutingModel != xaiVideos15Model {
+		t.Fatalf("routing model = %q, want %s", meta.RoutingModel, xaiVideos15Model)
+	}
 }
 
 func TestBuildXAIVideosCreateRequestNormalizesVideo15PreviewAlias(t *testing.T) {
@@ -286,6 +289,9 @@ func TestBuildXAIVideosCreateRequestNormalizesVideo15PreviewAlias(t *testing.T) 
 	}
 	if meta.Model != xaiVideos15Model {
 		t.Fatalf("meta model = %q, want %s", meta.Model, xaiVideos15Model)
+	}
+	if meta.RoutingModel != xaiVideos15PreviewAlias {
+		t.Fatalf("routing model = %q, want %s", meta.RoutingModel, xaiVideos15PreviewAlias)
 	}
 }
 
@@ -839,6 +845,94 @@ func TestXAIVideosNativeRetrieveUsesCanonicalBoundModel(t *testing.T) {
 	}
 	if binding.authID != "video-xai-1.5-auth" || binding.model != xaiVideos15Model {
 		t.Fatalf("binding = {authID:%q model:%q}, want {authID:%q model:%q}", binding.authID, binding.model, "video-xai-1.5-auth", xaiVideos15Model)
+	}
+}
+
+func TestVideosCreatePreviewAliasUsesPreviewAuthWithGAPayload(t *testing.T) {
+	resetVideoAuthBindingsForTest(t)
+	executor := &videoAuthCaptureExecutor{requestID: "video-openai-preview-alias"}
+	handler := newVideoSingleModelAuthTestHandler(t, executor, "video-openai-preview-auth", xaiVideos15PreviewAlias)
+
+	createResp := performVideosEndpointRequest(t, http.MethodPost, openAIVideosPath, "application/json", strings.NewReader(`{"model":"grok-imagine-video-1.5-preview","prompt":"make a video"}`), handler.VideosCreate)
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d: %s", createResp.Code, http.StatusOK, createResp.Body.String())
+	}
+	videoID := gjson.GetBytes(createResp.Body.Bytes(), "id").String()
+	if got := gjson.GetBytes(createResp.Body.Bytes(), "model").String(); got != xaiVideos15Model {
+		t.Fatalf("response model = %q, want %s", got, xaiVideos15Model)
+	}
+
+	retrieveResp := performVideosRouteRequest(t, http.MethodGet, openAIVideosPath+"/:video_id", openAIVideosPath+"/"+videoID, "", nil, handler.VideosRetrieve)
+	if retrieveResp.Code != http.StatusOK {
+		t.Fatalf("retrieve status = %d, want %d: %s", retrieveResp.Code, http.StatusOK, retrieveResp.Body.String())
+	}
+
+	assertPreviewAliasRouting(t, executor, videoID, "video-openai-preview-auth")
+}
+
+func TestXAIVideosNativePreviewAliasUsesPreviewAuthWithGAPayload(t *testing.T) {
+	resetVideoAuthBindingsForTest(t)
+	executor := &videoAuthCaptureExecutor{requestID: "video-native-preview-alias"}
+	handler := newVideoSingleModelAuthTestHandler(t, executor, "video-native-preview-auth", xaiVideos15PreviewAlias)
+
+	createResp := performVideosEndpointRequest(t, http.MethodPost, xaiVideosGenerationsAPI, "application/json", strings.NewReader(`{"model":"grok-imagine-video-1.5-preview","prompt":"make a video"}`), handler.XAIVideosGenerations)
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d: %s", createResp.Code, http.StatusOK, createResp.Body.String())
+	}
+	videoID := gjson.GetBytes(createResp.Body.Bytes(), "request_id").String()
+
+	retrieveResp := performVideosRouteRequest(t, http.MethodGet, videosPath+"/:request_id", videosPath+"/"+videoID, "", nil, handler.XAIVideosRetrieve)
+	if retrieveResp.Code != http.StatusOK {
+		t.Fatalf("retrieve status = %d, want %d: %s", retrieveResp.Code, http.StatusOK, retrieveResp.Body.String())
+	}
+
+	assertPreviewAliasRouting(t, executor, videoID, "video-native-preview-auth")
+}
+
+func newVideoSingleModelAuthTestHandler(t *testing.T, executor *videoAuthCaptureExecutor, authID string, model string) *OpenAIAPIHandler {
+	t.Helper()
+
+	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{
+		ID:       authID,
+		Provider: "xai",
+		Status:   coreauth.StatusActive,
+	}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("manager.Register(%s): %v", authID, errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(authID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	manager.RefreshSchedulerEntry(authID)
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(authID)
+	})
+
+	base := apihandlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	return NewOpenAIAPIHandler(base)
+}
+
+func assertPreviewAliasRouting(t *testing.T, executor *videoAuthCaptureExecutor, videoID string, authID string) {
+	t.Helper()
+
+	authIDs := executor.AuthIDs()
+	if len(authIDs) != 2 || authIDs[0] != authID || authIDs[1] != authID {
+		t.Fatalf("authIDs = %v, want both calls to use %s", authIDs, authID)
+	}
+	models := executor.Models()
+	if len(models) != 2 || models[0] != xaiVideos15PreviewAlias || models[1] != xaiVideos15PreviewAlias {
+		t.Fatalf("models = %v, want both calls to route with %s", models, xaiVideos15PreviewAlias)
+	}
+	payloadModels := executor.PayloadModels()
+	if len(payloadModels) != 2 || payloadModels[0] != xaiVideos15Model {
+		t.Fatalf("payload models = %v, want create payload model %s", payloadModels, xaiVideos15Model)
+	}
+	binding, ok := videoAuthBindings.getBinding(videoID)
+	if !ok {
+		t.Fatal("video auth binding was not stored")
+	}
+	if binding.authID != authID || binding.model != xaiVideos15PreviewAlias {
+		t.Fatalf("binding = {authID:%q model:%q}, want {authID:%q model:%q}", binding.authID, binding.model, authID, xaiVideos15PreviewAlias)
 	}
 }
 
