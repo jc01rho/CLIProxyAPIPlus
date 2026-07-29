@@ -33,6 +33,12 @@ var (
 	newCodexOAuthService  = func(cfg *config.Config) codexOAuthService { return codex.NewCodexAuth(cfg) }
 )
 
+type antigravityDiskEntry struct {
+	index     int
+	isPrimary bool
+	disabled  bool
+}
+
 func extractLastRefreshTimestamp(meta map[string]any) (time.Time, bool) {
 	if len(meta) == 0 {
 		return time.Time{}, false
@@ -174,11 +180,13 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 
 	// Try to find auth ID via authManager
 	var authID string
+	var matchedAuth *coreauth.Auth
 	if h.authManager != nil {
 		auths := h.authManager.List()
 		for _, auth := range auths {
-			if auth.FileName == name || auth.ID == name {
+			if authMatchesModelsQuery(auth, name) {
 				authID = auth.ID
+				matchedAuth = auth
 				break
 			}
 		}
@@ -191,9 +199,20 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	// Get models from registry
 	reg := registry.GetGlobalRegistry()
 	models := reg.GetModelsForClient(authID)
+	excluded := authFileExcludedModelSet(matchedAuth, h.cfg)
 
 	result := make([]gin.H, 0, len(models))
 	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		modelID := strings.ToLower(strings.TrimSpace(m.ID))
+		if _, blocked := excluded[modelID]; blocked {
+			continue
+		}
+		if isGitHubCopilotModelList(matchedAuth, m) && !registry.IsAllowedGitHubCopilotModel(modelID) {
+			continue
+		}
 		entry := gin.H{
 			"id": m.ID,
 		}
@@ -212,6 +231,56 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	c.JSON(200, gin.H{"models": result})
 }
 
+func isGitHubCopilotModelList(auth *coreauth.Auth, model *registry.ModelInfo) bool {
+	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "github-copilot") {
+		return true
+	}
+	return model != nil && strings.EqualFold(strings.TrimSpace(model.Type), "github-copilot")
+}
+
+func authMatchesModelsQuery(auth *coreauth.Auth, name string) bool {
+	if auth == nil {
+		return false
+	}
+	query := strings.TrimSpace(name)
+	if query == "" {
+		return false
+	}
+	if strings.TrimSpace(auth.ID) == query || strings.TrimSpace(auth.FileName) == query {
+		return true
+	}
+	return filepath.Base(strings.TrimSpace(auth.FileName)) == query
+}
+
+func authFileExcludedModelSet(auth *coreauth.Auth, cfg *config.Config) map[string]struct{} {
+	seen := make(map[string]struct{})
+	addCSV := func(raw string) {
+		for _, part := range strings.Split(raw, ",") {
+			if trimmed := strings.ToLower(strings.TrimSpace(part)); trimmed != "" {
+				seen[trimmed] = struct{}{}
+			}
+		}
+	}
+	addList := func(models []string) {
+		for _, model := range models {
+			if trimmed := strings.ToLower(strings.TrimSpace(model)); trimmed != "" {
+				seen[trimmed] = struct{}{}
+			}
+		}
+	}
+
+	if auth != nil {
+		if auth.Attributes != nil {
+			addCSV(auth.Attributes["excluded_models"])
+		}
+		if cfg != nil && cfg.OAuthExcludedModels != nil {
+			providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
+			addList(cfg.OAuthExcludedModels[providerKey])
+		}
+	}
+	return seen
+}
+
 // List auth files from disk when the auth manager is unavailable.
 func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 	nameFilter := strings.TrimSpace(c.Query("name"))
@@ -226,6 +295,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 		c.JSON(200, gin.H{"files": files})
 		return
 	}
+	antigravityEntries := make([]antigravityDiskEntry, 0)
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -247,6 +317,40 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
+				if strings.EqualFold(strings.TrimSpace(typeValue), "antigravity") {
+					disabled := false
+					if dv := gjson.GetBytes(data, "disabled"); dv.Exists() {
+						switch dv.Type {
+						case gjson.True:
+							disabled = true
+						case gjson.False:
+							disabled = false
+						case gjson.String:
+							if parsed, errParse := strconv.ParseBool(strings.TrimSpace(dv.String())); errParse == nil {
+								disabled = parsed
+							}
+						}
+						fileData["disabled"] = disabled
+					}
+					isPrimary := false
+					if pv := gjson.GetBytes(data, "primary_info.is_primary"); pv.Exists() {
+						switch pv.Type {
+						case gjson.True:
+							isPrimary = true
+						case gjson.False:
+							isPrimary = false
+						case gjson.String:
+							if parsed, errParse := strconv.ParseBool(strings.TrimSpace(pv.String())); errParse == nil {
+								isPrimary = parsed
+							}
+						}
+					}
+					antigravityEntries = append(antigravityEntries, antigravityDiskEntry{
+						index:     len(files),
+						isPrimary: isPrimary,
+						disabled:  disabled,
+					})
+				}
 				if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
 					fileData["project_id"] = projectID
 				}
@@ -282,7 +386,43 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 			files = append(files, fileData)
 		}
 	}
+	reconcileAntigravityDiskPrimaryInfo(files, antigravityEntries)
 	c.JSON(200, gin.H{"files": files})
+}
+
+func reconcileAntigravityDiskPrimaryInfo(files []gin.H, entries []antigravityDiskEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	primaryIndex := -1
+	for _, entry := range entries {
+		if entry.isPrimary {
+			primaryIndex = entry.index
+			break
+		}
+	}
+	if primaryIndex < 0 {
+		enabled := make([]antigravityDiskEntry, 0, 1)
+		for _, entry := range entries {
+			if !entry.disabled {
+				enabled = append(enabled, entry)
+			}
+		}
+		if len(enabled) == 1 {
+			primaryIndex = enabled[0].index
+		}
+	}
+	for _, entry := range entries {
+		isPrimary := entry.index == primaryIndex
+		order := 0
+		if isPrimary {
+			order = 1
+		}
+		files[entry.index]["primary_info"] = gin.H{
+			"is_primary": isPrimary,
+			"order":      order,
+		}
+	}
 }
 
 func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
@@ -405,6 +545,12 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 	}
 	if websockets, ok := authWebsocketsValue(auth); ok {
 		entry["websockets"] = websockets
+	}
+	if pi := h.reconcileAntigravityPrimaryInfoForResponse(auth); pi != nil {
+		entry["primary_info"] = gin.H{
+			"is_primary": pi.IsPrimary,
+			"order":      pi.Order,
+		}
 	}
 	return entry
 }

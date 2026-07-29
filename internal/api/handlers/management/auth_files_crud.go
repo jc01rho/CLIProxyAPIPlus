@@ -269,6 +269,20 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err != nil {
 		return err
 	}
+	h.initAntigravityPrimaryInfo(ctx, auth)
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") && auth.PrimaryInfo != nil {
+		var payload map[string]any
+		if err := json.Unmarshal(data, &payload); err == nil {
+			payload["primary_info"] = map[string]any{
+				"is_primary": auth.PrimaryInfo.IsPrimary,
+				"order":      auth.PrimaryInfo.Order,
+			}
+			payload["disabled"] = auth.Disabled
+			if canonicalData, err := json.Marshal(payload); err == nil {
+				data = canonicalData
+			}
+		}
+	}
 	if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}

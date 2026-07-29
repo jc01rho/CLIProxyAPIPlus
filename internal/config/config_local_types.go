@@ -42,6 +42,27 @@ func (c *OAuthEndpointConfig) ApplyDefaults(defaults OAuthEndpointConfig) OAuthE
 	return result
 }
 
+func (cfg *Config) NormalizeOAuthEndpointOverrides() {
+	if cfg == nil || len(cfg.OAuthEndpointOverrides) == 0 {
+		return
+	}
+	normalized := make(map[string]OAuthEndpointConfig, len(cfg.OAuthEndpointOverrides))
+	for provider, ep := range cfg.OAuthEndpointOverrides {
+		normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
+		if normalizedProvider == "" {
+			continue
+		}
+		ep.ApiBaseURL = strings.TrimSpace(ep.ApiBaseURL)
+		ep.AuthorizeURL = strings.TrimSpace(ep.AuthorizeURL)
+		ep.TokenURL = strings.TrimSpace(ep.TokenURL)
+		ep.RefreshURL = strings.TrimSpace(ep.RefreshURL)
+		ep.UserinfoURL = strings.TrimSpace(ep.UserinfoURL)
+		ep.DeviceAuthorizeURL = strings.TrimSpace(ep.DeviceAuthorizeURL)
+		normalized[normalizedProvider] = ep
+	}
+	cfg.OAuthEndpointOverrides = normalized
+}
+
 // AmpModelMapping maps an Amp-requested model to an available model.
 type AmpModelMapping struct {
 	From  string `yaml:"from" json:"from"`
@@ -110,6 +131,10 @@ func (cfg *Config) SanitizeCommandCodeKeys() {
 		entry.BillingClass = normalizeBillingClass(entry.BillingClass)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		for i := range entry.Models {
+			entry.Models[i].Name = strings.TrimSpace(entry.Models[i].Name)
+			entry.Models[i].Alias = strings.TrimSpace(entry.Models[i].Alias)
+		}
 		if entry.APIKey != "" {
 			out = append(out, entry)
 		}
