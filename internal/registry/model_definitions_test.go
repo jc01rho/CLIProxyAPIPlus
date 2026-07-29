@@ -35,9 +35,10 @@ func TestGeminiVertexModelsUseFlashLiteReleaseID(t *testing.T) {
 	t.Fatalf("Vertex models do not contain %q", releaseID)
 }
 
-func TestWithXAIBuiltinsUsesVideo15GAModel(t *testing.T) {
+func TestWithXAIBuiltinsIncludesVideo15GAAndPreviewAlias(t *testing.T) {
 	models := WithXAIBuiltins(nil)
 	foundGA := false
+	foundPreviewAlias := false
 
 	for _, model := range models {
 		if model == nil {
@@ -46,13 +47,16 @@ func TestWithXAIBuiltinsUsesVideo15GAModel(t *testing.T) {
 		if model.ID == xaiBuiltinVideo15ModelID {
 			foundGA = true
 		}
-		if model.ID == "grok-imagine-video-1.5-preview" {
-			t.Fatal("xAI builtins must not advertise the retired preview alias")
+		if model.ID == xaiBuiltinVideo15PreviewID {
+			foundPreviewAlias = true
 		}
 	}
 
 	if !foundGA {
 		t.Fatalf("expected xAI builtin model %s", xaiBuiltinVideo15ModelID)
+	}
+	if !foundPreviewAlias {
+		t.Fatalf("expected xAI builtin compatibility alias %s", xaiBuiltinVideo15PreviewID)
 	}
 }
 

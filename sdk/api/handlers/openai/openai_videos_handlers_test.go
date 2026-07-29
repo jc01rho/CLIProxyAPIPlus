@@ -870,6 +870,28 @@ func TestVideosCreatePreviewAliasUsesPreviewAuthWithGAPayload(t *testing.T) {
 	assertPreviewAliasRouting(t, executor, videoID, "video-openai-preview-auth")
 }
 
+func TestVideosCreatePreviewAliasUsesDefaultXAIModelsWithGAPayload(t *testing.T) {
+	resetVideoAuthBindingsForTest(t)
+	executor := &videoAuthCaptureExecutor{requestID: "video-openai-preview-default-models"}
+	handler := newVideoAuthTestHandler(t, executor, "video-openai-preview-default-auth", registry.GetXAIModels())
+
+	createResp := performVideosEndpointRequest(t, http.MethodPost, openAIVideosPath, "application/json", strings.NewReader(`{"model":"grok-imagine-video-1.5-preview","prompt":"make a video"}`), handler.VideosCreate)
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d: %s", createResp.Code, http.StatusOK, createResp.Body.String())
+	}
+	videoID := gjson.GetBytes(createResp.Body.Bytes(), "id").String()
+	if got := gjson.GetBytes(createResp.Body.Bytes(), "model").String(); got != xaiVideos15Model {
+		t.Fatalf("response model = %q, want %s", got, xaiVideos15Model)
+	}
+
+	retrieveResp := performVideosRouteRequest(t, http.MethodGet, openAIVideosPath+"/:video_id", openAIVideosPath+"/"+videoID, "", nil, handler.VideosRetrieve)
+	if retrieveResp.Code != http.StatusOK {
+		t.Fatalf("retrieve status = %d, want %d: %s", retrieveResp.Code, http.StatusOK, retrieveResp.Body.String())
+	}
+
+	assertPreviewAliasRouting(t, executor, videoID, "video-openai-preview-default-auth")
+}
+
 func TestXAIVideosNativePreviewAliasUsesPreviewAuthWithGAPayload(t *testing.T) {
 	resetVideoAuthBindingsForTest(t)
 	executor := &videoAuthCaptureExecutor{requestID: "video-native-preview-alias"}
@@ -892,6 +914,12 @@ func TestXAIVideosNativePreviewAliasUsesPreviewAuthWithGAPayload(t *testing.T) {
 func newVideoSingleModelAuthTestHandler(t *testing.T, executor *videoAuthCaptureExecutor, authID string, model string) *OpenAIAPIHandler {
 	t.Helper()
 
+	return newVideoAuthTestHandler(t, executor, authID, []*registry.ModelInfo{{ID: model}})
+}
+
+func newVideoAuthTestHandler(t *testing.T, executor *videoAuthCaptureExecutor, authID string, models []*registry.ModelInfo) *OpenAIAPIHandler {
+	t.Helper()
+
 	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
 	manager.RegisterExecutor(executor)
 	auth := &coreauth.Auth{
@@ -902,7 +930,7 @@ func newVideoSingleModelAuthTestHandler(t *testing.T, executor *videoAuthCapture
 	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
 		t.Fatalf("manager.Register(%s): %v", authID, errRegister)
 	}
-	registry.GetGlobalRegistry().RegisterClient(authID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	registry.GetGlobalRegistry().RegisterClient(authID, auth.Provider, models)
 	manager.RefreshSchedulerEntry(authID)
 	t.Cleanup(func() {
 		registry.GetGlobalRegistry().UnregisterClient(authID)
