@@ -282,7 +282,10 @@ func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string
 	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled, aliasResult
 }
 
-const sessionModelAffinityTTL = time.Hour
+const (
+	sessionModelAffinityTTL           = time.Hour
+	sessionModelAffinityPruneInterval = time.Minute
+)
 
 func sessionModelAffinityKeyFromParts(sessionID, routeModel string) string {
 	sessionID = strings.TrimSpace(sessionID)
@@ -339,6 +342,7 @@ func (m *Manager) applySessionModelAffinityForKeys(keys []string, models []strin
 	}
 	now := time.Now()
 	m.mu.Lock()
+	m.pruneExpiredSessionModelBindingsLocked(now)
 	var binding sessionModelBinding
 	found := false
 	for _, key := range keys {
@@ -369,12 +373,35 @@ func (m *Manager) rememberSessionModelAffinityForKeys(keys []string, upstreamMod
 	}
 	binding := sessionModelBinding{upstreamModel: upstreamModel, expiresAt: time.Now().Add(sessionModelAffinityTTL)}
 	m.mu.Lock()
+	m.pruneExpiredSessionModelBindingsLocked(time.Now())
 	for _, key := range keys {
 		if key != "" {
 			m.sessionModelBindings[key] = binding
 		}
 	}
 	m.mu.Unlock()
+}
+
+func (m *Manager) pruneExpiredSessionModelBindingsLocked(now time.Time) {
+	if !m.sessionModelNextPrune.IsZero() && now.Before(m.sessionModelNextPrune) {
+		return
+	}
+	for key, binding := range m.sessionModelBindings {
+		if now.After(binding.expiresAt) {
+			delete(m.sessionModelBindings, key)
+		}
+	}
+	m.sessionModelNextPrune = now.Add(sessionModelAffinityPruneInterval)
+}
+
+func (m *Manager) clearExecutionSessionModelBindingsLocked(sessionID string) {
+	executionPrefix := "execution:" + sessionID + "::"
+	execPrefix := "exec:" + sessionID + "::"
+	for key := range m.sessionModelBindings {
+		if strings.HasPrefix(key, executionPrefix) || strings.HasPrefix(key, execPrefix) {
+			delete(m.sessionModelBindings, key)
+		}
+	}
 }
 
 func (m *Manager) executionModelCandidatesWithAlias(auth *Auth, routeModel string) ([]string, bool, OAuthModelAliasResult) {
@@ -505,6 +532,14 @@ func (m *Manager) resolveAPIKeyModelAliasWithResult(auth *Auth, requestedModel s
 		if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
 			models = asModelAliasEntries(entry.Models)
 		}
+	case "commandcode":
+		if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
+			models = asModelAliasEntries(entry.Models)
+		}
+	case "mistral":
+		if entry := resolveMistralAPIKeyConfig(cfg, auth); entry != nil {
+			models = asModelAliasEntries(entry.Models)
+		}
 	default:
 		providerKey := ""
 		compatName := ""
@@ -629,6 +664,14 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 			}
 		case "vertex":
 			if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
+				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+			}
+		case "commandcode":
+			if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
+				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+			}
+		case "mistral":
+			if entry := resolveMistralAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
 		default:
@@ -756,6 +799,10 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 		upstreamModel = resolveUpstreamModelForXAIAPIKey(cfg, auth, requestedModel)
 	case "vertex":
 		upstreamModel = resolveUpstreamModelForVertexAPIKey(cfg, auth, requestedModel)
+	case "commandcode":
+		upstreamModel = resolveUpstreamModelForCommandCodeAPIKey(cfg, auth, requestedModel)
+	case "mistral":
+		upstreamModel = resolveUpstreamModelForMistralAPIKey(cfg, auth, requestedModel)
 	default:
 		upstreamModel = resolveUpstreamModelForOpenAICompatAPIKey(cfg, auth, requestedModel)
 	}
@@ -854,6 +901,20 @@ func resolveVertexAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internal
 	return resolveAPIKeyConfig(cfg.VertexCompatAPIKey, auth)
 }
 
+func resolveCommandCodeAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.CommandCodeKey {
+	if cfg == nil {
+		return nil
+	}
+	return resolveAPIKeyConfig(cfg.CommandCodeKey, auth)
+}
+
+func resolveMistralAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.MistralKey {
+	if cfg == nil {
+		return nil
+	}
+	return resolveAPIKeyConfig(cfg.MistralKey, auth)
+}
+
 func resolveUpstreamModelForGeminiAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
 	entry := resolveGeminiAPIKeyConfig(cfg, auth)
 	if entry == nil {
@@ -896,6 +957,22 @@ func resolveUpstreamModelForXAIAPIKey(cfg *internalconfig.Config, auth *Auth, re
 
 func resolveUpstreamModelForVertexAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
 	entry := resolveVertexAPIKeyConfig(cfg, auth)
+	if entry == nil {
+		return ""
+	}
+	return resolveModelAliasFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
+}
+
+func resolveUpstreamModelForCommandCodeAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
+	entry := resolveCommandCodeAPIKeyConfig(cfg, auth)
+	if entry == nil {
+		return ""
+	}
+	return resolveModelAliasFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
+}
+
+func resolveUpstreamModelForMistralAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
+	entry := resolveMistralAPIKeyConfig(cfg, auth)
 	if entry == nil {
 		return ""
 	}

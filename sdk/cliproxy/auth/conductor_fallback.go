@@ -105,6 +105,24 @@ func (m *Manager) resolveFallbackModels(originalModel string) []string {
 	return candidates
 }
 
+// ResolveProvidersForFallback returns the first fallback model with an available provider.
+func (m *Manager) ResolveProvidersForFallback(originalModel string) ([]string, string) {
+	if m == nil {
+		return nil, ""
+	}
+	for _, fallbackModel := range m.resolveFallbackModels(originalModel) {
+		providers := m.ProvidersForRouteModel(fallbackModel)
+		if len(providers) > 0 {
+			return providers, fallbackModel
+		}
+		providers = m.ProvidersForOAuthAliasWithoutRegisteredModels(fallbackModel)
+		if len(providers) > 0 {
+			return providers, fallbackModel
+		}
+	}
+	return nil, ""
+}
+
 func (m *Manager) fallbackSourceForModel(originalModel, fallbackModel string) string {
 	if fallback, ok := m.getFallbackModel(originalModel); ok && fallback == fallbackModel {
 		return "fallback-models"

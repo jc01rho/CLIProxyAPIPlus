@@ -150,8 +150,9 @@ type Manager struct {
 	apiKeyModelAlias atomic.Value
 
 	// modelPoolOffsets tracks per-auth alias pool rotation state.
-	modelPoolOffsets     map[string]int
-	sessionModelBindings map[string]sessionModelBinding
+	modelPoolOffsets      map[string]int
+	sessionModelBindings  map[string]sessionModelBinding
+	sessionModelNextPrune time.Time
 
 	// runtimeConfig stores the latest application config for request-time decisions.
 	// It is initialized in NewManager; never Load() before first Store().

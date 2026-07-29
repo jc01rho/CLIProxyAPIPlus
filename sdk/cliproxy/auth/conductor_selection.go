@@ -719,6 +719,14 @@ func (m *Manager) aliasRegistryModelKeysForAuth(auth *Auth, routeModel, routeKey
 			if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
 				models = asModelAliasEntries(entry.Models)
 			}
+		case "commandcode":
+			if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
+				models = asModelAliasEntries(entry.Models)
+			}
+		case "mistral":
+			if entry := resolveMistralAPIKeyConfig(cfg, auth); entry != nil {
+				models = asModelAliasEntries(entry.Models)
+			}
 		default:
 			if entry := resolveOpenAICompatConfig(cfg, strings.TrimSpace(auth.Attributes["provider_key"]), strings.TrimSpace(auth.Attributes["compat_name"]), auth.Provider); entry != nil {
 				models = asModelAliasEntries(entry.Models)
@@ -1127,10 +1135,12 @@ func (m *Manager) CloseExecutionSession(sessionID string) {
 		m.clearHomeRuntimeAuthsLocked()
 		selections = m.takeAllHomeSessionSelectionsLocked()
 		m.clearHomeSessionLocks()
+		m.sessionModelBindings = make(map[string]sessionModelBinding)
 	} else {
 		m.clearHomeRuntimeAuthsForSessionLocked(sessionID)
 		selections = m.takeHomeSessionSelectionsLocked(sessionID)
 		m.homeSessionLocks.Delete(sessionID)
+		m.clearExecutionSessionModelBindingsLocked(sessionID)
 	}
 	executors := make([]ProviderExecutor, 0, len(m.executors))
 	for _, exec := range m.executors {
