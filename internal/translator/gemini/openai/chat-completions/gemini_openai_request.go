@@ -270,7 +270,10 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 						functionID := tc.Get("id").String()
 						functionName := util.SanitizeFunctionName(tc.Get("function.name").String())
 						if functionName == "" {
-							continue
+							if functionID == "" {
+								continue
+							}
+							functionName = geminiOpenAIResponseFunctionName("", functionID)
 						}
 						part := []byte(`{"functionCall":{"name":""}}`)
 						part, _ = sjson.SetBytes(part, "functionCall.name", functionName)

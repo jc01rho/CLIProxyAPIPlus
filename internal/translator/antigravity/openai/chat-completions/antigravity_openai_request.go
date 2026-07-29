@@ -259,7 +259,10 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						functionID := tc.Get("id").String()
 						functionName := util.MapSanitizedFunctionName(functionNameMap, tc.Get("function.name").String())
 						if functionName == "" {
-							continue
+							if functionID == "" {
+								continue
+							}
+							functionName = antigravityOpenAIResponseFunctionName("", functionID)
 						}
 						functionArgs := tc.Get("function.arguments").String()
 						part := []byte(`{"functionCall":{"id":"","name":""}}`)
@@ -282,24 +285,26 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 					responseParts := make([][]byte, 0, len(functionIDs))
 					for _, functionID := range functionIDs {
-						if name, ok := tcID2Name[functionID]; ok {
-							part := []byte(`{"functionResponse":{"id":"","name":""}}`)
-							part, _ = sjson.SetBytes(part, "functionResponse.id", functionID)
-							part, _ = sjson.SetBytes(part, "functionResponse.name", util.MapSanitizedFunctionName(functionNameMap, name))
-							response := toolResponses[functionID]
-							if response == "" {
-								response = "{}"
-							}
-							if response != "null" {
-								parsed := gjson.Parse(response)
-								if parsed.Type == gjson.JSON {
-									part, _ = sjson.SetRawBytes(part, "functionResponse.response.result", []byte(parsed.Raw))
-								} else {
-									part, _ = sjson.SetBytes(part, "functionResponse.response.result", response)
-								}
-							}
-							responseParts = append(responseParts, part)
+						name := util.MapSanitizedFunctionName(functionNameMap, tcID2Name[functionID])
+						if name == "" {
+							name = antigravityOpenAIResponseFunctionName("", functionID)
 						}
+						part := []byte(`{"functionResponse":{"id":"","name":""}}`)
+						part, _ = sjson.SetBytes(part, "functionResponse.id", functionID)
+						part, _ = sjson.SetBytes(part, "functionResponse.name", name)
+						response := toolResponses[functionID]
+						if response == "" {
+							response = "{}"
+						}
+						if response != "null" {
+							parsed := gjson.Parse(response)
+							if parsed.Type == gjson.JSON {
+								part, _ = sjson.SetRawBytes(part, "functionResponse.response.result", []byte(parsed.Raw))
+							} else {
+								part, _ = sjson.SetBytes(part, "functionResponse.response.result", response)
+							}
+						}
+						responseParts = append(responseParts, part)
 					}
 					if len(responseParts) > 0 {
 						contentItems = append(contentItems, antigravityOpenAIContent("user", responseParts))
