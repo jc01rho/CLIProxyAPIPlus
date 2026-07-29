@@ -115,6 +115,17 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		}
 		models = applyExcludedModels(models, excluded)
 	case "codex":
+		if authKind == "apikey" {
+			if entry := s.resolveConfigCodexKey(a); entry != nil {
+				models = buildCodexConfigModels(entry)
+				excluded = entry.ExcludedModels
+			} else {
+				models = nil
+			}
+			models = applyExcludedModels(models, excluded)
+			break
+		}
+
 		codexPlanType := ""
 		if a.Attributes != nil {
 			codexPlanType = strings.TrimSpace(a.Attributes["plan_type"])
@@ -130,14 +141,6 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = registry.GetCodexFreeModels()
 		default:
 			models = registry.GetCodexProModels()
-		}
-		if entry := s.resolveConfigCodexKey(a); entry != nil {
-			if len(entry.Models) > 0 {
-				models = buildCodexConfigModels(entry)
-			}
-			if authKind == "apikey" {
-				excluded = entry.ExcludedModels
-			}
 		}
 		models = applyExcludedModels(models, excluded)
 	case "kimi":
@@ -802,7 +805,7 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 		return nil
 	}
 
-	models := registry.WithCodexBuiltins(buildConfigModels(entry.Models, "openai", "openai"))
+	models := buildConfigModels(entry.Models, "openai", "openai")
 	configuredDisplayNames := make(map[string]string, len(entry.Models))
 	seenConfiguredModels := make(map[string]struct{}, len(entry.Models))
 	for i := range entry.Models {
