@@ -556,6 +556,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			lastResponseOutput = previousLastResponseOutput
 			lastResponseID = previousLastResponseID
 			lastResponsePendingToolCallIDs = previousLastResponsePendingToolCallIDs
+			h.restoreResponsesWebsocketRequestScopedFailureAuth(cliCtx, lastAttemptedAuthID, modelName, forwardErrMsg)
 			if pinnedAuthAttempted && shouldReleaseResponsesWebsocketPinnedAuth(forwardErrMsg) {
 				forgetPinnedAuth()
 			}
@@ -592,6 +593,35 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			lastResponsePendingToolCallIDs = append([]string(nil), completedPendingToolCallIDs...)
 		}
 	}
+}
+
+func (h *OpenAIResponsesAPIHandler) restoreResponsesWebsocketRequestScopedFailureAuth(ctx context.Context, authID string, modelName string, errMsg *interfaces.ErrorMessage) {
+	if h == nil || h.AuthManager == nil || !isResponsesWebsocketRequestScopedBadRequest(errMsg) {
+		return
+	}
+	authID = strings.TrimSpace(authID)
+	modelName = strings.TrimSpace(modelName)
+	if authID == "" || modelName == "" {
+		return
+	}
+	auth, ok := h.AuthManager.GetByID(authID)
+	if !ok || auth == nil {
+		return
+	}
+	h.AuthManager.MarkResult(ctx, coreauth.Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    modelName,
+		Success:  true,
+	})
+}
+
+func isResponsesWebsocketRequestScopedBadRequest(errMsg *interfaces.ErrorMessage) bool {
+	if responsesWebsocketErrorStatus(errMsg) != http.StatusBadRequest || errMsg == nil || errMsg.Error == nil {
+		return false
+	}
+	msg := strings.ToLower(errMsg.Error.Error())
+	return strings.Contains(msg, "invalid_request")
 }
 
 func responsesWebsocketHTTPReplayRequiredError() error {

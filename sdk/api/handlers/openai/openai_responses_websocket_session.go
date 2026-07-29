@@ -71,6 +71,9 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketAvailableAuthsForModel(mod
 	resolvedModelName := responsesWebsocketResolvedModelName(modelName)
 	providerSet, modelKey := responsesWebsocketProviderSetForModel(resolvedModelName)
 	if len(providerSet) == 0 {
+		providerSet = h.responsesWebsocketProviderSetForRouteModel(resolvedModelName, modelKey)
+	}
+	if len(providerSet) == 0 {
 		return nil, modelKey
 	}
 
@@ -79,12 +82,42 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketAvailableAuthsForModel(mod
 	auths := h.AuthManager.List()
 	available := make([]*coreauth.Auth, 0, len(auths))
 	for _, auth := range auths {
-		if !responsesWebsocketAuthMatchesModel(auth, providerSet, modelKey, registryRef, now) {
+		if !responsesWebsocketAuthMatchesModel(auth, providerSet, modelKey, registryRef, now) &&
+			!h.AuthManager.AuthSupportsRouteModel(auth, resolvedModelName) {
+			continue
+		}
+		if !responsesWebsocketAuthAvailableForModel(auth, modelKey, now) {
 			continue
 		}
 		available = append(available, auth)
 	}
 	return available, modelKey
+}
+
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketProviderSetForRouteModel(resolvedModelName string, modelKey string) map[string]struct{} {
+	if h == nil || h.AuthManager == nil {
+		return nil
+	}
+	providers := h.AuthManager.ProvidersForRouteModel(resolvedModelName)
+	if len(providers) == 0 && strings.TrimSpace(modelKey) != "" && modelKey != resolvedModelName {
+		providers = h.AuthManager.ProvidersForRouteModel(modelKey)
+	}
+	if len(providers) == 0 {
+		providers = h.AuthManager.ProvidersForOAuthAliasWithoutRegisteredModels(resolvedModelName)
+	}
+	if len(providers) == 0 && strings.TrimSpace(modelKey) != "" && modelKey != resolvedModelName {
+		providers = h.AuthManager.ProvidersForOAuthAliasWithoutRegisteredModels(modelKey)
+	}
+
+	providerSet := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		providerKey := strings.TrimSpace(strings.ToLower(provider))
+		if providerKey == "" {
+			continue
+		}
+		providerSet[providerKey] = struct{}{}
+	}
+	return providerSet
 }
 
 func (h *OpenAIResponsesAPIHandler) responsesWebsocketUsesCodexWebsocketPassthrough(modelName string) bool {

@@ -5,12 +5,14 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 )
 
@@ -195,6 +197,29 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
 	}
+	if len(providers) == 0 && h != nil && h.AuthManager != nil {
+		providers = h.AuthManager.ProvidersForRouteModel(resolvedModelName)
+		if len(providers) == 0 && baseModel != resolvedModelName {
+			providers = h.AuthManager.ProvidersForRouteModel(baseModel)
+		}
+		if len(providers) == 0 {
+			providers = h.AuthManager.ProvidersForOAuthAliasWithoutRegisteredModels(resolvedModelName)
+			if len(providers) == 0 && baseModel != resolvedModelName {
+				providers = h.AuthManager.ProvidersForOAuthAliasWithoutRegisteredModels(baseModel)
+			}
+		}
+	}
+	if len(providers) == 0 && h != nil && h.AuthManager != nil {
+		if fallbackProviders, fallbackModel := h.AuthManager.ResolveProvidersForFallback(baseModel); len(fallbackProviders) > 0 {
+			log.WithFields(log.Fields{
+				"requested_model":         modelName,
+				"base_model":              baseModel,
+				"selected_fallback_model": fallbackModel,
+				"providers":               strings.Join(fallbackProviders, ","),
+			}).Infof("resolved request model through route fallback: requested=%s selected=%s", modelName, fallbackModel)
+			return fallbackProviders, fallbackModel, nil
+		}
+	}
 
 	if len(providers) == 0 {
 		return nil, "", &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("unknown provider for model %s", modelName)}
@@ -203,6 +228,102 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+func attachUnknownProviderUpstreamHint(ctx context.Context, originalModel, resolvedModel string) {
+	if ctx == nil {
+		return
+	}
+	c, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || c == nil {
+		return
+	}
+	model := strings.TrimSpace(resolvedModel)
+	if model == "" {
+		model = strings.TrimSpace(originalModel)
+	}
+	if model == "" {
+		return
+	}
+
+	parsed := thinking.ParseSuffix(model)
+	baseModel := strings.TrimSpace(parsed.ModelName)
+	providers := util.GetProviderName(baseModel)
+	if len(providers) == 0 && baseModel != model {
+		providers = util.GetProviderName(model)
+	}
+	provider := ""
+	if len(providers) > 0 {
+		provider = strings.TrimSpace(providers[0])
+	}
+	if provider == "" {
+		if configured := configuredClaudeLLMUpstreamURL(c); configured != "" {
+			c.Set("API_REQUEST_SUMMARY", map[string]string{"url": configured, "model": baseModel})
+		}
+		return
+	}
+
+	upstreamURL := defaultLLMUpstreamURL(provider)
+	if provider == "claude" {
+		if configured := configuredClaudeLLMUpstreamURL(c); configured != "" {
+			upstreamURL = configured
+		}
+	}
+	if upstreamURL != "" {
+		c.Set("API_REQUEST_SUMMARY", map[string]string{"url": upstreamURL, "model": baseModel})
+	}
+}
+
+func defaultLLMUpstreamURL(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "claude":
+		return "https://api.anthropic.com/v1/messages?beta=true"
+	case "openai":
+		return "https://api.openai.com/v1/chat/completions"
+	case "gemini":
+		return "https://generativelanguage.googleapis.com/v1beta/models"
+	default:
+		return ""
+	}
+}
+
+func configuredClaudeLLMUpstreamURL(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	handlerValue, exists := c.Get("handler")
+	if !exists {
+		return ""
+	}
+	h, ok := handlerValue.(*BaseAPIHandler)
+	if !ok || h == nil || h.AuthManager == nil {
+		return ""
+	}
+	for _, auth := range h.AuthManager.List() {
+		if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
+			continue
+		}
+		kind, _ := auth.AccountInfo()
+		if kind == "" && auth.Attributes != nil {
+			kind = strings.TrimSpace(auth.Attributes["auth_kind"])
+		}
+		if strings.EqualFold(strings.TrimSpace(kind), "api_key") || strings.EqualFold(strings.TrimSpace(kind), "apikey") {
+			continue
+		}
+		baseURL := ""
+		if auth.Attributes != nil {
+			baseURL = strings.TrimSpace(auth.Attributes["base_url"])
+		}
+		if baseURL == "" && auth.Metadata != nil {
+			if value, okValue := auth.Metadata["base_url"].(string); okValue {
+				baseURL = strings.TrimSpace(value)
+			}
+		}
+		if baseURL != "" {
+			return strings.TrimRight(baseURL, "/") + "/v1/messages?beta=true"
+		}
+	}
+	return ""
 }
 
 func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {
