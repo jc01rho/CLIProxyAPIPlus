@@ -703,9 +703,19 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if store == nil {
 		return "", fmt.Errorf("token store unavailable")
 	}
+	h.initAntigravityPrimaryInfo(ctx, record)
 	if h.postAuthHook != nil {
 		if err := h.postAuthHook(ctx, record); err != nil {
 			return "", fmt.Errorf("post-auth hook failed: %w", err)
+		}
+	}
+	if record.PrimaryInfo != nil {
+		if record.Metadata == nil {
+			record.Metadata = map[string]any{}
+		}
+		record.Metadata["primary_info"] = map[string]any{
+			"is_primary": record.PrimaryInfo.IsPrimary,
+			"order":      record.PrimaryInfo.Order,
 		}
 	}
 	savedPath, errSave := store.Save(ctx, record)

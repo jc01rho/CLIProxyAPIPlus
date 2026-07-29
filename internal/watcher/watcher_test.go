@@ -76,7 +76,7 @@ func TestBuildAPIKeyClientsCounts(t *testing.T) {
 		},
 	}
 
-gemini, vertex, claude, codex, xai, compat, commandCode, mistral := BuildAPIKeyClients(cfg)
+	gemini, vertex, claude, codex, xai, compat, commandCode, mistral := BuildAPIKeyClients(cfg)
 	if gemini != 3 || vertex != 1 || claude != 1 || codex != 2 || xai != 1 || compat != 2 || commandCode != 0 || mistral != 0 {
 		t.Fatalf("unexpected counts: %d %d %d %d %d %d %d %d", gemini, vertex, claude, codex, xai, compat, commandCode, mistral)
 
@@ -144,20 +144,30 @@ func TestSnapshotCoreAuths_ConfigAndAuthFiles(t *testing.T) {
 				Headers:        map[string]string{"X-Req": "1"},
 			},
 		},
+		OAuthExcludedModels: map[string][]string{
+			"gemini-cli": {"Foo", "bar"},
+		},
 	}
 
 	w := &Watcher{authDir: authDir}
 	w.SetConfig(cfg)
 
 	auths := w.SnapshotCoreAuths()
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 config auth entry, got %d", len(auths))
+	if len(auths) != 4 {
+		t.Fatalf("expected 4 auth entries (1 config + 1 primary + 2 virtual), got %d", len(auths))
 	}
 
 	var geminiAPIKeyAuth *coreauth.Auth
+	var geminiPrimary *coreauth.Auth
+	virtuals := make([]*coreauth.Auth, 0)
 	for _, a := range auths {
-		if a.Provider == "gemini" && a.Attributes["api_key"] == "g-key" {
+		switch {
+		case a.Provider == "gemini" && a.Attributes["api_key"] == "g-key":
 			geminiAPIKeyAuth = a
+		case a.Attributes["gemini_virtual_primary"] == "true":
+			geminiPrimary = a
+		case strings.TrimSpace(a.Attributes["gemini_virtual_parent"]) != "":
+			virtuals = append(virtuals, a)
 		}
 	}
 	if geminiAPIKeyAuth == nil {
@@ -169,6 +179,35 @@ func TestSnapshotCoreAuths_ConfigAndAuthFiles(t *testing.T) {
 	}
 	if geminiAPIKeyAuth.Attributes["auth_kind"] != "apikey" {
 		t.Fatalf("expected auth_kind=apikey, got %s", geminiAPIKeyAuth.Attributes["auth_kind"])
+	}
+
+	if geminiPrimary == nil {
+		t.Fatal("expected primary gemini-cli auth from file")
+	}
+	if !geminiPrimary.Disabled || geminiPrimary.Status != coreauth.StatusDisabled {
+		t.Fatal("expected primary gemini-cli auth to be disabled when virtual auths are synthesized")
+	}
+	expectedOAuthHash := diff.ComputeExcludedModelsHash([]string{"Foo", "bar"})
+	if geminiPrimary.Attributes["excluded_models_hash"] != expectedOAuthHash {
+		t.Fatalf("expected OAuth excluded hash %s, got %s", expectedOAuthHash, geminiPrimary.Attributes["excluded_models_hash"])
+	}
+	if geminiPrimary.Attributes["auth_kind"] != "oauth" {
+		t.Fatalf("expected auth_kind=oauth, got %s", geminiPrimary.Attributes["auth_kind"])
+	}
+
+	if len(virtuals) != 2 {
+		t.Fatalf("expected 2 virtual auths, got %d", len(virtuals))
+	}
+	for _, virtual := range virtuals {
+		if virtual.Attributes["gemini_virtual_parent"] != geminiPrimary.ID {
+			t.Fatalf("virtual auth missing parent link to %s", geminiPrimary.ID)
+		}
+		if virtual.Attributes["excluded_models_hash"] != expectedOAuthHash {
+			t.Fatalf("expected virtual excluded hash %s, got %s", expectedOAuthHash, virtual.Attributes["excluded_models_hash"])
+		}
+		if virtual.Status != coreauth.StatusActive {
+			t.Fatalf("expected virtual auth to be active, got %s", virtual.Status)
+		}
 	}
 }
 

@@ -322,7 +322,9 @@ func (s *Service) completeModelRegistrationForAuthWithCache(ctx context.Context,
 	if ctx != nil && ctx.Err() != nil {
 		return
 	}
-	s.coreManager.ReconcileRegistryModelStates(ctx, auth.ID)
+	if len(auth.ModelStates) > 0 {
+		s.coreManager.ReconcileRegistryModelStates(ctx, auth.ID)
+	}
 
 	// Refresh the scheduler entry so that the auth's supportedModelSet is rebuilt
 	// from the now-populated global model registry. Without this, newly added auths

@@ -88,6 +88,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	var legacy legacyConfigData
+	legacyConfigPresent := false
+	if errLegacy := yaml.Unmarshal(data, &legacy); errLegacy == nil {
+		legacyConfigPresent = cfg.migrateLegacyConfig(legacy)
+	}
+
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
 		return nil, errValidate
@@ -182,6 +188,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
+
+	if legacyConfigPresent && !optional && configFile != "" {
+		if errSave := SaveConfigPreserveComments(configFile, &cfg); errSave != nil {
+			return nil, fmt.Errorf("failed to persist migrated legacy config: %w", errSave)
+		}
+	}
 
 	// Return the populated configuration struct.
 	return &cfg, nil
