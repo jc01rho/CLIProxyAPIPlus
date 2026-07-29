@@ -318,3 +318,26 @@ func TestForwardInteractionsStreamWrapsBareJSONAsSSEData(t *testing.T) {
 		t.Fatalf("body = %q, want SSE data frame", got)
 	}
 }
+
+func TestForwardInteractionsChunksStopsWhenDownstreamCancels(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	chunks := make(chan handlers.ModelExecutionChunk, 2)
+	chunks <- handlers.ModelExecutionChunk{Payload: []byte("first")}
+	chunks <- handlers.ModelExecutionChunk{Payload: []byte("second")}
+	close(chunks)
+	data := make(chan []byte)
+	errs := make(chan *interfaces.ErrorMessage, 1)
+	done := make(chan struct{})
+	go func() {
+		forwardInteractionsChunks(ctx, chunks, data, errs)
+		close(done)
+	}()
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("interaction stream converter did not stop after cancellation")
+	}
+}

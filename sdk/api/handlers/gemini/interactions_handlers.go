@@ -91,9 +91,9 @@ func buildInteractionsExecutionRequest(target interactionsRequestTarget, modelNa
 
 // Interactions handles POST /v1beta/interactions.
 func (h *GeminiAPIHandler) Interactions(c *gin.Context) {
-	rawJSON, errRead := c.GetRawData()
+	rawJSON, errRead := handlers.ReadRequestBody(c)
 	if errRead != nil {
-		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: errRead.Error(), Type: "invalid_request_error"}})
+		c.JSON(handlers.RequestBodyErrorStatus(errRead), handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: errRead.Error(), Type: "invalid_request_error"}})
 		return
 	}
 	target, errParse := parseInteractionsRequestTarget(rawJSON)
@@ -150,20 +150,29 @@ func (h *GeminiAPIHandler) handleInteractionsStream(c *gin.Context, cliCtx conte
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), stream.Headers)
 	data := make(chan []byte)
 	errs := make(chan *interfaces.ErrorMessage, 1)
-	go func() {
-		defer close(data)
-		defer close(errs)
-		for chunk := range stream.Chunks {
-			if chunk.Err != nil {
-				errs <- &interfaces.ErrorMessage{StatusCode: chunk.Err.StatusCode, Error: chunk.Err}
+	go forwardInteractionsChunks(cliCtx, stream.Chunks, data, errs)
+	h.forwardInteractionsStream(c, flusher, func(err error) { cliCancel(err) }, data, errs)
+}
+
+func forwardInteractionsChunks(ctx context.Context, chunks <-chan handlers.ModelExecutionChunk, data chan<- []byte, errs chan<- *interfaces.ErrorMessage) {
+	defer close(data)
+	defer close(errs)
+	for chunk := range chunks {
+		if chunk.Err != nil {
+			select {
+			case errs <- &interfaces.ErrorMessage{StatusCode: chunk.Err.StatusCode, Error: chunk.Err}:
+			case <-ctx.Done():
+			}
+			return
+		}
+		if len(chunk.Payload) > 0 {
+			select {
+			case data <- chunk.Payload:
+			case <-ctx.Done():
 				return
 			}
-			if len(chunk.Payload) > 0 {
-				data <- chunk.Payload
-			}
 		}
-	}()
-	h.forwardInteractionsStream(c, flusher, func(err error) { cliCancel(err) }, data, errs)
+	}
 }
 
 func (h *GeminiAPIHandler) forwardInteractionsStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {

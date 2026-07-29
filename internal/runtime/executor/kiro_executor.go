@@ -89,13 +89,6 @@ var endpointAliases = map[string]string{
 	"cli":           "amazonq",
 }
 
-func enqueueTranslatedSSE(out chan<- cliproxyexecutor.StreamChunk, chunk []byte) {
-	if len(chunk) == 0 {
-		return
-	}
-	out <- cliproxyexecutor.StreamChunk{Payload: append(bytes.Clone(chunk), '\n', '\n')}
-}
-
 // retryConfig holds configuration for socket retry logic.
 // Based on kiro2Api Python implementation patterns.
 type retryConfig struct {
@@ -1413,7 +1406,7 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				defer func() {
 					if r := recover(); r != nil {
 						log.Errorf("kiro: panic in stream handler: %v", r)
-						out <- cliproxyexecutor.StreamChunk{Err: fmt.Errorf("internal error: %v", r)}
+						sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: fmt.Errorf("internal error: %v", r)})
 					}
 				}()
 				defer func() {
@@ -2471,6 +2464,11 @@ func (e *KiroExecutor) extractEventTypeFromBytes(headers []byte) string {
 // thinkingEnabled controls whether <thinking> tags are parsed - only parse when request enabled thinking.
 func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out chan<- cliproxyexecutor.StreamChunk, targetFormat sdktranslator.Format, model string, originalReq, claudeBody []byte, reporter *usageReporter, thinkingEnabled bool) {
 	reader := bufio.NewReaderSize(body, 20*1024*1024) // 20MB buffer to match other providers
+	enqueueTranslatedSSE := func(out chan<- cliproxyexecutor.StreamChunk, chunk []byte) {
+		if len(chunk) > 0 {
+			sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: append(bytes.Clone(chunk), '\n', '\n')})
+		}
+	}
 	var totalUsage usage.Detail
 	var hasToolUses bool          // Track if any tool uses were emitted
 	var upstreamStopReason string // Track stop_reason from upstream events
@@ -2565,7 +2563,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			log.Errorf("kiro: streamToChannel error: %v", eventErr)
 
 			// Send error to channel for client notification
-			out <- cliproxyexecutor.StreamChunk{Err: eventErr}
+			sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: eventErr})
 			return
 		}
 		if msg == nil {
@@ -2639,7 +2637,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				errMsg = msg
 			}
 			log.Errorf("kiro: received AWS error in stream: type=%s, message=%s", errType, errMsg)
-			out <- cliproxyexecutor.StreamChunk{Err: fmt.Errorf("kiro API error: %s - %s", errType, errMsg)}
+			sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: fmt.Errorf("kiro API error: %s - %s", errType, errMsg)})
 			return
 		}
 		if errType, hasErrType := event["type"].(string); hasErrType && (errType == "error" || errType == "exception") {
@@ -2653,7 +2651,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				}
 			}
 			log.Errorf("kiro: received error event in stream: type=%s, message=%s", errType, errMsg)
-			out <- cliproxyexecutor.StreamChunk{Err: fmt.Errorf("kiro API error: %s", errMsg)}
+			sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: fmt.Errorf("kiro API error: %s", errMsg)})
 			return
 		}
 
@@ -2762,9 +2760,9 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 			// Send error to the stream and exit
 			if errMsg != "" {
-				out <- cliproxyexecutor.StreamChunk{
+				sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{
 					Err: fmt.Errorf("kiro API error (%s): %s", errType, errMsg),
-				}
+				})
 				return
 			}
 
