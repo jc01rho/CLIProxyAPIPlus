@@ -51,6 +51,7 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 			selection.End("attempt_bind_failed")
 			return cliproxyexecutor.Response{}, errBind
 		}
+		execCtx = SetProviderAuthInContext(execCtx, selection.Provider, auth.ID, auth.Label)
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)

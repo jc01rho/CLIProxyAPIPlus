@@ -311,6 +311,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
+		execCtx = SetProviderAuthInContext(execCtx, provider, auth.ID, auth.Label)
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
@@ -444,6 +445,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
+		execCtx = SetProviderAuthInContext(execCtx, provider, auth.ID, auth.Label)
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
@@ -622,6 +624,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				return nil, errBind
 			}
 		}
+		execCtx = SetProviderAuthInContext(execCtx, provider, auth.ID, auth.Label)
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
