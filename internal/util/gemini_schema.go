@@ -24,21 +24,27 @@ const placeholderReasonDescription = "Brief explanation of why you are calling t
 // and replacements such as "enum" and "type" are fabricated. That regression reached production
 // once already; scope every call site to the schema itself.
 
-// CleanJSONSchemaForAntigravity transforms a JSON schema to be compatible with Antigravity API.
+// CleanJSONSchemaForAntigravity transforms a tool schema to be compatible with Antigravity API.
 // It handles unsupported keywords, type flattening, and schema simplification while preserving
-// semantic information as description hints.
+// semantic information as description hints and adding placeholders required by VALIDATED mode.
 func CleanJSONSchemaForAntigravity(jsonStr string) string {
-	return cleanJSONSchema(jsonStr, true)
+	return cleanJSONSchema(jsonStr, true, false)
+}
+
+// CleanJSONSchemaForAntigravityResponse transforms a response schema without adding tool-only
+// placeholders that would alter the client's structured output contract.
+func CleanJSONSchemaForAntigravityResponse(jsonStr string) string {
+	return cleanJSONSchema(jsonStr, false, false)
 }
 
 // CleanJSONSchemaForGemini transforms a JSON schema to be compatible with Gemini tool calling.
 // It removes unsupported keywords and simplifies schemas, without adding empty-schema placeholders.
 func CleanJSONSchemaForGemini(jsonStr string) string {
-	return cleanJSONSchema(jsonStr, false)
+	return cleanJSONSchema(jsonStr, false, true)
 }
 
 // cleanJSONSchema performs the core cleaning operations on the JSON schema.
-func cleanJSONSchema(jsonStr string, addPlaceholder bool) string {
+func cleanJSONSchema(jsonStr string, addPlaceholder, removeGeminiMetadata bool) string {
 	// Phase 1: Convert and add hints
 	jsonStr = convertRefsToHints(jsonStr)
 	jsonStr = convertConstToEnum(jsonStr)
@@ -54,7 +60,7 @@ func cleanJSONSchema(jsonStr string, addPlaceholder bool) string {
 
 	// Phase 3: Cleanup
 	jsonStr = removeUnsupportedKeywords(jsonStr)
-	if !addPlaceholder {
+	if removeGeminiMetadata {
 		// Gemini schema cleanup: remove nullable/title and placeholder-only fields.
 		jsonStr = removeKeywords(jsonStr, []string{"nullable", "title"})
 		jsonStr = removePlaceholderFields(jsonStr)

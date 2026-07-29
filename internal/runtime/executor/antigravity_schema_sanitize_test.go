@@ -243,6 +243,85 @@ func TestSanitizeAntigravityRequestSchemasMatchesWholePayloadCleaning(t *testing
 	}
 }
 
+func TestSanitizeAntigravityRequestSchemasKeepsResponseSchemasPlaceholderFree(t *testing.T) {
+	payload := `{"request":{
+		"tools":[{"functionDeclarations":[{"name":"tool","parameters":{"type":"object","properties":{"value":{"type":"string"}}}}]}],
+		"generationConfig":{"responseSchema":{"type":"object","properties":{
+			"empty":{"type":"object"},
+			"optional":{"type":"object","properties":{"value":{"type":"string"}}}
+		}}}
+	}}`
+
+	got := sanitizeAntigravityRequestSchemas(payload, true)
+	toolSchema := gjson.Get(got, "request.tools.0.functionDeclarations.0.parameters")
+	if required := toolSchema.Get("required.0").String(); required != "_" {
+		t.Fatalf("tool schema lost VALIDATED placeholder, required[0] = %q: %s", required, got)
+	}
+
+	responseSchema := gjson.Get(got, "request.generationConfig.responseSchema")
+	for _, path := range []string{
+		"required",
+		"properties._",
+		"properties.reason",
+		"properties.empty.required",
+		"properties.empty.properties.reason",
+		"properties.optional.required",
+		"properties.optional.properties._",
+	} {
+		if responseSchema.Get(path).Exists() {
+			t.Errorf("response schema gained tool-only field %s: %s", path, responseSchema.Raw)
+		}
+	}
+}
+
+func TestAntigravityBuildRequestKeepsJSONObjectSchemaPlaceholderFree(t *testing.T) {
+	input := []byte(`{"model":"gemini-3.1-pro-low","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`)
+	translated := antigravitychat.ConvertOpenAIRequestToAntigravity("gemini-3.1-pro-low", input, false)
+	body := buildRequestBodyFromRawPayload(t, "gemini-3.1-pro-low", translated)
+	encoded, errMarshal := json.Marshal(body)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+
+	schema := gjson.GetBytes(encoded, "request.generationConfig.responseSchema")
+	if got := schema.Get("type").String(); got != "object" {
+		t.Fatalf("responseSchema.type = %q, want object: %s", got, encoded)
+	}
+	if schema.Get("properties.reason").Exists() || schema.Get("required").Exists() {
+		t.Fatalf("json_object schema gained tool placeholders: %s", schema.Raw)
+	}
+}
+
+func TestAntigravityBuildRequestPreservesGenerationResponseSchemaMetadata(t *testing.T) {
+	payload := []byte(`{"request":{"generationConfig":{"responseSchema":{
+		"type":"object",
+		"nullable":true,
+		"properties":{"_":{"type":"string","nullable":true}},
+		"required":["_"]
+	}}}}`)
+
+	for _, modelName := range []string{"gemini-3.6-flash-high", "gemini-3.1-pro-low"} {
+		t.Run(modelName, func(t *testing.T) {
+			body := buildRequestBodyFromRawPayload(t, modelName, payload)
+			encoded, errMarshal := json.Marshal(body)
+			if errMarshal != nil {
+				t.Fatal(errMarshal)
+			}
+
+			schema := gjson.GetBytes(encoded, "request.generationConfig.responseSchema")
+			if !schema.Get("nullable").Bool() || !schema.Get("properties._.nullable").Bool() {
+				t.Fatalf("response schema nullable metadata was removed: %s", schema.Raw)
+			}
+			if !schema.Get("properties._").Exists() {
+				t.Fatalf("legitimate underscore property was removed: %s", schema.Raw)
+			}
+			if required := schema.Get("required.0").String(); required != "_" {
+				t.Fatalf("required[0] = %q, want underscore: %s", required, schema.Raw)
+			}
+		})
+	}
+}
+
 func TestAntigravityBuildRequestSanitizesSnakeCaseGenerationResponseSchemas(t *testing.T) {
 	for _, testCase := range []struct {
 		alias     string
