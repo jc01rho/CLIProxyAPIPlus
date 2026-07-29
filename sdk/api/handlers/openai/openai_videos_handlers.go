@@ -32,7 +32,8 @@ const (
 	xaiVideosExtensionsAPI   = "/v1/videos/extensions"
 	defaultOpenAIVideosModel = "sora-2"
 	defaultXAIVideosModel    = "grok-imagine-video"
-	xaiVideos15PreviewModel  = "grok-imagine-video-1.5-preview"
+	xaiVideos15Model         = "grok-imagine-video-1.5"
+	xaiVideos15PreviewAlias  = "grok-imagine-video-1.5-preview"
 	xaiVideosHandlerType     = "openai-video"
 	defaultVideosSeconds     = "4"
 	defaultVideosSize        = "720x1280"
@@ -147,7 +148,7 @@ func videosModelBase(model string) string {
 func isXAIVideosModel(model string) bool {
 	prefix, baseModel := imagesModelParts(model)
 	baseModel = strings.ToLower(strings.TrimSpace(baseModel))
-	if baseModel != defaultXAIVideosModel && baseModel != xaiVideos15PreviewModel {
+	if baseModel != defaultXAIVideosModel && baseModel != xaiVideos15Model && baseModel != xaiVideos15PreviewAlias {
 		return false
 	}
 
@@ -199,8 +200,8 @@ func canonicalXAIVideosModel(model string) string {
 	switch videosModelBase(model) {
 	case defaultXAIVideosModel:
 		return defaultXAIVideosModel
-	case xaiVideos15PreviewModel:
-		return xaiVideos15PreviewModel
+	case xaiVideos15Model, xaiVideos15PreviewAlias:
+		return xaiVideos15Model
 	}
 	return defaultXAIVideosModel
 }
@@ -732,6 +733,8 @@ func (h *OpenAIAPIHandler) handleXAIVideosNativePost(c *gin.Context) {
 		return
 	}
 
+	videoModel = canonicalXAIVideosModel(videoModel)
+	rawJSON, _ = sjson.SetBytes(rawJSON, "model", videoModel)
 	h.collectXAIVideosNative(c, rawJSON, videoModel, true)
 }
 
