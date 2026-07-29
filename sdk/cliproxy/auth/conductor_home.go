@@ -1045,6 +1045,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 		}
 		c.auth = preparedAuth
 		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
+		creditsCtx = SetProviderAuthInContext(creditsCtx, c.provider, c.auth.ID, c.auth.Label)
 		models, pooled, aliasResult := m.executionModelCandidatesWithAlias(c.auth, routeModel)
 		if len(models) == 0 {
 			continue
@@ -1099,6 +1100,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		}
 		c.auth = preparedAuth
 		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
+		creditsCtx = SetProviderAuthInContext(creditsCtx, c.provider, c.auth.ID, c.auth.Label)
 		models, pooled, aliasResult := m.executionModelCandidatesWithAlias(c.auth, routeModel)
 		if len(models) == 0 {
 			continue
