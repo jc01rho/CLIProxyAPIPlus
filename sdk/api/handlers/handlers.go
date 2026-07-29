@@ -24,6 +24,7 @@ import (
 	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"golang.org/x/net/context"
 )
@@ -76,6 +77,9 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 	errType := "invalid_request_error"
 	var code string
 	switch status {
+	case statusClientClosedRequest:
+		errType = "invalid_request_error"
+		code = "client_closed_request"
 	case http.StatusUnauthorized:
 		errType = "authentication_error"
 		code = "invalid_api_key"
@@ -88,6 +92,12 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 	case http.StatusNotFound:
 		errType = "invalid_request_error"
 		code = "model_not_found"
+	case http.StatusRequestTimeout:
+		errType = "invalid_request_error"
+		code = "request_timeout"
+	case http.StatusGatewayTimeout:
+		errType = "server_error"
+		code = "gateway_timeout"
 	default:
 		if status >= http.StatusInternalServerError {
 			errType = "server_error"
@@ -555,10 +565,7 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 		return
 	}
 
-	// Capture timestamp on first API response
-	if _, exists := c.Get("API_RESPONSE_TIMESTAMP"); !exists {
-		c.Set("API_RESPONSE_TIMESTAMP", time.Now())
-	}
+	markAPIResponseTimestamp(c)
 
 	if existing, exists := c.Get("API_RESPONSE"); exists {
 		if existingBytes, ok := existing.([]byte); ok && len(existingBytes) > 0 {
@@ -574,6 +581,58 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 	}
 
 	c.Set("API_RESPONSE", bytes.Clone(data))
+}
+
+func markAPIResponseTimestamp(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	if _, exists := c.Get("API_RESPONSE_TIMESTAMP"); !exists {
+		c.Set("API_RESPONSE_TIMESTAMP", time.Now())
+	}
+}
+
+func appendAPIResponseToSource(c *gin.Context, data []byte) bool {
+	if c == nil || len(data) == 0 {
+		return false
+	}
+	value, exists := c.Get(logging.APIResponseSourceContextKey)
+	if !exists {
+		return false
+	}
+	source, ok := value.(*logging.FileBodySource)
+	if !ok || source == nil {
+		return false
+	}
+	if errWrite := source.AppendBytes(data); errWrite != nil {
+		log.WithError(errWrite).Warn("failed to append successful api response log part")
+		return false
+	}
+	markAPIResponseTimestamp(c)
+	c.Set(logging.APIResponseCapturedContextKey, true)
+	return true
+}
+
+func (h *BaseAPIHandler) recordSuccessfulAPIResponse(ctx context.Context, data []byte) {
+	if h == nil || h.Cfg == nil || !h.Cfg.RequestLog || len(bytes.TrimSpace(data)) == 0 || ctx == nil {
+		return
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return
+	}
+	if appendAPIResponseToSource(ginCtx, data) {
+		return
+	}
+	if existing, exists := ginCtx.Get("API_RESPONSE"); exists {
+		if existingBytes, okBytes := existing.([]byte); okBytes && len(existingBytes) > 0 {
+			trimmedData := bytes.TrimSpace(data)
+			if len(trimmedData) > 0 && bytes.Contains(existingBytes, trimmedData) {
+				return
+			}
+		}
+	}
+	appendAPIResponse(ginCtx, data)
 }
 
 // APIHandlerCancelFunc is a function type for canceling an API handler's context.

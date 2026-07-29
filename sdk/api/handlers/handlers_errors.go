@@ -13,6 +13,8 @@ import (
 	"golang.org/x/net/context"
 )
 
+const statusClientClosedRequest = 499
+
 func statusFromError(err error) int {
 	if err == nil {
 		return 0
@@ -23,6 +25,29 @@ func statusFromError(err error) int {
 		}
 	}
 	return 0
+}
+
+func errorMessageStatus(err error) int {
+	status := statusFromError(err)
+	if status > 0 {
+		return status
+	}
+	if errors.Is(err, context.Canceled) {
+		return statusClientClosedRequest
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusInternalServerError
+}
+
+func headersFromError(err error) http.Header {
+	if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
+		if headers := he.Headers(); headers != nil {
+			return headers.Clone()
+		}
+	}
+	return nil
 }
 
 func isAuthSelectionUnavailable(err error) bool {

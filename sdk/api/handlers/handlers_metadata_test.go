@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -35,6 +36,37 @@ func TestGetContextWithCancelCapturesClientRequestMetadata(t *testing.T) {
 	}
 	if metadata.UserAgent != "test-client/1.0" {
 		t.Fatalf("UserAgent = %q", metadata.UserAgent)
+	}
+}
+
+func TestRecordSuccessfulAPIResponseUsesFileBackedSource(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	source, err := logging.NewFileBodySourceInDir(t.TempDir(), "api-response")
+	if err != nil {
+		t.Fatalf("NewFileBodySourceInDir() error = %v", err)
+	}
+	defer source.Cleanup()
+
+	ginCtx.Set(logging.APIResponseSourceContextKey, source)
+	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{RequestLog: true}}
+	payload := bytes.Repeat([]byte("x"), 1024)
+
+	handler.recordSuccessfulAPIResponse(context.WithValue(context.Background(), "gin", ginCtx), payload)
+
+	if _, exists := ginCtx.Get("API_RESPONSE"); exists {
+		t.Fatal("API_RESPONSE was set for file-backed successful response")
+	}
+	if captured, exists := ginCtx.Get(logging.APIResponseCapturedContextKey); !exists || captured != true {
+		t.Fatalf("APIResponseCapturedContextKey = %v, exists = %v; want true", captured, exists)
+	}
+	got, err := source.Bytes()
+	if err != nil {
+		t.Fatalf("source.Bytes() error = %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("source payload length = %d, want %d", len(got), len(payload))
 	}
 }
 

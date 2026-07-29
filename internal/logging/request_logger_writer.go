@@ -172,13 +172,39 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 		return fmt.Errorf("failed to write log file: %w", writeErr)
 	}
 
-	if force && !l.enabled {
+	if force && l.enabled {
+		errorPath := filepath.Join(l.logsDir, l.generateErrorFilename(url, requestID))
+		if errCopy := copyRequestLog(filePath, errorPath); errCopy != nil {
+			return fmt.Errorf("failed to create error log copy: %w", errCopy)
+		}
+	}
+
+	if force {
 		if errCleanup := l.cleanupOldErrorLogs(); errCleanup != nil {
 			log.WithError(errCleanup).Warn("failed to clean up old error logs")
 		}
 	}
 
 	return nil
+}
+
+func copyRequestLog(sourcePath, destinationPath string) error {
+	source, errOpenSource := os.Open(sourcePath)
+	if errOpenSource != nil {
+		return errOpenSource
+	}
+	defer source.Close()
+
+	destination, errOpenDestination := os.OpenFile(destinationPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if errOpenDestination != nil {
+		return errOpenDestination
+	}
+	if _, errCopy := io.Copy(destination, source); errCopy != nil {
+		_ = destination.Close()
+		_ = os.Remove(destinationPath)
+		return errCopy
+	}
+	return destination.Close()
 }
 
 // LogStreamingRequest initiates logging for a streaming request.

@@ -243,6 +243,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
 	if errMsg != nil {
+		attachUnknownProviderUpstreamHint(ctx, originalRequestedModel, modelName)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
 		close(errChan)
@@ -253,6 +254,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
+	maybeAttachEstimatedInputTokens(reqMeta, sdktranslator.FromString(entryProtocol), normalizedModel, rawJSON)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	setGenerateMetadata(reqMeta, rawJSON)

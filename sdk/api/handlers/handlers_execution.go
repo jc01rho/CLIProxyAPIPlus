@@ -50,6 +50,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
 	if errMsg != nil {
+		attachUnknownProviderUpstreamHint(ctx, originalRequestedModel, modelName)
 		return nil, nil, errMsg
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
@@ -57,6 +58,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
+	maybeAttachEstimatedInputTokens(reqMeta, sdktranslator.FromString(entryProtocol), normalizedModel, rawJSON)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	setGenerateMetadata(reqMeta, rawJSON)
@@ -98,6 +100,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	h.recordSuccessfulAPIResponse(ctx, body)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -116,12 +119,14 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, false, routeDecision, execOptions)
 	if errMsg != nil {
+		attachUnknownProviderUpstreamHint(ctx, originalRequestedModel, modelName)
 		return nil, nil, errMsg
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(handlerType, providers)
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
+	maybeAttachEstimatedInputTokens(reqMeta, sdktranslator.FromString(handlerType), normalizedModel, rawJSON)
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	setGenerateMetadata(reqMeta, rawJSON)
@@ -162,6 +167,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	h.recordSuccessfulAPIResponse(ctx, body)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -196,6 +202,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	h.recordSuccessfulAPIResponse(ctx, body)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -230,6 +237,7 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	h.recordSuccessfulAPIResponse(ctx, body)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -302,19 +310,7 @@ func executionErrorMessage(err error) *interfaces.ErrorMessage {
 			Headers:        terminated.ResponseHeaders(),
 		}
 	}
-	status := http.StatusInternalServerError
-	if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-		if code := se.StatusCode(); code > 0 {
-			status = code
-		}
-	}
-	var addon http.Header
-	if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
-		if hdr := he.Headers(); hdr != nil {
-			addon = hdr.Clone()
-		}
-	}
-	return &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
+	return &interfaces.ErrorMessage{StatusCode: errorMessageStatus(err), Error: err, Addon: headersFromError(err)}
 }
 
 func (h *BaseAPIHandler) pluginExecutorHost() PluginExecutorHost {
