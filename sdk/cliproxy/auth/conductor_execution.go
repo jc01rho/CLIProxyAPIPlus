@@ -343,6 +343,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if resolvedExecutionModel := m.oauthExecutionModelForRequest(auth, routeModel, upstreamModel); resolvedExecutionModel != "" {
 				execReq.Model = resolvedExecutionModel
 			}
+			// Store actual model name in context for logging
+			if execReq.Model != routeModel {
+				execCtx = SetFallbackInfoInContext(execCtx, routeModel, execReq.Model)
+			}
 			execOpts := opts
 			var errIntercept error
 			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
@@ -471,6 +475,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			if resolvedExecutionModel := m.oauthExecutionModelForRequest(auth, routeModel, upstreamModel); resolvedExecutionModel != "" {
 				execReq.Model = resolvedExecutionModel
+			}
+			// Store actual model name in context for logging
+			if execReq.Model != routeModel {
+				execCtx = SetFallbackInfoInContext(execCtx, routeModel, execReq.Model)
 			}
 			execOpts := opts
 			var errIntercept error

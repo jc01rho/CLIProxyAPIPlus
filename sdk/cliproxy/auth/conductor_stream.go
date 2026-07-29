@@ -194,6 +194,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		if executionModel != "" {
 			execReq.Model = executionModel
 		}
+		// Store actual model name in context for logging
+		if execReq.Model != routeModel {
+			ctx = SetFallbackInfoInContext(ctx, routeModel, execReq.Model)
+		}
 		execOpts := opts
 		var errIntercept error
 		execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(ctx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
