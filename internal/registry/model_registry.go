@@ -918,6 +918,14 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 		}
 	}
 
+	// Sort by model ID ascending so every /v1/models consumer sees the same
+	// deterministic order as the home control-plane path (decodeHomeModels).
+	sort.Slice(models, func(i, j int) bool {
+		idI, _ := models[i]["id"].(string)
+		idJ, _ := models[j]["id"].(string)
+		return idI < idJ
+	})
+
 	return models, expiresAt
 }
 

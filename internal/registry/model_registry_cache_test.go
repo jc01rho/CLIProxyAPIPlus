@@ -1,6 +1,50 @@
 package registry
 
-import "testing"
+import (
+	"testing"
+)
+
+// TestGetAvailableModelsSortsByIDAscending locks the home-parity ordering:
+// Home.Enabled path sorts model IDs ascending in decodeHomeModels; the local
+// registry path must do the same so /v1/models consumers see a stable list
+// regardless of Home.Enabled.
+func TestGetAvailableModelsSortsByIDAscending(t *testing.T) {
+	r := newTestModelRegistry()
+	// Register out of order so map-iteration order alone cannot pass the test.
+	r.RegisterClient("client-z", "OpenAI", []*ModelInfo{{ID: "zeta-model", OwnedBy: "team-z"}})
+	r.RegisterClient("client-a", "OpenAI", []*ModelInfo{{ID: "alpha-model", OwnedBy: "team-a"}})
+	r.RegisterClient("client-m", "OpenAI", []*ModelInfo{{ID: "mid-model", OwnedBy: "team-m"}})
+
+	models := r.GetAvailableModels("openai")
+	if len(models) != 3 {
+		t.Fatalf("expected 3 models, got %d", len(models))
+	}
+	want := []string{"alpha-model", "mid-model", "zeta-model"}
+	for i, id := range want {
+		got, _ := models[i]["id"].(string)
+		if got != id {
+			t.Fatalf("models[%d] id = %q, want %q (full order: %v)", i, got, id, modelIDs(models))
+		}
+	}
+
+	// Cached snapshot must preserve the same order.
+	second := r.GetAvailableModels("openai")
+	for i, id := range want {
+		got, _ := second[i]["id"].(string)
+		if got != id {
+			t.Fatalf("cached models[%d] id = %q, want %q", i, got, id)
+		}
+	}
+}
+
+func modelIDs(models []map[string]any) []string {
+	out := make([]string, 0, len(models))
+	for _, m := range models {
+		id, _ := m["id"].(string)
+		out = append(out, id)
+	}
+	return out
+}
 
 func TestGetAvailableModelsReturnsClonedSnapshots(t *testing.T) {
 	r := newTestModelRegistry()
