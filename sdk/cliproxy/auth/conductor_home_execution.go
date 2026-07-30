@@ -120,6 +120,7 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 					errExecute = errRefresh
 				} else if okRefresh {
 					preparedAuth = refreshed
+					m.replaceHomeSelectionAuth(selection, preparedAuth)
 					didRefreshOnUnauthorized = true
 					publishSelectedAuthMetadata(opts.Metadata, preparedAuth)
 					response, errExecute = execute()

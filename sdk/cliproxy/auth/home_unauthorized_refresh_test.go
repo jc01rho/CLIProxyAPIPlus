@@ -26,9 +26,12 @@ func (d *homeUnauthorizedRefreshDispatcher) RPopAuth(context.Context, string, st
 		ID:       "home-refresh-auth",
 		Provider: homeUnauthorizedRefreshProvider,
 		Status:   StatusActive,
+		Attributes: map[string]string{
+			AttributeAuthKind: AuthKindOAuth,
+			"websockets":      "true",
+		},
 		Metadata: map[string]any{
-			"access_token":  "stale-access-token",
-			"refresh_token": "refresh-token",
+			"access_token": "stale-access-token",
 		},
 	}})
 }
@@ -36,18 +39,24 @@ func (d *homeUnauthorizedRefreshDispatcher) RPopAuth(context.Context, string, st
 func (*homeUnauthorizedRefreshDispatcher) AbortAmbiguousDispatch() {}
 
 type homeUnauthorizedRefreshExecutor struct {
-	streamMode   string
-	refreshErr   error
-	executeCalls atomic.Int32
-	countCalls   atomic.Int32
-	streamCalls  atomic.Int32
-	refreshCalls atomic.Int32
+	streamMode      string
+	refreshErr      error
+	retainSelection bool
+	executeCalls    atomic.Int32
+	countCalls      atomic.Int32
+	streamCalls     atomic.Int32
+	refreshCalls    atomic.Int32
 }
 
 func (*homeUnauthorizedRefreshExecutor) Identifier() string { return homeUnauthorizedRefreshProvider }
 
-func (e *homeUnauthorizedRefreshExecutor) Execute(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *homeUnauthorizedRefreshExecutor) Execute(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	e.executeCalls.Add(1)
+	if e.retainSelection {
+		if lifecycle, ok := opts.ExecutionLifecycle.(interface{ Retain() }); ok {
+			lifecycle.Retain()
+		}
+	}
 	if authAccessToken(auth) == "stale-access-token" {
 		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusUnauthorized, Message: "expired access token"}
 	}
@@ -153,6 +162,32 @@ func TestHomeUnauthorizedRefreshesSameSelectionBeforeRedispatch(t *testing.T) {
 				t.Fatalf("count calls = %d, want 2", executor.countCalls.Load())
 			}
 		})
+	}
+}
+
+func TestHomeUnauthorizedRefreshUpdatesRetainedSelection(t *testing.T) {
+	dispatcher := &homeUnauthorizedRefreshDispatcher{}
+	executor := &homeUnauthorizedRefreshExecutor{retainSelection: true}
+	manager := newHomeUnauthorizedRefreshManager(dispatcher, executor)
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
+	opts := cliproxyexecutor.Options{Metadata: map[string]any{
+		cliproxyexecutor.ExecutionSessionMetadataKey: "refresh-session",
+		cliproxyexecutor.PinnedAuthMetadataKey:       "home-refresh-auth",
+	}}
+
+	for range 2 {
+		if _, errExecute := manager.Execute(ctx, []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, opts); errExecute != nil {
+			t.Fatalf("Execute() error = %v", errExecute)
+		}
+	}
+	if got := dispatcher.calls.Load(); got != 1 {
+		t.Fatalf("Home dispatch calls = %d, want one retained selection", got)
+	}
+	if got := executor.refreshCalls.Load(); got != 1 {
+		t.Fatalf("refresh calls = %d, want refreshed token reused by retained selection", got)
+	}
+	if got := executor.executeCalls.Load(); got != 3 {
+		t.Fatalf("execute calls = %d, want stale attempt, retry, and retained reuse", got)
 	}
 }
 
