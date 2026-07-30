@@ -55,6 +55,9 @@ func TestExtractSummaryConfig(t *testing.T) {
 		{name: "interactions nested camel include true", format: "interactions", body: `{"generation_config":{"thinking_config":{"includeThoughts":true}}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
 		{name: "interactions camel config snake include true", format: "interactions", body: `{"generation_config":{"thinkingConfig":{"include_thoughts":true}}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
 		{name: "interactions camel config camel include false", format: "interactions", body: `{"generation_config":{"thinkingConfig":{"includeThoughts":false}}}`, wantMode: SummaryDisabled},
+		{name: "interactions enum wins over compatibility reasoning", format: "interactions", body: `{"generation_config":{"thinking_summaries":"none"},"reasoning":{"summary":"auto"}}`, wantMode: SummaryDisabled},
+		{name: "interactions compatibility reasoning auto", format: "interactions", body: `{"reasoning":{"summary":"auto"}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
+		{name: "interactions compatibility reasoning none", format: "interactions", body: `{"reasoning":{"summary":"none"}}`, wantMode: SummaryDisabled},
 		{name: "interactions enum wins over include alias", format: "interactions", body: `{"generation_config":{"thinking_summaries":"none","thinking_config":{"include_thoughts":true}}}`, wantMode: SummaryDisabled},
 		{name: "interactions string include alias is invalid", format: "interactions", body: `{"generation_config":{"thinking_config":{"include_thoughts":"false"}}}`, wantMode: SummaryUnspecified},
 		{name: "interactions detailed is invalid", format: "interactions", body: `{"generation_config":{"thinking_summaries":"detailed"}}`, wantMode: SummaryUnspecified},
@@ -81,8 +84,9 @@ func TestApplySummaryConfig(t *testing.T) {
 		path   string
 		want   string
 	}{
-		{name: "chat enabled creates compatibility effort", format: "openai", config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning_effort", want: "medium"},
+		{name: "chat enabled invents no effort", format: "openai", config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning_effort", want: ""},
 		{name: "chat enabled preserves active effort", format: "openai", body: `{"reasoning_effort":"high"}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning_effort", want: "high"},
+		{name: "chat enabled preserves disabled effort", format: "openai", body: `{"reasoning_effort":"none"}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning_effort", want: "none"},
 		// Chat cannot express "reason but hide", so disabling must not fall back to
 		// reasoning_effort:"none", which would disable reasoning altogether.
 		{name: "chat disabled preserves requested effort", format: "openai", body: `{"reasoning_effort":"high"}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "reasoning_effort", want: "high"},
@@ -109,6 +113,46 @@ func TestApplySummaryConfig(t *testing.T) {
 			out := ApplySummaryConfig([]byte(body), test.format, test.config)
 			if got := gjson.GetBytes(out, test.path).String(); got != test.want {
 				t.Fatalf("%s = %q, want %q; body=%s", test.path, got, test.want, out)
+			}
+		})
+	}
+}
+
+func TestApplySummaryConfig_OpenAIChatProviderDialects(t *testing.T) {
+	tests := []struct {
+		name         string
+		provider     string
+		body         string
+		mode         SummaryMode
+		wantExclude  string
+		wantExisting bool
+		wantEffort   string
+	}{
+		{name: "OpenAI does not invent visibility", provider: "openai", body: `{}`, mode: SummaryEnabled},
+		{name: "OpenRouter enables visibility", provider: "openrouter", body: `{}`, mode: SummaryEnabled, wantExclude: "false", wantExisting: true},
+		{name: "OpenRouter disables visibility", provider: "prod-openrouter", body: `{}`, mode: SummaryDisabled, wantExclude: "true", wantExisting: true},
+		{name: "DeepSeek preserves documented effort", provider: "deepseek", body: `{"reasoning_effort":"high"}`, mode: SummaryDisabled, wantEffort: "high"},
+		{name: "Kimi preserves documented K3 effort", provider: "kimi", body: `{"reasoning_effort":"max"}`, mode: SummaryEnabled, wantEffort: "max"},
+		{name: "Moonshot does not invent visibility", provider: "moonshot", body: `{"thinking":{"type":"enabled"}}`, mode: SummaryEnabled},
+		{name: "generic provider updates existing OpenRouter field", provider: "openai-compatibility", body: `{"reasoning":{"exclude":false}}`, mode: SummaryDisabled, wantExclude: "true", wantExisting: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			out := applySummaryConfigForProvider([]byte(test.body), "openai", "model", test.provider, nil, SummaryConfig{Mode: test.mode})
+			exclude := gjson.GetBytes(out, "reasoning.exclude")
+			if exclude.Exists() != test.wantExisting {
+				t.Fatalf("reasoning.exclude exists = %v, want %v; body=%s", exclude.Exists(), test.wantExisting, out)
+			}
+			if test.wantExisting && exclude.String() != test.wantExclude {
+				t.Fatalf("reasoning.exclude = %q, want %q; body=%s", exclude.String(), test.wantExclude, out)
+			}
+			effort := gjson.GetBytes(out, "reasoning_effort")
+			if test.wantEffort == "" {
+				if effort.Exists() {
+					t.Fatalf("summary visibility invented reasoning_effort: %s", out)
+				}
+			} else if effort.String() != test.wantEffort {
+				t.Fatalf("reasoning_effort = %q, want %q; body=%s", effort.String(), test.wantEffort, out)
 			}
 		})
 	}

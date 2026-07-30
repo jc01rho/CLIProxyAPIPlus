@@ -225,7 +225,7 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 	// Unknown models are treated as user-defined so thinking config can still be applied.
 	// The upstream service is responsible for validating the configuration.
 	if IsUserDefinedModel(modelInfo) {
-		return applyUserDefinedModel(body, modelInfo, fromFormat, providerFormat, suffixResult, summaryConfig)
+		return applyUserDefinedModel(body, modelInfo, fromFormat, providerFormat, providerKey, suffixResult, summaryConfig)
 	}
 	if modelInfo.Thinking == nil {
 		config := extractThinkingConfig(body, providerFormat)
@@ -277,7 +277,7 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 			"provider": providerFormat,
 			"model":    modelInfo.ID,
 		}).Debug("thinking: no config found, passthrough |")
-		return applySummaryConfigForModel(body, providerFormat, baseModel, modelInfo, summaryConfig), nil
+		return applySummaryConfigForProvider(body, providerFormat, baseModel, providerKey, modelInfo, summaryConfig), nil
 	}
 	if modelInfoResolved && config.Mode == ModeLevel && modelInfo != nil && modelInfo.Thinking != nil && shouldMapConfiguredHighIntent(fromFormat, providerFormat, modelInfo) {
 		config.Level = mapConfiguredHighIntent(config.Level, modelInfo)
@@ -320,7 +320,17 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 	if err != nil {
 		return applied, err
 	}
-	return applySummaryConfigForModel(applied, providerFormat, baseModel, modelInfo, summaryConfig), nil
+	// A fully disabled amount takes precedence over visibility. Re-applying a
+	// summary-only field can recreate an otherwise removed provider config and
+	// make a default-on model think again.
+	if thinkingIsFullyDisabled(*validated) {
+		return applied, nil
+	}
+	return applySummaryConfigForProvider(applied, providerFormat, baseModel, providerKey, modelInfo, summaryConfig), nil
+}
+
+func thinkingIsFullyDisabled(config ThinkingConfig) bool {
+	return config.Mode == ModeNone && config.Budget == 0 && config.Level == ""
 }
 
 func shouldMapConfiguredHighIntent(fromFormat, toFormat string, modelInfo *registry.ModelInfo) bool {
@@ -409,7 +419,7 @@ func parseSuffixToConfig(rawSuffix, provider, model string) ThinkingConfig {
 
 // applyUserDefinedModel applies thinking configuration for user-defined models
 // without ThinkingSupport validation.
-func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromFormat, toFormat string, suffixResult SuffixResult, summaryConfig SummaryConfig) ([]byte, error) {
+func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromFormat, toFormat, providerKey string, suffixResult SuffixResult, summaryConfig SummaryConfig) ([]byte, error) {
 	// Get model ID for logging
 	modelID := ""
 	if modelInfo != nil {
@@ -450,7 +460,7 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 			"model":    modelID,
 			"provider": toFormat,
 		}).Debug("thinking: user-defined model, passthrough (no config) |")
-		return applySummaryConfigForModel(body, toFormat, modelID, modelInfo, summaryConfig), nil
+		return applySummaryConfigForProvider(body, toFormat, modelID, providerKey, modelInfo, summaryConfig), nil
 	}
 
 	applier := GetProviderApplier(toFormat)
@@ -474,7 +484,10 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	if err != nil {
 		return applied, err
 	}
-	return applySummaryConfigForModel(applied, toFormat, modelID, modelInfo, summaryConfig), nil
+	if thinkingIsFullyDisabled(config) {
+		return applied, nil
+	}
+	return applySummaryConfigForProvider(applied, toFormat, modelID, providerKey, modelInfo, summaryConfig), nil
 }
 
 func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat string) ThinkingConfig {

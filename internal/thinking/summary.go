@@ -95,6 +95,12 @@ func ExtractSummaryConfig(body []byte, format string) SummaryConfig {
 				return config
 			}
 		}
+		// Existing Interactions translators accept the OpenAI-style top-level
+		// compatibility object. Keep the official generation_config selector
+		// authoritative when both are present.
+		if config, ok := interactionsSummaryConfig(body, "reasoning.summary"); ok {
+			return config
+		}
 		if config, ok := firstSummaryBoolConfig(body, []string{
 			"generation_config.thinking_config.include_thoughts",
 			"generation_config.thinking_config.includeThoughts",
@@ -123,6 +129,12 @@ func ApplySummaryConfigForModel(body []byte, format, model string, config Summar
 // applySummaryConfigForModel uses the resolved model definition when execution
 // selected a configured API-key model whose capability is not globally visible.
 func applySummaryConfigForModel(body []byte, format, model string, modelInfo *registry.ModelInfo, config SummaryConfig) []byte {
+	return applySummaryConfigForProvider(body, format, model, "", modelInfo, config)
+}
+
+// applySummaryConfigForProvider uses the execution provider identity for Chat
+// dialects whose visibility controls are not part of the OpenAI wire format.
+func applySummaryConfigForProvider(body []byte, format, model, provider string, modelInfo *registry.ModelInfo, config SummaryConfig) []byte {
 	normalized := strings.ToLower(strings.TrimSpace(format))
 	if config.Mode == SummaryUnspecified || !summaryFormatSupported(normalized) || len(body) == 0 || !gjson.ValidBytes(body) {
 		return body
@@ -131,7 +143,7 @@ func applySummaryConfigForModel(body []byte, format, model string, modelInfo *re
 	enabled := config.Mode == SummaryEnabled
 	switch normalized {
 	case "openai":
-		body = applyOpenAIChatSummaryConfig(body, model, enabled)
+		body = applyOpenAIChatSummaryConfig(body, provider, enabled)
 	case "claude":
 		// Anthropic documents display as invalid with thinking.type=disabled and
 		// requires it alongside adaptive or enabled thinking. Model defaults differ:
@@ -234,65 +246,45 @@ func claudeThinkingAcceptsDisplay(body []byte) bool {
 	}
 }
 
-// applyOpenAIChatSummaryConfig writes summary visibility intent for the Chat
-// Completions protocol.
+// applyOpenAIChatSummaryConfig writes only documented Chat visibility controls.
 //
-// Four dialects share this protocol and only OpenAI's is authoritative. OpenAI
-// documents no reasoning-visibility field at all (Chat Completions never returns
-// reasoning text) and rejects unknown body parameters, so reasoning_effort is the
-// only field that is always safe to write here. OpenRouter's documented
-// "reason but hide" bits (reasoning.exclude and its legacy include_reasoning
-// alias) are updated only when the body already carries them, which is exactly
-// when the upstream is known to understand them.
-func applyOpenAIChatSummaryConfig(body []byte, model string, enabled bool) []byte {
-	if gjson.GetBytes(body, "reasoning").IsObject() {
+// OpenAI Chat Completions exposes reasoning_effort but no reasoning summary or
+// visibility parameter. DeepSeek and Kimi Chat return reasoning_content while
+// thinking is active, but likewise document no independent hide/show switch.
+// Summary intent must therefore never invent or overwrite thinking effort for
+// those dialects. OpenRouter is the exception: reasoning.exclude is its
+// documented "reason but hide" control, and include_reasoning is its deprecated
+// inverse alias. Unknown OpenAI-compatible providers are handled conservatively
+// by updating those fields only when the payload already carries them.
+//
+// Docs:
+// https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
+// https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+// https://api-docs.deepseek.com/guides/thinking_mode
+// https://platform.kimi.ai/docs/api/chat
+func applyOpenAIChatSummaryConfig(body []byte, provider string, enabled bool) []byte {
+	if isOpenRouterProvider(provider) || gjson.GetBytes(body, "reasoning.exclude").IsBool() {
 		body, _ = sjson.SetBytes(body, "reasoning.exclude", !enabled)
 	}
 	if gjson.GetBytes(body, "include_reasoning").IsBool() {
 		body, _ = sjson.SetBytes(body, "include_reasoning", enabled)
 	}
-	if !enabled {
-		// Chat has no portable way to keep reasoning while hiding its summary.
-		// reasoning_effort:"none" would disable reasoning instead of hiding it,
-		// and Google documents that it is not even honored on Gemini 2.5 Pro or
-		// 3 models, so leave the effort the client asked for untouched.
-		return body
-	}
-	effort := gjson.GetBytes(body, "reasoning_effort")
-	if effort.Type != gjson.String || strings.TrimSpace(effort.String()) == "" || strings.EqualFold(strings.TrimSpace(effort.String()), "none") {
-		body, _ = sjson.SetBytes(body, "reasoning_effort", openAIChatSummaryEffort(body, model))
-	}
 	return body
 }
 
-// openAIChatSummaryEffort picks an active reasoning effort that the target model
-// documents. Chat exposes reasoning only while an effort is active, so a summary
-// request has to select one when the client left it unset.
-func openAIChatSummaryEffort(body []byte, model string) string {
-	baseModel := ParseSuffix(model).ModelName
-	if baseModel == "" {
-		baseModel = ParseSuffix(gjson.GetBytes(body, "model").String()).ModelName
+func isOpenRouterProvider(provider string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "openrouter" {
+		return true
 	}
-	modelInfo := registry.LookupModelInfo(baseModel, "openai")
-	if modelInfo == nil || modelInfo.Thinking == nil || len(modelInfo.Thinking.Levels) == 0 {
-		return "medium"
-	}
-
-	levels := make([]string, 0, len(modelInfo.Thinking.Levels))
-	for _, level := range modelInfo.Thinking.Levels {
-		normalized := strings.ToLower(strings.TrimSpace(level))
-		if normalized == "" || normalized == "none" {
-			continue
+	for _, part := range strings.FieldsFunc(provider, func(r rune) bool {
+		return r == '-' || r == '_' || r == '/' || r == '.' || r == ':'
+	}) {
+		if part == "openrouter" {
+			return true
 		}
-		if normalized == "medium" {
-			return "medium"
-		}
-		levels = append(levels, normalized)
 	}
-	if len(levels) == 0 {
-		return "medium"
-	}
-	return levels[len(levels)/2]
+	return false
 }
 
 func extractOpenAIExplicitSummaryConfig(body []byte) (SummaryConfig, bool) {

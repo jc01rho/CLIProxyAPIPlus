@@ -128,8 +128,11 @@ func (a *Applier) applyLevelFormat(body []byte, config thinking.ThinkingConfig) 
 
 	if config.Mode == thinking.ModeNone {
 		if config.Budget == 0 && config.Level == "" {
+			// With the amount fully disabled, visibility is irrelevant. Restoring
+			// includeThoughts alone would recreate thinkingConfig and let a
+			// default-on model think again.
 			result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig")
-			return applyGeminiIncludeThoughts(result, body), nil
+			return result, nil
 		}
 		if config.Level != "" {
 			result, _ = sjson.SetBytes(result, "generationConfig.thinkingConfig.thinkingLevel", string(config.Level))

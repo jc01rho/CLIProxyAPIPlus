@@ -1456,30 +1456,26 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			includeThoughts: "false",
 			expectErr:       false,
 		},
-		// Case 31A: reasoning_effort=none with zero allowed removes the amount but
-		// preserves Chat's explicit disabled summary intent.
+		// Case 31A: reasoning_effort=none with zero allowed removes the entire
+		// thinking config. includeThoughts alone would restore the model default.
 		{
-			name:            "31A",
-			from:            "openai",
-			to:              "gemini",
-			model:           "gemini-toggle-mixed-model",
-			inputJSON:       `{"model":"gemini-toggle-mixed-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`,
-			expectField:     "generationConfig.thinkingConfig.includeThoughts",
-			expectValue:     "false",
-			includeThoughts: "false",
-			expectErr:       false,
+			name:        "31A",
+			from:        "openai",
+			to:          "gemini",
+			model:       "gemini-toggle-mixed-model",
+			inputJSON:   `{"model":"gemini-toggle-mixed-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`,
+			expectField: "",
+			expectErr:   false,
 		},
-		// Case 31B: the same explicit disabled intent survives Antigravity.
+		// Case 31B: Antigravity keeps the same fully disabled representation.
 		{
-			name:            "31B",
-			from:            "openai",
-			to:              "antigravity",
-			model:           "gemini-toggle-mixed-model",
-			inputJSON:       `{"model":"gemini-toggle-mixed-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`,
-			expectField:     "request.generationConfig.thinkingConfig.includeThoughts",
-			expectValue:     "false",
-			includeThoughts: "false",
-			expectErr:       false,
+			name:        "31B",
+			from:        "openai",
+			to:          "antigravity",
+			model:       "gemini-toggle-mixed-model",
+			inputJSON:   `{"model":"gemini-toggle-mixed-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`,
+			expectField: "",
+			expectErr:   false,
 		},
 		// Case 31C: reasoning.effort=none with zero allowed → delete thinkingConfig
 		{
