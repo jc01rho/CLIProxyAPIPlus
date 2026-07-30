@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	codexVersion               = "0.139.0"
-	codexUserAgent             = "codex_exec/" + codexVersion + " (Debian 12.0.0; aarch64) unknown (codex_exec; " + codexVersion + ")"
-	codexOriginator            = "codex_exec"
+codexVersion               = "0.146.0"
+	codexUserAgent             = "codex-tui/" + codexVersion + " (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; " + codexVersion + ")"
+	codexOriginator            = "codex-tui"
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
@@ -411,6 +411,10 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	if cfg != nil && !cfg.Codex.DisableCodexCloaking {
+		r.Header.Set("User-Agent", codexUserAgent)
+		r.Header.Set("Originator", codexOriginator)
+	}
 }
 
 func normalizeCodexInstructions(body []byte) []byte {
