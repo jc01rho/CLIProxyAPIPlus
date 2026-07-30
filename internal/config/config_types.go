@@ -386,6 +386,10 @@ func (k ClaudeKey) GetAPIKey() string { return k.APIKey }
 
 func (k ClaudeKey) GetBaseURL() string { return k.BaseURL }
 
+func (k ClaudeKey) GetPrefix() string { return k.Prefix }
+
+func (k ClaudeKey) GetProxyURL() string { return k.ProxyURL }
+
 // ClaudeModel describes a mapping between an alias and the actual upstream model name.
 type ClaudeModel struct {
 	// Name is the upstream model identifier used when issuing requests.
@@ -399,6 +403,9 @@ type ClaudeModel struct {
 
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+
+	// Thinking configures the thinking/reasoning capability for this model.
+	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
 func (m ClaudeModel) GetName() string { return m.Name }
@@ -408,6 +415,8 @@ func (m ClaudeModel) GetAlias() string { return m.Alias }
 func (m ClaudeModel) GetDisplayName() string { return m.DisplayName }
 
 func (m ClaudeModel) GetForceMapping() bool { return m.ForceMapping }
+
+func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
 // CodexKey represents the configuration for a Codex API key,
 // including the API key itself and an optional base URL for the API endpoint.
@@ -455,6 +464,10 @@ func (k CodexKey) GetAPIKey() string { return k.APIKey }
 
 func (k CodexKey) GetBaseURL() string { return k.BaseURL }
 
+func (k CodexKey) GetPrefix() string { return k.Prefix }
+
+func (k CodexKey) GetProxyURL() string { return k.ProxyURL }
+
 // CodexModel describes a mapping between an alias and the actual upstream model name.
 type CodexModel struct {
 	// Name is the upstream model identifier used when issuing requests.
@@ -468,6 +481,9 @@ type CodexModel struct {
 
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+
+	// Thinking configures the thinking/reasoning capability for this model.
+	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
 func (m CodexModel) GetName() string { return m.Name }
@@ -477,6 +493,8 @@ func (m CodexModel) GetAlias() string { return m.Alias }
 func (m CodexModel) GetDisplayName() string { return m.DisplayName }
 
 func (m CodexModel) GetForceMapping() bool { return m.ForceMapping }
+
+func (m CodexModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
 // CommandCodeKey represents a CommandCode API credential.
 type CommandCodeKey struct {
@@ -493,8 +511,10 @@ type CommandCodeKey struct {
 	DisableCooling bool               `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
-func (k CommandCodeKey) GetAPIKey() string  { return k.APIKey }
-func (k CommandCodeKey) GetBaseURL() string { return k.BaseURL }
+func (k CommandCodeKey) GetAPIKey() string   { return k.APIKey }
+func (k CommandCodeKey) GetBaseURL() string  { return k.BaseURL }
+func (k CommandCodeKey) GetPrefix() string   { return k.Prefix }
+func (k CommandCodeKey) GetProxyURL() string { return k.ProxyURL }
 
 // CommandCodeModel maps a client alias to an upstream model name.
 type CommandCodeModel struct {
@@ -523,8 +543,10 @@ type MistralKey struct {
 	DisableCooling bool              `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
-func (k MistralKey) GetAPIKey() string  { return k.APIKey }
-func (k MistralKey) GetBaseURL() string { return k.BaseURL }
+func (k MistralKey) GetAPIKey() string   { return k.APIKey }
+func (k MistralKey) GetBaseURL() string  { return k.BaseURL }
+func (k MistralKey) GetPrefix() string   { return k.Prefix }
+func (k MistralKey) GetProxyURL() string { return k.ProxyURL }
 
 // MistralModel maps a client alias to an upstream model name.
 type MistralModel struct {
@@ -586,6 +608,10 @@ func (k GeminiKey) GetAPIKey() string { return k.APIKey }
 
 func (k GeminiKey) GetBaseURL() string { return k.BaseURL }
 
+func (k GeminiKey) GetPrefix() string { return k.Prefix }
+
+func (k GeminiKey) GetProxyURL() string { return k.ProxyURL }
+
 // GeminiModel describes a mapping between an alias and the actual upstream model name.
 type GeminiModel struct {
 	// Name is the upstream model identifier used when issuing requests.
@@ -599,6 +625,9 @@ type GeminiModel struct {
 
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+
+	// Thinking configures the thinking/reasoning capability for this model.
+	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
 func (m GeminiModel) GetName() string { return m.Name }
@@ -608,6 +637,8 @@ func (m GeminiModel) GetAlias() string { return m.Alias }
 func (m GeminiModel) GetDisplayName() string { return m.DisplayName }
 
 func (m GeminiModel) GetForceMapping() bool { return m.ForceMapping }
+
+func (m GeminiModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
@@ -693,3 +724,5 @@ func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 func (m OpenAICompatibilityModel) GetDisplayName() string { return m.DisplayName }
 
 func (m OpenAICompatibilityModel) GetForceMapping() bool { return m.ForceMapping }
+
+func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }

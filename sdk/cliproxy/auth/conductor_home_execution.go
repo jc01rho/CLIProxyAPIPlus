@@ -56,7 +56,7 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
-		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if aliasResult.ForceMapping && responseAlias != "" {
 			aliasResult.OriginalAlias = responseAlias
 		}
@@ -98,6 +98,9 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 				selection.End("request_intercepted")
 				return cliproxyexecutor.Response{}, errIntercept
 			}
+			if !restoreExecutionModel {
+				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, preparedAuth, routeModel, upstreamModel)
+			}
 			if errCtx := execCtx.Err(); errCtx != nil {
 				releaseAttempt()
 				selection.End("attempt_canceled")
@@ -114,7 +117,8 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 			if errExecute == nil {
 				m.reportHomeResult(execCtx, result, preparedAuth)
 				releaseAttempt()
-				rewriteForceMappedResponse(&response, aliasResult)
+				attemptAliasResult := resolveAttemptAliasResult(routing, preparedAuth, routeModel, upstreamModel, aliasResult)
+				rewriteForceMappedResponse(&response, attemptAliasResult)
 				if !m.retainHomeWebsocketSelection(ctx, opts, routeModel, selection) {
 					selection.End("completed")
 				}

@@ -318,7 +318,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
-		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if len(models) == 0 {
 			continue
 		}
@@ -354,6 +354,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errIntercept != nil {
 				return cliproxyexecutor.Response{}, errIntercept
 			}
+			if !restoreExecutionModel {
+				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
+			}
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			if errExec != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {
@@ -385,7 +388,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			m.MarkResult(execCtx, result)
 			m.rememberSessionModelAffinityForKeys(affinityKeys, upstreamModel, pooled)
-			rewriteForceMappedResponse(&resp, aliasResult)
+			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
+			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, nil
 		}
 		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
@@ -452,7 +456,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
-		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if len(models) == 0 {
 			continue
 		}
@@ -487,6 +491,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			if errIntercept != nil {
 				return cliproxyexecutor.Response{}, errIntercept
+			}
+			if !restoreExecutionModel {
+				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
 			}
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
 			if errExec != nil {
@@ -527,7 +534,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			m.MarkResult(execCtx, result)
 			m.rememberSessionModelAffinityForKeys(affinityKeys, upstreamModel, pooled)
-			rewriteForceMappedResponse(&resp, aliasResult)
+			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
+			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, nil
 		}
 		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
@@ -629,7 +637,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
-		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if selection != nil && aliasResult.ForceMapping && responseAlias != "" {
 			aliasResult.OriginalAlias = responseAlias
 		}
@@ -679,7 +687,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			models = models[:1]
 			pooled = false
 		}
-		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, !homeMode, selection != nil)
+		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode, selection != nil)
 		if errStream != nil {
 			if selection != nil {
 				releaseAttempt()
