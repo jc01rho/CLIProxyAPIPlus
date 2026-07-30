@@ -59,3 +59,6 @@ _bmad-output/*
 
 # deepwork session state (local only)
 .slim/deepwork/
+
+# 로컬 세션 산출물
+.gjc/
