@@ -120,9 +120,9 @@ func modelAliasLookupCandidates(requestedModel string) (thinking.SuffixResult, [
 	if base == "" {
 		base = requestedModel
 	}
-	candidates := []string{base}
+	candidates := []string{requestedModel}
 	if base != requestedModel {
-		candidates = append(candidates, requestedModel)
+		candidates = append(candidates, base)
 	}
 	return requestResult, candidates
 }
@@ -177,14 +177,16 @@ func resolveModelAliasPoolFromConfigModels(requestedModel string, models []model
 			resolved = preserveResolvedModelSuffix(resolved, requestResult)
 			key := strings.ToLower(strings.TrimSpace(resolved))
 			if key == "" {
-				break
+				continue
 			}
 			if _, exists := seen[key]; exists {
-				break
+				continue
 			}
 			seen[key] = struct{}{}
 			out = append(out, resolved)
-			break
+		}
+		if len(out) > 0 {
+			return out
 		}
 	}
 
@@ -226,15 +228,15 @@ func resolveModelAliasResultFromConfigModels(requestedModel string, models []mod
 	if baseModel == "" {
 		baseModel = requestedModel
 	}
-	for i := range models {
-		original := strings.TrimSpace(models[i].GetName())
-		alias := strings.TrimSpace(models[i].GetAlias())
-		if original == "" || alias == "" {
+	for _, candidate := range candidates {
+		key := strings.TrimSpace(candidate)
+		if key == "" {
 			continue
 		}
-		for _, candidate := range candidates {
-			key := strings.TrimSpace(candidate)
-			if key == "" || !strings.EqualFold(alias, key) {
+		for i := range models {
+			original := strings.TrimSpace(models[i].GetName())
+			alias := strings.TrimSpace(models[i].GetAlias())
+			if original == "" || alias == "" || !strings.EqualFold(alias, key) {
 				continue
 			}
 			if strings.EqualFold(original, baseModel) {
@@ -355,15 +357,15 @@ func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, r
 	if baseModel == "" {
 		baseModel = strings.TrimSpace(requestedModel)
 	}
-	for _, entry := range aliases {
-		original := strings.TrimSpace(entry.Name)
-		alias := strings.TrimSpace(entry.Alias)
-		if original == "" || alias == "" {
+	for _, candidate := range candidates {
+		key := strings.TrimSpace(candidate)
+		if key == "" {
 			continue
 		}
-		for _, candidate := range candidates {
-			key := strings.TrimSpace(candidate)
-			if key == "" || !strings.EqualFold(alias, key) {
+		for _, entry := range aliases {
+			original := strings.TrimSpace(entry.Name)
+			alias := strings.TrimSpace(entry.Alias)
+			if original == "" || alias == "" || !strings.EqualFold(alias, key) {
 				continue
 			}
 			if strings.EqualFold(original, baseModel) {
@@ -407,13 +409,8 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 		return OAuthModelAliasResult{}
 	}
 
-	requestResult := thinking.ParseSuffix(requestedModel)
+	requestResult, candidates := modelAliasLookupCandidates(requestedModel)
 	baseModel := requestResult.ModelName
-
-	candidates := []string{baseModel}
-	if baseModel != requestedModel {
-		candidates = append(candidates, requestedModel)
-	}
 
 	raw := m.oauthModelAlias.Load()
 	table, _ := raw.(*oauthModelAliasTable)
