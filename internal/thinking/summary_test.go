@@ -149,34 +149,42 @@ func TestApplySummaryConfig_ClaudeDisplayRequiresActiveThinking(t *testing.T) {
 	}
 }
 
-func TestApplySummaryConfigForModel_ClaudeExplicitVisibilityUsesValidThinkingMode(t *testing.T) {
+func TestApplySummaryConfigForModel_ClaudeEnabledSummaryUsesValidThinkingMode(t *testing.T) {
 	tests := []struct {
-		name        string
-		model       string
-		body        string
-		mode        SummaryMode
-		wantType    string
-		wantDisplay string
-		wantBudget  int64
+		name       string
+		model      string
+		body       string
+		wantType   string
+		wantBudget int64
 	}{
-		{name: "adaptive model summarized", model: "claude-opus-5", body: `{"model":"claude-opus-5","max_tokens":32000}`, mode: SummaryEnabled, wantType: "adaptive", wantDisplay: "summarized"},
-		{name: "adaptive model omitted", model: "claude-opus-5", body: `{"model":"claude-opus-5","max_tokens":32000}`, mode: SummaryDisabled, wantType: "adaptive", wantDisplay: "omitted"},
-		{name: "manual model summarized", model: "claude-haiku-4-5-20251001", body: `{"model":"claude-haiku-4-5-20251001","max_tokens":32000}`, mode: SummaryEnabled, wantType: "enabled", wantDisplay: "summarized", wantBudget: 1024},
-		{name: "manual model omitted", model: "claude-haiku-4-5-20251001", body: `{"model":"claude-haiku-4-5-20251001","max_tokens":32000}`, mode: SummaryDisabled, wantType: "enabled", wantDisplay: "omitted", wantBudget: 1024},
+		{name: "adaptive model", model: "claude-opus-5", body: `{"model":"claude-opus-5","max_tokens":32000}`, wantType: "adaptive"},
+		{name: "manual model", model: "claude-haiku-4-5-20251001", body: `{"model":"claude-haiku-4-5-20251001","max_tokens":32000}`, wantType: "enabled", wantBudget: 1024},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			out := ApplySummaryConfigForModel([]byte(test.body), "claude", test.model, SummaryConfig{Mode: test.mode})
+			out := ApplySummaryConfigForModel([]byte(test.body), "claude", test.model, SummaryConfig{Mode: SummaryEnabled})
 			if got := gjson.GetBytes(out, "thinking.type").String(); got != test.wantType {
 				t.Fatalf("thinking.type = %q, want %q; body=%s", got, test.wantType, out)
 			}
-			if got := gjson.GetBytes(out, "thinking.display").String(); got != test.wantDisplay {
-				t.Fatalf("thinking.display = %q, want %q; body=%s", got, test.wantDisplay, out)
+			if got := gjson.GetBytes(out, "thinking.display").String(); got != "summarized" {
+				t.Fatalf("thinking.display = %q, want summarized; body=%s", got, out)
 			}
 			if test.wantBudget > 0 && gjson.GetBytes(out, "thinking.budget_tokens").Int() != test.wantBudget {
 				t.Fatalf("thinking.budget_tokens = %d, want %d; body=%s", gjson.GetBytes(out, "thinking.budget_tokens").Int(), test.wantBudget, out)
 			}
 		})
+	}
+}
+
+// Disabling summaries must not activate Claude thinking. Doing so would add
+// reasoning tokens, latency, and cost to a request that asked only to hide output.
+func TestApplySummaryConfigForModel_ClaudeDisabledSummaryDoesNotEnableThinking(t *testing.T) {
+	for _, model := range []string{"claude-opus-5", "claude-haiku-4-5-20251001"} {
+		body := []byte(`{"model":"` + model + `","max_tokens":32000}`)
+		out := ApplySummaryConfigForModel(body, "claude", model, SummaryConfig{Mode: SummaryDisabled})
+		if gjson.GetBytes(out, "thinking").Exists() {
+			t.Fatalf("model %s gained thinking for a disabled summary: %s", model, out)
+		}
 	}
 }
 

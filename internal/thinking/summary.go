@@ -126,12 +126,12 @@ func applySummaryConfigForModel(body []byte, format, model string, modelInfo *re
 		body = applyOpenAIChatSummaryConfig(body, model, enabled)
 	case "claude":
 		// Anthropic documents display as invalid with thinking.type=disabled and
-		// requires it alongside adaptive or enabled thinking. An explicit source
-		// visibility request is independent of thinking effort, so activate the
-		// target model's documented thinking mode before writing either
-		// summarized or omitted. Unspecified intent returns above and leaves the
-		// target's default untouched.
-		if !gjson.GetBytes(body, "thinking.type").Exists() {
+		// requires it alongside adaptive or enabled thinking. An enabled source
+		// summary needs an active target thinking mode. A disabled summary only
+		// hides an already-active target thinking mode; it must not enable thinking
+		// merely to hide a summary that would not otherwise exist. Unspecified
+		// intent returns above and leaves the target's default untouched.
+		if enabled && !gjson.GetBytes(body, "thinking.type").Exists() {
 			body = enableClaudeThinkingForSummary(body, model, modelInfo)
 		}
 		if !claudeThinkingAcceptsDisplay(body) {

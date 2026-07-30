@@ -92,36 +92,44 @@ func TestApplyThinkingWithModelInfoKeepsSameFamilyValidationStrict(t *testing.T)
 	}
 }
 
-func TestApplyThinkingWithModelInfoAppliesSummaryOnlyClaudeVisibility(t *testing.T) {
+func TestApplyThinkingWithModelInfoAppliesEnabledSummaryOnlyClaudeVisibility(t *testing.T) {
 	modelInfo := &registry.ModelInfo{
 		ID:       "private-claude",
 		Type:     "claude",
 		Thinking: &registry.ThinkingSupport{Levels: []string{"high"}},
 	}
-	for _, test := range []struct {
-		name    string
-		source  string
-		display string
-	}{
-		{name: "enabled", source: `{"reasoning":{"summary":"auto"}}`, display: "summarized"},
-		{name: "disabled", source: `{"reasoning":{"summary":null}}`, display: "omitted"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			out, err := thinking.ApplyThinkingWithModelInfo(
-				[]byte(`{"model":"private-claude","max_tokens":32000}`),
-				[]byte(test.source),
-				"private-claude", "openai-response", "claude", "claude", modelInfo,
-			)
-			if err != nil {
-				t.Fatalf("ApplyThinkingWithModelInfo() error = %v", err)
-			}
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
-				t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, out)
-			}
-			if got := gjson.GetBytes(out, "thinking.display").String(); got != test.display {
-				t.Fatalf("thinking.display = %q, want %q; body=%s", got, test.display, out)
-			}
-		})
+	out, err := thinking.ApplyThinkingWithModelInfo(
+		[]byte(`{"model":"private-claude","max_tokens":32000}`),
+		[]byte(`{"reasoning":{"summary":"auto"}}`),
+		"private-claude", "openai-response", "claude", "claude", modelInfo,
+	)
+	if err != nil {
+		t.Fatalf("ApplyThinkingWithModelInfo() error = %v", err)
+	}
+	if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
+		t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "thinking.display").String(); got != "summarized" {
+		t.Fatalf("thinking.display = %q, want summarized; body=%s", got, out)
+	}
+}
+
+func TestApplyThinkingWithModelInfoDoesNotActivateClaudeForDisabledSummary(t *testing.T) {
+	modelInfo := &registry.ModelInfo{
+		ID:       "private-claude",
+		Type:     "claude",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"high"}},
+	}
+	out, err := thinking.ApplyThinkingWithModelInfo(
+		[]byte(`{"model":"private-claude","max_tokens":32000}`),
+		[]byte(`{"reasoning":{"summary":null}}`),
+		"private-claude", "openai-response", "claude", "claude", modelInfo,
+	)
+	if err != nil {
+		t.Fatalf("ApplyThinkingWithModelInfo() error = %v", err)
+	}
+	if gjson.GetBytes(out, "thinking").Exists() {
+		t.Fatalf("disabled summary activated Claude thinking: %s", out)
 	}
 }
 

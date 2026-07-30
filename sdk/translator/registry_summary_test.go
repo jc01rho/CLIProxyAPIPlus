@@ -85,35 +85,40 @@ func TestRegistryTranslateRequestAppliesSummaryIntent(t *testing.T) {
 	}
 }
 
-func TestRegistryTranslateRequestMakesExplicitClaudeVisibilityValid(t *testing.T) {
-	tests := []struct {
-		name        string
-		input       string
-		wantDisplay string
-	}{
-		{name: "summary auto is visible", input: `{"reasoning":{"summary":"auto"},"input":"hi"}`, wantDisplay: "summarized"},
-		{name: "summary null is hidden", input: `{"reasoning":{"summary":null},"input":"hi"}`, wantDisplay: "omitted"},
+func TestRegistryTranslateRequestActivatesClaudeForEnabledSummary(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(FormatOpenAIResponse, FormatClaude, func(_ string, _ []byte, _ bool) []byte {
+		return []byte(`{"model":"claude-opus-5","max_tokens":32000}`)
+	}, ResponseTransform{})
+	out := registry.TranslateRequest(
+		FormatOpenAIResponse,
+		FormatClaude,
+		"claude-opus-5",
+		[]byte(`{"reasoning":{"summary":"auto"},"input":"hi"}`),
+		false,
+	)
+	if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
+		t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, out)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			registry := NewRegistry()
-			registry.Register(FormatOpenAIResponse, FormatClaude, func(_ string, _ []byte, _ bool) []byte {
-				return []byte(`{"model":"claude-opus-5","max_tokens":32000}`)
-			}, ResponseTransform{})
-			out := registry.TranslateRequest(
-				FormatOpenAIResponse,
-				FormatClaude,
-				"claude-opus-5",
-				[]byte(test.input),
-				false,
-			)
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
-				t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, out)
-			}
-			if got := gjson.GetBytes(out, "thinking.display").String(); got != test.wantDisplay {
-				t.Fatalf("thinking.display = %q, want %q; body=%s", got, test.wantDisplay, out)
-			}
-		})
+	if got := gjson.GetBytes(out, "thinking.display").String(); got != "summarized" {
+		t.Fatalf("thinking.display = %q, want summarized; body=%s", got, out)
+	}
+}
+
+func TestRegistryTranslateRequestDoesNotActivateClaudeForDisabledSummary(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(FormatOpenAIResponse, FormatClaude, func(_ string, _ []byte, _ bool) []byte {
+		return []byte(`{"model":"claude-opus-5","max_tokens":32000}`)
+	}, ResponseTransform{})
+	out := registry.TranslateRequest(
+		FormatOpenAIResponse,
+		FormatClaude,
+		"claude-opus-5",
+		[]byte(`{"reasoning":{"summary":null},"input":"hi"}`),
+		false,
+	)
+	if gjson.GetBytes(out, "thinking").Exists() {
+		t.Fatalf("disabled summary activated Claude thinking: %s", out)
 	}
 }
 
