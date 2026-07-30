@@ -212,7 +212,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				return nil, errCtx
 			}
 			if allowRetry {
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, errStream, didRefreshOnUnauthorized); okRefresh {
+				if refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(ctx, executor, auth, errStream, didRefreshOnUnauthorized, ephemeralResult); errRefresh != nil {
+					errStream = errRefresh
+				} else if okRefresh {
 					auth = refreshed
 					didRefreshOnUnauthorized = true
 					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
@@ -246,7 +248,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				return nil, errCtx
 			}
 			if allowRetry {
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, bootstrapErr, didRefreshOnUnauthorized); okRefresh {
+				if refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(ctx, executor, auth, bootstrapErr, didRefreshOnUnauthorized, ephemeralResult); errRefresh != nil {
+					discardStreamChunks(streamResult.Chunks)
+					bootstrapErr = errRefresh
+					streamResult = &cliproxyexecutor.StreamResult{}
+				} else if okRefresh {
 					discardStreamChunks(streamResult.Chunks)
 					auth = refreshed
 					didRefreshOnUnauthorized = true
