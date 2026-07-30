@@ -19,6 +19,7 @@ const (
 type staticModelsJSON struct {
 	Claude      []*ModelInfo `json:"claude"`
 	Gemini      []*ModelInfo `json:"gemini"`
+	GeminiCLI   []*ModelInfo `json:"gemini-cli"`
 	Vertex      []*ModelInfo `json:"vertex"`
 	AIStudio    []*ModelInfo `json:"aistudio"`
 	CodexFree   []*ModelInfo `json:"codex-free"`
@@ -38,6 +39,11 @@ func GetClaudeModels() []*ModelInfo {
 // GetGeminiModels returns the standard Gemini model definitions.
 func GetGeminiModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Gemini)
+}
+
+// GetGeminiCLIModels returns the model definitions advertised by Gemini CLI OAuth credentials.
+func GetGeminiCLIModels() []*ModelInfo {
+	return cloneModelInfos(getModels().GeminiCLI)
 }
 
 // GetGeminiVertexModels returns Gemini model definitions for Vertex AI.
@@ -429,6 +435,7 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 // Supported channels:
 //   - claude
 //   - gemini
+//   - gemini-cli
 //   - vertex
 //   - aistudio
 //   - codex
@@ -439,6 +446,7 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - kilocode (alias for kilo)
 //   - antigravity (returns static overrides only)
 //   - xai
+//   - cline
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
@@ -446,6 +454,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetClaudeModels()
 	case "gemini":
 		return GetGeminiModels()
+	case "gemini-cli":
+		return GetGeminiCLIModels()
 	case "vertex":
 		return GetGeminiVertexModels()
 	case "aistudio":
@@ -468,6 +478,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetCodeBuddyModels()
 	case "cursor":
 		return GetCursorModels()
+	case "cline":
+		return GetClineModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
 	default:
@@ -498,6 +510,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 	allModels := [][]*ModelInfo{
 		data.Claude,
 		data.Gemini,
+		data.GeminiCLI,
 		data.Vertex,
 		data.AIStudio,
 		data.CodexPro,
@@ -509,6 +522,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetAmazonQModels(),
 		GetCodeBuddyModels(),
 		GetCursorModels(),
+		GetClineModels(),
 		data.XAI,
 	}
 	for _, models := range allModels {
