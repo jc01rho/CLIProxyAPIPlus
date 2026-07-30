@@ -95,6 +95,14 @@ func ExtractSummaryConfig(body []byte, format string) SummaryConfig {
 				return config
 			}
 		}
+		if config, ok := firstSummaryBoolConfig(body, []string{
+			"generation_config.thinking_config.include_thoughts",
+			"generation_config.thinking_config.includeThoughts",
+			"generation_config.thinkingConfig.include_thoughts",
+			"generation_config.thinkingConfig.includeThoughts",
+		}); ok {
+			return config
+		}
 	}
 
 	return SummaryConfig{}
@@ -213,10 +221,14 @@ func claudeThinkingAcceptsDisplay(body []byte) bool {
 		return true
 	case "enabled":
 		// This runs before ApplyThinking normalizes the request, so a missing
-		// budget_tokens is an unfinished body rather than inactive thinking.
-		// Only an explicit non-positive budget means thinking is off.
+		// budget_tokens is an unfinished body rather than inactive thinking. CPA
+		// also accepts -1 as its compatibility representation for auto thinking.
 		budget := gjson.GetBytes(body, "thinking.budget_tokens")
-		return budget.Type != gjson.Number || budget.Int() > 0
+		if budget.Type != gjson.Number {
+			return true
+		}
+		value := budget.Int()
+		return value == -1 || value > 0
 	default:
 		return false
 	}

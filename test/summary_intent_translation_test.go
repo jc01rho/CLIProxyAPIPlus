@@ -62,6 +62,7 @@ func TestSummaryIntentTranslation(t *testing.T) {
 		{name: "Chat effort enables Interactions summary", from: sdktranslator.FormatOpenAI, to: sdktranslator.FormatInteractions, body: `{"model":"gemini-3.6-flash","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`, path: "generation_config.thinking_summaries", want: "auto", wantExists: true},
 		{name: "Responses concise summary maps to Interactions auto", from: sdktranslator.FormatOpenAIResponse, to: sdktranslator.FormatInteractions, body: `{"model":"gemini-3.6-flash","reasoning":{"effort":"high","summary":"concise"},"input":"hi"}`, path: "generation_config.thinking_summaries", want: "auto", wantExists: true},
 		{name: "Native Claude summarized enables Gemini summary", from: sdktranslator.FormatClaude, to: sdktranslator.FormatGemini, body: `{"model":"claude-opus-5","thinking":{"type":"adaptive","display":"summarized"},"messages":[{"role":"user","content":"hi"}]}`, path: "generationConfig.thinkingConfig.includeThoughts", want: "true", wantExists: true},
+		{name: "Claude auto compatibility budget keeps Gemini summary", from: sdktranslator.FormatClaude, to: sdktranslator.FormatGemini, body: `{"model":"gemini-3.6-flash","thinking":{"type":"enabled","budget_tokens":-1,"display":"summarized"},"messages":[{"role":"user","content":"hi"}]}`, path: "generationConfig.thinkingConfig.includeThoughts", want: "true", wantExists: true},
 		{name: "Native Gemini disabled omits Claude summary", from: sdktranslator.FormatGemini, to: sdktranslator.FormatClaude, body: `{"model":"gemini-3.6-flash","generationConfig":{"thinkingConfig":{"thinkingLevel":"high","includeThoughts":false}},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`, path: "thinking.display", want: "omitted", wantExists: true},
 		{name: "Native Gemini absent summary leaves Claude display absent", from: sdktranslator.FormatGemini, to: sdktranslator.FormatClaude, body: `{"model":"gemini-3.6-flash","generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`, path: "thinking.display"},
 		{name: "Native Interactions auto enables Gemini summary", from: sdktranslator.FormatInteractions, to: sdktranslator.FormatGemini, body: `{"model":"gemini-3.6-flash","generation_config":{"thinking_level":"high","thinking_summaries":"auto"},"input":"hi"}`, path: "generationConfig.thinkingConfig.includeThoughts", want: "true", wantExists: true},
@@ -168,6 +169,43 @@ func TestSummaryIntentFinalPipeline(t *testing.T) {
 			}
 			if test.to == sdktranslator.FormatClaude && gjson.GetBytes(out, "thinking.type").String() == "disabled" && gjson.GetBytes(out, "thinking.display").Exists() {
 				t.Fatalf("disabled Claude thinking retained display: %s", out)
+			}
+		})
+	}
+}
+
+func TestGeminiSummaryOnlyProducesValidClaudeThinking(t *testing.T) {
+	reg := registry.GetGlobalRegistry()
+	uid := fmt.Sprintf("gemini-summary-only-claude-%d", time.Now().UnixNano())
+	reg.RegisterClient(uid, "test", getTestModels())
+	defer reg.UnregisterClient(uid)
+
+	tests := []struct {
+		name       string
+		model      string
+		wantType   string
+		wantBudget int64
+	}{
+		{name: "adaptive model", model: "claude-sonnet-4-6-model", wantType: "adaptive"},
+		{name: "manual model", model: "claude-budget-model", wantType: "enabled", wantBudget: 1024},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := []byte(`{"model":"` + test.model + `","generationConfig":{"thinkingConfig":{"includeThoughts":true}},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+			out := sdktranslator.TranslateRequest(sdktranslator.FormatGemini, sdktranslator.FormatClaude, test.model, body, false)
+			if got := gjson.GetBytes(out, "thinking.type").String(); got != test.wantType {
+				t.Fatalf("thinking.type = %q, want %q; body=%s", got, test.wantType, out)
+			}
+			if got := gjson.GetBytes(out, "thinking.display").String(); got != "summarized" {
+				t.Fatalf("thinking.display = %q, want summarized; body=%s", got, out)
+			}
+			budget := gjson.GetBytes(out, "thinking.budget_tokens")
+			if test.wantBudget > 0 {
+				if budget.Int() != test.wantBudget {
+					t.Fatalf("thinking.budget_tokens = %d, want %d; body=%s", budget.Int(), test.wantBudget, out)
+				}
+			} else if budget.Exists() {
+				t.Fatalf("adaptive model retained budget_tokens: %s", out)
 			}
 		})
 	}

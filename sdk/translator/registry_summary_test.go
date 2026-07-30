@@ -1,9 +1,11 @@
 package translator
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func TestRegistryTranslateRequestAppliesSummaryIntent(t *testing.T) {
@@ -128,5 +130,76 @@ func TestRegistryTranslateRequestPreservesNativeClaudeMissingDisplay(t *testing.
 	out := registry.TranslateRequest(FormatClaude, FormatClaude, "claude-opus-5", body, true)
 	if gjson.GetBytes(out, "thinking.display").Exists() {
 		t.Fatalf("native Claude request without display gained one: %s", out)
+	}
+}
+
+func TestRegistryTranslateRequestDoesNotMixSummaryIntoFallback(t *testing.T) {
+	registry := NewRegistry()
+	body := []byte(`{"model":"gemini-3.6-flash","reasoning":{"summary":"auto"},"input":"hi"}`)
+	out := registry.TranslateRequest(FormatOpenAIResponse, FormatGemini, "gemini-3.6-flash", body, false)
+	if !bytes.Equal(out, body) {
+		t.Fatalf("missing translator changed fallback body: got %s, want %s", out, body)
+	}
+	if gjson.GetBytes(out, "generationConfig").Exists() {
+		t.Fatalf("missing translator mixed Gemini fields into Responses body: %s", out)
+	}
+}
+
+func TestRegistryTranslateRequestPluginMissDoesNotMixSummary(t *testing.T) {
+	registry := NewRegistry()
+	hooks := &fakePluginHooks{requestTranslateOK: false}
+	registry.SetPluginHooks(hooks)
+	body := []byte(`{"model":"gemini-3.6-flash","reasoning":{"summary":"auto"},"input":"hi"}`)
+	out := registry.TranslateRequest(FormatOpenAIResponse, FormatGemini, "gemini-3.6-flash", body, false)
+	if !bytes.Equal(out, body) {
+		t.Fatalf("plugin translation miss changed fallback body: got %s, want %s", out, body)
+	}
+	if gjson.GetBytes(out, "generationConfig").Exists() {
+		t.Fatalf("plugin translation miss mixed Gemini fields into Responses body: %s", out)
+	}
+}
+
+func TestRegistryTranslateRequestAppliesSummaryAfterPluginTranslation(t *testing.T) {
+	registry := NewRegistry()
+	hooks := &fakePluginHooks{
+		requestTranslateBody: []byte(`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`),
+		requestTranslateOK:   true,
+	}
+	registry.SetPluginHooks(hooks)
+	out := registry.TranslateRequest(
+		FormatOpenAIResponse,
+		FormatGemini,
+		"gemini-3.6-flash",
+		[]byte(`{"reasoning":{"summary":"auto"},"input":"hi"}`),
+		false,
+	)
+	if !gjson.GetBytes(out, "generationConfig.thinkingConfig.includeThoughts").Bool() {
+		t.Fatalf("plugin-translated request lost canonical summary: %s", out)
+	}
+}
+
+func TestRegistryTranslateRequestNormalizerOwnsFinalSummaryField(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(FormatOpenAIResponse, FormatGemini, func(_ string, _ []byte, _ bool) []byte {
+		return []byte(`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`)
+	}, ResponseTransform{})
+	hooks := &fakePluginHooks{normalizeRequest: func(body []byte) []byte {
+		if !gjson.GetBytes(body, "generationConfig.thinkingConfig.includeThoughts").Bool() {
+			t.Fatalf("normalizer did not receive canonical enabled summary: %s", body)
+		}
+		out, _ := sjson.DeleteBytes(body, "generationConfig.thinkingConfig.includeThoughts")
+		return out
+	}}
+	registry.SetPluginHooks(hooks)
+
+	out := registry.TranslateRequest(
+		FormatOpenAIResponse,
+		FormatGemini,
+		"gemini-3.6-flash",
+		[]byte(`{"reasoning":{"effort":"high","summary":"auto"},"input":"hi"}`),
+		false,
+	)
+	if gjson.GetBytes(out, "generationConfig.thinkingConfig.includeThoughts").Exists() {
+		t.Fatalf("summary post-processing overrode request normalizer: %s", out)
 	}
 }
