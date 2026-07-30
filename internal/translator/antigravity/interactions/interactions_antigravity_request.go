@@ -707,20 +707,17 @@ func antigravityInputAudioMimeType(format string) string {
 }
 
 func antigravityThinkingSummariesIncludeThoughts(summary gjson.Result) (bool, bool) {
-	switch summary.Type {
-	case gjson.True:
-		return true, true
-	case gjson.False:
-		return false, true
-	case gjson.String:
-		switch strings.ToLower(strings.TrimSpace(summary.String())) {
-		case "", "none", "off", "false", "disabled":
-			return false, true
-		default:
-			return true, true
-		}
+	if summary.Type != gjson.String {
+		return false, false
 	}
-	return false, false
+	switch strings.ToLower(strings.TrimSpace(summary.String())) {
+	case "auto":
+		return true, true
+	case "none":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 func convertSnakeCaseKeysToCamelCaseForAntigravity(raw []byte) []byte {
