@@ -176,8 +176,9 @@ func TestApplySummaryConfigForModel_ClaudeEnabledSummaryUsesValidThinkingMode(t 
 	}
 }
 
-// Disabling summaries must not activate Claude thinking. Doing so would add
-// reasoning tokens, latency, and cost to a request that asked only to hide output.
+// Disabling summaries must not make CPA add a Claude thinking block. Absence
+// preserves the per-model default: newer models may still think by default,
+// while older models remain off.
 func TestApplySummaryConfigForModel_ClaudeDisabledSummaryDoesNotEnableThinking(t *testing.T) {
 	for _, model := range []string{"claude-opus-5", "claude-haiku-4-5-20251001"} {
 		body := []byte(`{"model":"` + model + `","max_tokens":32000}`)

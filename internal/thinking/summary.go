@@ -126,11 +126,19 @@ func applySummaryConfigForModel(body []byte, format, model string, modelInfo *re
 		body = applyOpenAIChatSummaryConfig(body, model, enabled)
 	case "claude":
 		// Anthropic documents display as invalid with thinking.type=disabled and
-		// requires it alongside adaptive or enabled thinking. An enabled source
-		// summary needs an active target thinking mode. A disabled summary only
-		// hides an already-active target thinking mode; it must not enable thinking
-		// merely to hide a summary that would not otherwise exist. Unspecified
-		// intent returns above and leaves the target's default untouched.
+		// requires it alongside adaptive or enabled thinking. Model defaults differ:
+		// Opus 5 and Sonnet 5 default to adaptive thinking; Fable/Mythos 5 are always
+		// on. Opus 4.8/4.7/4.6, Sonnet 4.6, and the 4.5 models default to thinking
+		// off. The newest models also default display to omitted. Keeping a missing
+		// thinking block absent therefore preserves both kinds of model default;
+		// absence does not mean every Claude model runs without thinking. Only an
+		// enabled summary may activate a valid target thinking mode so that summarized
+		// text can be returned. A disabled summary only adds omitted to an
+		// already-active target mode.
+		//
+		// Anthropic docs:
+		// https://platform.claude.com/docs/en/build-with-claude/thinking
+		// https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting#supported-models
 		if enabled && !gjson.GetBytes(body, "thinking.type").Exists() {
 			body = enableClaudeThinkingForSummary(body, model, modelInfo)
 		}
