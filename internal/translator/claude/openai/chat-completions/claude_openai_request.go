@@ -47,6 +47,11 @@ var (
 //   - []byte: The transformed request data in Claude Code API format
 func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
+	if claudeCanNormalizeOpenAIInstructions(rawJSON) {
+		if normalized, _, err := common.NormalizeLeadingOpenAIInstructions(rawJSON); err == nil {
+			rawJSON = normalized
+		}
+	}
 
 	if account == "" {
 		u, _ := uuid.NewRandom()
@@ -169,6 +174,9 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
 			contentResult := message.Get("content")
+			if role == "system" && !claudeSystemContentIsLossless(contentResult) {
+				role = "developer"
+			}
 
 			switch role {
 			case "system":
@@ -198,7 +206,7 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						}
 					}
 				}
-			case "user", "assistant":
+			case "user", "assistant", "developer":
 				contentBlocks := make([][]byte, 0, 4)
 
 				// Handle content based on its type (string or array)
@@ -211,9 +219,17 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						claudePart := convertOpenAIContentPartToClaudePart(part)
 						if claudePart != "" {
 							contentBlocks = append(contentBlocks, []byte(claudePart))
+						} else if role == "developer" {
+							fallbackPart := []byte(`{"type":"text","text":""}`)
+							fallbackPart, _ = sjson.SetBytes(fallbackPart, "text", part.Raw)
+							contentBlocks = append(contentBlocks, fallbackPart)
 						}
 						return true
 					})
+				} else if role == "developer" && contentResult.Exists() {
+					fallbackPart := []byte(`{"type":"text","text":""}`)
+					fallbackPart, _ = sjson.SetBytes(fallbackPart, "text", contentResult.Raw)
+					contentBlocks = append(contentBlocks, fallbackPart)
 				}
 
 				// Handle tool calls (for assistant messages)
@@ -255,7 +271,11 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				}
 
 				msg := []byte(`{"role":"","content":[]}`)
-				msg, _ = sjson.SetBytes(msg, "role", role)
+				claudeRole := role
+				if role == "developer" {
+					claudeRole = "user"
+				}
+				msg, _ = sjson.SetBytes(msg, "role", claudeRole)
 				msg, _ = sjson.SetRawBytes(msg, "content", common.JoinRawArray(contentBlocks))
 				msg = common.AttachMessageCacheControl(msg, message)
 				messageBlocks = append(messageBlocks, msg)
@@ -360,6 +380,46 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	}
 
 	return out
+}
+
+func claudeCanNormalizeOpenAIInstructions(payload []byte) bool {
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+
+	canNormalize := true
+	messages.ForEach(func(_, message gjson.Result) bool {
+		role := message.Get("role").String()
+		if role != "system" && role != "developer" {
+			return false
+		}
+		if !claudeSystemContentIsLossless(message.Get("content")) {
+			canNormalize = false
+			return false
+		}
+		return true
+	})
+	return canNormalize
+}
+
+func claudeSystemContentIsLossless(content gjson.Result) bool {
+	if content.Type == gjson.String {
+		return true
+	}
+	if !content.IsArray() {
+		return false
+	}
+
+	lossless := true
+	content.ForEach(func(_, part gjson.Result) bool {
+		if part.Get("type").String() != "text" {
+			lossless = false
+			return false
+		}
+		return true
+	})
+	return lossless
 }
 
 func convertOpenAIContentPartToClaudePart(part gjson.Result) string {

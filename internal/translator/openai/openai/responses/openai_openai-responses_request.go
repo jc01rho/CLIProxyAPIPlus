@@ -149,9 +149,6 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			case "message", "":
 				// Handle regular message conversion
 				role := item.Get("role").String()
-				if role == "developer" {
-					role = "user"
-				}
 				if role != "assistant" {
 					appendPendingReasoningMessage()
 				}
@@ -171,6 +168,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 							text := contentItem.Get("text").String()
 							contentPart := []byte(`{"type":"text","text":""}`)
 							contentPart, _ = sjson.SetBytes(contentPart, "text", text)
+							contentPart = translatorcommon.AttachCacheControl(contentPart, contentItem)
 							contentItems = append(contentItems, contentPart)
 						case "input_image":
 							imageURL := contentItem.Get("image_url").String()
@@ -179,6 +177,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 							if detail := contentItem.Get("detail"); detail.Exists() {
 								contentPart, _ = sjson.SetBytes(contentPart, "image_url.detail", detail.String())
 							}
+							contentPart = translatorcommon.AttachCacheControl(contentPart, contentItem)
 							contentItems = append(contentItems, contentPart)
 						}
 						return true
@@ -187,6 +186,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				} else if content.Type == gjson.String {
 					message, _ = sjson.SetBytes(message, "content", content.String())
 				}
+				message = translatorcommon.AttachMessageCacheControl(message, item)
 
 				if role == "assistant" {
 					reasoningContent := item.Get("reasoning_content").String()
@@ -345,6 +345,10 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		}
 	}
 
+	normalized, _, err := translatorcommon.NormalizeLeadingOpenAIInstructions(out)
+	if err == nil {
+		out = normalized
+	}
 	return out
 }
 

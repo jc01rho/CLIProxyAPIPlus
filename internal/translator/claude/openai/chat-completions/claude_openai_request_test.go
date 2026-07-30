@@ -521,3 +521,98 @@ func TestConvertOpenAIRequestToClaude_PartCacheControlWinsOverMessageLevel(t *te
 		t.Fatalf("part-level cache_control should win; unexpected ttl: %s", result)
 	}
 }
+
+func TestConvertOpenAIRequestToClaude_LeadingDeveloperBecomesTopLevelSystem(t *testing.T) {
+	inputJSON := `{
+		"model":"claude-sonnet-4-5",
+		"messages":[
+			{"role":"system","content":"base"},
+			{"role":"developer","content":[{"type":"text","text":"developer rule","cache_control":{"type":"ephemeral"}}]},
+			{"role":"user","content":"question"}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	root := gjson.ParseBytes(result)
+	if got := root.Get("system.#").Int(); got != 2 {
+		t.Fatalf("system block count = %d, want 2; output=%s", got, result)
+	}
+	if got := root.Get("system.0.text").String(); got != "base" {
+		t.Fatalf("system.0.text = %q, want base; output=%s", got, result)
+	}
+	if got := root.Get("system.1.text").String(); got != "developer rule" {
+		t.Fatalf("system.1.text = %q, want developer rule; output=%s", got, result)
+	}
+	if got := root.Get("system.1.cache_control.type").String(); got != "ephemeral" {
+		t.Fatalf("system.1.cache_control.type = %q, want ephemeral; output=%s", got, result)
+	}
+	if got := root.Get("messages.#").Int(); got != 1 {
+		t.Fatalf("messages count = %d, want 1; output=%s", got, result)
+	}
+	if got := root.Get("messages.0.content.0.text").String(); got != "question" {
+		t.Fatalf("user text = %q, want question; output=%s", got, result)
+	}
+}
+
+func TestConvertOpenAIRequestToClaude_LaterDeveloperPreservedAsUserInPlace(t *testing.T) {
+	inputJSON := `{"messages":[{"role":"user","content":"question"},{"role":"developer","content":"late"},{"role":"assistant","content":"answer"}]}`
+	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	root := gjson.ParseBytes(result)
+
+	if root.Get("system").Exists() {
+		t.Fatalf("later developer must not become system; output=%s", result)
+	}
+	if got := root.Get("messages.#").Int(); got != 3 {
+		t.Fatalf("messages count = %d, want 3; output=%s", got, result)
+	}
+	if got := root.Get("messages.1.role").String(); got != "user" {
+		t.Fatalf("messages.1.role = %q, want user compatibility block; output=%s", got, result)
+	}
+	if got := root.Get("messages.1.content.0.text").String(); got != "late" {
+		t.Fatalf("messages.1 developer content = %q, want late; output=%s", got, result)
+	}
+	if got := root.Get("messages.2.content.0.text").String(); got != "answer" {
+		t.Fatalf("messages.2 content = %q, want answer; output=%s", got, result)
+	}
+}
+
+func TestConvertOpenAIRequestToClaude_LeadingNonTextDeveloperIsNotSilentlyDropped(t *testing.T) {
+	inputJSON := `{"messages":[{"role":"developer","content":[{"type":"text","text":"inspect"},{"type":"image_url","image_url":{"url":"https://example.com/rule.png"}}]},{"role":"user","content":"question"}]}`
+	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	root := gjson.ParseBytes(result)
+
+	if root.Get("system").Exists() {
+		t.Fatalf("non-text developer content must not be partially hoisted; output=%s", result)
+	}
+	if got := root.Get("messages.0.role").String(); got != "user" {
+		t.Fatalf("messages.0.role = %q, want user compatibility block; output=%s", got, result)
+	}
+	if got := root.Get("messages.0.content.0.text").String(); got != "inspect" {
+		t.Fatalf("developer text = %q, want inspect; output=%s", got, result)
+	}
+	if got := root.Get("messages.0.content.1.source.url").String(); got != "https://example.com/rule.png" {
+		t.Fatalf("developer image URL = %q, want preserved; output=%s", got, result)
+	}
+	if got := root.Get("messages.1.content.0.text").String(); got != "question" {
+		t.Fatalf("question = %q, want preserved after developer block; output=%s", got, result)
+	}
+}
+
+func TestConvertOpenAIRequestToClaude_UnsupportedSystemPartIsNotSilentlyDropped(t *testing.T) {
+	inputJSON := `{"messages":[{"role":"system","content":[{"type":"text","text":"inspect"},{"type":"file","file":{"file_data":"data:application/pdf;base64,cGRm"}}]},{"role":"user","content":"question"}]}`
+	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	root := gjson.ParseBytes(result)
+
+	if root.Get("system").Exists() {
+		t.Fatalf("unsupported system content must not be partially emitted; output=%s", result)
+	}
+	if got := root.Get("messages.0.content.0.text").String(); got != "inspect" {
+		t.Fatalf("system text = %q, want preserved in compatibility block; output=%s", got, result)
+	}
+	if got := root.Get("messages.0.content.1.type").String(); got != "document" {
+		t.Fatalf("system file type = %q, want document; output=%s", got, result)
+	}
+	if got := root.Get("messages.1.content.0.text").String(); got != "question" {
+		t.Fatalf("question = %q, want preserved; output=%s", got, result)
+	}
+}
