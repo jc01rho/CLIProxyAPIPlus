@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	claudeopenai "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/openai/chat-completions"
+
 	"github.com/tidwall/gjson"
 )
 
@@ -471,5 +473,68 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesInputImag
 	}
 	if got := gjson.GetBytes(out, "messages.0.content.0.image_url.detail").String(); got != "high" {
 		t.Fatalf("messages.0.content.0.image_url.detail = %q, want high; output=%s", got, out)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_NormalizesLeadingDeveloper(t *testing.T) {
+	raw := []byte(`{
+		"instructions":"base",
+		"input":[
+			{"type":"message","role":"developer","content":[{"type":"input_text","text":"developer rule"}]},
+			{"type":"message","role":"user","content":"question"}
+		],
+		"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5.4", raw, false)
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
+		t.Fatalf("messages count = %d, want 2; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "system" {
+		t.Fatalf("messages.0.role = %q, want system; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.content.0.text").String(); got != "base" {
+		t.Fatalf("first instruction = %q, want base; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.content.1.text").String(); got != "developer rule" {
+		t.Fatalf("second instruction = %q, want developer rule; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "user" {
+		t.Fatalf("messages.1.role = %q, want user; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "tools.0.function.name").String(); got != "lookup" {
+		t.Fatalf("tool name = %q, want lookup; output=%s", got, out)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_KeepsLaterDeveloper(t *testing.T) {
+	raw := []byte(`{"input":[{"role":"user","content":"question"},{"role":"developer","content":"late rule"},{"role":"assistant","content":"answer"}]}`)
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5.4", raw, false)
+
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 3 {
+		t.Fatalf("messages count = %d, want 3; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "developer" {
+		t.Fatalf("messages.1.role = %q, want developer; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.1.content").String(); got != "late rule" {
+		t.Fatalf("messages.1.content = %q, want late rule; output=%s", got, out)
+	}
+
+	claudeOut := claudeopenai.ConvertOpenAIRequestToClaude("claude-sonnet-4-5", out, false)
+	if gjson.GetBytes(claudeOut, "system").Exists() {
+		t.Fatalf("later developer must not be hoisted during composition; output=%s", claudeOut)
+	}
+	if got := gjson.GetBytes(claudeOut, "messages.#").Int(); got != 3 {
+		t.Fatalf("composed messages count = %d, want 3; output=%s", got, claudeOut)
+	}
+	if got := gjson.GetBytes(claudeOut, "messages.1.role").String(); got != "user" {
+		t.Fatalf("composed messages.1.role = %q, want user compatibility block; output=%s", got, claudeOut)
+	}
+	if got := gjson.GetBytes(claudeOut, "messages.1.content.0.text").String(); got != "late rule" {
+		t.Fatalf("composed later developer content = %q, want late rule; output=%s", got, claudeOut)
+	}
+	if got := gjson.GetBytes(claudeOut, "messages.2.content.0.text").String(); got != "answer" {
+		t.Fatalf("composed following content = %q, want answer; output=%s", got, claudeOut)
 	}
 }

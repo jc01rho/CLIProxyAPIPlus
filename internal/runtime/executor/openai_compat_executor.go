@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -40,6 +41,10 @@ const (
 type OpenAICompatExecutor struct {
 	provider string
 	cfg      *config.Config
+
+	developerRoleCacheMu sync.Mutex
+	developerRoleCache   *openAICompatDeveloperRoleCache
+	now                  func() time.Time
 }
 
 // NewOpenAICompatExecutor creates an executor bound to a provider key (e.g., "openrouter").
@@ -167,6 +172,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	// Ensure all tool-related id fields are JSON strings (some clients send
 	// numeric or null ids which upstream providers reject).
 	translated = normalizeToolResultIDsToString(translated)
+	developerRoleKey := e.developerRoleCapabilityKey(auth, baseURL, baseModel, endpoint)
+	if endpoint == "/chat/completions" {
+		translated = e.applyKnownDeveloperRoleFallback(developerRoleKey, translated)
+	}
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -214,19 +223,52 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
-		return resp, err
-	}
-	body, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
+	body, errRead := io.ReadAll(httpResp.Body)
+	if errRead != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+		return resp, errRead
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+
+	retriedDeveloperRole := false
+	if retryPayload, retry := e.developerRoleRetryPayload(developerRoleKey, translated, body, httpResp.StatusCode); retry {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("openai compat executor: close developer-role retry response body error: %v", errClose)
+		}
+		translated = retryPayload
+		retriedDeveloperRole = true
+		retryReq := cloneOpenAICompatRequestWithBody(httpReq, translated)
+		helps.LogWithRequestID(ctx).Warnf("openai compat provider %s rejected role developer; retrying with normalized leading instructions", strings.TrimPrefix(e.provider, "openai-compatible-"))
+		helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+			URL: url, Method: http.MethodPost, Headers: retryReq.Header.Clone(), Body: translated,
+			Provider: e.Identifier(), AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue,
+		})
+		httpResp, err = httpClient.Do(retryReq)
+		if err != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, err)
+			return resp, err
+		}
+		helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		body, errRead = io.ReadAll(httpResp.Body)
+		if errRead != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+			return resp, errRead
+		}
+		helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	}
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 || openAICompatHasStructuredError(body) || (retriedDeveloperRole && !openAICompatUsableSuccessBody(endpoint, body)) {
+		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), body))
+		code := httpResp.StatusCode
+		if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 && (openAICompatHasStructuredError(body) || (retriedDeveloperRole && !openAICompatUsableSuccessBody(endpoint, body))) {
+			code = http.StatusBadGateway // 502
+		}
+		err = statusErr{code: code, msg: string(body)}
+		return resp, err
+	}
+	if retriedDeveloperRole {
+		e.rememberDeveloperRoleFallback(developerRoleKey)
+	}
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.EnsurePublished(ctx)
@@ -403,6 +445,8 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Ensure all tool-related id fields are JSON strings (some clients send
 	// numeric or null ids which upstream providers reject).
 	translated = normalizeToolResultIDsToString(translated)
+	developerRoleKey := e.developerRoleCapabilityKey(auth, baseURL, baseModel, "/chat/completions")
+	translated = e.applyKnownDeveloperRoleFallback(developerRoleKey, translated)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -447,92 +491,233 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		return nil, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	retriedDeveloperRole := false
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("openai compat executor: close response body error: %v", errClose)
+		body, errRead := io.ReadAll(httpResp.Body)
+		if errRead != nil {
+			_ = httpResp.Body.Close()
+			helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+			return nil, errRead
 		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+		if retryPayload, retry := e.developerRoleRetryPayload(developerRoleKey, translated, body, httpResp.StatusCode); retry {
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.Errorf("openai compat executor: close developer-role retry response body error: %v", errClose)
+			}
+			translated = retryPayload
+			retriedDeveloperRole = true
+			retryReq := cloneOpenAICompatRequestWithBody(httpReq, translated)
+			helps.LogWithRequestID(ctx).Warnf("openai compat provider %s rejected role developer; retrying stream with normalized leading instructions", strings.TrimPrefix(e.provider, "openai-compatible-"))
+			helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+				URL: url, Method: http.MethodPost, Headers: retryReq.Header.Clone(), Body: translated,
+				Provider: e.Identifier(), AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue,
+			})
+			httpResp, err = httpClient.Do(retryReq)
+			if err != nil {
+				helps.RecordAPIResponseError(ctx, e.cfg, err)
+				return nil, err
+			}
+			helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		} else {
+			_ = httpResp.Body.Close()
+			err = statusErr{code: httpResp.StatusCode, msg: string(body)}
+			return nil, err
+		}
+	}
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		body, errRead := io.ReadAll(httpResp.Body)
+		_ = httpResp.Body.Close()
+		if errRead != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+			return nil, errRead
+		}
+		helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+		err = statusErr{code: httpResp.StatusCode, msg: string(body)}
 		return nil, err
 	}
+
+	newScanner := func(body io.Reader) *bufio.Scanner {
+		next := bufio.NewScanner(body)
+		next.Buffer(nil, 52_428_800) // 50MB
+		return next
+	}
+	currentBody := httpResp.Body
+	scanner := newScanner(currentBody)
+	var bootstrapLines [][]byte
+	var bootstrapErr error
+	bootstrapControls := 0
+	for {
+		if !scanner.Scan() {
+			if errScan := scanner.Err(); errScan != nil {
+				bootstrapErr = errScan
+			}
+			break
+		}
+		line := bytes.Clone(scanner.Bytes())
+		helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+		trimmedLine := bytes.TrimSpace(line)
+		if len(trimmedLine) == 0 || bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
+			bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
+			bootstrapControls++
+			if bootstrapControls >= 32 {
+				break
+			}
+			continue
+		}
+		data := trimmedLine
+		isSSEData := bytes.HasPrefix(trimmedLine, []byte("data:"))
+		if isSSEData {
+			data = bytes.TrimSpace(trimmedLine[len("data:"):])
+		}
+		if openAICompatHasStructuredError(data) {
+			if !retriedDeveloperRole && openAICompatRejectsDeveloperRole(http.StatusOK, data) {
+				retryPayload, retry := e.developerRoleRetryPayload(developerRoleKey, translated, data, http.StatusOK)
+				if retry {
+					if errClose := currentBody.Close(); errClose != nil {
+						log.Errorf("openai compat executor: close embedded developer-role retry response body error: %v", errClose)
+					}
+					translated = retryPayload
+					retriedDeveloperRole = true
+					retryReq := cloneOpenAICompatRequestWithBody(httpReq, translated)
+					helps.LogWithRequestID(ctx).Warnf("openai compat provider %s returned a streamed developer-role error; retrying with normalized leading instructions", strings.TrimPrefix(e.provider, "openai-compatible-"))
+					helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+						URL: url, Method: http.MethodPost, Headers: retryReq.Header.Clone(), Body: translated,
+						Provider: e.Identifier(), AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue,
+					})
+					httpResp, err = httpClient.Do(retryReq)
+					if err != nil {
+						helps.RecordAPIResponseError(ctx, e.cfg, err)
+						return nil, err
+					}
+					helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+					currentBody = httpResp.Body
+					if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+						body, errRead := io.ReadAll(currentBody)
+						_ = currentBody.Close()
+						if errRead != nil {
+							return nil, errRead
+						}
+						helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+						err = statusErr{code: httpResp.StatusCode, msg: string(body)}
+						return nil, err
+					}
+					scanner = newScanner(currentBody)
+					continue
+				}
+			}
+			bootstrapErr = statusErr{code: http.StatusBadGateway, msg: string(data)}
+			break
+		}
+		if !isSSEData {
+			if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
+				bootstrapErr = statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
+				break
+			}
+			continue
+		}
+		bootstrapLines = append(bootstrapLines, line)
+		break
+	}
+
+	returnedHeaders := httpResp.Header.Clone()
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
 		defer func() {
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("openai compat executor: close response body error: %v", errClose)
+			if currentBody != nil {
+				if errClose := currentBody.Close(); errClose != nil {
+					log.Errorf("openai compat executor: close response body error: %v", errClose)
+				}
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800) // 50MB
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
 		var streamUsage helps.StreamUsageBuffer
 		defer streamUsage.Publish(ctx, reporter)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			streamUsage.ObserveOpenAIStream(line)
-			trimmedLine := bytes.TrimSpace(line)
-			if len(trimmedLine) == 0 {
-				continue
+		validStreamData := false
+		terminalCompletion := false
+		emitError := func(streamErr error) {
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			reporter.PublishFailure(ctx, streamErr)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+			case <-ctx.Done():
 			}
-
+		}
+		if bootstrapErr != nil {
+			emitError(bootstrapErr)
+			return
+		}
+		processLine := func(line []byte) bool {
+			trimmedLine := bytes.TrimSpace(line)
+			streamUsage.ObserveOpenAIStream(line)
+			if len(trimmedLine) == 0 {
+				return true
+			}
+			if bytes.HasPrefix(trimmedLine, []byte("data:")) {
+				data := bytes.TrimSpace(trimmedLine[len("data:"):])
+				if openAICompatHasStructuredError(data) {
+					emitError(statusErr{code: http.StatusBadGateway, msg: string(data)})
+					return false
+				}
+				if bytes.Equal(data, []byte("[DONE]")) {
+					terminalCompletion = true
+				} else if openAICompatUsableStreamData(data) {
+					validStreamData = true
+				}
+			}
 			if !bytes.HasPrefix(trimmedLine, []byte("data:")) {
 				if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
 					bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
-					continue
+					return true
 				}
 				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
-					streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
-					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-					reporter.PublishFailure(ctx, streamErr)
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-					case <-ctx.Done():
-					}
-					return
+					emitError(statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)})
+					return false
 				}
-				continue
+				return true
 			}
-
-			// OpenAI-compatible streams must use SSE data lines.
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param, claudeInputTokens)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 				case <-ctx.Done():
-					return
+					return false
 				}
+			}
+			return true
+		}
+		for _, line := range bootstrapLines {
+			if !processLine(line) {
+				return
+			}
+		}
+		for scanner.Scan() {
+			line := bytes.Clone(scanner.Bytes())
+			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			if !processLine(line) {
+				return
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			emitError(errScan)
+			return
+		}
+		if retriedDeveloperRole && validStreamData && terminalCompletion {
+			e.rememberDeveloperRoleFallback(developerRoleKey)
+		}
+		chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param, claudeInputTokens)
+		for i := range chunks {
 			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 			case <-ctx.Done():
-			}
-		} else {
-			// In case the upstream close the stream without a terminal [DONE] marker.
-			// Feed a synthetic done marker through the translator so pending
-			// response.completed events are still emitted exactly once.
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param, claudeInputTokens)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
-				}
+				return
 			}
 		}
-		// Ensure we record the request if no usage chunk was ever seen.
 		streamUsage.Publish(ctx, reporter)
 		reporter.EnsurePublished(ctx)
 	}()
-	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+	return &cliproxyexecutor.StreamResult{Headers: returnedHeaders, Chunks: out}, nil
 }
 
 func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, endpointPath string) (_ *cliproxyexecutor.StreamResult, err error) {

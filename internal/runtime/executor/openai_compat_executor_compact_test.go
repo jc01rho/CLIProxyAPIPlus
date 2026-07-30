@@ -63,6 +63,163 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorRetriesUnsupportedDeveloperRole(t *testing.T) {
+	var requestBodies [][]byte
+	failedDeveloperRequest := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestBodies = append(requestBodies, append([]byte(nil), body...))
+		w.Header().Set("Content-Type", "application/json")
+		if !failedDeveloperRequest && gjson.GetBytes(body, "messages.0.role").String() == "developer" {
+			failedDeveloperRequest = true
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`data: {"error":{"code":"invalid_parameter_error","message":"developer is not one of ['system', 'assistant', 'user', 'tool', 'function']","type":"invalid_request_error"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatible-qwen-cloud-token-plan", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"higher-coding","messages":[{"role":"developer","content":"Follow the policy"},{"role":"user","content":"hi"}]}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "higher-coding",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if len(requestBodies) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requestBodies))
+	}
+	if role := gjson.GetBytes(requestBodies[0], "messages.0.role").String(); role != "developer" {
+		t.Fatalf("first request role = %q, want developer", role)
+	}
+	if role := gjson.GetBytes(requestBodies[1], "messages.0.role").String(); role != "system" {
+		t.Fatalf("retry request role = %q, want system", role)
+	}
+	if content := gjson.GetBytes(requestBodies[1], "messages.0.content").String(); content != "Follow the policy" {
+		t.Fatalf("retry developer content = %q", content)
+	}
+	if got := gjson.GetBytes(resp.Payload, "choices.0.message.content").String(); got != "ok" {
+		t.Fatalf("response content = %q, want ok", got)
+	}
+
+	requestBodies = nil
+	_, err = executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "higher-coding",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("cached Execute error: %v", err)
+	}
+	if len(requestBodies) != 1 {
+		t.Fatalf("cached request count = %d, want 1", len(requestBodies))
+	}
+	if role := gjson.GetBytes(requestBodies[0], "messages.0.role").String(); role != "system" {
+		t.Fatalf("cached request role = %q, want system", role)
+	}
+}
+
+func TestOpenAICompatExecutorStreamRetriesUnsupportedDeveloperRole(t *testing.T) {
+	var requestBodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestBodies = append(requestBodies, append([]byte(nil), body...))
+		if len(requestBodies) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"unsupported role: developer","type":"invalid_request_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatible-qwen-cloud-token-plan", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "higher-coding",
+		Payload: []byte(`{"model":"higher-coding","messages":[{"role":"developer","content":"Follow the policy"},{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	var output []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+		output = append(output, chunk.Payload...)
+	}
+	if len(requestBodies) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requestBodies))
+	}
+	if role := gjson.GetBytes(requestBodies[1], "messages.0.role").String(); role != "system" {
+		t.Fatalf("retry request role = %q, want system", role)
+	}
+	if !strings.Contains(string(output), `"content":"ok"`) {
+		t.Fatalf("stream output = %s, want content ok", output)
+	}
+}
+
+func TestOpenAICompatExecutorStreamRetriesEmbeddedUnsupportedDeveloperRole(t *testing.T) {
+	var requestBodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestBodies = append(requestBodies, append([]byte(nil), body...))
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(requestBodies) == 1 {
+			_, _ = w.Write([]byte("data: {\"error\":{\"code\":\"invalid_parameter_error\",\"message\":\"developer is not one of ['system', 'assistant', 'user', 'tool', 'function']\",\"type\":\"invalid_request_error\"}}\n\n"))
+			return
+		}
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatible-qwen-cloud-token-plan", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "higher-coding",
+		Payload: []byte(`{"model":"higher-coding","messages":[{"role":"developer","content":"Follow the policy"},{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	var output []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+		output = append(output, chunk.Payload...)
+	}
+	if len(requestBodies) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requestBodies))
+	}
+	if role := gjson.GetBytes(requestBodies[1], "messages.0.role").String(); role != "system" {
+		t.Fatalf("retry request role = %q, want system", role)
+	}
+	if strings.Contains(string(output), "invalid_parameter_error") {
+		t.Fatalf("embedded error leaked to output: %s", output)
+	}
+	if !strings.Contains(string(output), `"content":"ok"`) {
+		t.Fatalf("stream output = %s, want content ok", output)
+	}
+}
+
 func TestOpenAICompatExecutor_NvidiaCompatReducesMaxTokens(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
