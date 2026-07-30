@@ -159,7 +159,23 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	case "gitlab":
 		models = executor.GitLabModelsFromAuth(a)
 		models = applyExcludedModels(models, excluded)
+	case constant.CommandCode:
+		if entry := s.resolveConfigCommandCodeKey(a); entry != nil {
+			models = buildCommandCodeConfigModels(entry)
+			excluded = entry.ExcludedModels
+		}
+		models = applyExcludedModels(models, excluded)
+	case constant.Mistral:
+		if entry := s.resolveConfigMistralKey(a); entry != nil {
+			models = buildMistralConfigModels(entry)
+			excluded = entry.ExcludedModels
+		}
+		models = applyExcludedModels(models, excluded)
 	default:
+		models = applyExcludedModels(registry.GetStaticModelDefinitionsByChannel(provider), excluded)
+		if len(models) > 0 {
+			break
+		}
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {
 			providerKey := provider
