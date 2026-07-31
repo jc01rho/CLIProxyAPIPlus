@@ -183,6 +183,13 @@ func ApplyThinkingWithModelInfo(body, sourceBody []byte, model string, fromForma
 	if len(sourceBody) == 0 {
 		summaryConfig = ExtractSummaryConfig(body, toFormat)
 	}
+	return ApplyThinkingWithModelInfoAndSummary(body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, summaryConfig)
+}
+
+// ApplyThinkingWithModelInfoAndSummary applies the exact configured model
+// definition with a summary intent already resolved across source translation
+// and plugin normalization.
+func ApplyThinkingWithModelInfoAndSummary(body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, modelInfo *registry.ModelInfo, summaryConfig SummaryConfig) ([]byte, error) {
 	return applyThinking(body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, true, summaryConfig)
 }
 

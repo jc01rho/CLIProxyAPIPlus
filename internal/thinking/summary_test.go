@@ -75,6 +75,18 @@ func TestExtractSummaryConfig(t *testing.T) {
 	}
 }
 
+func TestExtractExplicitSummaryConfigDoesNotUseChatEffort(t *testing.T) {
+	body := []byte(`{"reasoning_effort":"high"}`)
+	if got := ExtractExplicitSummaryConfig(body, "openai"); got.Mode != SummaryUnspecified {
+		t.Fatalf("ExtractExplicitSummaryConfig() = %+v, want unspecified", got)
+	}
+
+	body = []byte(`{"reasoning_effort":"high","reasoning":{"exclude":true}}`)
+	if got := ExtractExplicitSummaryConfig(body, "openai"); got.Mode != SummaryDisabled {
+		t.Fatalf("ExtractExplicitSummaryConfig() = %+v, want disabled", got)
+	}
+}
+
 func TestApplySummaryConfig(t *testing.T) {
 	tests := []struct {
 		name   string

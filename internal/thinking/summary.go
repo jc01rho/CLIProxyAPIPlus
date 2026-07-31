@@ -114,6 +114,22 @@ func ExtractSummaryConfig(body []byte, format string) SummaryConfig {
 	return SummaryConfig{}
 }
 
+// ExtractExplicitSummaryConfig reads only explicit visibility controls from a
+// provider payload. Unlike ExtractSummaryConfig, OpenAI Chat reasoning_effort
+// is not treated as a summary proxy. This lets executor post-processing tell
+// whether a request normalizer retained or removed the translated target field.
+func ExtractExplicitSummaryConfig(body []byte, format string) SummaryConfig {
+	normalized := strings.ToLower(strings.TrimSpace(format))
+	if normalized != "openai" {
+		return ExtractSummaryConfig(body, normalized)
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return SummaryConfig{}
+	}
+	config, _ := extractOpenAIExplicitSummaryConfig(body)
+	return config
+}
+
 // ApplySummaryConfig writes canonical summary intent in the target protocol.
 func ApplySummaryConfig(body []byte, format string, config SummaryConfig) []byte {
 	return ApplySummaryConfigForModel(body, format, "", config)
