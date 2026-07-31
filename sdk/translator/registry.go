@@ -57,8 +57,6 @@ func (r *Registry) SetPluginHooks(hooks PluginHooks) {
 // "model" field is still updated to match the resolved model name so that
 // client-side prefixes (e.g. "copilot/gpt-5-mini") are not leaked upstream.
 func (r *Registry) TranslateRequest(from, to Format, model string, rawJSON []byte, stream bool) []byte {
-	summaryConfig := thinking.ExtractSummaryConfig(rawJSON, from.String())
-
 	r.mu.RLock()
 	var fn RequestTransform
 	if byTarget, ok := r.requests[from]; ok {
@@ -69,6 +67,7 @@ func (r *Registry) TranslateRequest(from, to Format, model string, rawJSON []byt
 
 	body := rawJSON
 	if fn != nil {
+		summaryConfig := thinking.ExtractSummaryConfig(rawJSON, from.String())
 		body = fn(model, body, stream)
 		body = thinking.ApplySummaryConfigForModel(body, to.String(), model, summaryConfig)
 		if hooks != nil {
@@ -93,8 +92,10 @@ func (r *Registry) TranslateRequest(from, to Format, model string, rawJSON []byt
 	}
 
 	// Plugin request normalizers canonicalize the source before a plugin request
-	// translator gets a chance to handle a missing native route.
+	// translator gets a chance to handle a missing native route. Extract summary
+	// intent from that normalized source so a normalizer can remove or rewrite it.
 	body = hooks.NormalizeRequest(context.Background(), from, to, model, body, stream)
+	summaryConfig := thinking.ExtractSummaryConfig(body, from.String())
 	if translated, ok := hooks.TranslateRequest(context.Background(), from, to, model, body, stream); ok {
 		body = thinking.ApplySummaryConfigForModel(translated, to.String(), model, summaryConfig)
 	}

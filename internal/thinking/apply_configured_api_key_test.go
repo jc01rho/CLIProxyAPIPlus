@@ -114,6 +114,26 @@ func TestApplyThinkingWithModelInfoAppliesEnabledSummaryOnlyClaudeVisibility(t *
 	}
 }
 
+func TestApplyThinkingWithModelInfoAndSummaryDropsInferredClaudeModeWhenSummaryRemoved(t *testing.T) {
+	modelInfo := &registry.ModelInfo{
+		ID:       "private-manual-claude",
+		Type:     "claude",
+		Thinking: &registry.ThinkingSupport{Min: 1024, Max: 16000},
+	}
+	out, err := thinking.ApplyThinkingWithModelInfoAndSummary(
+		[]byte(`{"model":"private-manual-claude","max_tokens":32000,"thinking":{"type":"adaptive"}}`),
+		[]byte(`{"reasoning":{"summary":"auto"}}`),
+		"private-manual-claude", "openai-response", "claude", "claude", modelInfo,
+		thinking.SummaryConfig{},
+	)
+	if err != nil {
+		t.Fatalf("ApplyThinkingWithModelInfoAndSummary() error = %v", err)
+	}
+	if gjson.GetBytes(out, "thinking").Exists() {
+		t.Fatalf("removed summary retained globally inferred adaptive thinking: %s", out)
+	}
+}
+
 func TestApplyThinkingWithModelInfoDoesNotActivateClaudeForDisabledSummary(t *testing.T) {
 	modelInfo := &registry.ModelInfo{
 		ID:       "private-claude",

@@ -178,6 +178,59 @@ func TestRegistryTranslateRequestAppliesSummaryAfterPluginTranslation(t *testing
 	}
 }
 
+func TestRegistryTranslateRequestPluginNormalizerOwnsSourceSummaryIntent(t *testing.T) {
+	tests := []struct {
+		name       string
+		normalize  func([]byte) []byte
+		wantExists bool
+		want       bool
+	}{
+		{
+			name: "removed summary remains absent",
+			normalize: func(body []byte) []byte {
+				out, _ := sjson.DeleteBytes(body, "reasoning.summary")
+				return out
+			},
+		},
+		{
+			name: "disabled summary replaces enabled intent",
+			normalize: func(body []byte) []byte {
+				out, _ := sjson.SetBytes(body, "reasoning.summary", nil)
+				return out
+			},
+			wantExists: true,
+			want:       false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			registry := NewRegistry()
+			hooks := &fakePluginHooks{
+				normalizeRequest:     test.normalize,
+				requestTranslateBody: []byte(`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`),
+				requestTranslateOK:   true,
+			}
+			registry.SetPluginHooks(hooks)
+
+			out := registry.TranslateRequest(
+				FormatOpenAIResponse,
+				FormatGemini,
+				"gemini-3.6-flash",
+				[]byte(`{"reasoning":{"summary":"auto"},"input":"hi"}`),
+				false,
+			)
+			result := gjson.GetBytes(out, "generationConfig.thinkingConfig.includeThoughts")
+			if result.Exists() != test.wantExists {
+				t.Fatalf("includeThoughts exists = %v, want %v; body=%s", result.Exists(), test.wantExists, out)
+			}
+			if test.wantExists && result.Bool() != test.want {
+				t.Fatalf("includeThoughts = %v, want %v; body=%s", result.Bool(), test.want, out)
+			}
+		})
+	}
+}
+
 func TestRegistryTranslateRequestNormalizerOwnsFinalSummaryField(t *testing.T) {
 	registry := NewRegistry()
 	registry.Register(FormatOpenAIResponse, FormatGemini, func(_ string, _ []byte, _ bool) []byte {
