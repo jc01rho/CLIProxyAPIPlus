@@ -81,6 +81,7 @@ func TestRegisterAvailableExecutors(t *testing.T) {
 	providers := []string{
 		"codex",
 		"claude",
+		"commandcode",
 		"gemini",
 		"gemini-interactions",
 		"vertex",
@@ -176,6 +177,32 @@ func TestRegisterExecutorForAuth_OpenAICompatUsesNamespacedProviderKey(t *testin
 				t.Fatalf("compat executor type = %T, want *executor.OpenAICompatExecutor", compatExecutor)
 			}
 		})
+	}
+}
+
+func TestRegisterExecutorForAuth_CommandCodeUsesNativeExecutor(t *testing.T) {
+	service := &Service{
+		cfg:         &config.Config{},
+		coreManager: coreauth.NewManager(nil, nil, nil),
+	}
+
+	service.registerExecutorForAuth(&coreauth.Auth{
+		ID:       "commandcode-key",
+		Provider: "commandcode",
+		Attributes: map[string]string{
+			"api_key": "user_test",
+		},
+	}, true)
+
+	resolved, ok := service.coreManager.Executor("commandcode")
+	if !ok || resolved == nil {
+		t.Fatal("expected native commandcode executor")
+	}
+	if _, okCommandCode := resolved.(*runtimeexecutor.CommandCodeExecutor); !okCommandCode {
+		t.Fatalf("executor type = %T, want *executor.CommandCodeExecutor", resolved)
+	}
+	if _, isOpenAICompat := resolved.(*runtimeexecutor.OpenAICompatExecutor); isOpenAICompat {
+		t.Fatalf("commandcode executor type = %T, must not use OpenAICompatExecutor", resolved)
 	}
 }
 
