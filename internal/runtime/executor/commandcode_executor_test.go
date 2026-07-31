@@ -1,11 +1,17 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -76,8 +82,8 @@ func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T
 	if got := req.Header.Get("Authorization"); got != "Bearer user_test" {
 		t.Fatalf("Authorization = %q, want %q", got, "Bearer user_test")
 	}
-	if got := req.Header.Get("x-command-code-version"); got != "0.29.0" {
-		t.Fatalf("x-command-code-version = %q, want %q", got, "0.29.0")
+	if got := req.Header.Get("x-command-code-version"); got != "1.6.0" {
+		t.Fatalf("x-command-code-version = %q, want %q", got, "1.6.0")
 	}
 	if got := req.Header.Get("x-cli-environment"); got != "production" {
 		t.Fatalf("x-cli-environment = %q, want %q", got, "production")
@@ -171,4 +177,114 @@ func assertCommandCodeMessageContent(t *testing.T, message gjson.Result, want st
 	if got := message.Get("content").String(); got != want {
 		t.Fatalf("message content = %q, want %q", got, want)
 	}
+}
+
+func Test_CommandCodeFallbackText_recovers_unrecognized_ndjson_events(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{name: "plain text", line: `{"type":"unknown","text":"hello"}`, want: "hello"},
+		{name: "delta text", line: `{"type":"unknown","delta":{"text":"world"}}`, want: "world"},
+		{name: "delta content", line: `{"type":"unknown","delta":{"content":"fallback"}}`, want: "fallback"},
+		{name: "message content", line: `{"type":"unknown","message":{"content":"recovered"}}`, want: "recovered"},
+		{name: "no text", line: `{"type":"unknown","value":1}`, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := commandCodeFallbackText([]byte(tt.line)); got != tt.want {
+				t.Fatalf("commandCodeFallbackText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_CommandCodeRecoverFromRawBody_handles_legacy_json_envelopes(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			name: "openai message content",
+			line: `{"choices":[{"message":{"content":"legacy answer"}}]}`,
+			want: "legacy answer",
+		},
+		{
+			name: "typed content parts",
+			line: `{"content":[{"type":"text","text":"part one"},{"type":"text","text":"part two"}]}`,
+			want: "part one\npart two",
+		},
+		{
+			name: "reasoning delta is not exposed",
+			line: `{"type":"reasoning-delta","text":"private chain"}`,
+			want: "",
+		},
+		{
+			name: "no recoverable text",
+			line: `{"type":"finish","finishReason":"stop"}`,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := commandCodeRecoverFromRawBody([][]byte{[]byte(tt.line)}); got != tt.want {
+				t.Fatalf("commandCodeRecoverFromRawBody() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	prettyLines := [][]byte{
+		[]byte(`{`),
+		[]byte(`  "message": {`),
+		[]byte(`    "content": "pretty answer"`),
+		[]byte(`  }`),
+		[]byte(`}`),
+	}
+	if got := commandCodeRecoverFromRawBody(prettyLines); got != "pretty answer" {
+		t.Fatalf("pretty commandCodeRecoverFromRawBody() = %q, want pretty answer", got)
+	}
+}
+
+func Test_CommandCodeExecutorExecute_recovers_legacy_json_response(t *testing.T) {
+	var upstreamURL string
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", commandCodeRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		upstreamURL = req.URL.String()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"choices":[{"message":{"content":"fallback answer"}}]}`,
+			)),
+		}, nil
+	}))
+
+	executor := NewCommandCodeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "user_test"}}
+	payload := []byte(`{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}`)
+	response, err := executor.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "deepseek/deepseek-v4-pro",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAI,
+		OriginalRequest: payload,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if upstreamURL != "https://api.commandcode.ai/alpha/generate" {
+		t.Fatalf("upstream URL = %q, want CommandCode generate endpoint", upstreamURL)
+	}
+	if got := gjson.GetBytes(response.Payload, "choices.0.message.content").String(); got != "fallback answer" {
+		t.Fatalf("response content = %q, want fallback answer; payload=%s", got, response.Payload)
+	}
+}
+
+type commandCodeRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f commandCodeRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

@@ -23,7 +23,7 @@ import (
 
 const (
 	commandCodeBaseURL = "https://api.commandcode.ai"
-	commandCodeVersion = "0.29.0"
+	commandCodeVersion = "1.6.0"
 	commandCodeProject = "cli-proxy"
 )
 
@@ -135,10 +135,13 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, err
 	}
 
-	// Collect text-delta events into a single response body.
+	// Collect NDJSON events into a single response body.
 	var textContent strings.Builder
 	var inputTokens, outputTokens int64
+	var toolCalls []map[string]any
+	toolCallIndex := 0
 	finishReason := "stop"
+	var rawLines [][]byte
 
 	scanner := bufio.NewScanner(httpResp.Body)
 	scanner.Buffer(nil, 52_428_800)
@@ -149,14 +152,46 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		if len(trimmed) == 0 {
 			continue
 		}
+		rawLines = append(rawLines, append([]byte(nil), trimmed...))
 		switch gjson.GetBytes(trimmed, "type").String() {
 		case "text-delta":
 			textContent.WriteString(gjson.GetBytes(trimmed, "text").String())
+		case "reasoning-delta":
+			// Do not expose hidden reasoning through the generic fallback.
+		case "tool-call":
+			inputRaw := gjson.GetBytes(trimmed, "input").Raw
+			if inputRaw == "" {
+				inputRaw = "{}"
+			}
+			toolCalls = append(toolCalls, map[string]any{
+				"index": toolCallIndex,
+				"id":    gjson.GetBytes(trimmed, "toolCallId").String(),
+				"type":  "function",
+				"function": map[string]any{
+					"name":      gjson.GetBytes(trimmed, "toolName").String(),
+					"arguments": inputRaw,
+				},
+			})
+			toolCallIndex++
+		case "finish-step":
+			inputTokens += gjson.GetBytes(trimmed, "usage.inputTokens").Int()
+			outputTokens += gjson.GetBytes(trimmed, "usage.outputTokens").Int()
 		case "finish":
-			inputTokens = gjson.GetBytes(trimmed, "totalUsage.inputTokens").Int()
-			outputTokens = gjson.GetBytes(trimmed, "totalUsage.outputTokens").Int()
+			if u := gjson.GetBytes(trimmed, "totalUsage.inputTokens").Int(); u > 0 {
+				inputTokens = u
+			}
+			if u := gjson.GetBytes(trimmed, "totalUsage.outputTokens").Int(); u > 0 {
+				outputTokens = u
+			}
 			if fr := gjson.GetBytes(trimmed, "finishReason").String(); fr != "" {
 				finishReason = fr
+			}
+		default:
+			// Fallback: upstream may rename event fields or emit an
+			// unrecognized event type. Try common text-bearing fields so
+			// we never silently drop content.
+			if text := commandCodeFallbackText(trimmed); text != "" {
+				textContent.WriteString(text)
 			}
 		}
 	}
@@ -165,8 +200,24 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, errScan
 	}
 
+	// Fallback: if structured NDJSON parsing produced no text and no tool
+	// calls, the upstream may have returned a single JSON envelope (legacy
+	// or format drift). Attempt to recover content from the raw body.
+	if textContent.Len() == 0 && len(toolCalls) == 0 {
+		if fallbackText := commandCodeRecoverFromRawBody(rawLines); fallbackText != "" {
+			textContent.WriteString(fallbackText)
+		}
+	}
+
 	// Build an OpenAI-shaped response to feed through the translator.
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	message := map[string]any{
+		"role":    "assistant",
+		"content": textContent.String(),
+	}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+	}
 	openAIResp := map[string]any{
 		"id":      chatID,
 		"object":  "chat.completion",
@@ -174,11 +225,8 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		"model":   baseModel,
 		"choices": []map[string]any{
 			{
-				"index": 0,
-				"message": map[string]any{
-					"role":    "assistant",
-					"content": textContent.String(),
-				},
+				"index":         0,
+				"message":       message,
 				"finish_reason": finishReason,
 			},
 		},
@@ -750,4 +798,97 @@ func commandCodeStreamChunk(id, model string, delta map[string]any, finishReason
 		"model":   model,
 		"choices": []map[string]any{choice},
 	}
+}
+
+// commandCodeFallbackText extracts text from an unrecognized NDJSON event
+// line. It probes common text-bearing field paths so that upstream format
+// drift (renamed fields, new event types) does not silently drop content.
+func commandCodeFallbackText(line []byte) string {
+	for _, path := range []string{
+		"text",
+		"delta.text",
+		"delta.content",
+		"content",
+		"message.content",
+		"output_text",
+		"outputText",
+	} {
+		if v := gjson.GetBytes(line, path); v.Exists() && v.Type == gjson.String {
+			if s := v.String(); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// commandCodeRecoverFromRawBody attempts to recover assistant text when the
+// structured NDJSON parser produced nothing. It handles two legacy shapes:
+// a single JSON envelope (whole body is one object) and a body where the
+// text lives under choices/message/content paths.
+func commandCodeRecoverFromRawBody(lines [][]byte) string {
+	if len(lines) == 0 {
+		return ""
+	}
+
+	candidates := make([][]byte, 0, len(lines)+1)
+	candidates = append(candidates, bytes.Join(lines, []byte("\n")))
+	if len(lines) > 1 {
+		candidates = append(candidates, lines...)
+	}
+
+	for _, candidate := range candidates {
+		// Hidden reasoning must never be surfaced by the generic fallback.
+		if gjson.GetBytes(candidate, "type").String() == "reasoning-delta" {
+			continue
+		}
+		for _, path := range []string{
+			"choices.0.message.content",
+			"message.content",
+			"content",
+			"result",
+			"output",
+			"text",
+		} {
+			if v := gjson.GetBytes(candidate, path); v.Exists() {
+				switch v.Type {
+				case gjson.String:
+					if s := v.String(); s != "" {
+						return s
+					}
+				case gjson.JSON:
+					// content may be an array of parts; flatten text blocks.
+					if flattened := commandCodeFallbackFlattenContent(v); flattened != "" {
+						return flattened
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// commandCodeFallbackFlattenContent collapses a JSON content value (string,
+// array of typed parts, or object) into plain text.
+func commandCodeFallbackFlattenContent(v gjson.Result) string {
+	switch v.Type {
+	case gjson.String:
+		return v.String()
+	case gjson.JSON:
+		if v.IsArray() {
+			var parts []string
+			for _, item := range v.Array() {
+				if t := item.Get("text"); t.Exists() && t.Type == gjson.String {
+					if s := t.String(); s != "" {
+						parts = append(parts, s)
+					}
+				}
+			}
+			return strings.Join(compactCommandCodeTextParts(parts), "\n")
+		}
+		if t := v.Get("text"); t.Exists() && t.Type == gjson.String {
+			return t.String()
+		}
+	}
+	return ""
 }
