@@ -23,24 +23,25 @@ import (
 )
 
 type UsageReporter struct {
-	provider     string
-	executorType string
-	model        string
-	alias        string
-	authID       string
-	authIndex    string
-	authType     string
-	apiKey       string
-	source       string
-	reasoning    string
-	serviceTier  string
-	generate     bool
-	requestedAt  time.Time
-	ttftMu       sync.RWMutex
-	ttft         time.Duration
-	ttftStart    time.Time
-	ttftSet      bool
-	once         sync.Once
+	provider        string
+	executorType    string
+	model           string
+	alias           string
+	authID          string
+	authIndex       string
+	accessTokenHash string
+	authType        string
+	apiKey          string
+	source          string
+	reasoning       string
+	serviceTier     string
+	generate        bool
+	requestedAt     time.Time
+	ttftMu          sync.RWMutex
+	ttft            time.Duration
+	ttftStart       time.Time
+	ttftSet         bool
+	once            sync.Once
 }
 
 type usageExecutor interface {
@@ -78,6 +79,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
+		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 	}
 	return reporter
 }
@@ -284,6 +286,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		APIKey:              r.apiKey,
 		AuthID:              r.authID,
 		AuthIndex:           r.authIndex,
+		AccessTokenSHA256:   r.accessTokenHash,
 		AuthType:            r.authType,
 		ReasoningEffort:     r.reasoning,
 		ServiceTier:         r.serviceTier,
