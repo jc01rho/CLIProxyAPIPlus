@@ -77,7 +77,10 @@ func applyInteractionsNone(result, original []byte, config thinking.ThinkingConf
 	if config.Budget > 0 {
 		return applyInteractionsBudget(result, original, config.Budget, modelInfo)
 	}
-	return setInteractionsThinkingSummaries(result, original)
+	// With the amount fully disabled, visibility is irrelevant. Restoring
+	// thinking_summaries alone could make a default-on model reason and return a
+	// summary despite the explicit none override.
+	return result
 }
 
 func stripInteractionsThinkingFields(body []byte) []byte {
