@@ -180,13 +180,24 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
 }
 
-func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel, executionModel string, execModels []string, pooled bool, aliasResult OAuthModelAliasResult, routing *apiKeyModelRoutingSnapshot, allowRetry bool, ephemeralResult bool) (*cliproxyexecutor.StreamResult, error) {
+func (m *Manager) replaceHomeExecutionLifecycleAuth(lifecycle cliproxyexecutor.ExecutionLifecycle, auth *Auth) {
+	selection, ok := lifecycle.(*HomeDispatchSelection)
+	if !ok || selection == nil {
+		return
+	}
+	m.replaceHomeSelectionAuth(selection, auth)
+}
+
+func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel, executionModel string, execModels []string, pooled bool, aliasResult OAuthModelAliasResult, routing *apiKeyModelRoutingSnapshot, allowRetry bool, ephemeralResult bool, unauthorizedRefreshTried map[string]struct{}) (*cliproxyexecutor.StreamResult, error) {
 	if executor == nil {
 		return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	ctx = contextWithRequestedModelAlias(ctx, opts, routeModel)
 	var lastErr error
 	didRefreshOnUnauthorized := false
+	if auth != nil && unauthorizedRefreshTried != nil {
+		_, didRefreshOnUnauthorized = unauthorizedRefreshTried[auth.ID]
+	}
 	for idx, execModel := range execModels {
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
 		execReq := req
@@ -212,8 +223,21 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				return nil, errCtx
 			}
 			if allowRetry {
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, errStream, didRefreshOnUnauthorized); okRefresh {
+				alreadyTried := didRefreshOnUnauthorized
+				willAttemptHomeRefresh := ephemeralResult && !alreadyTried && auth != nil && auth.AuthKind() == AuthKindOAuth && isUnauthorizedError(errStream)
+				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(ctx, executor, auth, errStream, alreadyTried, ephemeralResult)
+				if willAttemptHomeRefresh {
+					didRefreshOnUnauthorized = true
+					if unauthorizedRefreshTried != nil {
+						unauthorizedRefreshTried[auth.ID] = struct{}{}
+					}
+				}
+				if errRefresh != nil {
+					errStream = errRefresh
+				} else if okRefresh {
 					auth = refreshed
+					m.replaceHomeExecutionLifecycleAuth(execOpts.ExecutionLifecycle, auth)
+					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
 					if errStream != nil {
@@ -251,9 +275,24 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				return nil, errCtx
 			}
 			if allowRetry {
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, bootstrapErr, didRefreshOnUnauthorized); okRefresh {
+				alreadyTried := didRefreshOnUnauthorized
+				willAttemptHomeRefresh := ephemeralResult && !alreadyTried && auth != nil && auth.AuthKind() == AuthKindOAuth && isUnauthorizedError(bootstrapErr)
+				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(ctx, executor, auth, bootstrapErr, alreadyTried, ephemeralResult)
+				if willAttemptHomeRefresh {
+					didRefreshOnUnauthorized = true
+					if unauthorizedRefreshTried != nil {
+						unauthorizedRefreshTried[auth.ID] = struct{}{}
+					}
+				}
+				if errRefresh != nil {
+					discardStreamChunks(streamResult.Chunks)
+					bootstrapErr = errRefresh
+					streamResult = &cliproxyexecutor.StreamResult{}
+				} else if okRefresh {
 					discardStreamChunks(streamResult.Chunks)
 					auth = refreshed
+					m.replaceHomeExecutionLifecycleAuth(execOpts.ExecutionLifecycle, auth)
+					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 					if retryErr != nil {
