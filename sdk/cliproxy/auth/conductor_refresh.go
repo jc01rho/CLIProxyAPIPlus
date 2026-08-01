@@ -414,7 +414,12 @@ func (m *Manager) tryRefreshExecutionAuthAfterUnauthorized(ctx context.Context, 
 		updated.Runtime = auth.Runtime
 	}
 	preserveHomeRoutingAttributes(updated, auth)
-	return updated, true, nil
+	prepared, errPrepare := m.prepareHomeAuthSnapshot(ctx, executor, updated)
+	if errPrepare != nil {
+		return auth, false, errPrepare
+	}
+	preserveHomeRoutingAttributes(prepared, auth)
+	return prepared, true, nil
 }
 
 // RefreshHomeSelectionAfterUnauthorized refreshes the credential snapshot that
@@ -431,7 +436,13 @@ func (m *Manager) RefreshHomeSelectionAfterUnauthorized(ctx context.Context, sel
 		currentToken := authAccessToken(current)
 		failedToken := authAccessToken(failedAuth)
 		if currentToken != "" && failedToken != "" && currentToken != failedToken {
-			return current, true, nil
+			prepared, errPrepare := m.prepareHomeAuthSnapshot(ctx, selection.Executor, current)
+			if errPrepare != nil {
+				return current, false, errPrepare
+			}
+			preserveHomeRoutingAttributes(prepared, current)
+			m.replaceHomeSelectionAuth(selection, prepared)
+			return selection.CloneAuth(), true, nil
 		}
 	}
 	refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(ctx, selection.Executor, failedAuth, &Error{HTTPStatus: http.StatusUnauthorized, Message: "upstream unauthorized"}, false, true)

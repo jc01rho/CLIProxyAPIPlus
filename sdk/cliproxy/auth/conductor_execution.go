@@ -819,12 +819,15 @@ type requestAuthPrepareLock struct {
 
 // prepareHomeRequestAuth prepares a dispatch auth without reading or updating local auth state.
 func (m *Manager) prepareHomeRequestAuth(ctx context.Context, executor ProviderExecutor, selection *HomeDispatchSelection) (*Auth, error) {
-	if m == nil || executor == nil || selection == nil {
+	if selection == nil {
 		return nil, nil
 	}
-	auth := selection.CloneAuth()
-	if auth == nil {
-		return nil, nil
+	return m.prepareHomeAuthSnapshot(ctx, executor, selection.CloneAuth())
+}
+
+func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor ProviderExecutor, auth *Auth) (*Auth, error) {
+	if m == nil || executor == nil || auth == nil {
+		return auth, nil
 	}
 	preparer, ok := executor.(RequestAuthPreparer)
 	if !ok || preparer == nil || !preparer.ShouldPrepareRequestAuth(auth) {

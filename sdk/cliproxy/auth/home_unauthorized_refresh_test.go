@@ -43,10 +43,12 @@ type homeUnauthorizedRefreshExecutor struct {
 	refreshErr      error
 	keepStale       bool
 	retainSelection bool
+	requirePrepared bool
 	executeCalls    atomic.Int32
 	countCalls      atomic.Int32
 	streamCalls     atomic.Int32
 	refreshCalls    atomic.Int32
+	prepareCalls    atomic.Int32
 }
 
 func (*homeUnauthorizedRefreshExecutor) Identifier() string { return homeUnauthorizedRefreshProvider }
@@ -60,6 +62,9 @@ func (e *homeUnauthorizedRefreshExecutor) Execute(_ context.Context, auth *Auth,
 	}
 	if authAccessToken(auth) == "stale-access-token" {
 		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusUnauthorized, Message: "expired access token"}
+	}
+	if e.requirePrepared && auth.Metadata["project_id"] != "prepared-project" {
+		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusBadRequest, Message: "missing prepared auth"}
 	}
 	return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
 }
@@ -83,6 +88,9 @@ func (e *homeUnauthorizedRefreshExecutor) ExecuteStream(_ context.Context, auth 
 			return nil, &Error{HTTPStatus: http.StatusUnauthorized, Message: "expired access token"}
 		}
 	}
+	if e.requirePrepared && auth.Metadata["project_id"] != "prepared-project" {
+		return nil, &Error{HTTPStatus: http.StatusBadRequest, Message: "missing prepared auth"}
+	}
 	chunks := make(chan cliproxyexecutor.StreamChunk, 1)
 	chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("ok")}
 	close(chunks)
@@ -102,6 +110,23 @@ func (e *homeUnauthorizedRefreshExecutor) Refresh(_ context.Context, auth *Auth)
 		updated.Metadata = make(map[string]any)
 	}
 	updated.Metadata["access_token"] = "fresh-access-token"
+	if e.requirePrepared {
+		delete(updated.Metadata, "project_id")
+	}
+	return updated, nil
+}
+
+func (e *homeUnauthorizedRefreshExecutor) ShouldPrepareRequestAuth(auth *Auth) bool {
+	return e.requirePrepared && auth != nil && auth.Metadata["project_id"] != "prepared-project"
+}
+
+func (e *homeUnauthorizedRefreshExecutor) PrepareRequestAuth(_ context.Context, auth *Auth) (*Auth, error) {
+	e.prepareCalls.Add(1)
+	updated := auth.Clone()
+	if updated.Metadata == nil {
+		updated.Metadata = make(map[string]any)
+	}
+	updated.Metadata["project_id"] = "prepared-project"
 	return updated, nil
 }
 
@@ -109,6 +134,9 @@ func (e *homeUnauthorizedRefreshExecutor) CountTokens(_ context.Context, auth *A
 	e.countCalls.Add(1)
 	if authAccessToken(auth) == "stale-access-token" {
 		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusUnauthorized, Message: "expired access token"}
+	}
+	if e.requirePrepared && auth.Metadata["project_id"] != "prepared-project" {
+		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusBadRequest, Message: "missing prepared auth"}
 	}
 	return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
 }
@@ -169,6 +197,59 @@ func TestHomeUnauthorizedRefreshesSameSelectionBeforeRedispatch(t *testing.T) {
 	}
 }
 
+func TestHomeUnauthorizedRefreshRepreparesAuthBeforeRetry(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*Manager) error
+	}{
+		{
+			name: "execute",
+			run: func(manager *Manager) error {
+				_, errExecute := manager.Execute(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, cliproxyexecutor.Options{})
+				return errExecute
+			},
+		},
+		{
+			name: "count_tokens",
+			run: func(manager *Manager) error {
+				_, errCount := manager.ExecuteCount(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, cliproxyexecutor.Options{})
+				return errCount
+			},
+		},
+		{
+			name: "stream",
+			run: func(manager *Manager) error {
+				result, errStream := manager.ExecuteStream(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, cliproxyexecutor.Options{Stream: true})
+				if errStream != nil {
+					return errStream
+				}
+				for chunk := range result.Chunks {
+					if chunk.Err != nil {
+						return chunk.Err
+					}
+				}
+				return nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dispatcher := &homeUnauthorizedRefreshDispatcher{}
+			executor := &homeUnauthorizedRefreshExecutor{requirePrepared: true}
+			manager := newHomeUnauthorizedRefreshManager(dispatcher, executor)
+
+			if errRun := test.run(manager); errRun != nil {
+				t.Fatalf("execution error = %v", errRun)
+			}
+			if got := executor.refreshCalls.Load(); got != 1 {
+				t.Fatalf("refresh calls = %d, want 1", got)
+			}
+			if got := executor.prepareCalls.Load(); got != 2 {
+				t.Fatalf("prepare calls = %d, want initial preparation and refreshed preparation", got)
+			}
+		})
+	}
+}
+
 func TestHomeUnauthorizedRefreshUpdatesRetainedSelection(t *testing.T) {
 	dispatcher := &homeUnauthorizedRefreshDispatcher{}
 	executor := &homeUnauthorizedRefreshExecutor{retainSelection: true}
@@ -196,7 +277,7 @@ func TestHomeUnauthorizedRefreshUpdatesRetainedSelection(t *testing.T) {
 }
 
 func TestRefreshHomeSelectionReusesConcurrentNewerToken(t *testing.T) {
-	executor := &homeUnauthorizedRefreshExecutor{}
+	executor := &homeUnauthorizedRefreshExecutor{requirePrepared: true}
 	selection := &HomeDispatchSelection{
 		Auth:     &Auth{ID: "home-refresh-auth", Provider: homeUnauthorizedRefreshProvider, Attributes: map[string]string{AttributeAuthKind: AuthKindOAuth}, Metadata: map[string]any{"access_token": "fresh-access-token"}},
 		Executor: executor,
@@ -211,6 +292,12 @@ func TestRefreshHomeSelectionReusesConcurrentNewerToken(t *testing.T) {
 	}
 	if got := executor.refreshCalls.Load(); got != 0 {
 		t.Fatalf("refresh calls = %d, want 0 when selection already has a newer token", got)
+	}
+	if got := executor.prepareCalls.Load(); got != 1 {
+		t.Fatalf("prepare calls = %d, want reused token prepared once", got)
+	}
+	if updated.Metadata["project_id"] != "prepared-project" {
+		t.Fatalf("reused auth metadata = %#v, want prepared project", updated.Metadata)
 	}
 }
 
