@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -165,6 +166,60 @@ func TestBuildHTTPTransportSOCKS5HProxy(t *testing.T) {
 	}
 	if transport.DialContext == nil {
 		t.Fatal("expected SOCKS5H transport to have custom DialContext")
+	}
+}
+
+func TestBuildHTTPTransportSOCKS5DialContextCancelsBlockedProxyHandshake(t *testing.T) {
+	t.Parallel()
+
+	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
+	if errListen != nil {
+		t.Fatalf("net.Listen returned error: %v", errListen)
+	}
+	defer func() { _ = listener.Close() }()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, errAccept := listener.Accept()
+		if errAccept == nil {
+			accepted <- conn
+		}
+	}()
+
+	transport, mode, errBuild := BuildHTTPTransport("socks5://" + listener.Addr().String())
+	if errBuild != nil || mode != ModeProxy {
+		t.Fatalf("BuildHTTPTransport mode=%d error=%v", mode, errBuild)
+	}
+	if transport == nil || transport.DialContext == nil {
+		t.Fatal("expected SOCKS5 transport with DialContext")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	dialDone := make(chan error, 1)
+	go func() {
+		conn, errDial := transport.DialContext(ctx, "tcp", "target.example.com:443")
+		if conn != nil {
+			_ = conn.Close()
+		}
+		dialDone <- errDial
+	}()
+
+	var proxyConn net.Conn
+	select {
+	case proxyConn = <-accepted:
+		defer func() { _ = proxyConn.Close() }()
+	case <-time.After(time.Second):
+		t.Fatal("SOCKS5 proxy did not receive connection")
+	}
+
+	select {
+	case errDial := <-dialDone:
+		if !errors.Is(errDial, context.DeadlineExceeded) {
+			t.Fatalf("DialContext error = %v, want context deadline exceeded", errDial)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SOCKS5 DialContext did not return after context deadline")
 	}
 }
 

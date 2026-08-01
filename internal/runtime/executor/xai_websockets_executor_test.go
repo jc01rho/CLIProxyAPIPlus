@@ -78,6 +78,78 @@ func TestXAIWebsocketsRequiredUpstreamRejectsCompactionHTTPFallback(t *testing.T
 	}
 }
 
+func TestReadXAIWebsocketMessageSetsIdleReadDeadlineWithoutSession(t *testing.T) {
+	oldTimeout := xaiResponsesWebsocketIdleTimeout
+	xaiResponsesWebsocketIdleTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { xaiResponsesWebsocketIdleTimeout = oldTimeout })
+	timeout := xaiResponsesWebsocketIdleTimeout
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		time.Sleep(timeout + 25*time.Millisecond)
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+	if errDial != nil {
+		t.Fatalf("Dial returned error: %v", errDial)
+	}
+	defer func() { _ = conn.Close() }()
+
+	start := time.Now()
+	_, _, errRead := readXAIWebsocketMessage(context.Background(), nil, conn, nil)
+	if errRead == nil {
+		t.Fatal("readXAIWebsocketMessage error = nil, want idle timeout")
+	}
+	if elapsed := time.Since(start); elapsed > timeout+time.Second {
+		t.Fatalf("read elapsed = %v, want bounded by idle timeout", elapsed)
+	}
+}
+
+func TestConfigureXAIWebsocketConnRefreshesReadDeadlineOnPong(t *testing.T) {
+	t.Parallel()
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if errPing := conn.WriteControl(websocket.PingMessage, []byte("keepalive"), time.Now().Add(time.Second)); errPing != nil {
+			t.Errorf("write ping: %v", errPing)
+			return
+		}
+		if errDeadline := conn.SetReadDeadline(time.Now().Add(time.Second)); errDeadline != nil {
+			t.Errorf("set read deadline: %v", errDeadline)
+			return
+		}
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+	if errDial != nil {
+		t.Fatalf("Dial returned error: %v", errDial)
+	}
+	defer func() { _ = conn.Close() }()
+
+	configureXAIWebsocketConn(&codexWebsocketSession{}, conn)
+	time.Sleep(25 * time.Millisecond)
+	if errPong := conn.WriteControl(websocket.PongMessage, []byte("keepalive"), time.Now().Add(time.Second)); errPong != nil {
+		t.Fatalf("WriteControl pong returned error: %v", errPong)
+	}
+}
+
 func TestMapXAIWebsocketWriteErrorStopsRetryForMessageTooBig(t *testing.T) {
 	networkWriteErr := errors.New("write: broken pipe")
 	tests := []struct {

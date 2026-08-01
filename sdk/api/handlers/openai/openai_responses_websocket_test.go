@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -159,6 +160,41 @@ func TestResponsesWebsocketHomeSelectedAuthCallbackPinsAndReusesFirstSelection(t
 	}
 	if got := executor.calls.Load(); got != 2 {
 		t.Fatalf("executor calls = %d, want 2", got)
+	}
+}
+
+func TestConfigureResponsesWebsocketLivenessTimesOutIdleRead(t *testing.T) {
+	t.Parallel()
+
+	errCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, errUpgrade := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			errCh <- errUpgrade
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		configureResponsesWebsocketLiveness(conn, 25*time.Millisecond)
+		_, _, errRead := conn.ReadMessage()
+		errCh <- errRead
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+	if errDial != nil {
+		t.Fatalf("dial websocket: %v", errDial)
+	}
+	defer func() { _ = conn.Close() }()
+
+	select {
+	case errRead := <-errCh:
+		var netErr net.Error
+		if !errors.As(errRead, &netErr) || !netErr.Timeout() {
+			t.Fatalf("ReadMessage error = %v, want timeout", errRead)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server ReadMessage did not return after idle timeout")
 	}
 }
 

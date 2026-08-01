@@ -34,6 +34,8 @@ type XAIWebsocketsExecutor struct {
 	idStore *xaiWebsocketIDStateStore
 }
 
+var xaiResponsesWebsocketIdleTimeout = codexResponsesWebsocketIdleTimeout
+
 var globalXAIWebsocketSessionStore = &codexWebsocketSessionStore{
 	sessions: make(map[string]*codexWebsocketSession),
 }
@@ -1152,6 +1154,10 @@ func configureXAIWebsocketConn(sess *codexWebsocketSession, conn *websocket.Conn
 		return
 	}
 	sess.resetUpstreamDisconnectError(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(xaiResponsesWebsocketIdleTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(xaiResponsesWebsocketIdleTimeout))
+	})
 	conn.SetPingHandler(func(appData string) error {
 		sess.writeMu.Lock()
 		defer sess.writeMu.Unlock()
@@ -1184,6 +1190,7 @@ func readXAIWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, c
 		if conn == nil {
 			return 0, nil, fmt.Errorf("xai websockets executor: websocket conn is nil")
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(xaiResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
 		return msgType, payload, errRead
 	}
@@ -1217,6 +1224,7 @@ func (e *XAIWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, co
 		return
 	}
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(xaiResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
 		if errRead != nil {
 			invalidate := func() {

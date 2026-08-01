@@ -41,12 +41,24 @@ const (
 	codexLocalCompactionSummaryPrefix = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:"
 )
 
+const responsesWebsocketReadIdleTimeout = 5 * time.Minute
+
 var responsesWebsocketUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
+}
+
+func configureResponsesWebsocketLiveness(conn *websocket.Conn, idleTimeout time.Duration) {
+	if conn == nil || idleTimeout <= 0 {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(idleTimeout))
+	})
 }
 
 // writeWebsocketCloseForUpstreamError mirrors transport-level upstream close
@@ -191,6 +203,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	configureResponsesWebsocketLiveness(conn, responsesWebsocketReadIdleTimeout)
 	writer := newResponsesWebsocketWriter(conn)
 	passthroughSessionID := uuid.NewString()
 	downstreamSessionKey := websocketDownstreamSessionKey(c.Request)
@@ -308,6 +321,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	}
 
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(responsesWebsocketReadIdleTimeout))
 		msgType, payload, errReadMessage := conn.ReadMessage()
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage

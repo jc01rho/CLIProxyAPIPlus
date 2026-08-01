@@ -982,3 +982,41 @@ func TestSidebandURLShapes(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigureSidebandWebsocketLivenessTimesOutIdleReads(t *testing.T) {
+	t.Parallel()
+
+	upgraded := make(chan *websocket.Conn, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Errorf("upgrade websocket: %v", errUpgrade)
+			return
+		}
+		upgraded <- conn
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client, resp, errDial := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if errDial != nil {
+		t.Fatalf("dial websocket: %v", errDial)
+	}
+	defer func() { _ = client.Close() }()
+	select {
+	case serverConn := <-upgraded:
+		defer func() { _ = serverConn.Close() }()
+	case <-time.After(time.Second):
+		t.Fatal("server websocket was not upgraded")
+	}
+
+	configureSidebandWebsocketLiveness(client, 25*time.Millisecond)
+	_, _, errRead := client.NextReader()
+	if errRead == nil {
+		t.Fatal("NextReader() error = nil, want idle timeout")
+	}
+}

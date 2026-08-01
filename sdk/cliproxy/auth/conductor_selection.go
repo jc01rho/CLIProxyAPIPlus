@@ -1104,6 +1104,20 @@ func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
 	}
 
 	m.mu.RLock()
+	executor, okExecutor := m.executorForProviderLocked(provider)
+	m.mu.RUnlock()
+
+	if !okExecutor || executor == nil {
+		return nil, false
+	}
+	return executor, true
+}
+
+func (m *Manager) executorForProviderLocked(provider string) (ProviderExecutor, bool) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return nil, false
+	}
 	executor, okExecutor := m.executors[provider]
 	if !okExecutor {
 		lowerProvider := strings.ToLower(provider)
@@ -1114,8 +1128,6 @@ func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
 	if !okExecutor && strings.HasPrefix(provider, "openai-compatible-") {
 		executor, okExecutor = m.executors[strings.TrimPrefix(provider, "openai-compatible-")]
 	}
-	m.mu.RUnlock()
-
 	if !okExecutor || executor == nil {
 		return nil, false
 	}
@@ -1508,7 +1520,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if _, used := tried[candidate.ID]; used {
 			continue
 		}
-		if _, ok := m.Executor(providerKey); !ok {
+		if _, ok := m.executorForProviderLocked(providerKey); !ok {
 			continue
 		}
 		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {

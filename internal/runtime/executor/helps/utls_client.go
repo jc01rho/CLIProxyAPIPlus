@@ -22,7 +22,7 @@ import (
 type utlsRoundTripper struct {
 	mu          sync.Mutex
 	connections map[string]*http2.ClientConn
-	pending     map[string]*sync.Cond
+	pending     map[string]chan struct{}
 	dialer      proxy.Dialer
 }
 
@@ -38,49 +38,52 @@ func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
 	}
 	return &utlsRoundTripper{
 		connections: make(map[string]*http2.ClientConn),
-		pending:     make(map[string]*sync.Cond),
+		pending:     make(map[string]chan struct{}),
 		dialer:      dialer,
 	}
 }
 
-func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*http2.ClientConn, error) {
-	t.mu.Lock()
-
-	if h2Conn, ok := t.connections[host]; ok && h2Conn.CanTakeNewRequest() {
-		t.mu.Unlock()
-		return h2Conn, nil
-	}
-
-	if cond, ok := t.pending[host]; ok {
-		cond.Wait()
+func (t *utlsRoundTripper) getOrCreateConnection(ctx context.Context, host, addr string) (*http2.ClientConn, error) {
+	for {
+		t.mu.Lock()
 		if h2Conn, ok := t.connections[host]; ok && h2Conn.CanTakeNewRequest() {
 			t.mu.Unlock()
 			return h2Conn, nil
 		}
+
+		if pending, ok := t.pending[host]; ok {
+			t.mu.Unlock()
+			select {
+			case <-pending:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+
+		pending := make(chan struct{})
+		t.pending[host] = pending
+		t.mu.Unlock()
+
+		h2Conn, err := t.createConnection(ctx, host, addr)
+
+		t.mu.Lock()
+		delete(t.pending, host)
+		close(pending)
+
+		if err != nil {
+			t.mu.Unlock()
+			return nil, err
+		}
+
+		t.connections[host] = h2Conn
+		t.mu.Unlock()
+		return h2Conn, nil
 	}
-
-	cond := sync.NewCond(&t.mu)
-	t.pending[host] = cond
-	t.mu.Unlock()
-
-	h2Conn, err := t.createConnection(host, addr)
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	delete(t.pending, host)
-	cond.Broadcast()
-
-	if err != nil {
-		return nil, err
-	}
-
-	t.connections[host] = h2Conn
-	return h2Conn, nil
 }
 
-func (t *utlsRoundTripper) createConnection(host, addr string) (*http2.ClientConn, error) {
-	conn, err := t.dialer.Dial("tcp", addr)
+func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr string) (*http2.ClientConn, error) {
+	conn, err := dialUTLSContext(ctx, t.dialer, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +91,7 @@ func (t *utlsRoundTripper) createConnection(host, addr string) (*http2.ClientCon
 	tlsConfig := &tls.Config{ServerName: host}
 	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloChrome_Auto)
 
-	if err := tlsConn.Handshake(); err != nil {
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -111,7 +114,7 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	addr := net.JoinHostPort(hostname, port)
 
-	h2Conn, err := t.getOrCreateConnection(hostname, addr)
+	h2Conn, err := t.getOrCreateConnection(req.Context(), hostname, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +130,44 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 
 	return resp, nil
+}
+
+func dialUTLSContext(ctx context.Context, dialer proxy.Dialer, network, addr string) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+		return contextDialer.DialContext(ctx, network, addr)
+	}
+	resultCh := make(chan struct {
+		conn net.Conn
+		err  error
+	}, 1)
+	go func() {
+		conn, err := dialer.Dial(network, addr)
+		resultCh <- struct {
+			conn net.Conn
+			err  error
+		}{conn: conn, err: err}
+	}()
+	select {
+	case result := <-resultCh:
+		if result.err == nil {
+			if errContext := ctx.Err(); errContext != nil {
+				_ = result.conn.Close()
+				return nil, errContext
+			}
+		}
+		return result.conn, result.err
+	case <-ctx.Done():
+		go func() {
+			result := <-resultCh
+			if result.conn != nil {
+				_ = result.conn.Close()
+			}
+		}()
+		return nil, ctx.Err()
+	}
 }
 
 // utlsProtectedHosts contains the hosts that should use utls Chrome TLS fingerprint
