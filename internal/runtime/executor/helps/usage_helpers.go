@@ -28,6 +28,7 @@ type UsageReporter struct {
 	alias           string
 	authID          string
 	authIndex       string
+	authMu          sync.RWMutex
 	accessTokenHash string
 	authType        string
 	apiKey          string
@@ -81,6 +82,25 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 	}
 	return reporter
+}
+
+// UpdateAccessTokenFingerprint records the token version actually used upstream.
+func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
+	if r == nil {
+		return
+	}
+	r.authMu.Lock()
+	r.accessTokenHash = authAccessTokenSHA256(auth)
+	r.authMu.Unlock()
+}
+
+func (r *UsageReporter) accessTokenFingerprint() string {
+	if r == nil {
+		return ""
+	}
+	r.authMu.RLock()
+	defer r.authMu.RUnlock()
+	return r.accessTokenHash
 }
 
 func ExecutorTypeName(executor any) string {
@@ -266,7 +286,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		APIKey:              r.apiKey,
 		AuthID:              r.authID,
 		AuthIndex:           r.authIndex,
-		AccessTokenSHA256:   r.accessTokenHash,
+		AccessTokenSHA256:   r.accessTokenFingerprint(),
 		AuthType:            r.authType,
 		ReasoningEffort:     r.reasoning,
 		ServiceTier:         r.serviceTier,
