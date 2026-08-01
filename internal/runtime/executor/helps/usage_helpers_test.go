@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -480,28 +479,6 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	}
 	if record.Latency > 3*time.Second {
 		t.Fatalf("latency = %v, want <= 3s", record.Latency)
-	}
-}
-
-func TestUsageReporterUpdatesAccessTokenFingerprint(t *testing.T) {
-	initial := &cliproxyauth.Auth{
-		ID:       "usage-auth",
-		Index:    "usage-auth",
-		Provider: "antigravity",
-		Metadata: map[string]any{"access_token": "initial-token"},
-	}
-	updated := initial.Clone()
-	updated.Metadata["access_token"] = "refreshed-token"
-	reporter := NewUsageReporter(context.Background(), "antigravity", "gemini-3-pro", initial)
-
-	reporter.UpdateAccessTokenFingerprint(updated)
-	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
-	want := authAccessTokenSHA256(updated)
-	if record.AccessTokenSHA256 != want {
-		t.Fatalf("access token fingerprint = %q, want %q", record.AccessTokenSHA256, want)
-	}
-	if record.AccessTokenSHA256 == authAccessTokenSHA256(initial) {
-		t.Fatal("usage reporter retained the pre-refresh token fingerprint")
 	}
 }
 

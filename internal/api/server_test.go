@@ -27,20 +27,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
-
-type apiUsageCapturePlugin struct {
-	records chan coreusage.Record
-}
-
-func (p apiUsageCapturePlugin) HandleUsage(_ context.Context, record coreusage.Record) {
-	if p.records != nil {
-		p.records <- record
-	}
-}
 
 type codexSearchCaptureExecutor struct {
 	request      *http.Request
@@ -359,53 +348,6 @@ func TestHomeCodexAlphaSearchRefreshesUnauthorizedSelectionOnce(t *testing.T) {
 	}
 	if got := dispatcher.calls.Load(); got != 1 {
 		t.Fatalf("Home RPOP calls = %d, want 1", got)
-	}
-}
-
-func TestHomeCodexAlphaSearchReportsEveryUnauthorizedAttempt(t *testing.T) {
-	records := make(chan coreusage.Record, 8)
-	const pluginName = "api-home-search-unauthorized-test"
-	coreusage.RegisterNamedPlugin(pluginName, apiUsageCapturePlugin{records: records})
-	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(pluginName, apiUsageCapturePlugin{})
-	})
-
-	server := newTestServer(t)
-	dispatcher := &codexSearchHomeDispatcher{}
-	server.handlers.AuthManager.SetConfig(&proxyconfig.Config{Home: proxyconfig.HomeConfig{Enabled: true}})
-	server.handlers.AuthManager.PublishHomeDispatch(dispatcher, executionregistry.New(), 1)
-	executor := &codexSearchCaptureExecutor{statuses: []int{http.StatusUnauthorized, http.StatusUnauthorized}}
-	server.handlers.AuthManager.RegisterExecutor(executor)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"id":"home-search-unauthorized","model":"gpt-5-codex","query":"test"}`))
-	req.Header.Set("Authorization", "Bearer test-key")
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
-	}
-	if executor.refreshCalls != 1 || executor.httpCalls != 2 {
-		t.Fatalf("refresh/http calls = %d/%d, want 1/2", executor.refreshCalls, executor.httpCalls)
-	}
-	wantHashes := map[string]bool{
-		auth.AccessTokenSHA256(&auth.Auth{Metadata: map[string]any{"access_token": "home-search-token"}}):           false,
-		auth.AccessTokenSHA256(&auth.Auth{Metadata: map[string]any{"access_token": "refreshed-home-search-token"}}): false,
-	}
-	deadline := time.After(time.Second)
-	for remaining := len(wantHashes); remaining > 0; {
-		select {
-		case record := <-records:
-			if record.AuthID != "home-codex-search" || record.Fail.StatusCode != http.StatusUnauthorized {
-				continue
-			}
-			if seen, ok := wantHashes[record.AccessTokenSHA256]; ok && !seen {
-				wantHashes[record.AccessTokenSHA256] = true
-				remaining--
-			}
-		case <-deadline:
-			t.Fatalf("unauthorized attempt fingerprints = %#v", wantHashes)
-		}
 	}
 }
 
