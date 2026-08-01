@@ -11,10 +11,12 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -161,6 +163,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		translated = applyNVIDIAMaxTokensReduction(translated)
 	}
 	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compatCfg, translated)
+	if opts.Alt != "responses/compact" {
+		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
+		if err != nil {
+			return resp, err
+		}
+	}
 	if opts.Alt == "responses/compact" {
 		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
 			translated = updated
@@ -436,6 +444,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		translated = applyNVIDIAMaxTokensReduction(translated)
 	}
 	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compatCfg, translated)
+	if opts.Alt != "responses/compact" {
+		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
@@ -994,6 +1008,51 @@ func rewriteOpenAICompatImagesMultipartPayload(payload []byte, model string, bou
 	return body.Bytes(), writer.FormDataContentType(), nil
 }
 
+func (e *OpenAICompatExecutor) applyPromptCacheKey(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, baseModel string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, translated []byte) ([]byte, error) {
+	compat := e.resolveCompatConfig(auth)
+	if compat == nil || !compat.SupportPromptCacheKey {
+		return translated, nil
+	}
+
+	for _, payload := range [][]byte{req.Payload, opts.OriginalRequest, translated} {
+		if promptCacheKey := strings.TrimSpace(gjson.GetBytes(payload, "prompt_cache_key").String()); promptCacheKey != "" {
+			return helps.SetStringIfDifferent(translated, "prompt_cache_key", promptCacheKey), nil
+		}
+	}
+
+	modelName := strings.TrimSpace(gjson.GetBytes(translated, "model").String())
+	if modelName == "" {
+		modelName = baseModel
+	}
+	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
+		cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, modelName, req.Payload, opts.Headers)
+		if errCache != nil {
+			return translated, errCache
+		}
+		if ok {
+			return helps.SetStringIfDifferent(translated, "prompt_cache_key", cached.ID), nil
+		}
+	}
+
+	sessionID := helps.ProviderSessionUUID(e.provider, opts.Metadata, req.Metadata)
+	if sessionID == "" {
+		return translated, nil
+	}
+	provider := strings.TrimSpace(e.provider)
+	if provider == "" {
+		provider = strings.TrimSpace(compat.Name)
+	}
+	identity := strings.Join([]string{
+		"cli-proxy-api:openai-compat:prompt-cache",
+		strings.ToLower(provider),
+		strings.ToLower(modelName),
+		strings.ToLower(strings.TrimSpace(from.String())),
+		sessionID,
+	}, "\x00")
+	promptCacheKey := uuid.NewSHA1(uuid.NameSpaceOID, []byte(identity)).String()
+	return helps.SetStringIfDifferent(translated, "prompt_cache_key", promptCacheKey), nil
+}
+
 func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (baseURL, apiKey string) {
 	if auth == nil {
 		return "", ""
@@ -1008,6 +1067,17 @@ func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (base
 func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *config.OpenAICompatibility {
 	if auth == nil || e.cfg == nil {
 		return nil
+	}
+	if auth.AuthSourceKind() == cliproxyauth.AuthSourceConfig && auth.Attributes != nil {
+		if rawIndex := strings.TrimSpace(auth.Attributes["config_index"]); rawIndex != "" {
+			configIndex, errIndex := strconv.Atoi(rawIndex)
+			if errIndex == nil && configIndex >= 0 && configIndex < len(e.cfg.OpenAICompatibility) {
+				compat := &e.cfg.OpenAICompatibility[configIndex]
+				if !compat.Disabled {
+					return compat
+				}
+			}
+		}
 	}
 	candidates := make([]string, 0, 3)
 	if auth.Attributes != nil {

@@ -72,6 +72,20 @@ func (m *Manager) getFallbackChain() []string {
 	return chain
 }
 
+// FallbackChain returns the current fallback chain for logging and diagnostics.
+func (m *Manager) FallbackChain() []string {
+	return m.getFallbackChain()
+}
+
+// FallbackModels returns the current fallback-model mapping for logging and diagnostics.
+func (m *Manager) FallbackModels() map[string]string {
+	if m == nil {
+		return nil
+	}
+	models, _ := m.fallbackModels.Load().(map[string]string)
+	return models
+}
+
 func (m *Manager) getFallbackMaxDepth() int {
 	if m == nil {
 		return 3
