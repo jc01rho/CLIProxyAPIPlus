@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 const homeUnauthorizedRefreshProvider = "home-unauthorized-refresh"
@@ -40,18 +43,22 @@ func (d *homeUnauthorizedRefreshDispatcher) RPopAuth(context.Context, string, st
 func (*homeUnauthorizedRefreshDispatcher) AbortAmbiguousDispatch() {}
 
 type homeUnauthorizedRefreshExecutor struct {
-	streamMode      string
-	refreshErr      error
-	keepStale       bool
-	retainSelection bool
-	requirePrepared bool
-	nilRetryStream  bool
-	nilRetryChunks  bool
-	executeCalls    atomic.Int32
-	countCalls      atomic.Int32
-	streamCalls     atomic.Int32
-	refreshCalls    atomic.Int32
-	prepareCalls    atomic.Int32
+	streamMode         string
+	refreshErr         error
+	keepStale          bool
+	retainSelection    bool
+	requirePrepared    bool
+	alwaysUnauthorized bool
+	countAccessTokens  []string
+	nilRetryStream     bool
+	nilRetryChunks     bool
+	executeCalls       atomic.Int32
+	countCalls         atomic.Int32
+	streamCalls        atomic.Int32
+	refreshCalls       atomic.Int32
+	prepareCalls       atomic.Int32
+	refreshInputsMu    sync.Mutex
+	refreshInputs      []string
 }
 
 func (*homeUnauthorizedRefreshExecutor) Identifier() string { return homeUnauthorizedRefreshProvider }
@@ -108,6 +115,9 @@ func (e *homeUnauthorizedRefreshExecutor) ExecuteStream(_ context.Context, auth 
 
 func (e *homeUnauthorizedRefreshExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
 	e.refreshCalls.Add(1)
+	e.refreshInputsMu.Lock()
+	e.refreshInputs = append(e.refreshInputs, authAccessToken(auth))
+	e.refreshInputsMu.Unlock()
 	if e.refreshErr != nil {
 		return nil, e.refreshErr
 	}
@@ -139,9 +149,17 @@ func (e *homeUnauthorizedRefreshExecutor) PrepareRequestAuth(_ context.Context, 
 	return updated, nil
 }
 
-func (e *homeUnauthorizedRefreshExecutor) CountTokens(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	e.countCalls.Add(1)
-	if authAccessToken(auth) == "stale-access-token" {
+func (e *homeUnauthorizedRefreshExecutor) CountTokens(ctx context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	call := int(e.countCalls.Add(1))
+	if call <= len(e.countAccessTokens) {
+		effective := auth.Clone()
+		if effective.Metadata == nil {
+			effective.Metadata = make(map[string]any)
+		}
+		effective.Metadata["access_token"] = e.countAccessTokens[call-1]
+		NotifyAccessTokenFingerprint(ctx, effective)
+	}
+	if e.alwaysUnauthorized || authAccessToken(auth) == "stale-access-token" {
 		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusUnauthorized, Message: "expired access token"}
 	}
 	if e.requirePrepared && auth.Metadata["project_id"] != "prepared-project" {
@@ -324,6 +342,75 @@ func TestHomeUnauthorizedRefreshIsAttemptedAtMostOnce(t *testing.T) {
 	}
 	if got := executor.executeCalls.Load(); got != 2 {
 		t.Fatalf("execute calls = %d, want initial attempt and one retry", got)
+	}
+}
+
+func TestHomeCountTokensReportsEveryUnauthorizedAttempt(t *testing.T) {
+	records := make(chan coreusage.Record, 8)
+	const pluginName = "auth-home-count-unauthorized-test"
+	coreusage.RegisterNamedPlugin(pluginName, homeResultCapturePlugin{records: records})
+	t.Cleanup(func() {
+		coreusage.RegisterNamedPlugin(pluginName, homeResultCapturePlugin{})
+	})
+
+	dispatcher := &homeUnauthorizedRefreshDispatcher{}
+	executor := &homeUnauthorizedRefreshExecutor{
+		alwaysUnauthorized: true,
+		countAccessTokens:  []string{"executor-internal-token", "retry-internal-token"},
+	}
+	manager := newHomeUnauthorizedRefreshManager(dispatcher, executor)
+	_, errCount := manager.ExecuteCount(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, cliproxyexecutor.Options{})
+	if statusCodeFromError(errCount) != http.StatusUnauthorized {
+		t.Fatalf("ExecuteCount() error = %v, want final 401", errCount)
+	}
+	if got := executor.refreshCalls.Load(); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	executor.refreshInputsMu.Lock()
+	refreshInputs := append([]string(nil), executor.refreshInputs...)
+	executor.refreshInputsMu.Unlock()
+	if len(refreshInputs) != 1 || refreshInputs[0] != "executor-internal-token" {
+		t.Fatalf("refresh input tokens = %#v, want internally refreshed token", refreshInputs)
+	}
+	if got := executor.countCalls.Load(); got != 2 {
+		t.Fatalf("CountTokens calls = %d, want 2", got)
+	}
+
+	wantHashes := map[string]bool{
+		AccessTokenSHA256(&Auth{Metadata: map[string]any{"access_token": "executor-internal-token"}}): false,
+		AccessTokenSHA256(&Auth{Metadata: map[string]any{"access_token": "retry-internal-token"}}):    false,
+	}
+	matchedRecords := 0
+	deadline := time.After(time.Second)
+	for remaining := len(wantHashes); remaining > 0; {
+		select {
+		case record := <-records:
+			if record.AuthID != "home-refresh-auth" || record.Fail.StatusCode != http.StatusUnauthorized {
+				continue
+			}
+			matchedRecords++
+			if seen, ok := wantHashes[record.AccessTokenSHA256]; ok && !seen {
+				wantHashes[record.AccessTokenSHA256] = true
+				remaining--
+			}
+		case <-deadline:
+			t.Fatalf("unauthorized attempt fingerprints = %#v", wantHashes)
+		}
+	}
+	timer := time.NewTimer(50 * time.Millisecond)
+	defer timer.Stop()
+	for {
+		select {
+		case record := <-records:
+			if record.AuthID == "home-refresh-auth" && record.Fail.StatusCode == http.StatusUnauthorized {
+				matchedRecords++
+			}
+		case <-timer.C:
+			if matchedRecords != 2 {
+				t.Fatalf("unauthorized usage records = %d, want exactly 2", matchedRecords)
+			}
+			return
+		}
 	}
 }
 

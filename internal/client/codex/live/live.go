@@ -304,6 +304,7 @@ func (h *Handler) Handle(c *gin.Context) {
 		return
 	}
 	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
+		h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", model)
 		helps.RecordAPIResponseMetadata(ctx, runtimeConfig, resp.StatusCode, callResponseHeaders(resp.Header))
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -328,6 +329,9 @@ func (h *Handler) Handle(c *gin.Context) {
 			helps.RecordAPIResponseError(ctx, runtimeConfig, errRequest)
 			c.JSON(http.StatusBadGateway, gin.H{"error": errRequest.Error()})
 			return
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", model)
 		}
 	}
 

@@ -2,8 +2,6 @@ package helps
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,40 +119,7 @@ func RefreshAuthViaHome(ctx context.Context, cfg *config.Config, auth *cliproxya
 }
 
 func authAccessTokenSHA256(auth *cliproxyauth.Auth) string {
-	accessToken := authAccessTokenForFingerprint(auth)
-	if accessToken == "" {
-		return ""
-	}
-	digest := sha256.Sum256([]byte(accessToken))
-	return hex.EncodeToString(digest[:])
-}
-
-func authAccessTokenForFingerprint(auth *cliproxyauth.Auth) string {
-	if auth == nil || auth.Metadata == nil {
-		return ""
-	}
-	for _, key := range []string{"access_token", "accessToken"} {
-		if value, ok := auth.Metadata[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	for _, key := range []string{"token", "Token"} {
-		switch token := auth.Metadata[key].(type) {
-		case map[string]any:
-			for _, tokenKey := range []string{"access_token", "accessToken"} {
-				if value, ok := token[tokenKey].(string); ok && strings.TrimSpace(value) != "" {
-					return strings.TrimSpace(value)
-				}
-			}
-		case map[string]string:
-			for _, tokenKey := range []string{"access_token", "accessToken"} {
-				if value := strings.TrimSpace(token[tokenKey]); value != "" {
-					return value
-				}
-			}
-		}
-	}
-	return ""
+	return cliproxyauth.AccessTokenSHA256(auth)
 }
 
 func parseHomeRefreshAuth(raw []byte) (*cliproxyauth.Auth, string, error) {

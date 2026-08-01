@@ -403,6 +403,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		return
 	}
 	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
+		s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
 		helps.RecordAPIResponseMetadata(ctx, s.cfg, resp.StatusCode, resp.Header.Clone())
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -436,6 +437,9 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 			helps.RecordAPIResponseError(ctx, s.cfg, err)
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
 		}
 	}
 	closeResponseBody := func() error {

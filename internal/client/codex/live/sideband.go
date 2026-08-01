@@ -408,6 +408,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 
 	upstream, handshakeResponse, errDial := dialUpstream(selected)
 	if errDial != nil && selection != nil && handshakeResponse != nil && handshakeResponse.StatusCode == http.StatusUnauthorized {
+		h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", session.model)
 		helps.RecordAPIWebsocketHandshake(ctx, runtimeConfig, handshakeResponse.StatusCode, callResponseHeaders(handshakeResponse.Header))
 		if handshakeResponse.Body != nil {
 			if errClose := handshakeResponse.Body.Close(); errClose != nil {
@@ -426,6 +427,9 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		selected = refreshed
 		logging.SetGinCPATraceID(c, selected.EnsureIndex())
 		upstream, handshakeResponse, errDial = dialUpstream(selected)
+		if errDial != nil && handshakeResponse != nil && handshakeResponse.StatusCode == http.StatusUnauthorized {
+			h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", session.model)
+		}
 	}
 	if errDial != nil {
 		handleSidebandDialError(c, ctx, runtimeConfig, handshakeResponse, errDial)

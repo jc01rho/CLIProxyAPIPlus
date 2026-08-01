@@ -18,7 +18,41 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
+
+type liveUsageCapturePlugin struct {
+	records chan coreusage.Record
+}
+
+func (p liveUsageCapturePlugin) HandleUsage(_ context.Context, record coreusage.Record) {
+	if p.records != nil {
+		p.records <- record
+	}
+}
+
+func waitForLiveUnauthorizedHashes(t *testing.T, records <-chan coreusage.Record, authID string, hashes ...string) {
+	t.Helper()
+	want := make(map[string]bool, len(hashes))
+	for _, hash := range hashes {
+		want[hash] = false
+	}
+	deadline := time.After(time.Second)
+	for remaining := len(want); remaining > 0; {
+		select {
+		case record := <-records:
+			if record.AuthID != authID || record.Fail.StatusCode != http.StatusUnauthorized {
+				continue
+			}
+			if seen, ok := want[record.AccessTokenSHA256]; ok && !seen {
+				want[record.AccessTokenSHA256] = true
+				remaining--
+			}
+		case <-deadline:
+			t.Fatalf("unauthorized attempt fingerprints = %#v", want)
+		}
+	}
+}
 
 type apiKeyFirstSelector struct{}
 
@@ -640,6 +674,44 @@ func TestHandlerRefreshesUnauthorizedHomeSelectionOnce(t *testing.T) {
 	}
 }
 
+func TestHandlerReportsEveryUnauthorizedHomeAttempt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	records := make(chan coreusage.Record, 8)
+	const pluginName = "live-home-unauthorized-test"
+	coreusage.RegisterNamedPlugin(pluginName, liveUsageCapturePlugin{records: records})
+	t.Cleanup(func() {
+		coreusage.RegisterNamedPlugin(pluginName, liveUsageCapturePlugin{})
+	})
+
+	manager := auth.NewManager(nil, nil, nil)
+	manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
+	manager.PublishHomeDispatch(&homeDispatcher{}, executionregistry.New(), 1)
+	executor := &captureExecutor{
+		statuses:     []int{http.StatusUnauthorized, http.StatusUnauthorized},
+		responseBody: io.NopCloser(strings.NewReader("unauthorized")),
+	}
+	manager.RegisterExecutor(executor)
+	handler := NewHandler(manager, nil)
+	router := gin.New()
+	router.POST("/v1/live", handler.Handle)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/live", strings.NewReader(`{"model":"gpt-live-1-codex","sdp":"v=0"}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusUnauthorized, recorder.Body.String())
+	}
+	if executor.refreshCalls.Load() != 1 || executor.httpCalls.Load() != 2 {
+		t.Fatalf("refresh/http calls = %d/%d, want 1/2", executor.refreshCalls.Load(), executor.httpCalls.Load())
+	}
+	waitForLiveUnauthorizedHashes(t, records, "home-codex-live",
+		auth.AccessTokenSHA256(&auth.Auth{Metadata: map[string]any{"access_token": "home-live-token"}}),
+		auth.AccessTokenSHA256(&auth.Auth{Metadata: map[string]any{"access_token": "refreshed-home-live-token"}}),
+	)
+}
+
 func TestHandlerUsesLiveModelForHomeDispatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -890,6 +962,62 @@ func TestHandleSidebandRefreshesUnauthorizedHomeHandshakeOnce(t *testing.T) {
 	if first.Get("Authorization") != "Bearer home-live-token" || second.Get("Authorization") != "Bearer refreshed-home-live-token" {
 		t.Fatalf("upstream Authorization sequence = %q, %q", first.Get("Authorization"), second.Get("Authorization"))
 	}
+}
+
+func TestHandleSidebandReportsEveryUnauthorizedHomeHandshake(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	records := make(chan coreusage.Record, 8)
+	const pluginName = "live-sideband-home-unauthorized-test"
+	coreusage.RegisterNamedPlugin(pluginName, liveUsageCapturePlugin{records: records})
+	t.Cleanup(func() {
+		coreusage.RegisterNamedPlugin(pluginName, liveUsageCapturePlugin{})
+	})
+
+	var upstreamCalls atomic.Int32
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		writer.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer upstreamServer.Close()
+
+	manager := auth.NewManager(nil, nil, nil)
+	manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
+	manager.PublishHomeDispatch(&homeDispatcher{}, executionregistry.New(), 1)
+	executor := &captureExecutor{}
+	manager.RegisterExecutor(executor)
+	selection, errSelect := manager.SelectHomeAuthByKind(context.Background(), "codex", defaultLiveModel, auth.AuthKindOAuth, coreexecutor.Options{})
+	if errSelect != nil {
+		t.Fatalf("SelectHomeAuthByKind() error = %v", errSelect)
+	}
+	selection.Retain()
+	defer selection.End("test_complete")
+
+	handler := NewHandler(manager, nil)
+	handler.sidebandAPIBaseURL = "ws" + strings.TrimPrefix(upstreamServer.URL, "http") + "/v1"
+	handler.sessions.put("call-home-unauthorized", liveSession{authID: "home-codex-live", model: defaultLiveModel, homeSelection: selection})
+	router := gin.New()
+	router.GET("/v1/live/:call_id", handler.HandleSideband)
+	downstreamServer := httptest.NewServer(router)
+	defer downstreamServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(downstreamServer.URL, "http") + "/v1/live/call-home-unauthorized"
+	client, response, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+	if client != nil {
+		_ = client.Close()
+	}
+	if response != nil && response.Body != nil {
+		defer func() { _ = response.Body.Close() }()
+	}
+	if errDial == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("sideband dial = response %#v error %v, want 401", response, errDial)
+	}
+	if executor.refreshCalls.Load() != 1 || upstreamCalls.Load() != 2 {
+		t.Fatalf("refresh/upstream calls = %d/%d, want 1/2", executor.refreshCalls.Load(), upstreamCalls.Load())
+	}
+	waitForLiveUnauthorizedHashes(t, records, "home-codex-live",
+		auth.AccessTokenSHA256(&auth.Auth{Metadata: map[string]any{"access_token": "home-live-token"}}),
+		auth.AccessTokenSHA256(&auth.Auth{Metadata: map[string]any{"access_token": "refreshed-home-live-token"}}),
+	)
 }
 
 func TestPrepareCallRequestRewritesMultipart(t *testing.T) {
