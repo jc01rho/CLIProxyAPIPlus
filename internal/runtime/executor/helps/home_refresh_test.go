@@ -112,6 +112,37 @@ func TestAuthAccessTokenSHA256SupportsKnownMetadataShapes(t *testing.T) {
 	}
 }
 
+func TestRefreshAuthViaHomeRejectsDisabledAuthEnvelope(t *testing.T) {
+	raw, errMarshal := json.Marshal(homeRefreshAuthEnvelope{
+		Auth: cliproxyauth.Auth{
+			ID:       "disabled-home-auth",
+			Provider: "codex",
+			Status:   cliproxyauth.StatusDisabled,
+			Disabled: true,
+			Metadata: map[string]any{"access_token": "disabled-access-token"},
+		},
+		AuthIndex: "disabled-home-auth",
+	})
+	if errMarshal != nil {
+		t.Fatalf("marshal home envelope: %v", errMarshal)
+	}
+	client := &fakeHomeRefreshClient{raw: raw}
+	oldCurrentHomeRefreshClient := currentHomeRefreshClient
+	currentHomeRefreshClient = func() homeRefreshClient { return client }
+	t.Cleanup(func() { currentHomeRefreshClient = oldCurrentHomeRefreshClient })
+
+	cfg := &config.Config{Home: config.HomeConfig{Enabled: true}}
+	auth := &cliproxyauth.Auth{ID: "disabled-home-auth", Index: "disabled-home-auth", Provider: "codex"}
+	updated, handled, errRefresh := RefreshAuthViaHome(context.Background(), cfg, auth)
+	if updated != nil {
+		t.Fatalf("RefreshAuthViaHome() auth = %#v, want nil", updated)
+	}
+	statusErr, okStatus := errRefresh.(interface{ StatusCode() int })
+	if !handled || !okStatus || statusErr.StatusCode() != http.StatusUnauthorized {
+		t.Fatalf("RefreshAuthViaHome() = handled %v err %v, want unauthorized", handled, errRefresh)
+	}
+}
+
 func TestRefreshAuthViaHomeAcceptsAuthEnvelope(t *testing.T) {
 	raw, errMarshal := json.Marshal(struct {
 		Auth      cliproxyauth.Auth `json:"auth"`

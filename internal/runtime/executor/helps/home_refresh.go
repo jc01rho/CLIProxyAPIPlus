@@ -109,6 +109,9 @@ func RefreshAuthViaHome(ctx context.Context, cfg *config.Config, auth *cliproxya
 	if errParse != nil {
 		return nil, true, homeStatusErr{code: http.StatusBadGateway, msg: "home returned invalid auth payload"}
 	}
+	if updated.Disabled || updated.Status == cliproxyauth.StatusDisabled {
+		return nil, true, homeStatusErr{code: http.StatusUnauthorized, msg: "credential unauthorized"}
+	}
 	if returnedIndex != "" {
 		authIndex = returnedIndex
 	}
