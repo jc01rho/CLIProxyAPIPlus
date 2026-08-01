@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type countingStore struct {
@@ -18,6 +20,70 @@ func (s *countingStore) Save(context.Context, *Auth) (string, error) {
 }
 
 func (s *countingStore) Delete(context.Context, string) error { return nil }
+
+type blockingSaveStore struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingSaveStore) List(context.Context) ([]*Auth, error) { return nil, nil }
+
+func (s *blockingSaveStore) Save(context.Context, *Auth) (string, error) {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return "", nil
+}
+
+func (s *blockingSaveStore) Delete(context.Context, string) error { return nil }
+
+func TestMarkResultDoesNotHoldManagerLockWhilePersisting(t *testing.T) {
+	store := &blockingSaveStore{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	mgr := NewManager(store, nil, nil)
+	mgr.RegisterExecutor(schedulerTestExecutor{provider: "codex"})
+	auth := &Auth{
+		ID:       "auth-1",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "codex"},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register(skipPersist) returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		mgr.MarkResult(context.Background(), Result{AuthID: "auth-1", Provider: "codex", Success: true})
+		close(done)
+	}()
+
+	select {
+	case <-store.entered:
+	case <-time.After(time.Second):
+		t.Fatal("MarkResult did not enter persistence")
+	}
+
+	executorDone := make(chan bool, 1)
+	go func() {
+		_, ok := mgr.Executor("codex")
+		executorDone <- ok
+	}()
+
+	select {
+	case ok := <-executorDone:
+		if !ok {
+			t.Fatal("Executor(codex) returned false")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Executor blocked while MarkResult was persisting")
+	}
+
+	close(store.release)
+	<-done
+}
 
 func TestWithSkipPersist_DisablesUpdatePersistence(t *testing.T) {
 	store := &countingStore{}

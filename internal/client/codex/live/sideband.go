@@ -27,6 +27,9 @@ import (
 const (
 	defaultSidebandAPIBaseURL = "wss://api.openai.com/v1"
 	sessionLifetime           = time.Hour
+	sidebandReadTimeout       = 5 * time.Minute
+	sidebandWriteTimeout      = 10 * time.Second
+	sidebandPingInterval      = 30 * time.Second
 )
 
 var (
@@ -557,6 +560,13 @@ func websocketCloseFunc(name string, conn *websocket.Conn) func() error {
 }
 
 func relayWebsockets(downstream, upstream *websocket.Conn) error {
+	configureSidebandWebsocketLiveness(downstream, sidebandReadTimeout)
+	configureSidebandWebsocketLiveness(upstream, sidebandReadTimeout)
+	stopPing := make(chan struct{})
+	defer close(stopPing)
+	go pingSidebandWebsocket(downstream, stopPing)
+	go pingSidebandWebsocket(upstream, stopPing)
+
 	results := make(chan error, 2)
 	go func() { results <- copyWebsocket(upstream, downstream) }()
 	go func() { results <- copyWebsocket(downstream, upstream) }()
@@ -572,8 +582,37 @@ func relayWebsockets(downstream, upstream *websocket.Conn) error {
 	return firstErr
 }
 
+func configureSidebandWebsocketLiveness(conn *websocket.Conn, readTimeout time.Duration) {
+	if conn == nil || readTimeout <= 0 {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(readTimeout))
+	})
+}
+
+func pingSidebandWebsocket(conn *websocket.Conn, stop <-chan struct{}) {
+	if conn == nil {
+		return
+	}
+	ticker := time.NewTicker(sidebandPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(sidebandWriteTimeout)); err != nil {
+				return
+			}
+		}
+	}
+}
+
 func copyWebsocket(destination, source *websocket.Conn) error {
 	for {
+		_ = source.SetReadDeadline(time.Now().Add(sidebandReadTimeout))
 		messageType, reader, errReader := source.NextReader()
 		if errReader != nil {
 			return errReader

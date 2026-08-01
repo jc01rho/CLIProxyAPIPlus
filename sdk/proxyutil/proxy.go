@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/net/proxy"
 )
@@ -100,20 +102,11 @@ func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 		return NewDirectTransport(), setting.Mode, nil
 	case ModeProxy:
 		if setting.URL.Scheme == "socks5" || setting.URL.Scheme == "socks5h" {
-			var proxyAuth *proxy.Auth
-			if setting.URL.User != nil {
-				username := setting.URL.User.Username()
-				password, _ := setting.URL.User.Password()
-				proxyAuth = &proxy.Auth{User: username, Password: password}
-			}
-			dialer, errSOCKS5 := proxy.SOCKS5("tcp", setting.URL.Host, proxyAuth, proxy.Direct)
-			if errSOCKS5 != nil {
-				return nil, setting.Mode, fmt.Errorf("create SOCKS5 dialer failed: %w", errSOCKS5)
-			}
+			dialer := socks5ContextDialer{proxyURL: setting.URL}
 			transport := cloneDefaultTransport()
 			transport.Proxy = nil
-			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, addr)
 			}
 			return transport, setting.Mode, nil
 		}
@@ -141,13 +134,186 @@ func BuildDialer(raw string) (proxy.Dialer, Mode, error) {
 		if setting.URL.Scheme == "http" || setting.URL.Scheme == "https" {
 			return &httpConnectDialer{proxyURL: setting.URL, dialer: proxy.Direct}, setting.Mode, nil
 		}
+		if setting.URL.Scheme == "socks5" || setting.URL.Scheme == "socks5h" {
+			return socks5ContextDialer{proxyURL: setting.URL}, setting.Mode, nil
+		}
 		dialer, errDialer := proxy.FromURL(setting.URL, proxy.Direct)
 		if errDialer != nil {
 			return nil, setting.Mode, fmt.Errorf("create proxy dialer failed: %w", errDialer)
 		}
-		return dialer, setting.Mode, nil
+		return contextProxyDialer{dialer: dialer}, setting.Mode, nil
 	default:
 		return nil, setting.Mode, nil
+	}
+}
+
+type socks5ContextDialer struct {
+	proxyURL *url.URL
+}
+
+func (d socks5ContextDialer) Dial(network, addr string) (net.Conn, error) {
+	return d.DialContext(context.Background(), network, addr)
+}
+
+func (d socks5ContextDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var proxyAuth *proxy.Auth
+	if d.proxyURL.User != nil {
+		username := d.proxyURL.User.Username()
+		password, _ := d.proxyURL.User.Password()
+		proxyAuth = &proxy.Auth{User: username, Password: password}
+	}
+	dialer, errSOCKS5 := proxy.SOCKS5("tcp", d.proxyURL.Host, proxyAuth, contextDirectDialer{ctx: ctx})
+	if errSOCKS5 != nil {
+		return nil, fmt.Errorf("create SOCKS5 dialer failed: %w", errSOCKS5)
+	}
+	conn, errDial := dialWithContext(ctx, dialer, network, addr)
+	if errDial != nil {
+		if errContext := contextError(ctx); errContext != nil {
+			return nil, errContext
+		}
+		return nil, errDial
+	}
+	return conn, nil
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if errContext := ctx.Err(); errContext != nil {
+		return errContext
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+type contextProxyDialer struct {
+	dialer proxy.Dialer
+}
+
+func (d contextProxyDialer) Dial(network, addr string) (net.Conn, error) {
+	return d.dialer.Dial(network, addr)
+}
+
+func (d contextProxyDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	return dialWithContext(ctx, d.dialer, network, addr)
+}
+
+type contextClosingConn struct {
+	net.Conn
+	cancelOnce sync.Once
+	mu         sync.Mutex
+	stopped    bool
+	stop       func() bool
+	done       chan struct{}
+}
+
+func newContextClosingConn(ctx context.Context, conn net.Conn) net.Conn {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	wrapped := &contextClosingConn{Conn: conn, done: make(chan struct{})}
+	wrapped.stop = context.AfterFunc(ctx, func() {
+		wrapped.cancelOnce.Do(func() {
+			_ = conn.Close()
+			close(wrapped.done)
+		})
+	})
+	return wrapped
+}
+
+func (c *contextClosingConn) Close() error {
+	if c == nil || c.Conn == nil {
+		return net.ErrClosed
+	}
+	c.mu.Lock()
+	stopped := c.stopped
+	if !stopped {
+		c.stopped = true
+	}
+	c.mu.Unlock()
+	if c.stop != nil && !stopped && !c.stop() {
+		c.cancelOnce.Do(func() { close(c.done) })
+	}
+	return c.Conn.Close()
+}
+
+func (c *contextClosingConn) stopContextCancellation() {
+	if c == nil || c.stop == nil {
+		return
+	}
+	c.mu.Lock()
+	stopped := c.stopped
+	if !stopped {
+		c.stopped = true
+	}
+	c.mu.Unlock()
+	if !stopped && !c.stop() {
+		<-c.done
+	}
+}
+
+func stopContextCancellation(conn net.Conn) {
+	if wrapped, ok := conn.(*contextClosingConn); ok {
+		wrapped.stopContextCancellation()
+	}
+}
+
+type contextDirectDialer struct {
+	ctx context.Context
+}
+
+func (d contextDirectDialer) Dial(network, addr string) (net.Conn, error) {
+	if d.ctx == nil {
+		d.ctx = context.Background()
+	}
+	conn, errDial := (&net.Dialer{}).DialContext(d.ctx, network, addr)
+	if errDial != nil {
+		return nil, errDial
+	}
+	return newContextClosingConn(d.ctx, conn), nil
+}
+
+func dialWithContext(ctx context.Context, dialer proxy.Dialer, network, addr string) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+		return contextDialer.DialContext(ctx, network, addr)
+	}
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	done := make(chan dialResult, 1)
+	go func() {
+		conn, errDial := dialer.Dial(network, addr)
+		done <- dialResult{conn: conn, err: errDial}
+	}()
+	select {
+	case <-ctx.Done():
+		go func() {
+			result := <-done
+			if result.conn != nil {
+				_ = result.conn.Close()
+			}
+		}()
+		return nil, ctx.Err()
+	case result := <-done:
+		if result.err != nil {
+			return nil, result.err
+		}
+		if errContext := ctx.Err(); errContext != nil {
+			_ = result.conn.Close()
+			return nil, errContext
+		}
+		stopContextCancellation(result.conn)
+		return result.conn, nil
 	}
 }
 

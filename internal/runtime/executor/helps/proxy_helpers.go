@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,6 +18,12 @@ import (
 var (
 	httpClientCache      = make(map[string]*http.Client)
 	httpClientCacheMutex sync.RWMutex
+)
+
+const (
+	defaultTLSHandshakeTimeout   = 30 * time.Second
+	defaultResponseHeaderTimeout = 45 * time.Second
+	defaultStreamingIdleTimeout  = 5 * time.Minute
 )
 
 // NewProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
@@ -60,7 +67,7 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 
 	// Create new client
-	httpClient := &http.Client{}
+	httpClient := &http.Client{Transport: newBoundedTransport()}
 	if timeout > 0 {
 		httpClient.Timeout = timeout
 	}
@@ -69,7 +76,7 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	if proxyURL != "" {
 		transport := buildProxyTransport(proxyURL)
 		if transport != nil {
-			httpClient.Transport = transport
+			httpClient.Transport = withStreamingIdleTimeout(transport)
 			// Cache the client
 			httpClientCacheMutex.Lock()
 			httpClientCache[proxyURL] = httpClient
@@ -81,8 +88,10 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 
 	// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
-	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
-		httpClient.Transport = rt
+	if ctx != nil {
+		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+			httpClient.Transport = withStreamingIdleTimeout(rt)
+		}
 	}
 
 	return httpClient
@@ -102,5 +111,85 @@ func buildProxyTransport(proxyURL string) *http.Transport {
 		log.Errorf("%v", errBuild)
 		return nil
 	}
+	tuneHTTPTransport(transport)
 	return transport
+}
+
+func newBoundedTransport() http.RoundTripper {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || transport == nil {
+		transport = &http.Transport{}
+	}
+	clone := transport.Clone()
+	tuneHTTPTransport(clone)
+	return withStreamingIdleTimeout(clone)
+}
+
+func tuneHTTPTransport(transport *http.Transport) {
+	if transport == nil {
+		return
+	}
+	if transport.ResponseHeaderTimeout == 0 {
+		transport.ResponseHeaderTimeout = defaultResponseHeaderTimeout
+	}
+	if transport.TLSHandshakeTimeout == 0 {
+		transport.TLSHandshakeTimeout = defaultTLSHandshakeTimeout
+	}
+}
+
+func withStreamingIdleTimeout(rt http.RoundTripper) http.RoundTripper {
+	if rt == nil {
+		rt = http.DefaultTransport
+	}
+	return idleTimeoutRoundTripper{next: rt, idleTimeout: defaultStreamingIdleTimeout}
+}
+
+type idleTimeoutRoundTripper struct {
+	next        http.RoundTripper
+	idleTimeout time.Duration
+}
+
+func (rt idleTimeoutRoundTripper) Unwrap() http.RoundTripper {
+	return rt.next
+}
+
+func (rt idleTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.next.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil || rt.idleTimeout <= 0 {
+		return resp, err
+	}
+	resp.Body = newIdleTimeoutBody(resp.Body, rt.idleTimeout)
+	return resp, nil
+}
+
+type idleTimeoutBody struct {
+	body    io.ReadCloser
+	timeout time.Duration
+	once    sync.Once
+	err     error
+}
+
+func newIdleTimeoutBody(body io.ReadCloser, timeout time.Duration) io.ReadCloser {
+	return &idleTimeoutBody{body: body, timeout: timeout}
+}
+
+func (b *idleTimeoutBody) Read(p []byte) (int, error) {
+	if b == nil || b.body == nil {
+		return 0, http.ErrBodyReadAfterClose
+	}
+	timer := time.AfterFunc(b.timeout, func() {
+		_ = b.body.Close()
+	})
+	defer timer.Stop()
+	return b.body.Read(p)
+}
+
+func (b *idleTimeoutBody) Close() error {
+	if b == nil || b.body == nil {
+		return nil
+	}
+	b.once.Do(func() {
+		b.err = b.body.Close()
+	})
+	return b.err
 }

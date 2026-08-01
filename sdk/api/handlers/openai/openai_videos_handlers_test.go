@@ -467,10 +467,7 @@ func TestWriteVideoContentFromURLUsesPinnedAuthProxy(t *testing.T) {
 	}
 
 	client := handler.videoContentHTTPClient(ctx)
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport type = %T, want *http.Transport", client.Transport)
-	}
+	transport := requireVideoHTTPTransport(t, client.Transport)
 	if transport.Proxy != nil {
 		t.Fatal("expected pinned auth direct proxy to bypass global proxy")
 	}
@@ -492,10 +489,7 @@ func TestWriteVideoContentFromURLFallsBackToGlobalProxy(t *testing.T) {
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/videos/video_456/content", nil)
 
 	client := handler.videoContentHTTPClient(ctx)
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport type = %T, want *http.Transport", client.Transport)
-	}
+	transport := requireVideoHTTPTransport(t, client.Transport)
 
 	req, errRequest := http.NewRequest(http.MethodGet, "https://example.com/video.mp4", nil)
 	if errRequest != nil {
@@ -508,6 +502,18 @@ func TestWriteVideoContentFromURLFallsBackToGlobalProxy(t *testing.T) {
 	if proxyURL == nil || proxyURL.String() != "http://global-proxy.example.com:8080" {
 		t.Fatalf("proxy URL = %v, want http://global-proxy.example.com:8080", proxyURL)
 	}
+}
+
+func requireVideoHTTPTransport(t *testing.T, rt http.RoundTripper) *http.Transport {
+	t.Helper()
+	if wrapper, ok := rt.(interface{ Unwrap() http.RoundTripper }); ok {
+		rt = wrapper.Unwrap()
+	}
+	transport, ok := rt.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", rt)
+	}
+	return transport
 }
 
 func TestVideosContentUsesSelectedAuthProxyForDownload(t *testing.T) {
