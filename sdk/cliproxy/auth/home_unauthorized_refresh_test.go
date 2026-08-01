@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -44,6 +45,8 @@ type homeUnauthorizedRefreshExecutor struct {
 	keepStale       bool
 	retainSelection bool
 	requirePrepared bool
+	nilRetryStream  bool
+	nilRetryChunks  bool
 	executeCalls    atomic.Int32
 	countCalls      atomic.Int32
 	streamCalls     atomic.Int32
@@ -90,6 +93,12 @@ func (e *homeUnauthorizedRefreshExecutor) ExecuteStream(_ context.Context, auth 
 	}
 	if e.requirePrepared && auth.Metadata["project_id"] != "prepared-project" {
 		return nil, &Error{HTTPStatus: http.StatusBadRequest, Message: "missing prepared auth"}
+	}
+	if e.nilRetryStream {
+		return nil, nil
+	}
+	if e.nilRetryChunks {
+		return &cliproxyexecutor.StreamResult{}, nil
 	}
 	chunks := make(chan cliproxyexecutor.StreamChunk, 1)
 	chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("ok")}
@@ -359,6 +368,45 @@ func TestHomeUnauthorizedStreamRefreshesAtMostOnceAcrossRedispatch(t *testing.T)
 	}
 	if got := executor.streamCalls.Load(); got != 2 {
 		t.Fatalf("stream calls = %d, want initial attempt and one retry", got)
+	}
+}
+
+func TestHomeUnauthorizedBootstrapRetryRejectsEmptyStream(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		nilRetryStream bool
+		nilRetryChunks bool
+	}{
+		{name: "nil result", nilRetryStream: true},
+		{name: "nil chunks", nilRetryChunks: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dispatcher := &homeUnauthorizedRefreshDispatcher{}
+			executor := &homeUnauthorizedRefreshExecutor{
+				streamMode:     "bootstrap",
+				nilRetryStream: test.nilRetryStream,
+				nilRetryChunks: test.nilRetryChunks,
+			}
+			manager := newHomeUnauthorizedRefreshManager(dispatcher, executor)
+
+			result, errStream := manager.ExecuteStream(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, cliproxyexecutor.Options{Stream: true})
+			if errStream != nil {
+				t.Fatalf("ExecuteStream() error = %v", errStream)
+			}
+			var streamErr error
+			for chunk := range result.Chunks {
+				if chunk.Err != nil {
+					streamErr = chunk.Err
+				}
+			}
+			var authErr *Error
+			if !errors.As(streamErr, &authErr) || authErr.Code != "empty_stream" {
+				t.Fatalf("stream error = %#v, want empty_stream", streamErr)
+			}
+			if got := executor.streamCalls.Load(); got != 2 {
+				t.Fatalf("stream calls = %d, want initial attempt and one retry", got)
+			}
+		})
 	}
 }
 
