@@ -15,6 +15,7 @@ import (
 	"time"
 
 	tls "github.com/refraction-networking/utls"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
 type claudeTestDialer struct {
@@ -85,6 +86,65 @@ func TestClaudeOAuthTLSClientHelloSpecMatchesNative220Capture(t *testing.T) {
 	}
 }
 
+func TestClaudeOAuthTLSResumptionIsWireSafe(t *testing.T) {
+	t.Parallel()
+
+	// RFC 8446 4.2.11 requires pre_shared_key to be the final extension.
+	spec := claudeOAuthTLSClientHelloSpec()
+	last := spec.Extensions[len(spec.Extensions)-1]
+	if _, ok := last.(*tls.UtlsPreSharedKeyExtension); !ok {
+		t.Fatalf("last OAuth extension = %T, want *tls.UtlsPreSharedKeyExtension", last)
+	}
+
+	// Without OmitEmptyPsk uTLS refuses to marshal an empty PSK, and without
+	// PreferSkipResumptionOnNilExtension a HelloCustom resumption attempt panics.
+	cfg := newClaudeOAuthTLSConfig("api.anthropic.com", tls.NewLRUClientSessionCache(claudeOAuthSessionCacheCapacity))
+	if cfg.ServerName != "api.anthropic.com" {
+		t.Fatalf("ServerName = %q, want api.anthropic.com", cfg.ServerName)
+	}
+	if cfg.ClientSessionCache == nil {
+		t.Fatal("ClientSessionCache = nil, want a session cache so resumption is possible")
+	}
+	if !cfg.OmitEmptyPsk {
+		t.Fatal("OmitEmptyPsk = false, want true so an unresumed ClientHello stays byte-identical")
+	}
+	if !cfg.PreferSkipResumptionOnNilExtension {
+		t.Fatal("PreferSkipResumptionOnNilExtension = false, want true to avoid a HelloCustom resumption panic")
+	}
+
+	// ClaudeAuth is rebuilt for every refresh and every executor profile check, so
+	// the cache must be keyed on the proxy rather than owned by the transport;
+	// otherwise every dial starts with an empty cache and never resumes.
+	first := newUtlsRoundTripper(&sdkconfig.SDKConfig{ProxyURL: "http://127.0.0.1:9"})
+	second := newUtlsRoundTripper(&sdkconfig.SDKConfig{ProxyURL: "http://127.0.0.1:9"})
+	if first.sessionCache == nil || second.sessionCache == nil {
+		t.Fatal("round tripper session cache = nil, want a shared per-proxy cache")
+	}
+	if first.sessionCache != second.sessionCache {
+		t.Fatal("same-proxy transports have different session caches, so resumption can never hit")
+	}
+
+	// Resumption must not cross proxy boundaries.
+	other := newUtlsRoundTripper(&sdkconfig.SDKConfig{ProxyURL: "http://127.0.0.1:10"})
+	if first.sessionCache == other.sessionCache {
+		t.Fatal("different proxies share a session cache, want per-proxy isolation")
+	}
+
+	// Same check through the real entry point: two ClaudeAuth values built the way
+	// refresh and the executor profile check build them must still share a cache.
+	cacheOf := func(service *ClaudeAuth) tls.ClientSessionCache {
+		t.Helper()
+		transport, ok := service.httpClient.Transport.(*utlsRoundTripper)
+		if !ok {
+			t.Fatalf("ClaudeAuth transport type = %T, want *utlsRoundTripper", service.httpClient.Transport)
+		}
+		return transport.sessionCache
+	}
+	if cacheOf(NewClaudeAuthWithProxyURL(nil, "http://127.0.0.1:11")) != cacheOf(NewClaudeAuthWithProxyURL(nil, "http://127.0.0.1:11")) {
+		t.Fatal("per-operation ClaudeAuth instances do not share a session cache, so refresh can never resume")
+	}
+}
+
 func TestClaudeOAuthRequestHeaderOrderMatchesNative220Capture(t *testing.T) {
 	t.Parallel()
 
@@ -131,6 +191,12 @@ func claudeOAuthExtensionTypes(t *testing.T, extensions []tls.TLSExtension) []ui
 			result = append(result, 45)
 		case *tls.SupportedVersionsExtension:
 			result = append(result, 43)
+		case *tls.UtlsPreSharedKeyExtension:
+			// pre_shared_key contributes zero bytes until a session is cached, so
+			// it never appears in the fresh ClientHello the native capture covers
+			// and must stay out of the JA3 extension list. The record length
+			// assertion in the caller proves the byte neutrality.
+			continue
 		default:
 			t.Fatalf("unexpected OAuth TLS extension %T", extension)
 		}
@@ -173,7 +239,9 @@ func captureClaudeOAuthClientHello(t *testing.T) []byte {
 			t.Errorf("close server connection: %v", errClose)
 		}
 	})
-	tlsConn := tls.UClient(clientConn, &tls.Config{ServerName: "api.anthropic.com"}, tls.HelloCustom)
+	// Use the production config so the captured bytes reflect the real dial path.
+	cfg := newClaudeOAuthTLSConfig("api.anthropic.com", tls.NewLRUClientSessionCache(claudeOAuthSessionCacheCapacity))
+	tlsConn := tls.UClient(clientConn, cfg, tls.HelloCustom)
 	if errPreset := tlsConn.ApplyPreset(claudeOAuthTLSClientHelloSpec()); errPreset != nil {
 		t.Fatal(errPreset)
 	}

@@ -119,6 +119,34 @@ func TestClaudeCodeTLSClientHelloSpecMatches220Capture(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeTLSResumptionIsWireSafe(t *testing.T) {
+	t.Parallel()
+
+	// RFC 8446 4.2.11 requires pre_shared_key to be the final extension, after
+	// the padding extension.
+	spec := claudeCodeTLSClientHelloSpec()
+	last := spec.Extensions[len(spec.Extensions)-1]
+	if _, ok := last.(*tls.UtlsPreSharedKeyExtension); !ok {
+		t.Fatalf("last inference extension = %T, want *tls.UtlsPreSharedKeyExtension", last)
+	}
+	if _, ok := spec.Extensions[len(spec.Extensions)-2].(*tls.UtlsPaddingExtension); !ok {
+		t.Fatalf("extension before pre_shared_key = %T, want *tls.UtlsPaddingExtension", spec.Extensions[len(spec.Extensions)-2])
+	}
+
+	// Without OmitEmptyPsk uTLS refuses to marshal an empty PSK, and without
+	// PreferSkipResumptionOnNilExtension a HelloCustom resumption attempt panics.
+	cfg := newClaudeCodeTLSConfig("api.anthropic.com", tls.NewLRUClientSessionCache(claudeCodeSessionCacheCapacity))
+	if cfg.ClientSessionCache == nil {
+		t.Fatal("ClientSessionCache = nil, want a session cache so resumption is possible")
+	}
+	if !cfg.OmitEmptyPsk {
+		t.Fatal("OmitEmptyPsk = false, want true so an unresumed ClientHello stays byte-identical")
+	}
+	if !cfg.PreferSkipResumptionOnNilExtension {
+		t.Fatal("PreferSkipResumptionOnNilExtension = false, want true to avoid a HelloCustom resumption panic")
+	}
+}
+
 func TestClaudeCodeRequestHeaderOrderMatchesNative220Capture(t *testing.T) {
 	t.Parallel()
 
@@ -277,7 +305,10 @@ func captureClaudeCodeClientHello(t *testing.T) []byte {
 			t.Errorf("close server pipe: %v", errClose)
 		}
 	})
-	tlsConn := tls.UClient(clientConn, &tls.Config{ServerName: "api.anthropic.com"}, tls.HelloCustom)
+	// Use the production config so the captured bytes reflect the real dial path,
+	// including the resumption settings.
+	cfg := newClaudeCodeTLSConfig("api.anthropic.com", tls.NewLRUClientSessionCache(claudeCodeSessionCacheCapacity))
+	tlsConn := tls.UClient(clientConn, cfg, tls.HelloCustom)
 	if errPreset := tlsConn.ApplyPreset(claudeCodeTLSClientHelloSpec()); errPreset != nil {
 		t.Fatal(errPreset)
 	}

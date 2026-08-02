@@ -131,6 +131,25 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
+// claudeCodeSessionCacheCapacity bounds the per-transport TLS session cache for
+// the Anthropic inference plane.
+const claudeCodeSessionCacheCapacity = 32
+
+// newClaudeCodeTLSConfig builds the uTLS config for one inference-plane dial.
+//
+// OmitEmptyPsk keeps the pre_shared_key extension silent until a session is
+// cached, so an unresumed ClientHello stays byte-identical to the captured
+// native handshake. PreferSkipResumptionOnNilExtension turns uTLS's HelloCustom
+// "resume without the matching extension" panic into a skipped resumption.
+func newClaudeCodeTLSConfig(host string, sessionCache tls.ClientSessionCache) *tls.Config {
+	return &tls.Config{
+		ServerName:                         host,
+		ClientSessionCache:                 sessionCache,
+		OmitEmptyPsk:                       true,
+		PreferSkipResumptionOnNilExtension: true,
+	}
+}
+
 // claudeCodeTLSClientHelloSpec reproduces the deterministic Node/OpenSSL
 // ClientHello emitted by Claude Code 2.1.220 on macOS arm64. Keep this spec in
 // sync with a fresh native capture whenever the advertised Claude Code version
@@ -182,6 +201,9 @@ func claudeCodeTLSClientHelloSpec() *tls.ClientHelloSpec {
 			&tls.PSKKeyExchangeModesExtension{Modes: []uint8{tls.PskModeDHE}},
 			&tls.SupportedVersionsExtension{Versions: []uint16{tls.VersionTLS13, tls.VersionTLS12}},
 			&tls.UtlsPaddingExtension{GetPaddingLen: tls.BoringPaddingStyle},
+			// pre_shared_key MUST be the final extension (RFC 8446 4.2.11), after
+			// padding. It contributes zero bytes until a cached session exists.
+			&tls.UtlsPreSharedKeyExtension{},
 		},
 	}
 }
@@ -260,6 +282,9 @@ func cachedClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
 }
 
 func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
+	// The cache is scoped to this round tripper, which is already keyed by proxy,
+	// so resumption never crosses proxy boundaries.
+	sessionCache := tls.NewLRUClientSessionCache(claudeCodeSessionCacheCapacity)
 	var dialer proxy.Dialer = proxy.Direct
 	if proxyURL != "" {
 		proxyDialer, mode, errBuild := proxyutil.BuildDialer(proxyURL)
@@ -293,7 +318,7 @@ func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
 				}
 				return nil, fmt.Errorf("claude tls: split upstream address: %w", errSplit)
 			}
-			tlsConn := tls.UClient(conn, &tls.Config{ServerName: host}, tls.HelloCustom)
+			tlsConn := tls.UClient(conn, newClaudeCodeTLSConfig(host, sessionCache), tls.HelloCustom)
 			if errPreset := tlsConn.ApplyPreset(claudeCodeTLSClientHelloSpec()); errPreset != nil {
 				if errClose := tlsConn.Close(); errClose != nil {
 					log.Debugf("claude tls: close connection after preset failure: %v", errClose)
