@@ -26,17 +26,18 @@ var claudeDiagnosticsState = struct {
 	lastCleanup time.Time
 }{entries: make(map[string]claudeDiagnosticsEntry)}
 
-// BeginClaudeDiagnostics starts one request generation for a credential and
-// Claude conversation. It returns the last successfully completed upstream
-// message ID, if any. Only a SHA-256 digest of the credential and session is
-// retained as the cache key.
-func BeginClaudeDiagnostics(apiKey, sessionID string) (key string, sequence uint64, previousMessageID string) {
-	apiKey = strings.TrimSpace(apiKey)
+// BeginClaudeDiagnostics starts one request generation for a stable credential
+// identity and Claude conversation. It returns the last successfully completed
+// upstream message ID, if any. Only a SHA-256 digest of the credential identity
+// and session is retained as the cache key, so access-token rotation does not
+// interrupt continuity.
+func BeginClaudeDiagnostics(credentialIdentity, sessionID string) (key string, sequence uint64, previousMessageID string) {
+	credentialIdentity = strings.TrimSpace(credentialIdentity)
 	sessionID = strings.TrimSpace(sessionID)
-	if apiKey == "" || sessionID == "" {
+	if credentialIdentity == "" || sessionID == "" {
 		return "", 0, ""
 	}
-	digest := sha256.Sum256([]byte(apiKey + "\x00" + sessionID))
+	digest := sha256.Sum256([]byte(credentialIdentity + "\x00" + sessionID))
 	key = hex.EncodeToString(digest[:])
 	now := time.Now()
 

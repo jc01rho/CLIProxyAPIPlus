@@ -135,8 +135,9 @@ func EnsureDeviceIDPoolFor(metadata *map[string]any) ([]string, bool, error) {
 	return ensureDeviceIDPoolLocked(*metadata)
 }
 
-// ReadDeviceIDPool returns the raw stored pool value, initializing the map when
-// needed, under the device pool lock.
+// ReadDeviceIDPool returns the stored pool value, initializing the map when
+// needed, under the device pool lock. Slice values are copied so a caller can
+// never mutate the stored credential identity after the lock is released.
 func ReadDeviceIDPool(metadata *map[string]any) any {
 	if metadata == nil {
 		return nil
@@ -148,7 +149,14 @@ func ReadDeviceIDPool(metadata *map[string]any) any {
 		*metadata = make(map[string]any)
 		return nil
 	}
-	return (*metadata)[ClaudeDeviceIDsMetadataKey]
+	switch stored := (*metadata)[ClaudeDeviceIDsMetadataKey].(type) {
+	case []string:
+		return append([]string(nil), stored...)
+	case []any:
+		return append([]any(nil), stored...)
+	default:
+		return stored
+	}
 }
 
 // StoreDeviceIDPool writes a defensive copy of deviceIDs under the device pool lock.

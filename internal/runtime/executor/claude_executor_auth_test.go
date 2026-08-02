@@ -90,30 +90,38 @@ func TestClaudeExecutorPrepareRequestAuthMigratesFiveDevicesToOne(t *testing.T) 
 	}
 }
 
-func TestClaudeExecutorPrepareRequestAuthThrottlesFailedProfileLookup(t *testing.T) {
+func TestClaudeExecutorPrepareRequestAuthIgnoresFreshTimestampWithoutIdentity(t *testing.T) {
 	calls := 0
 	executor := NewClaudeExecutor(&config.Config{})
 	executor.oauthProfileFetcher = func(context.Context, *cliproxyauth.Auth, string) (*claudeauth.OAuthProfile, error) {
 		calls++
 		return nil, fmt.Errorf("profile unavailable")
 	}
+	const previousCheckedAt = "2999-01-01T00:00:00Z"
 	auth := &cliproxyauth.Auth{
 		ID:         "claude-profile-unavailable",
 		Attributes: map[string]string{"api_key": "sk-ant-oat-profile-unavailable"},
-		Metadata:   map[string]any{"type": "claude"},
+		Metadata: map[string]any{
+			"type":                                "claude",
+			claudeAccountProfileCheckedAtKey:      previousCheckedAt,
+			claudeauth.ClaudeDeviceIDsMetadataKey: []string{"0000000000000000000000000000000000000000000000000000000000000000"},
+		},
 	}
 
 	prepared, errPrepare := executor.PrepareRequestAuth(context.Background(), auth)
-	if errPrepare != nil {
-		t.Fatalf("PrepareRequestAuth() error = %v", errPrepare)
+	if errPrepare == nil {
+		t.Fatal("PrepareRequestAuth() error = nil, want missing account identity failure")
+	}
+	if prepared != nil {
+		t.Fatalf("PrepareRequestAuth() auth = %#v, want nil on missing account identity", prepared)
 	}
 	if calls != 1 {
 		t.Fatalf("profile calls = %d, want 1", calls)
 	}
-	if len(claudeauth.NormalizeDeviceIDPool(prepared.Metadata[claudeauth.ClaudeDeviceIDsMetadataKey])) != claudeauth.ClaudeDevicePoolSize {
-		t.Fatal("device pool was not populated after profile failure")
+	if !executor.ShouldPrepareRequestAuth(auth) {
+		t.Fatal("ShouldPrepareRequestAuth() = false after failed profile lookup; failure must remain retryable")
 	}
-	if executor.ShouldPrepareRequestAuth(prepared) {
-		t.Fatal("ShouldPrepareRequestAuth() = true immediately after failed profile lookup")
+	if got := claudeauth.ReadMetadataString(&auth.Metadata, claudeAccountProfileCheckedAtKey); got != previousCheckedAt {
+		t.Fatalf("profile checked timestamp = %q, want prior value preserved without suppressing retry", got)
 	}
 }

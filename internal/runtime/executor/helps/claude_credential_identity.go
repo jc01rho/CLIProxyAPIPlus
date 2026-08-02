@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,12 +12,33 @@ import (
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	homekv "github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-// ClaudeAgentSessionUUID maps the downstream agent conversation to one stable UUID.
+// ClaudeAgentSessionUUID maps the downstream agent conversation to one stable UUID,
+// preserving native Claude Code session signals.
 func ClaudeAgentSessionUUID(headers http.Header, originalPayload, translatedPayload []byte, metadataSets ...map[string]any) string {
+	return claudeAgentSessionUUID(headers, originalPayload, translatedPayload, metadataSets...)
+}
+
+// ClaudeAgentSessionUUIDForRequest preserves Claude-specific session signals only
+// for a confirmed native caller. Other callers use protocol session fields,
+// execution metadata, or the stable derived conversation root.
+func ClaudeAgentSessionUUIDForRequest(headers http.Header, originalPayload, translatedPayload []byte, confirmedClaudeCode bool, metadataSets ...map[string]any) string {
+	if !confirmedClaudeCode {
+		headers = headers.Clone()
+		for key := range headers {
+			if strings.EqualFold(key, "X-Claude-Code-Session-Id") {
+				delete(headers, key)
+			}
+		}
+		originalPayload = withoutClaudeMetadataUserID(originalPayload)
+		translatedPayload = withoutClaudeMetadataUserID(translatedPayload)
+	}
+	return claudeAgentSessionUUID(headers, originalPayload, translatedPayload, metadataSets...)
+}
+
+func claudeAgentSessionUUID(headers http.Header, originalPayload, translatedPayload []byte, metadataSets ...map[string]any) string {
 	metadata := mergeClaudeSessionMetadata(metadataSets...)
 	identity := cliproxyauth.ExtractSessionID(headers, originalPayload, metadata)
 	if identity == "" && len(translatedPayload) > 0 {
@@ -35,6 +57,17 @@ func ClaudeAgentSessionUUID(headers http.Header, originalPayload, translatedPayl
 	}
 	stableInput := "cli-proxy-api\x00claude\x00agent-conversation\x00" + identity
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(stableInput)).String()
+}
+
+func withoutClaudeMetadataUserID(payload []byte) []byte {
+	if len(payload) == 0 {
+		return payload
+	}
+	updated, errDelete := sjson.DeleteBytes(payload, "metadata.user_id")
+	if errDelete != nil {
+		return payload
+	}
+	return updated
 }
 
 func mergeClaudeSessionMetadata(metadataSets ...map[string]any) map[string]any {
@@ -171,6 +204,24 @@ func ApplyClaudeCredentialMetadata(payload []byte, auth *cliproxyauth.Auth, sess
 	if auth == nil {
 		return nil, "", fmt.Errorf("apply Claude credential metadata: auth is nil")
 	}
+	metadata, metadataPresent, errMetadata := uniqueClaudeJSONObjectMember(payload, "metadata")
+	if errMetadata != nil {
+		return nil, "", fmt.Errorf("apply Claude credential metadata: %w", errMetadata)
+	}
+	var existing string
+	if metadataPresent {
+		trimmedMetadata := bytes.TrimSpace(metadata)
+		if len(trimmedMetadata) >= 2 && trimmedMetadata[0] == '{' {
+			userID, userIDPresent, errUserID := uniqueClaudeJSONObjectMember(trimmedMetadata, "user_id")
+			if errUserID != nil {
+				return nil, "", fmt.Errorf("apply Claude credential metadata: metadata: %w", errUserID)
+			}
+			if userIDPresent && json.Unmarshal(userID, &existing) != nil {
+				existing = ""
+			}
+		}
+	}
+
 	deviceIDs, _, errDeviceIDs := claudeauth.EnsureDeviceIDPoolFor(&auth.Metadata)
 	if errDeviceIDs != nil {
 		return nil, "", errDeviceIDs
@@ -179,25 +230,192 @@ func ApplyClaudeCredentialMetadata(payload []byte, auth *cliproxyauth.Auth, sess
 	if errDeviceID != nil {
 		return nil, "", errDeviceID
 	}
+	accountUUID := ClaudeCredentialAccountUUID(auth)
+	if accountUUID == "" {
+		return nil, "", fmt.Errorf("apply Claude credential metadata: account UUID is empty")
+	}
 
-	existing := strings.TrimSpace(gjson.GetBytes(payload, "metadata.user_id").String())
-	encoded := []byte(existing)
-	if !gjson.ValidBytes(encoded) || !gjson.ParseBytes(encoded).IsObject() {
-		encoded = []byte(`{}`)
-	}
-	var errSetIdentity error
-	if encoded, errSetIdentity = sjson.SetBytes(encoded, "device_id", deviceID); errSetIdentity != nil {
-		return nil, "", fmt.Errorf("set Claude credential device ID: %w", errSetIdentity)
-	}
-	if encoded, errSetIdentity = sjson.SetBytes(encoded, "account_uuid", ClaudeCredentialAccountUUID(auth)); errSetIdentity != nil {
-		return nil, "", fmt.Errorf("set Claude credential account UUID: %w", errSetIdentity)
-	}
-	if encoded, errSetIdentity = sjson.SetBytes(encoded, "session_id", sessionID); errSetIdentity != nil {
-		return nil, "", fmt.Errorf("set Claude credential session ID: %w", errSetIdentity)
+	encoded, errIdentity := rebuildClaudeMetadataUserID(existing, deviceID, accountUUID, sessionID)
+	if errIdentity != nil {
+		return nil, "", fmt.Errorf("apply Claude credential metadata: %w", errIdentity)
 	}
 	updated, errSet := sjson.SetBytes(payload, "metadata.user_id", string(encoded))
 	if errSet != nil {
 		return nil, "", fmt.Errorf("set Claude credential metadata: %w", errSet)
 	}
 	return updated, deviceID, nil
+}
+
+type claudeJSONMember struct {
+	key   string
+	value json.RawMessage
+}
+
+func uniqueClaudeJSONObjectMember(raw []byte, target string) ([]byte, bool, error) {
+	raw = bytes.TrimSpace(raw)
+	if !json.Valid(raw) || len(raw) < 2 || raw[0] != '{' {
+		return nil, false, fmt.Errorf("request must be a JSON object")
+	}
+
+	position := 1
+	found := false
+	var value []byte
+	for {
+		position = skipClaudeJSONWhitespace(raw, position)
+		if position >= len(raw) {
+			return nil, false, fmt.Errorf("unterminated JSON object")
+		}
+		if raw[position] == '}' {
+			break
+		}
+		keyStart := position
+		keyEnd := skipClaudeJSONString(raw, keyStart)
+		var key string
+		if errUnmarshal := json.Unmarshal(raw[keyStart:keyEnd], &key); errUnmarshal != nil {
+			return nil, false, fmt.Errorf("decode JSON object key: %w", errUnmarshal)
+		}
+		position = skipClaudeJSONWhitespace(raw, keyEnd)
+		if position >= len(raw) || raw[position] != ':' {
+			return nil, false, fmt.Errorf("JSON object key %q is missing a value", key)
+		}
+		position = skipClaudeJSONWhitespace(raw, position+1)
+		valueStart := position
+		position = skipClaudeJSONValue(raw, position)
+		if key == target {
+			if found {
+				return nil, false, fmt.Errorf("duplicate JSON object key %q", target)
+			}
+			found = true
+			value = raw[valueStart:position]
+		}
+		position = skipClaudeJSONWhitespace(raw, position)
+		if position < len(raw) && raw[position] == ',' {
+			position++
+			continue
+		}
+		if position >= len(raw) || raw[position] != '}' {
+			return nil, false, fmt.Errorf("JSON object key %q has an invalid terminator", key)
+		}
+	}
+	return value, found, nil
+}
+
+func skipClaudeJSONWhitespace(raw []byte, position int) int {
+	for position < len(raw) {
+		switch raw[position] {
+		case ' ', '\t', '\r', '\n':
+			position++
+		default:
+			return position
+		}
+	}
+	return position
+}
+
+func skipClaudeJSONString(raw []byte, position int) int {
+	if position >= len(raw) || raw[position] != '"' {
+		return position
+	}
+	position++
+	for position < len(raw) {
+		switch raw[position] {
+		case '\\':
+			position += 2
+		case '"':
+			return position + 1
+		default:
+			position++
+		}
+	}
+	return position
+}
+
+func skipClaudeJSONValue(raw []byte, position int) int {
+	if position >= len(raw) {
+		return position
+	}
+	switch raw[position] {
+	case '"':
+		return skipClaudeJSONString(raw, position)
+	case '{', '[':
+		stack := []byte{raw[position]}
+		position++
+		for position < len(raw) && len(stack) > 0 {
+			switch raw[position] {
+			case '"':
+				position = skipClaudeJSONString(raw, position)
+				continue
+			case '{', '[':
+				stack = append(stack, raw[position])
+			case '}', ']':
+				stack = stack[:len(stack)-1]
+			}
+			position++
+		}
+		return position
+	default:
+		for position < len(raw) {
+			switch raw[position] {
+			case ',', '}', ']', ' ', '\t', '\r', '\n':
+				return position
+			default:
+				position++
+			}
+		}
+		return position
+	}
+}
+
+func rebuildClaudeMetadataUserID(existing, deviceID, accountUUID, sessionID string) ([]byte, error) {
+	extras := make([]claudeJSONMember, 0)
+	rawExisting := []byte(strings.TrimSpace(existing))
+	if json.Valid(rawExisting) && len(rawExisting) >= 2 && rawExisting[0] == '{' {
+		decoder := json.NewDecoder(bytes.NewReader(rawExisting))
+		_, _ = decoder.Token()
+		seen := make(map[string]bool)
+		for decoder.More() {
+			token, errToken := decoder.Token()
+			if errToken != nil {
+				return nil, errToken
+			}
+			key, ok := token.(string)
+			if !ok {
+				return nil, fmt.Errorf("metadata.user_id contains a non-string key")
+			}
+			if seen[key] {
+				return nil, fmt.Errorf("metadata.user_id contains duplicate key %q", key)
+			}
+			seen[key] = true
+			var value json.RawMessage
+			if errDecode := decoder.Decode(&value); errDecode != nil {
+				return nil, errDecode
+			}
+			switch key {
+			case "device_id", "account_uuid", "session_id":
+			default:
+				extras = append(extras, claudeJSONMember{key: key, value: value})
+			}
+		}
+	}
+
+	var output bytes.Buffer
+	output.WriteString(`{"device_id":`)
+	writeClaudeJSONQuoted(&output, deviceID)
+	output.WriteString(`,"account_uuid":`)
+	writeClaudeJSONQuoted(&output, accountUUID)
+	output.WriteString(`,"session_id":`)
+	writeClaudeJSONQuoted(&output, sessionID)
+	for _, extra := range extras {
+		output.WriteByte(',')
+		writeClaudeJSONQuoted(&output, extra.key)
+		output.WriteByte(':')
+		output.Write(extra.value)
+	}
+	output.WriteByte('}')
+	return output.Bytes(), nil
+}
+
+func writeClaudeJSONQuoted(output *bytes.Buffer, value string) {
+	encoded, _ := json.Marshal(value)
+	output.Write(encoded)
 }

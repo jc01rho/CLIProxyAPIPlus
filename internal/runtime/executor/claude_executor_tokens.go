@@ -136,11 +136,11 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if len(opts.OriginalRequest) > 0 {
 		originalPayload = opts.OriginalRequest
 	}
-	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, true)
+	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, true, e.cfg)
 	confirmedClaudeCode := claudeCodeDetection.Confirmed
 	claudeSessionID := ""
 	if oauthToken {
-		claudeSessionID = helps.ClaudeAgentSessionUUID(incomingHeaders, originalPayload, req.Payload, opts.Metadata, req.Metadata)
+		claudeSessionID = helps.ClaudeAgentSessionUUIDForRequest(incomingHeaders, originalPayload, req.Payload, confirmedClaudeCode, opts.Metadata, req.Metadata)
 	}
 	// Use streaming translation to preserve function calling, except for claude.
 	stream := from != to

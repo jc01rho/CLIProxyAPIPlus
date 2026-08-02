@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -20,7 +21,9 @@ func TestInjectClaudeDiagnosticsMatchesNativeFieldOrderAndContinuity(t *testing.
 	t.Parallel()
 
 	body := []byte(`{"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]},"max_tokens":1,"messages":[]}`)
-	first, state := injectClaudeDiagnostics(body, "credential-diagnostics-order", "session-diagnostics-order")
+	testID := uuid.NewString()
+	auth := &cliproxyauth.Auth{ID: "credential-diagnostics-order-" + testID}
+	first, state := injectClaudeDiagnostics(body, auth, "session-diagnostics-order-"+testID)
 	wantOrder := `"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]},"diagnostics":{"previous_message_id":null},"max_tokens"`
 	if !bytes.Contains(first, []byte(wantOrder)) {
 		t.Fatalf("diagnostics field order differs from native: %s", first)
@@ -30,7 +33,7 @@ func TestInjectClaudeDiagnosticsMatchesNativeFieldOrderAndContinuity(t *testing.
 	}
 
 	commitClaudeDiagnostics(state, "msg_01ABCDEF0123456789ABCDEFG")
-	second, _ := injectClaudeDiagnostics(body, "credential-diagnostics-order", "session-diagnostics-order")
+	second, _ := injectClaudeDiagnostics(body, auth, "session-diagnostics-order-"+testID)
 	if got := gjson.GetBytes(second, "diagnostics.previous_message_id").String(); got != "msg_01ABCDEF0123456789ABCDEFG" {
 		t.Fatalf("second previous_message_id = %q, want committed upstream ID", got)
 	}
@@ -51,8 +54,9 @@ func TestClaudeExecutorDiagnosticsAdvancesAfterSuccessfulResponse(t *testing.T) 
 	})
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
 	deviceIDs := []string{"0000000000000000000000000000000000000000000000000000000000000000"}
+	testID := uuid.NewString()
 	auth := &cliproxyauth.Auth{
-		ID:         "diagnostics-live-path",
+		ID:         "diagnostics-live-path-" + testID,
 		Attributes: map[string]string{"api_key": "sk-ant-oat-diagnostics-live-path"},
 		Metadata: map[string]any{
 			"account_uuid":                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -63,11 +67,14 @@ func TestClaudeExecutorDiagnosticsAdvancesAfterSuccessfulResponse(t *testing.T) 
 	request := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"x"}],"max_tokens":16}`)}
 	options := cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FormatClaude,
-		Metadata:     map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "diagnostics-conversation"},
+		Metadata:     map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "diagnostics-conversation-" + testID},
 	}
-	for range 2 {
+	for turn := range 2 {
 		if _, errExecute := executor.Execute(ctx, auth, request, options); errExecute != nil {
 			t.Fatalf("Execute() error = %v", errExecute)
+		}
+		if turn == 0 {
+			auth.Attributes["api_key"] = "sk-ant-oat-diagnostics-live-path-rotated"
 		}
 	}
 	if len(previousValues) != 2 || previousValues[0].Type != gjson.Null || previousValues[0].Raw != "null" {

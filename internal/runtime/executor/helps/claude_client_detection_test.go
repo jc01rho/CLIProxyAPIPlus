@@ -4,7 +4,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
+
+const validClaudeCodeMetadataUserID = `{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","session_id":"11111111-2222-4333-8444-555555555555"}`
+
+func claudeCodeDetectionPayload(userID string) []byte {
+	encodedUserID, _ := json.Marshal(userID)
+	return []byte(`{"metadata":{"user_id":` + string(encodedUserID) + `}}`)
+}
 
 func confirmedClaudeCodeHeaders() http.Header {
 	return http.Header{
@@ -15,7 +24,7 @@ func confirmedClaudeCodeHeaders() http.Header {
 }
 
 func TestDetectClaudeCodeRequestRequiresAllFourMessageSignals(t *testing.T) {
-	payload := []byte(`{"metadata":{"user_id":"{\"device_id\":\"abc\",\"session_id\":\"session\"}"}}`)
+	payload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
 	detection := DetectClaudeCodeRequest(confirmedClaudeCodeHeaders(), payload, false)
 
 	if !detection.Confirmed || !detection.StrongSignals || !detection.NativeClient {
@@ -26,8 +35,26 @@ func TestDetectClaudeCodeRequestRequiresAllFourMessageSignals(t *testing.T) {
 	}
 }
 
+func TestDetectClaudeCodeRequestAcceptsConfiguredMeasuredBaseline(t *testing.T) {
+	headers := confirmedClaudeCodeHeaders()
+	headers.Set("User-Agent", "claude-cli/2.2.0 (external, cli)")
+	payload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
+	if detection := DetectClaudeCodeRequest(headers, payload, false); detection.Confirmed {
+		t.Fatalf("default detection = %#v, want unconfigured 2.2.0 rejected", detection)
+	}
+
+	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
+		UserAgent:      "claude-cli/2.2.0 (external, cli)",
+		PackageVersion: "0.95.0",
+		RuntimeVersion: "v26.4.0",
+	}}
+	if detection := DetectClaudeCodeRequest(headers, payload, false, cfg); !detection.Confirmed {
+		t.Fatalf("configured detection = %#v, want measured baseline confirmed", detection)
+	}
+}
+
 func TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal(t *testing.T) {
-	payload := []byte(`{"metadata":{"user_id":"user-id"}}`)
+	payload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
 	for _, test := range []struct {
 		name    string
 		headers http.Header
@@ -47,7 +74,7 @@ func TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal(t *testing.T) {
 }
 
 func TestDetectClaudeCodeRequestClassifiesEntrypoints(t *testing.T) {
-	payload := []byte(`{"metadata":{"user_id":"user-id"}}`)
+	payload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
 	for _, test := range []struct {
 		name            string
 		userAgent       string
@@ -99,18 +126,26 @@ func TestDetectClaudeCodeCountTokensAllowsMissingMetadata(t *testing.T) {
 	}
 }
 
-func TestDetectClaudeCodeRequestAcceptsJSONAndLegacyMetadataStrings(t *testing.T) {
-	for _, userID := range []string{
-		`{"device_id":"abc","account_uuid":"","session_id":"session"}`,
-		"user_abc_account__session_session",
-	} {
-		encodedUserID, errMarshal := json.Marshal(userID)
-		if errMarshal != nil {
-			t.Fatalf("marshal user_id: %v", errMarshal)
-		}
-		payload := []byte(`{"metadata":{"user_id":` + string(encodedUserID) + `}}`)
-		if detection := DetectClaudeCodeRequest(confirmedClaudeCodeHeaders(), payload, false); !detection.Confirmed {
-			t.Fatalf("user_id %q detection = %#v, want confirmed", userID, detection)
-		}
+func TestDetectClaudeCodeRequestRejectsMalformedNativeSignals(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers http.Header
+		userID  string
+	}{
+		{name: "legacy metadata", headers: confirmedClaudeCodeHeaders(), userID: "user_abc_account__session_session"},
+		{name: "short device", headers: confirmedClaudeCodeHeaders(), userID: `{"device_id":"abc","account_uuid":"","session_id":"11111111-2222-4333-8444-555555555555"}`},
+		{name: "uppercase device", headers: confirmedClaudeCodeHeaders(), userID: `{"device_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","account_uuid":"","session_id":"11111111-2222-4333-8444-555555555555"}`},
+		{name: "invalid session", headers: confirmedClaudeCodeHeaders(), userID: `{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"","session_id":"session"}`},
+		{name: "malformed user agent", headers: http.Header{"User-Agent": {"claude-cli/not-a-version (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {"claude-code-20250219"}}, userID: validClaudeCodeMetadataUserID},
+		{name: "unmeasured next-minor user agent", headers: http.Header{"User-Agent": {"claude-cli/2.2.0 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {"claude-code-20250219"}}, userID: validClaudeCodeMetadataUserID},
+		{name: "implausible future user agent", headers: http.Header{"User-Agent": {"claude-cli/999.0.0 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {"claude-code-20250219"}}, userID: validClaudeCodeMetadataUserID},
+		{name: "unrelated beta", headers: http.Header{"User-Agent": {"claude-cli/2.1.220 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {"anything"}}, userID: validClaudeCodeMetadataUserID},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if detection := DetectClaudeCodeRequest(test.headers, claudeCodeDetectionPayload(test.userID), false); detection.Confirmed {
+				t.Fatalf("detection = %#v, want malformed signal to use local profile", detection)
+			}
+		})
 	}
 }

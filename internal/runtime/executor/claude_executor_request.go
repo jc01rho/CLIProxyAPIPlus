@@ -307,7 +307,11 @@ func claudeRequestedBetas(incomingBetas string, extraBetas []string) map[string]
 // gateways set their own host, yet both delegate to ClaudeExecutor and are
 // therefore cloaked; a cloak-keyed rule silently rewrites their traffic too.
 func isAnthropicUpstreamURL(u *url.URL) bool {
-	return u != nil && strings.EqualFold(u.Scheme, "https") && strings.EqualFold(u.Host, "api.anthropic.com")
+	if u == nil || u.User != nil || !strings.EqualFold(u.Scheme, "https") || !strings.EqualFold(u.Hostname(), "api.anthropic.com") {
+		return false
+	}
+	port := u.Port()
+	return port == "" || port == "443"
 }
 
 // isAnthropicUpstreamBase reports whether a configured base URL targets Anthropic's

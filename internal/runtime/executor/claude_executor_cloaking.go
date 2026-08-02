@@ -35,9 +35,9 @@ func resolveIncomingClaudeHeaders(ctx context.Context, incoming http.Header) htt
 	return resolved
 }
 
-func detectIncomingClaudeCodeRequest(ctx context.Context, incoming http.Header, payload []byte, countTokens bool) (http.Header, helps.ClaudeCodeRequestDetection) {
+func detectIncomingClaudeCodeRequest(ctx context.Context, incoming http.Header, payload []byte, countTokens bool, cfg *config.Config) (http.Header, helps.ClaudeCodeRequestDetection) {
 	resolved := resolveIncomingClaudeHeaders(ctx, incoming)
-	return resolved, helps.DetectClaudeCodeRequest(resolved, payload, countTokens)
+	return resolved, helps.DetectClaudeCodeRequest(resolved, payload, countTokens, cfg)
 }
 
 // getWorkloadFromContext extracts workload identifier from the gin request headers.

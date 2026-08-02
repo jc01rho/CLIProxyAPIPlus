@@ -143,6 +143,7 @@ func TestClaudeExecutor_ContextManagementNeverLeaksToOtherUpstreams(t *testing.T
 	auth := &cliproxyauth.Auth{
 		ID:         "claude-non-anthropic-upstream",
 		Attributes: map[string]string{"api_key": "sk-ant-oat-non-anthropic", "base_url": server.URL},
+		Metadata:   claudeOAuthTestMetadata(),
 	}
 	payload := []byte(`{"model":"claude-opus-5","system":"p","messages":[{"role":"user","content":"hi"}]}`)
 
@@ -161,6 +162,9 @@ func TestIsAnthropicUpstreamBase(t *testing.T) {
 	cases := map[string]bool{
 		"https://api.anthropic.com":      true,
 		"https://API.Anthropic.com":      true,
+		"https://api.anthropic.com:443":  true,
+		"https://api.anthropic.com:8443": false,
+		"https://user@api.anthropic.com": false,
 		"https://api.kimi.com":           false,
 		"http://api.anthropic.com":       false,
 		"https://api.anthropic.com.evil": false,

@@ -37,9 +37,27 @@ func (fake *fakeClaudeCredentialDevicePoolKV) KVSet(_ context.Context, key strin
 
 func TestClaudeAgentSessionUUIDPreservesNativeSession(t *testing.T) {
 	const sessionID = "11111111-2222-4333-8444-555555555555"
-	got := ClaudeAgentSessionUUID(http.Header{"X-Claude-Code-Session-Id": {sessionID}}, nil, nil)
+	got := ClaudeAgentSessionUUIDForRequest(http.Header{"X-Claude-Code-Session-Id": {sessionID}}, nil, nil, true)
 	if got != sessionID {
-		t.Fatalf("ClaudeAgentSessionUUID() = %q, want native session %q", got, sessionID)
+		t.Fatalf("ClaudeAgentSessionUUIDForRequest() = %q, want native session %q", got, sessionID)
+	}
+}
+
+func TestClaudeAgentSessionUUIDIgnoresUnconfirmedClaudeSignals(t *testing.T) {
+	const nativeSessionID = "11111111-2222-4333-8444-555555555555"
+	metadata := map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "non-native-conversation"}
+	got := ClaudeAgentSessionUUIDForRequest(
+		http.Header{"X-Claude-Code-Session-Id": {nativeSessionID}},
+		[]byte(`{"metadata":{"user_id":"{\"device_id\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"}}`),
+		nil,
+		false,
+		metadata,
+	)
+	if got == nativeSessionID {
+		t.Fatalf("ClaudeAgentSessionUUIDForRequest() = native session %q for unconfirmed caller", got)
+	}
+	if repeated := ClaudeAgentSessionUUIDForRequest(nil, nil, nil, false, metadata); repeated != got {
+		t.Fatalf("derived session changed: first=%q repeated=%q", got, repeated)
 	}
 }
 
@@ -145,6 +163,55 @@ func TestApplyClaudeCredentialMetadataUsesCredentialDeviceAndPreservesExtras(t *
 	}
 	wantPrefix := `{"device_id":"` + selectedDevice + `","account_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","session_id":"` + sessionID + `"`
 	if !strings.HasPrefix(userID, wantPrefix) {
-		t.Fatalf("metadata.user_id = %q, want original native identity field order preserved", userID)
+		t.Fatalf("metadata.user_id = %q, want credential identity fields first", userID)
+	}
+}
+
+func TestApplyClaudeCredentialMetadataRejectsDuplicateIdentityContainers(t *testing.T) {
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{
+		"account_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		claudeauth.ClaudeDeviceIDsMetadataKey: []string{
+			"0000000000000000000000000000000000000000000000000000000000000000",
+		},
+	}}
+	const sessionID = "11111111-2222-4333-8444-555555555555"
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "duplicate top-level metadata",
+			body: `{"messages":[],"metadata":{"user_id":"{}"},"metadata":{"user_id":"{}"}}`,
+		},
+		{
+			name: "duplicate metadata user ID",
+			body: `{"messages":[],"metadata":{"user_id":"{}","user_id":"{}"}}`,
+		},
+		{
+			name: "duplicate encoded account UUID",
+			body: `{"messages":[],"metadata":{"user_id":"{\"account_uuid\":\"first\",\"account_uuid\":\"last\"}"}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, _, errApply := ApplyClaudeCredentialMetadata([]byte(test.body), auth, sessionID); errApply == nil {
+				t.Fatal("ApplyClaudeCredentialMetadata() error = nil, want duplicate-key rejection")
+			}
+		})
+	}
+}
+
+func TestApplyClaudeCredentialMetadataRequiresAccountUUID(t *testing.T) {
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{
+		claudeauth.ClaudeDeviceIDsMetadataKey: []string{
+			"0000000000000000000000000000000000000000000000000000000000000000",
+		},
+	}}
+	if _, _, errApply := ApplyClaudeCredentialMetadata(
+		[]byte(`{"messages":[]}`),
+		auth,
+		"11111111-2222-4333-8444-555555555555",
+	); errApply == nil {
+		t.Fatal("ApplyClaudeCredentialMetadata() error = nil, want missing account UUID rejection")
 	}
 }

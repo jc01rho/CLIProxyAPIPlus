@@ -5,12 +5,14 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/tidwall/gjson"
 )
 
 var (
 	claudeCodeUserAgentPattern        = regexp.MustCompile(`(?i)^claude-cli/`)
 	claudeCodeUserAgentDetailsPattern = regexp.MustCompile(`(?i)^claude-cli/\S+\s+\(external,\s*([^,)]+)(?:,\s*agent-sdk/([^,)]+))?`)
+	claudeCodeNativeUserAgentPattern  = regexp.MustCompile(`(?i)^claude-cli/[0-9]+\.[0-9]+\.[0-9]+\s+\(external,\s*[^,)]+(?:,\s*agent-sdk/[0-9]+\.[0-9]+\.[0-9]+)?\)$`)
 )
 
 var claudeCodeSubclientByEntrypoint = map[string]string{
@@ -72,24 +74,38 @@ type ClaudeCodeRequestDetection struct {
 // Only Anthropic first-party product entrypoints are confirmed for pass-through.
 // Generic sdk-ts/sdk-py Agent SDK entrypoints remain unconfirmed and receive
 // CLI cloaking; native Claude Code print mode keeps its original sdk-cli identity.
-func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bool) ClaudeCodeRequestDetection {
+func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bool, configs ...*config.Config) ClaudeCodeRequestDetection {
+	var cfg *config.Config
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
 	userAgent := headerValue(headers, "User-Agent")
 	entrypoint, agentSDKVersion := parseClaudeCodeUserAgentDetails(userAgent)
 	detection := ClaudeCodeRequestDetection{
 		XAppCLI:         headerValue(headers, "X-App") == "cli",
-		UserAgent:       claudeCodeUserAgentPattern.MatchString(userAgent),
-		BetasPresent:    headerPresent(headers, "Anthropic-Beta"),
+		UserAgent:       plausibleClaudeCodeUserAgent(userAgent, cfg),
+		BetasPresent:    headerContainsClaudeCodeBeta(headers),
 		Entrypoint:      entrypoint,
 		Subclient:       claudeCodeSubclientByEntrypoint[entrypoint],
 		AgentSDKVersion: agentSDKVersion,
 	}
 
 	metadataUserID := gjson.GetBytes(payload, "metadata.user_id")
-	detection.MetadataUserID = metadataUserID.Exists() && metadataUserID.Type == gjson.String
+	detection.MetadataUserID = metadataUserID.Exists() && metadataUserID.Type == gjson.String && isValidUserID(metadataUserID.String())
 	detection.StrongSignals = detection.XAppCLI && detection.UserAgent && detection.BetasPresent && (countTokens || detection.MetadataUserID)
 	detection.NativeClient = nativeClaudeEntrypoints[entrypoint]
 	detection.Confirmed = detection.StrongSignals && detection.NativeClient
 	return detection
+}
+
+func plausibleClaudeCodeUserAgent(userAgent string, cfg *config.Config) bool {
+	userAgent = strings.TrimSpace(userAgent)
+	if !claudeCodeUserAgentPattern.MatchString(userAgent) || !claudeCodeNativeUserAgentPattern.MatchString(userAgent) {
+		return false
+	}
+	candidate, okCandidate := parseClaudeCLIVersion(userAgent)
+	baseline, okBaseline := parseClaudeCLIVersion(defaultClaudeDeviceProfile(cfg).UserAgent)
+	return okCandidate && okBaseline && plausibleClaudeCLIVersion(candidate, baseline)
 }
 
 func parseClaudeCodeUserAgentDetails(userAgent string) (entrypoint, agentSDKVersion string) {
@@ -120,13 +136,20 @@ func headerValue(headers http.Header, name string) string {
 	return ""
 }
 
-func headerPresent(headers http.Header, name string) bool {
+func headerContainsClaudeCodeBeta(headers http.Header) bool {
 	if headers == nil {
 		return false
 	}
-	for key := range headers {
-		if strings.EqualFold(key, name) {
-			return true
+	for key, values := range headers {
+		if !strings.EqualFold(key, "Anthropic-Beta") {
+			continue
+		}
+		for _, value := range values {
+			for _, beta := range strings.Split(value, ",") {
+				if strings.TrimSpace(beta) == "claude-code-20250219" {
+					return true
+				}
+			}
 		}
 	}
 	return false

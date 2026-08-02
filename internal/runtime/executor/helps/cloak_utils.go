@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-var claudeMetadataDeviceIDPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
+var claudeMetadataDeviceIDPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 type claudeMetadataUserID struct {
 	DeviceID    string `json:"device_id"`

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"strings"
 
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -14,8 +16,8 @@ type claudeDiagnosticsRequestState struct {
 	sequence uint64
 }
 
-func injectClaudeDiagnostics(body []byte, apiKey, sessionID string) ([]byte, claudeDiagnosticsRequestState) {
-	key, sequence, previousMessageID := helps.BeginClaudeDiagnostics(apiKey, sessionID)
+func injectClaudeDiagnostics(body []byte, auth *cliproxyauth.Auth, sessionID string) ([]byte, claudeDiagnosticsRequestState) {
+	key, sequence, previousMessageID := helps.BeginClaudeDiagnostics(claudeDiagnosticsCredentialIdentity(auth), sessionID)
 	if key == "" {
 		return body, claudeDiagnosticsRequestState{}
 	}
@@ -47,6 +49,26 @@ func injectClaudeDiagnostics(body []byte, apiKey, sessionID string) ([]byte, cla
 		return body, claudeDiagnosticsRequestState{}
 	}
 	return updated, claudeDiagnosticsRequestState{key: key, sequence: sequence}
+}
+
+func claudeDiagnosticsCredentialIdentity(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(auth.ID); id != "" {
+		return "id:" + id
+	}
+	if index := strings.TrimSpace(auth.Index); index != "" {
+		return "index:" + index
+	}
+	deviceIDs := claudeauth.NormalizeDeviceIDPool(claudeauth.ReadDeviceIDPool(&auth.Metadata))
+	if len(deviceIDs) > 0 {
+		return "device:" + deviceIDs[0]
+	}
+	if accountUUID := helps.ClaudeCredentialAccountUUID(auth); accountUUID != "" {
+		return "account:" + accountUUID
+	}
+	return ""
 }
 
 func commitClaudeDiagnostics(state claudeDiagnosticsRequestState, messageID string) {

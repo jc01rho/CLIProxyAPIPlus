@@ -14,7 +14,10 @@ import (
 // outside claudeDevicePoolMu, which aborts the process with "concurrent map
 // writes" rather than failing a request. Run with -race.
 func TestApplyClaudeCredentialMetadataConcurrentSharedAuth(t *testing.T) {
-	auth := &cliproxyauth.Auth{ID: "shared-credential"}
+	auth := &cliproxyauth.Auth{
+		ID:       "shared-credential",
+		Metadata: map[string]any{"account_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+	}
 	payload := []byte(`{"model":"claude-opus-4-6","messages":[{"role":"user","content":"hi"}]}`)
 
 	const goroutines = 32

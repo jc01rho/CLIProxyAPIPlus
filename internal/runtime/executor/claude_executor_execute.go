@@ -43,11 +43,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false)
+	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false, e.cfg)
 	confirmedClaudeCode := claudeCodeDetection.Confirmed
 	claudeSessionID := ""
 	if oauthToken {
-		claudeSessionID = helps.ClaudeAgentSessionUUID(incomingHeaders, originalPayload, req.Payload, opts.Metadata, req.Metadata)
+		claudeSessionID = helps.ClaudeAgentSessionUUIDForRequest(incomingHeaders, originalPayload, req.Payload, confirmedClaudeCode, opts.Metadata, req.Metadata)
 	}
 	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, upstreamStream)
 	body := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, upstreamStream)
@@ -82,7 +82,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if cloaked && isAnthropicUpstreamBase(baseURL) {
 		body = injectClaudeCodeContextManagement(body)
 		if oauthToken {
-			body, diagnosticsState = injectClaudeDiagnostics(body, apiKey, claudeSessionID)
+			body, diagnosticsState = injectClaudeDiagnostics(body, auth, claudeSessionID)
 		}
 	}
 

@@ -31,7 +31,9 @@ const (
 )
 
 var (
-	claudeCLIVersionPattern = regexp.MustCompile(`^claude-cli/(\d+)\.(\d+)\.(\d+)`)
+	claudeCLIVersionPattern     = regexp.MustCompile(`^claude-cli/(\d+)\.(\d+)\.(\d+)`)
+	claudePackageVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	claudeRuntimeVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 
 	claudeDeviceProfileCache            = make(map[string]claudeDeviceProfileCacheEntry)
 	claudeDeviceProfileCacheMu          sync.RWMutex
@@ -210,14 +212,20 @@ func shouldUpgradeClaudeDeviceProfile(candidate, current ClaudeDeviceProfile) bo
 	return candidate.version.Compare(current.version) > 0
 }
 
+func plausibleClaudeCLIVersion(candidate, baseline claudeCLIVersion) bool {
+	return candidate.Compare(baseline) == 0
+}
+
 func meetsClaudeDeviceProfileBaseline(candidate, baseline ClaudeDeviceProfile) bool {
 	if candidate.UserAgent == "" || !candidate.hasVersion {
 		return false
 	}
 	if baseline.UserAgent == "" || !baseline.hasVersion {
-		return true
+		return false
 	}
-	return candidate.version.Compare(baseline.version) >= 0
+	return plausibleClaudeCLIVersion(candidate.version, baseline.version) &&
+		candidate.PackageVersion == baseline.PackageVersion &&
+		candidate.RuntimeVersion == baseline.RuntimeVersion
 }
 
 func pinClaudeDeviceProfilePlatform(profile, baseline ClaudeDeviceProfile) ClaudeDeviceProfile {
@@ -230,7 +238,7 @@ func pinClaudeDeviceProfilePlatform(profile, baseline ClaudeDeviceProfile) Claud
 // baseline platform and enforces the baseline software fingerprint as a floor.
 func normalizeClaudeDeviceProfile(profile, baseline ClaudeDeviceProfile) ClaudeDeviceProfile {
 	profile = pinClaudeDeviceProfilePlatform(profile, baseline)
-	if profile.UserAgent == "" || !profile.hasVersion || shouldUpgradeClaudeDeviceProfile(baseline, profile) {
+	if !meetsClaudeDeviceProfileBaseline(profile, baseline) {
 		profile.UserAgent = baseline.UserAgent
 		profile.PackageVersion = baseline.PackageVersion
 		profile.RuntimeVersion = baseline.RuntimeVersion
@@ -247,15 +255,23 @@ func extractClaudeDeviceProfile(headers http.Header, cfg *config.Config) (Claude
 
 	userAgent := strings.TrimSpace(headers.Get("User-Agent"))
 	version, ok := parseClaudeCLIVersion(userAgent)
-	if !ok {
+	if !ok || !claudeCodeNativeUserAgentPattern.MatchString(userAgent) {
 		return ClaudeDeviceProfile{}, false
 	}
 
 	baseline := defaultClaudeDeviceProfile(cfg)
+	packageVersion := firstNonEmptyHeader(headers, "X-Stainless-Package-Version", baseline.PackageVersion)
+	if !claudePackageVersionPattern.MatchString(packageVersion) {
+		packageVersion = baseline.PackageVersion
+	}
+	runtimeVersion := firstNonEmptyHeader(headers, "X-Stainless-Runtime-Version", baseline.RuntimeVersion)
+	if !claudeRuntimeVersionPattern.MatchString(runtimeVersion) {
+		runtimeVersion = baseline.RuntimeVersion
+	}
 	profile := ClaudeDeviceProfile{
 		UserAgent:      userAgent,
-		PackageVersion: firstNonEmptyHeader(headers, "X-Stainless-Package-Version", baseline.PackageVersion),
-		RuntimeVersion: firstNonEmptyHeader(headers, "X-Stainless-Runtime-Version", baseline.RuntimeVersion),
+		PackageVersion: packageVersion,
+		RuntimeVersion: runtimeVersion,
 		OS:             firstNonEmptyHeader(headers, "X-Stainless-Os", baseline.OS),
 		Arch:           firstNonEmptyHeader(headers, "X-Stainless-Arch", baseline.Arch),
 		version:        version,
@@ -586,23 +602,23 @@ func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg
 		return
 	}
 	profile := defaultClaudeDeviceProfile(cfg)
-	miscEnsure := func(name, fallback string) {
-		if strings.TrimSpace(r.Header.Get(name)) != "" {
+	miscEnsure := func(name, fallback string, valid func(string) bool) {
+		if current := strings.TrimSpace(r.Header.Get(name)); current != "" && (valid == nil || valid(current)) {
 			return
 		}
-		if strings.TrimSpace(ginHeaders.Get(name)) != "" {
-			r.Header.Set(name, strings.TrimSpace(ginHeaders.Get(name)))
+		if incoming := strings.TrimSpace(ginHeaders.Get(name)); incoming != "" && (valid == nil || valid(incoming)) {
+			r.Header.Set(name, incoming)
 			return
 		}
 		r.Header.Set(name, fallback)
 	}
 
 	if confirmedClaudeCode {
-		miscEnsure("X-Stainless-Runtime-Version", profile.RuntimeVersion)
-		miscEnsure("X-Stainless-Package-Version", profile.PackageVersion)
-		miscEnsure("X-Stainless-Os", mapStainlessOS())
-		miscEnsure("X-Stainless-Arch", mapStainlessArch())
-		if clientUA := strings.TrimSpace(ginHeaders.Get("User-Agent")); clientUA != "" {
+		miscEnsure("X-Stainless-Runtime-Version", profile.RuntimeVersion, func(value string) bool { return value == profile.RuntimeVersion })
+		miscEnsure("X-Stainless-Package-Version", profile.PackageVersion, func(value string) bool { return value == profile.PackageVersion })
+		miscEnsure("X-Stainless-Os", mapStainlessOS(), nil)
+		miscEnsure("X-Stainless-Arch", mapStainlessArch(), nil)
+		if clientUA := strings.TrimSpace(ginHeaders.Get("User-Agent")); plausibleClaudeCodeUserAgent(clientUA, cfg) {
 			r.Header.Set("User-Agent", clientUA)
 			return
 		}

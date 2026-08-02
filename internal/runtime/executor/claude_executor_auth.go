@@ -14,7 +14,6 @@ import (
 
 const (
 	claudeAccountProfileCheckedAtKey = "claude_account_profile_checked_at"
-	claudeAccountProfileRefreshAge   = 24 * time.Hour
 	claudeAccountProfileTimeout      = 10 * time.Second
 )
 
@@ -28,22 +27,7 @@ func (e *ClaudeExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool 
 	if !claudeauth.HasCanonicalDeviceIDPool(claudeauth.ReadDeviceIDPool(&auth.Metadata)) {
 		return true
 	}
-	if helps.ClaudeCredentialAccountUUID(auth) != "" {
-		return false
-	}
-	return claudeAccountProfileLookupDue(claudeauth.ReadMetadataString(&auth.Metadata, claudeAccountProfileCheckedAtKey), time.Now())
-}
-
-// claudeAccountProfileLookupDue takes the already-read timestamp rather than the
-// metadata map: the map belongs to a credential shared by concurrent requests and
-// may only be touched under the metadata lock.
-func claudeAccountProfileLookupDue(checkedAt string, now time.Time) bool {
-	checkedAt = strings.TrimSpace(checkedAt)
-	if checkedAt == "" {
-		return true
-	}
-	parsed, errParse := time.Parse(time.RFC3339, checkedAt)
-	return errParse != nil || !parsed.Add(claudeAccountProfileRefreshAge).After(now)
+	return helps.ClaudeCredentialAccountUUID(auth) == ""
 }
 
 func (e *ClaudeExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -55,27 +39,25 @@ func (e *ClaudeExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxya
 	if _, errDeviceIDs := helps.EnsureClaudeCredentialDevicePoolRequired(ctx, auth); errDeviceIDs != nil {
 		return nil, errDeviceIDs
 	}
-	if helps.ClaudeCredentialAccountUUID(auth) != "" ||
-		!claudeAccountProfileLookupDue(claudeauth.ReadMetadataString(&auth.Metadata, claudeAccountProfileCheckedAtKey), time.Now()) {
+	if helps.ClaudeCredentialAccountUUID(auth) != "" {
 		return auth, nil
 	}
 
-	claudeauth.StoreMetadataString(&auth.Metadata, claudeAccountProfileCheckedAtKey, time.Now().UTC().Format(time.RFC3339))
 	profile, errProfile := e.fetchClaudeOAuthProfile(ctx, auth, apiKey)
 	if errProfile != nil {
 		if errContext := ctx.Err(); errContext != nil {
 			return nil, errContext
 		}
-		log.WithError(errProfile).Warn("claude executor: unable to populate OAuth account profile")
-		return auth, nil
+		return nil, fmt.Errorf("populate Claude OAuth account profile: %w", errProfile)
 	}
-	if profile == nil {
-		return auth, nil
+	if profile == nil || strings.TrimSpace(profile.Account.UUID) == "" {
+		return nil, fmt.Errorf("populate Claude OAuth account profile: account UUID is empty")
 	}
 	claudeauth.StoreMetadataString(&auth.Metadata, "account_uuid", profile.Account.UUID)
 	claudeauth.StoreMetadataString(&auth.Metadata, "email", profile.Account.Email)
 	claudeauth.StoreMetadataString(&auth.Metadata, "organization_uuid", profile.Organization.UUID)
 	claudeauth.StoreMetadataString(&auth.Metadata, "organization_name", profile.Organization.Name)
+	claudeauth.StoreMetadataString(&auth.Metadata, claudeAccountProfileCheckedAtKey, time.Now().UTC().Format(time.RFC3339))
 	return auth, nil
 }
 
