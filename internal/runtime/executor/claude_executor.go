@@ -178,7 +178,7 @@ func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
 		return nil
 	}
 	useAPIKey := auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""
-	isAnthropicBase := req.URL != nil && strings.EqualFold(req.URL.Scheme, "https") && strings.EqualFold(req.URL.Host, "api.anthropic.com")
+	isAnthropicBase := isAnthropicUpstreamURL(req.URL)
 	if isAnthropicBase && useAPIKey {
 		req.Header.Del("Authorization")
 		req.Header.Set("x-api-key", apiKey)

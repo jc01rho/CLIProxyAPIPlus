@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/andybalholm/brotli"
@@ -26,10 +27,201 @@ import (
 )
 
 const (
-	defaultClaudeCodeCLIBetas = "claude-code-20250219,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01"
-	claudeTokenCountingBeta   = "token-counting-2024-11-01"
-	claudeFastModeBeta        = "fast-mode-2026-02-01"
+	claudeTokenCountingBeta      = "token-counting-2024-11-01"
+	claudeFastModeBeta           = "fast-mode-2026-02-01"
+	claudeOAuthBeta              = "oauth-2025-04-20"
+	claudeCodeBeta               = "claude-code-20250219"
+	claudeContext1MBeta          = "context-1m-2025-08-07"
+	claudeMidConvSystemBeta      = "mid-conversation-system-2026-04-07"
+	claudeAdvancedToolUseBeta    = "advanced-tool-use-2025-11-20"
+	claudeEffortBeta             = "effort-2025-11-24"
+	claudeServerSideFallbackBeta = "server-side-fallback-2026-06-01"
+	claudeFallbackCreditBeta     = "fallback-credit-2026-06-01"
+	claudeStructuredOutputsBeta  = "structured-outputs-2025-12-15"
+	claudeExtendedCacheTTLBeta   = "extended-cache-ttl-2025-04-11"
 )
+
+// claudeCodeCLIConstantBetas are the betas Claude Code 2.1.220 sends on every
+// /v1/messages request from the "cli" entrypoint, in wire order, excluding the
+// leading claude-code-20250219.
+//
+// redact-thinking-2026-02-12 belongs here because cloaked requests always claim
+// cc_entrypoint=cli; the "sdk-cli" entrypoint omits it.
+var claudeCodeCLIConstantBetas = []string{
+	"interleaved-thinking-2025-05-14",
+	"redact-thinking-2026-02-12",
+	"thinking-token-count-2026-05-13",
+	"context-management-2025-06-27",
+	"prompt-caching-scope-2026-01-05",
+}
+
+// claudeCodeTrailingBetas are caller-supplied betas that real Claude Code emits
+// after effort-2025-11-24, in that relative order. They are forwarded when the
+// caller asks for them and dropped otherwise.
+var claudeCodeTrailingBetas = []string{
+	claudeServerSideFallbackBeta,
+	claudeFallbackCreditBeta,
+	claudeStructuredOutputsBeta,
+}
+
+// claudeCodeCLIBetas assembles the Anthropic-Beta baseline the way Claude Code
+// 2.1.220 does: the list is per-request, not a fixed string. requested holds the
+// betas the caller asked for, which decide the capability flags below.
+//
+// Verified 2026-08-01 against api.anthropic.com with isolated 2.1.220 profiles on
+// both the API-key and OAuth paths, across 11 model IDs and the [1m] variants.
+// The full observed order is:
+//
+//	 1 claude-code-20250219
+//	 2 oauth-2025-04-20                  OAuth credentials only
+//	 3 context-1m-2025-08-07             [1m] model variants only
+//	 4 interleaved-thinking-2025-05-14
+//	 5 redact-thinking-2026-02-12        cli entrypoint only
+//	 6 thinking-token-count-2026-05-13
+//	 7 context-management-2025-06-27
+//	 8 prompt-caching-scope-2026-01-05
+//	 9 mid-conversation-system-2026-04-07  models accepting a role=system turn
+//	10 advanced-tool-use-2025-11-20        requests declaring tools
+//	11 effort-2025-11-24
+//	12 server-side-fallback-2026-06-01
+//	13 fallback-credit-2026-06-01
+//	14 extended-cache-ttl-2025-04-11      OAuth credentials only, always last
+//
+// fast-mode-2026-02-01 has no captured position; it is emitted just before the
+// OAuth trailer so the one measured invariant, extended-cache-ttl last, holds.
+//
+// An empty body keeps the optimistic role=system default, matching the cloaking
+// policy for unknown and future model IDs.
+func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool) string {
+	betas := make([]string, 0, len(claudeCodeCLIConstantBetas)+len(claudeCodeTrailingBetas)+6)
+	betas = append(betas, claudeCodeBeta)
+	if oauthToken {
+		betas = append(betas, claudeOAuthBeta)
+	}
+	if requested[claudeContext1MBeta] {
+		betas = append(betas, claudeContext1MBeta)
+	}
+	betas = append(betas, claudeCodeCLIConstantBetas...)
+	if !claudeUsesLegacySystemReminder(body) {
+		betas = append(betas, claudeMidConvSystemBeta)
+	}
+	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() && len(tools.Array()) > 0 {
+		betas = append(betas, claudeAdvancedToolUseBeta)
+	}
+	betas = append(betas, claudeEffortBeta)
+	for _, beta := range claudeCodeTrailingBetas {
+		if requested[beta] {
+			betas = append(betas, beta)
+		}
+	}
+	if claudeRequestUsesFastMode(body, requested) {
+		betas = append(betas, claudeFastModeBeta)
+	}
+	if oauthToken {
+		betas = append(betas, claudeExtendedCacheTTLBeta)
+	}
+	return strings.Join(betas, ",")
+}
+
+// claudeRequestUsesFastMode reports whether the request selects the fast service
+// tier. Anthropic rejects the body's speed field with "Extra inputs are not
+// permitted" unless fast-mode-2026-02-01 is declared, so the beta has to follow
+// the body. Deriving it here rather than at the call sites is deliberate: the
+// streaming and non-streaming paths previously disagreed and streaming silently
+// dropped the beta, turning every fast request into a 400.
+func claudeRequestUsesFastMode(body []byte, requested map[string]bool) bool {
+	if requested[claudeFastModeBeta] {
+		return true
+	}
+	speed := gjson.GetBytes(body, "speed")
+	return speed.Type == gjson.String && strings.EqualFold(strings.TrimSpace(speed.String()), "fast")
+}
+
+// claudeCountTokensBetas is the fixed profile Claude Code 2.1.220 sends to
+// /v1/messages/count_tokens. It is far smaller than the inference baseline:
+// redact-thinking, thinking-token-count, prompt-caching-scope, effort and every
+// conditional beta are absent. Verified identical across 37 captured calls.
+var claudeCountTokensBetas = []string{
+	claudeCodeBeta,
+	"interleaved-thinking-2025-05-14",
+	"context-management-2025-06-27",
+	claudeTokenCountingBeta,
+}
+
+// withClaudeOAuthCredentialBetas restores the two betas that describe the
+// upstream credential rather than the caller's capabilities.
+//
+// A confirmed native client authenticates to CPA with whatever key the user
+// configured and cannot know that CPA will select an OAuth credential upstream,
+// so its header never carries the OAuth betas. Passing it through verbatim ships
+// a Bearer request that declares neither oauth-2025-04-20 nor
+// extended-cache-ttl-2025-04-11, which no real OAuth client ever does. Passthrough
+// governs what the caller expressed; the credential is CPA's own choice and has to
+// be described accurately.
+//
+// Betas already present are left exactly where the caller put them.
+func withClaudeOAuthCredentialBetas(betas string) string {
+	parts := make([]string, 0, 16)
+	seen := make(map[string]bool)
+	for _, beta := range strings.Split(betas, ",") {
+		if beta = strings.TrimSpace(beta); beta != "" && !seen[beta] {
+			parts = append(parts, beta)
+			seen[beta] = true
+		}
+	}
+	if !seen[claudeOAuthBeta] {
+		// Captured position 2, directly after claude-code-20250219.
+		insertAt := 0
+		if len(parts) > 0 && parts[0] == claudeCodeBeta {
+			insertAt = 1
+		}
+		parts = append(parts, "")
+		copy(parts[insertAt+1:], parts[insertAt:])
+		parts[insertAt] = claudeOAuthBeta
+	}
+	if !seen[claudeExtendedCacheTTLBeta] {
+		parts = append(parts, claudeExtendedCacheTTLBeta)
+	}
+	return strings.Join(parts, ",")
+}
+
+// claudeRequestedBetas collects every beta the caller asked for, from the
+// Anthropic-Beta header and from betas lifted out of the request body.
+func claudeRequestedBetas(incomingBetas string, extraBetas []string) map[string]bool {
+	requested := make(map[string]bool)
+	for _, beta := range strings.Split(incomingBetas, ",") {
+		if beta = strings.TrimSpace(beta); beta != "" {
+			requested[beta] = true
+		}
+	}
+	for _, beta := range extraBetas {
+		if beta = strings.TrimSpace(beta); beta != "" {
+			requested[beta] = true
+		}
+	}
+	return requested
+}
+
+// isAnthropicUpstreamURL reports whether a resolved request targets Anthropic's
+// first-party API.
+//
+// Every rule that reconstructs Claude Code's identity must key on this rather
+// than on the cloaked flag. Kimi rewrites base_url to api.kimi.com and custom
+// gateways set their own host, yet both delegate to ClaudeExecutor and are
+// therefore cloaked; a cloak-keyed rule silently rewrites their traffic too.
+func isAnthropicUpstreamURL(u *url.URL) bool {
+	return u != nil && strings.EqualFold(u.Scheme, "https") && strings.EqualFold(u.Host, "api.anthropic.com")
+}
+
+// isAnthropicUpstreamBase reports whether a configured base URL targets Anthropic's
+// first-party API. Used before the outgoing request exists.
+func isAnthropicUpstreamBase(baseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+	return isAnthropicUpstreamURL(parsed)
+}
 
 // extractAndRemoveBetas extracts the "betas" array from the body and removes it.
 // Returns the extracted betas as a string slice and the modified body.
@@ -50,19 +242,6 @@ func extractAndRemoveBetas(body []byte) ([]string, []byte) {
 	}
 	body, _ = sjson.DeleteBytes(body, "betas")
 	return betas, body
-}
-
-func appendClaudeFastModeBeta(body []byte, betas []string) []string {
-	speed := gjson.GetBytes(body, "speed")
-	if speed.Type != gjson.String || !strings.EqualFold(strings.TrimSpace(speed.String()), "fast") {
-		return betas
-	}
-	for _, beta := range betas {
-		if strings.TrimSpace(beta) == claudeFastModeBeta {
-			return betas
-		}
-	}
-	return append(betas, claudeFastModeBeta)
 }
 
 // disableThinkingIfToolChoiceForced checks if tool_choice forces tool use and disables thinking.
@@ -227,7 +406,7 @@ func decodeResponseBody(body io.ReadCloser, contentEncoding string) (io.ReadClos
 	return body, nil
 }
 
-func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string, stream bool, extraBetas []string, cfg *config.Config, incomingHeaders http.Header, confirmedClaudeCode bool, sessionIDs ...string) error {
+func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string, stream bool, extraBetas []string, body []byte, cfg *config.Config, incomingHeaders http.Header, confirmedClaudeCode bool, sessionIDs ...string) error {
 	if r == nil {
 		return nil
 	}
@@ -246,7 +425,7 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	hasAPIKeyAttr := auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""
 	oauthToken := isClaudeOAuthToken(apiKey) || !hasAPIKeyAttr
 	useAPIKey := !oauthToken
-	isAnthropicBase := r.URL != nil && strings.EqualFold(r.URL.Scheme, "https") && strings.EqualFold(r.URL.Host, "api.anthropic.com")
+	isAnthropicBase := isAnthropicUpstreamURL(r.URL)
 	if isAnthropicBase && useAPIKey {
 		r.Header.Del("Authorization")
 		r.Header.Set("x-api-key", apiKey)
@@ -270,10 +449,17 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		}
 	}
 
-	baseBetas := defaultClaudeCodeCLIBetas
 	incomingBetas := strings.TrimSpace(strings.Join(incomingHeaders.Values("Anthropic-Beta"), ","))
+	countTokens := r.URL != nil && strings.HasSuffix(r.URL.Path, "/count_tokens")
+	baseBetas := claudeCodeCLIBetas(body, claudeRequestedBetas(incomingBetas, extraBetas), oauthToken)
+	if countTokens {
+		baseBetas = strings.Join(claudeCountTokensBetas, ",")
+	}
 	if confirmedClaudeCode && incomingBetas != "" {
 		baseBetas = incomingBetas
+		if oauthToken && !countTokens {
+			baseBetas = withClaudeOAuthCredentialBetas(baseBetas)
+		}
 	}
 	existingSet := make(map[string]bool)
 	for _, beta := range strings.Split(baseBetas, ",") {
@@ -289,16 +475,32 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		baseBetas += "," + beta
 		existingSet[beta] = true
 	}
-	if !confirmedClaudeCode && incomingBetas != "" {
+	// On direct Anthropic an unconfirmed caller's own betas are dropped: appending
+	// them to the official baseline produces a combination real Claude Code never
+	// sends, which defeats the identity the rest of this path reconstructs. Other
+	// Anthropic-compatible upstreams (Kimi, custom gateways) run no such check, so
+	// caller betas stay functional there. This matches the CCH signing gate, which
+	// is likewise limited to api.anthropic.com.
+	if !confirmedClaudeCode && incomingBetas != "" && !isAnthropicBase {
 		for _, beta := range strings.Split(incomingBetas, ",") {
 			appendBeta(beta)
 		}
 	}
-	if oauthToken {
-		appendBeta("oauth-2025-04-20")
+	// The OAuth betas have known positions on /v1/messages and are placed by
+	// claudeCodeCLIBetas. count_tokens was only captured over an API key, so its
+	// OAuth shape keeps the previous appended form until it can be measured.
+	if oauthToken && countTokens {
+		appendBeta(claudeOAuthBeta)
 	}
-	for _, beta := range extraBetas {
-		appendBeta(beta)
+	// Betas lifted out of the body follow the same policy as header-supplied ones.
+	// Known betas already reached the assembled baseline through the requested map,
+	// which places them at their captured positions; anything left over is unknown
+	// to Claude Code and Anthropic rejects it outright. Forwarding those verbatim
+	// here was letting the body bypass the gate the header path enforces.
+	if !isAnthropicBase {
+		for _, beta := range extraBetas {
+			appendBeta(beta)
+		}
 	}
 	r.Header.Set("Anthropic-Beta", baseBetas)
 
@@ -316,7 +518,15 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	identityHeader("X-Stainless-Retry-Count", "0")
 	identityHeader("X-Stainless-Runtime", "node")
 	identityHeader("X-Stainless-Lang", "js")
-	identityHeader("X-Stainless-Timeout", hdrDefault(hd.Timeout, "600"))
+	// Claude Code omits X-Stainless-Timeout on count_tokens; only a confirmed
+	// native client that sent one of its own keeps it there.
+	if !countTokens {
+		identityHeader("X-Stainless-Timeout", hdrDefault(hd.Timeout, "600"))
+	} else if confirmedClaudeCode {
+		if incomingTimeout := incomingHeaders.Get("X-Stainless-Timeout"); incomingTimeout != "" {
+			r.Header.Set("X-Stainless-Timeout", incomingTimeout)
+		}
+	}
 	// Selected-credential OAuth identity is an explicit native passthrough
 	// exception. Callers pass the same agent-conversation UUID written to
 	// metadata.user_id; legacy paths retain their previous cached fallback.
@@ -342,16 +552,26 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		identityHeader("x-client-request-id", uuid.New().String())
 	}
 	r.Header.Set("Connection", "keep-alive")
-	if stream {
-		r.Header.Set("Accept", "text/event-stream")
-		// SSE streams must not be compressed: the downstream scanner reads
-		// line-delimited text and cannot parse compressed bytes.  Using
-		// "identity" tells the upstream to send an uncompressed stream.
-		r.Header.Set("Accept-Encoding", "identity")
-	} else {
+	// Claude Code negotiates transport identically for streaming and non-streaming
+	// requests: Accept stays application/json and full compression is offered even
+	// when the body sets stream:true, because Anthropic selects SSE from the body
+	// rather than from Accept. Verified across every captured 2.1.220 stream.
+	// Forcing text/event-stream plus identity here would otherwise mark every
+	// streaming request, which is nearly all traffic. decodeResponseBody already
+	// wraps the success path, so a compressed SSE body is decoded transparently.
+	applyTransportNegotiation := func() {
+		if stream && !isAnthropicBase {
+			// Other Anthropic-compatible upstreams (Kimi, custom gateways) may select
+			// SSE from Accept and need not compress predictably, so they keep the
+			// conservative contract.
+			r.Header.Set("Accept", "text/event-stream")
+			r.Header.Set("Accept-Encoding", "identity")
+			return
+		}
 		r.Header.Set("Accept", "application/json")
 		r.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	}
+	applyTransportNegotiation()
 	// Confirmed Claude Code requests may contribute their real software profile.
 	// Unconfirmed clients always receive the CLI baseline instead of being
 	// allowed to populate or reuse another client's software profile.
@@ -369,11 +589,19 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
-	// Re-enforce the SSE transport contract after custom headers. A custom Accept
-	// value can disable event negotiation, while compressed SSE breaks line parsing.
-	if stream {
-		r.Header.Set("Accept", "text/event-stream")
-		r.Header.Set("Accept-Encoding", "identity")
+	// Custom credential headers are a configuration escape hatch for third-party
+	// gateways, so they keep the last word there. On api.anthropic.com they must
+	// not rewrite the reconstructed identity: an overridden Anthropic-Beta yields a
+	// combination real Claude Code never sends and the API rejects, and an
+	// overridden Accept-Encoding contradicts the negotiated transport. Both were
+	// reachable because this ran after the whole header set was assembled.
+	if isAnthropicBase {
+		r.Header.Set("Anthropic-Beta", baseBetas)
+		applyTransportNegotiation()
+	} else if stream {
+		// Elsewhere only streaming is protected, so an Accept override cannot
+		// silently disable event negotiation.
+		applyTransportNegotiation()
 	}
 	return nil
 }

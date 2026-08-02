@@ -76,6 +76,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if err != nil {
 		return resp, err
 	}
+	// Only the Messages endpoint on Anthropic itself was captured; count_tokens
+	// keeps its own shape and other gateways never see this field.
+	if cloaked && isAnthropicUpstreamBase(baseURL) {
+		body = injectClaudeCodeContextManagement(body)
+	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
@@ -106,7 +111,6 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// Extract betas from body and convert to header
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
-	extraBetas = appendClaudeFastModeBeta(body, extraBetas)
 	bodyForTranslation := body
 	bodyForUpstream := body
 	var oauthToolNamesReverseMap map[string]string
@@ -133,7 +137,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if err != nil {
 		return resp, err
 	}
-	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, upstreamStream, extraBetas, e.cfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
+	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, upstreamStream, extraBetas, bodyForUpstream, e.cfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
 		return resp, errHeaders
 	}
 	var authID, authLabel, authType, authValue string

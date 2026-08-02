@@ -14,6 +14,7 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -179,12 +180,11 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, mcpAliases)
 	}
 	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel)
-	if oauthToken {
-		var errIdentity error
-		body, _, errIdentity = helps.ApplyClaudeCredentialMetadata(body, auth, claudeSessionID)
-		if errIdentity != nil {
-			return cliproxyexecutor.Response{}, fmt.Errorf("apply Claude credential metadata: %w", errIdentity)
-		}
+	// Claude Code never sends metadata on count_tokens, and Anthropic rejects the
+	// field outright there ("metadata: Extra inputs are not permitted"). The
+	// Messages path still carries the credential identity; this endpoint must not.
+	if isAnthropicUpstreamBase(baseURL) {
+		body, _ = sjson.DeleteBytes(body, "metadata")
 	}
 	if cchSigning {
 		fallbackBilling := claudeCCHFallbackBillingHeader(ctx, e.cfg, body, claudeCodeDetection.Entrypoint)
@@ -199,7 +199,7 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
-	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
+	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, body, e.cfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
 		return cliproxyexecutor.Response{}, errHeaders
 	}
 	var authID, authLabel, authType, authValue string

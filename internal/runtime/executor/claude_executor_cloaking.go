@@ -263,7 +263,6 @@ var claudeLegacySystemReminderModels = map[string]struct{}{
 	"claude-sonnet-4-5":          {},
 	"claude-sonnet-4-5-20250929": {},
 	"claude-sonnet-4-6":          {},
-	"claude-sonnet-5":            {},
 }
 
 func claudeUsesLegacySystemReminder(payload []byte) bool {
@@ -526,6 +525,28 @@ func injectClaudeCodeCurrentDate(payload []byte, now time.Time) []byte {
 	rawBlocks[insertAt] = dateBlock
 	payload, _ = sjson.SetRawBytes(payload, contentPath, []byte("["+strings.Join(rawBlocks, ",")+"]"))
 	return payload
+}
+
+// claudeCodeContextManagement is the context_management object Claude Code
+// 2.1.220 sends on every Messages request, captured 2026-08-01 from an isolated
+// profile talking to api.anthropic.com. keep:"all" retains every thinking block,
+// so replicating the client's exact value cannot produce upstream behaviour the
+// real client does not already get.
+const claudeCodeContextManagement = `{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`
+
+// injectClaudeCodeContextManagement supplies context_management when the caller
+// omitted it. CPA already claims context-management-2025-06-27 in Anthropic-Beta,
+// so a missing body field is an observable inconsistency with the real client. A
+// caller that sent its own object keeps it untouched.
+func injectClaudeCodeContextManagement(payload []byte) []byte {
+	if gjson.GetBytes(payload, "context_management").Exists() {
+		return payload
+	}
+	updated, err := sjson.SetRawBytes(payload, "context_management", []byte(claudeCodeContextManagement))
+	if err != nil {
+		return payload
+	}
+	return updated
 }
 
 func withEphemeralCacheControl(rawBlock string) string {
