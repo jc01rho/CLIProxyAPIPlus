@@ -290,8 +290,8 @@ type PayloadModelRule struct {
 // Cloaking disguises API requests to appear as originating from the official Claude Code CLI.
 type CloakConfig struct {
 	// Mode controls cloaking behavior: "auto" (default), "always", or "never".
-	// - "auto": cloak only when client is not Claude Code (based on User-Agent)
-	// - "always": always apply cloaking regardless of client
+	// - "auto": cloak unless strong request signals identify a verified native entrypoint
+	// - "always": cloak every unconfirmed client; confirmed native Claude Code remains passthrough
 	// - "never": never apply cloaking
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
 
@@ -351,9 +351,8 @@ type ClaudeKey struct {
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
 
-	// ExperimentalCCHSigning enables opt-in final-body cch signing for cloaked
-	// Claude /v1/messages requests. It is disabled by default so upstream seed
-	// changes do not alter the proxy's legacy behavior.
+	// ExperimentalCCHSigning is retained for configuration compatibility.
+	// CCH signing is automatic for Claude OAuth and supported direct upstreams.
 	ExperimentalCCHSigning bool `yaml:"experimental-cch-signing,omitempty" json:"experimental-cch-signing,omitempty"`
 }
 

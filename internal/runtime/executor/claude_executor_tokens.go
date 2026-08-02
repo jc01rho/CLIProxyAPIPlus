@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -18,6 +17,18 @@ import (
 )
 
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	apiKey, baseURL := claudeCreds(auth)
+	if baseURL == "" {
+		baseURL = "https://api.anthropic.com"
+	}
+	endpoint := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
+	// Claude Code uses the native endpoint for OAuth and first-party Anthropic
+	// credentials. Keep local counting for custom API-key gateways that may not
+	// implement count_tokens.
+	if apiKey != "" && claudeCCHSigningEnabled(apiKey, claudeCCHUpstreamAnthropic, endpoint) {
+		return e.countTokensUpstream(ctx, auth, req, opts)
+	}
+
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -39,9 +50,8 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		return cliproxyexecutor.Response{}, errValidate
 	}
 
-	// Count locally so generation-only Claude Code system instructions are never
-	// injected into the payload being measured and OAuth does not require an
-	// additional upstream count_tokens request.
+	// Custom API-key gateways without a native count_tokens contract continue to
+	// use the local estimator without injecting generation-only CLI instructions.
 	count, err := helps.CountClaudeInputTokens(body)
 	if err != nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("claude executor: token counting failed: %w", err)
@@ -110,10 +120,23 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
+	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
+	oauthToken := isClaudeOAuthToken(apiKey)
+	cchSigning := claudeCCHSigningEnabled(apiKey, claudeCCHUpstreamAnthropic, url)
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("claude")
+	originalPayload := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		originalPayload = opts.OriginalRequest
+	}
+	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, true)
+	confirmedClaudeCode := claudeCodeDetection.Confirmed
+	claudeSessionID := ""
+	if oauthToken {
+		claudeSessionID = helps.ClaudeAgentSessionUUID(incomingHeaders, originalPayload, req.Payload, opts.Metadata, req.Metadata)
+	}
 	// Use streaming translation to preserve function calling, except for claude.
 	stream := from != to
 	body := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, stream)
@@ -127,8 +150,19 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 		body = rebuildMidSystemMessagesToTopLevel(body)
 	}
 
-	if !strings.HasPrefix(baseModel, "claude-3-5-haiku") {
-		body = checkSystemInstructions(body)
+	var cloaked bool
+	var errCloaking error
+	body, cloaked, errCloaking = applyCloaking(
+		ctx,
+		e.cfg,
+		auth,
+		body,
+		apiKey,
+		confirmedClaudeCode,
+		cchSigning,
+	)
+	if errCloaking != nil {
+		return cliproxyexecutor.Response{}, errCloaking
 	}
 
 	// Keep count_tokens requests compatible with Anthropic cache-control constraints too.
@@ -138,17 +172,34 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	// Extract betas from body and convert to header (for count_tokens too)
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
-	if isClaudeOAuthToken(apiKey) {
-		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, claudeToolPrefix, auth.ToolPrefixDisabled())
+	// Claude Code 2.1.220's beta.messages.countTokens() always appends this beta.
+	extraBetas = append(extraBetas, claudeTokenCountingBeta)
+	if oauthToken && cloaked {
+		mcpAliases := resolveClaudeMCPAliasOptions(ctx)
+		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, mcpAliases)
 	}
 	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel)
+	if oauthToken {
+		var errIdentity error
+		body, _, errIdentity = helps.ApplyClaudeCredentialMetadata(body, auth, claudeSessionID)
+		if errIdentity != nil {
+			return cliproxyexecutor.Response{}, fmt.Errorf("apply Claude credential metadata: %w", errIdentity)
+		}
+	}
+	if cchSigning {
+		fallbackBilling := claudeCCHFallbackBillingHeader(ctx, e.cfg, body, claudeCodeDetection.Entrypoint)
+		var errCCH error
+		body, errCCH = finalizeAnthropicMessagesBodyCCH(body, fallbackBilling)
+		if errCCH != nil {
+			return cliproxyexecutor.Response{}, fmt.Errorf("finalize Claude CCH: %w", errCCH)
+		}
+	}
 
-	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
-	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg, opts.Headers); errHeaders != nil {
+	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
 		return cliproxyexecutor.Response{}, errHeaders
 	}
 	var authID, authLabel, authType, authValue string

@@ -101,7 +101,7 @@ func TestConvertClaudeRequestToGemini_StripsClaudeCodeAttribution(t *testing.T) 
 		"model": "claude-sonnet-4-5",
 		"system": [
 			{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.63.abc; cc_entrypoint=cli; cch=12345;"},
-			{"type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."},
+			{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
 			{"type": "text", "text": "User system prompt"}
 		],
 		"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
@@ -113,7 +113,7 @@ func TestConvertClaudeRequestToGemini_StripsClaudeCodeAttribution(t *testing.T) 
 	if len(parts) != 2 {
 		t.Fatalf("Expected 2 system parts after attribution strip, got %d: %s", len(parts), gjson.GetBytes(output, "systemInstruction.parts").Raw)
 	}
-	if got := parts[0].Get("text").String(); got != "You are a Claude agent, built on Anthropic's Claude Agent SDK." {
+	if got := parts[0].Get("text").String(); got != "You are Claude Code, Anthropic's official CLI for Claude." {
 		t.Fatalf("Unexpected first system part: %q", got)
 	}
 	if got := parts[1].Get("text").String(); got != "User system prompt" {

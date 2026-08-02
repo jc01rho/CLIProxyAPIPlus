@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -17,8 +18,8 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// utlsRoundTripper implements http.RoundTripper using utls with Chrome fingerprint
-// to bypass Cloudflare's TLS fingerprinting on Anthropic domains.
+// utlsRoundTripper implements http.RoundTripper using a Chrome fingerprint for
+// providers that require a browser-like TLS and HTTP/2 transport.
 type utlsRoundTripper struct {
 	mu          sync.Mutex
 	connections map[string]*http2.ClientConn
@@ -129,32 +130,138 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
-// utlsProtectedHosts contains the hosts that should use utls Chrome TLS fingerprint
-// to bypass Cloudflare's TLS fingerprinting.
-var utlsProtectedHosts = map[string]struct{}{
-	"api.anthropic.com": {},
-	"chatgpt.com":       {},
+// claudeCodeTLSClientHelloSpec reproduces the deterministic Node/OpenSSL
+// ClientHello emitted by Claude Code 2.1.220 on macOS arm64. Keep this spec in
+// sync with a fresh native capture whenever the advertised Claude Code version
+// changes.
+func claudeCodeTLSClientHelloSpec() *tls.ClientHelloSpec {
+	return &tls.ClientHelloSpec{
+		CipherSuites: []uint16{
+			tls.TLS_AES_128_GCM_SHA256,
+			tls.TLS_AES_256_GCM_SHA384,
+			tls.TLS_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		},
+		CompressionMethods: []uint8{0},
+		Extensions: []tls.TLSExtension{
+			&tls.SNIExtension{},
+			&tls.ExtendedMasterSecretExtension{},
+			&tls.RenegotiationInfoExtension{Renegotiation: tls.RenegotiateOnceAsClient},
+			&tls.SupportedCurvesExtension{Curves: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}},
+			&tls.SupportedPointsExtension{SupportedPoints: []byte{0}},
+			&tls.SessionTicketExtension{},
+			&tls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
+			&tls.StatusRequestExtension{},
+			&tls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []tls.SignatureScheme{
+				tls.ECDSAWithP256AndSHA256,
+				tls.PSSWithSHA256,
+				tls.PKCS1WithSHA256,
+				tls.ECDSAWithP384AndSHA384,
+				tls.PSSWithSHA384,
+				tls.PKCS1WithSHA384,
+				tls.PSSWithSHA512,
+				tls.PKCS1WithSHA512,
+				tls.PKCS1WithSHA1,
+			}},
+			&tls.SCTExtension{},
+			&tls.KeyShareExtension{KeyShares: []tls.KeyShare{{Group: tls.X25519}}},
+			&tls.PSKKeyExchangeModesExtension{Modes: []uint8{tls.PskModeDHE}},
+			&tls.SupportedVersionsExtension{Versions: []uint16{tls.VersionTLS13, tls.VersionTLS12}},
+			&tls.UtlsPaddingExtension{GetPaddingLen: tls.BoringPaddingStyle},
+		},
+	}
 }
 
-// fallbackRoundTripper uses utls for protected HTTPS hosts and falls back to
-// standard transport for all other requests.
+func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
+	var dialer proxy.Dialer = proxy.Direct
+	if proxyURL != "" {
+		proxyDialer, mode, errBuild := proxyutil.BuildDialer(proxyURL)
+		if errBuild != nil {
+			log.Errorf("claude tls: failed to configure proxy dialer for %q: %v", proxyutil.Redact(proxyURL), errBuild)
+		} else if mode != proxyutil.ModeInherit && proxyDialer != nil {
+			dialer = proxyDialer
+		}
+	}
+
+	transport := &http.Transport{
+		ForceAttemptHTTP2: false,
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			var (
+				conn net.Conn
+				err  error
+			)
+			if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+				conn, err = contextDialer.DialContext(ctx, network, addr)
+			} else {
+				conn, err = dialer.Dial(network, addr)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("claude tls: dial upstream: %w", err)
+			}
+
+			host, _, errSplit := net.SplitHostPort(addr)
+			if errSplit != nil {
+				if errClose := conn.Close(); errClose != nil {
+					log.Debugf("claude tls: close failed connection: %v", errClose)
+				}
+				return nil, fmt.Errorf("claude tls: split upstream address: %w", errSplit)
+			}
+			tlsConn := tls.UClient(conn, &tls.Config{ServerName: host}, tls.HelloCustom)
+			if errPreset := tlsConn.ApplyPreset(claudeCodeTLSClientHelloSpec()); errPreset != nil {
+				if errClose := tlsConn.Close(); errClose != nil {
+					log.Debugf("claude tls: close connection after preset failure: %v", errClose)
+				}
+				return nil, fmt.Errorf("claude tls: apply Claude Code ClientHello: %w", errPreset)
+			}
+			if errHandshake := tlsConn.HandshakeContext(ctx); errHandshake != nil {
+				if errClose := tlsConn.Close(); errClose != nil {
+					log.Debugf("claude tls: close connection after handshake failure: %v", errClose)
+				}
+				return nil, fmt.Errorf("claude tls: handshake upstream: %w", errHandshake)
+			}
+			return tlsConn, nil
+		},
+	}
+	return transport
+}
+
+// fallbackRoundTripper uses provider-specific TLS fingerprints for protected
+// HTTPS hosts and falls back to the standard transport for all other requests.
 type fallbackRoundTripper struct {
-	utls     http.RoundTripper
-	fallback http.RoundTripper
+	anthropic http.RoundTripper
+	chrome    http.RoundTripper
+	fallback  http.RoundTripper
 }
 
 func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.URL.Scheme == "https" {
-		if _, ok := utlsProtectedHosts[strings.ToLower(req.URL.Hostname())]; ok {
-			return f.utls.RoundTrip(req)
+		switch strings.ToLower(req.URL.Hostname()) {
+		case "api.anthropic.com":
+			return f.anthropic.RoundTrip(req)
+		case "chatgpt.com":
+			return f.chrome.RoundTrip(req)
 		}
 	}
 	return f.fallback.RoundTrip(req)
 }
 
-// NewUtlsHTTPClient creates an HTTP client using utls Chrome TLS fingerprint.
-// Use this for provider requests that need a Chrome-like TLS fingerprint.
-// Falls back to standard transport for non-HTTPS requests.
+// NewUtlsHTTPClient creates an HTTP client using provider-specific TLS
+// fingerprints for protected hosts. It uses Claude Code's Node/OpenSSL profile
+// for Anthropic and a Chrome profile for ChatGPT, with a standard-transport
+// fallback for other hosts.
 func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	var proxyURL string
 	if auth != nil {
@@ -169,21 +276,24 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		ctxRoundTripper, _ = ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
 	}
 
-	var utlsRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
+	var chromeRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
+	var anthropicRT http.RoundTripper = newClaudeCodeRoundTripper(proxyURL)
 	var standardTransport http.RoundTripper = http.DefaultTransport
 	if proxyURL != "" {
 		if transport := buildProxyTransport(proxyURL); transport != nil {
 			standardTransport = transport
 		}
 	} else if ctxRoundTripper != nil {
-		utlsRT = ctxRoundTripper
+		chromeRT = ctxRoundTripper
+		anthropicRT = ctxRoundTripper
 		standardTransport = ctxRoundTripper
 	}
 
 	client := &http.Client{
 		Transport: &fallbackRoundTripper{
-			utls:     utlsRT,
-			fallback: standardTransport,
+			anthropic: anthropicRT,
+			chrome:    chromeRT,
+			fallback:  standardTransport,
 		},
 	}
 	if timeout > 0 {

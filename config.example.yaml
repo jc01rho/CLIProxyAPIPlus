@@ -406,7 +406,7 @@ nonstream-keepalive-interval: 0
 #     rebuild-mid-system-message: false # optional: default is false; when true, move messages with role "system" into the top-level Claude system field
 #     cloak:                         # optional: request cloaking for non-Claude-Code clients
 #       mode: "auto"                 # "auto" (default): cloak only when client is not Claude Code
-#                                    # "always": always apply cloaking
+#                                    # "always": cloak every unconfirmed client; confirmed native Claude Code still passes through
 #                                    # "never": never apply cloaking
 #       # This "cloak" block applies to this claude-api-key entry only. For Claude OAuth
 #       # credentials, set the same options in the auth/token JSON file via "cloak_mode" /
@@ -418,19 +418,22 @@ nonstream-keepalive-interval: 0
 #         - "API"
 #         - "proxy"
 #       cache-user-id: true          # optional: default is false; set true to reuse cached user_id per API key instead of generating a random one each request
-#     experimental-cch-signing: false # optional: default is false; when true, sign the final /v1/messages body using the current Claude Code cch algorithm
-#                                     # keep this disabled unless you explicitly need the behavior, so upstream seed changes fall back to legacy proxy behavior
+#       # Every custom tool on a cloaked OAuth request automatically uses a caller-stable opaque mcp__<server>__<tool> alias.
+#     experimental-cch-signing: false # deprecated compatibility field; CCH is generated automatically
+#                                     # all Claude OAuth requests sign, including custom gateways; direct Anthropic/Vertex paths also sign
 
 # Default headers for Claude API requests. Update when Claude Code releases new versions.
-# In legacy mode, user-agent/package-version/runtime-version/timeout are used as fallbacks
+# Unconfirmed clients use this minimum CLI baseline; verified native Claude Code CLI,
+# sdk-cli, and VSCode requests preserve or may upgrade their real software fingerprint. In legacy mode,
+# user-agent/package-version/runtime-version/timeout are used as fallbacks
 # when the client omits them, while OS/arch remain runtime-derived. When
 # stabilize-device-profile is enabled, OS/arch stay pinned to the baseline values below,
-# while user-agent/package-version/runtime-version seed a software fingerprint that can
-# still upgrade to newer official Claude client versions.
+# while user-agent/package-version/runtime-version seed per-subclient software fingerprints
+# that can still upgrade independently for verified CLI and VSCode entrypoints.
 # claude-header-defaults:
-#   user-agent: "claude-cli/2.1.44 (external, sdk-cli)"
-#   package-version: "0.74.0"
-#   runtime-version: "v24.3.0"
+#   user-agent: "claude-cli/2.1.220 (external, cli)"
+#   package-version: "0.94.0"
+#   runtime-version: "v26.3.0"
 #   os: "MacOS"
 #   arch: "arm64"
 #   timeout: "600"

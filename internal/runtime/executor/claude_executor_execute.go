@@ -26,6 +26,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
+	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
+	oauthToken := isClaudeOAuthToken(apiKey)
+	cchSigning := claudeCCHSigningEnabled(apiKey, claudeCCHUpstreamAnthropic, url)
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -40,6 +43,12 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
+	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false)
+	confirmedClaudeCode := claudeCodeDetection.Confirmed
+	claudeSessionID := ""
+	if oauthToken {
+		claudeSessionID = helps.ClaudeAgentSessionUUID(incomingHeaders, originalPayload, req.Payload, opts.Metadata, req.Metadata)
+	}
 	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, upstreamStream)
 	body := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, upstreamStream)
 	body = helps.SetStringIfDifferent(body, "model", upstreamModel)
@@ -54,7 +63,16 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
-	body, err = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
+	var cloaked bool
+	body, cloaked, err = applyCloaking(
+		ctx,
+		e.cfg,
+		auth,
+		body,
+		apiKey,
+		confirmedClaudeCode,
+		cchSigning,
+	)
 	if err != nil {
 		return resp, err
 	}
@@ -91,25 +109,31 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	extraBetas = appendClaudeFastModeBeta(body, extraBetas)
 	bodyForTranslation := body
 	bodyForUpstream := body
-	oauthToken := isClaudeOAuthToken(apiKey)
 	var oauthToolNamesReverseMap map[string]string
-	if oauthToken {
-		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
+	if oauthToken && cloaked {
+		mcpAliases := resolveClaudeMCPAliasOptions(ctx)
+		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, mcpAliases)
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
-	// Enable cch signing by default for OAuth tokens (not just experimental flag).
-	// Claude Code always computes cch; missing or invalid cch is a detectable fingerprint.
-	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
-		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
+	if oauthToken {
+		bodyForUpstream, _, err = helps.ApplyClaudeCredentialMetadata(bodyForUpstream, auth, claudeSessionID)
+		if err != nil {
+			return resp, fmt.Errorf("apply Claude credential metadata: %w", err)
+		}
+	}
+	if cchSigning {
+		fallbackBilling := claudeCCHFallbackBillingHeader(ctx, e.cfg, bodyForUpstream, claudeCodeDetection.Entrypoint)
+		bodyForUpstream, err = finalizeAnthropicMessagesBodyCCH(bodyForUpstream, fallbackBilling)
+		if err != nil {
+			return resp, fmt.Errorf("finalize Claude CCH: %w", err)
+		}
 	}
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
-
-	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyForUpstream))
 	if err != nil {
 		return resp, err
 	}
-	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, upstreamStream, extraBetas, e.cfg, opts.Headers); errHeaders != nil {
+	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, upstreamStream, extraBetas, e.cfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
 		return resp, errHeaders
 	}
 	var authID, authLabel, authType, authValue string
@@ -193,12 +217,12 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}
-			lines[i] = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
+			lines[i] = restoreClaudeOAuthToolNamesFromStreamLine(line, oauthToolNamesReverseMap)
 		}
 		data = bytes.Join(lines, []byte("\n"))
 	} else {
 		reporter.Publish(ctx, helps.ParseClaudeUsage(data))
-		data = restoreClaudeOAuthToolNamesFromResponse(data, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
+		data = restoreClaudeOAuthToolNamesFromResponse(data, oauthToolNamesReverseMap)
 	}
 	data = e.restoreResponseModel(data, req.Model)
 	var param any
