@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -211,5 +212,60 @@ func TestApplyClaudeHeaders_FastModePrecedesOAuthTrailer(t *testing.T) {
 	}
 	if parts[len(parts)-2] != claudeFastModeBeta {
 		t.Fatalf("Anthropic-Beta = %q, want %s immediately before the OAuth trailer", got, claudeFastModeBeta)
+	}
+}
+
+// Anthropic refuses a fast-mode request from an account without the matching
+// usage credits with 429 rate_limit_error. The generic pipeline reads 429 as
+// quota exhaustion, cools the credential down and rotates, so one speed:"fast"
+// request would walk the whole Claude pool and disable credentials that are
+// perfectly healthy for ordinary traffic.
+func TestClassifyClaudeUpstreamError_FastModeCreditsIsRequestScoped(t *testing.T) {
+	// Anthropic and the Claude Code CLI word this refusal differently; both must
+	// be recognised, and neither may be rewritten on the way back to the caller.
+	bodies := [][]byte{
+		[]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for fast mode."}}`),
+		[]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Fast mode requires usage credits"}}`),
+	}
+	for _, body := range bodies {
+		err := classifyClaudeUpstreamError(http.StatusTooManyRequests, body)
+
+		scoped, ok := err.(cliproxyexecutor.RequestScopedError)
+		if !ok || !scoped.IsRequestScoped() {
+			t.Fatalf("fast-mode credit refusal = %T, want a request-scoped error: %s", err, body)
+		}
+		var status cliproxyexecutor.StatusError
+		if !errors.As(err, &status) || status.StatusCode() != http.StatusTooManyRequests {
+			t.Fatalf("status was not preserved for the caller: %v", err)
+		}
+		// Pass-through must be byte-exact: the upstream body is the caller's
+		// only explanation of what to do about it.
+		if err.Error() != string(body) {
+			t.Fatalf("body was rewritten:\n got  %s\n want %s", err.Error(), body)
+		}
+	}
+}
+
+// A genuine rate limit must keep cooling the credential down and rotating.
+func TestClassifyClaudeUpstreamError_RealRateLimitStaysCredentialScoped(t *testing.T) {
+	cases := [][]byte{
+		[]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Number of requests has exceeded your rate limit."}}`),
+		[]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"This organization has exceeded its usage limit."}}`),
+	}
+	for _, body := range cases {
+		err := classifyClaudeUpstreamError(http.StatusTooManyRequests, body)
+		if scoped, ok := err.(cliproxyexecutor.RequestScopedError); ok && scoped.IsRequestScoped() {
+			t.Fatalf("genuine rate limit was misclassified as request-scoped: %s", body)
+		}
+	}
+}
+
+func TestClassifyClaudeUpstreamError_OtherStatusesUnaffected(t *testing.T) {
+	body := []byte(`{"error":{"message":"Usage credits are required for fast mode."}}`)
+	// Only 429 carries the entitlement refusal; a 500 mentioning it is still a
+	// credential-scoped failure worth rotating away from.
+	err := classifyClaudeUpstreamError(http.StatusInternalServerError, body)
+	if scoped, ok := err.(cliproxyexecutor.RequestScopedError); ok && scoped.IsRequestScoped() {
+		t.Fatal("non-429 status was misclassified as request-scoped")
 	}
 }

@@ -185,6 +185,46 @@ func withClaudeOAuthCredentialBetas(betas string) string {
 	return strings.Join(parts, ",")
 }
 
+// claudeEntitlementError marks an upstream refusal that is a property of the
+// request shape combined with the account's entitlements, not of the credential's
+// health. The auth manager must neither rotate nor cool down on these.
+type claudeEntitlementError struct {
+	statusErr
+}
+
+func (claudeEntitlementError) IsRequestScoped() bool {
+	return true
+}
+
+// classifyClaudeUpstreamError promotes upstream refusals that no other credential
+// can satisfy into request-scoped errors.
+//
+// Anthropic answers a fast-mode request from an account without the matching
+// usage credits with 429 rate_limit_error "Usage credits are required for fast
+// mode". The generic pipeline reads 429 as quota exhaustion: it marks the
+// credential Quota.Exceeded, applies an exponential cooldown and rotates to the
+// next one, which returns the same 429. A single speed:"fast" request would walk
+// the whole Claude pool and cool down every credential, all of which remain
+// perfectly healthy for ordinary traffic. The refusal belongs to the request.
+func classifyClaudeUpstreamError(statusCode int, body []byte) error {
+	err := statusErr{code: statusCode, msg: string(body)}
+	if statusCode == http.StatusTooManyRequests && claudeBodyIndicatesFastModeCredits(body) {
+		return claudeEntitlementError{err}
+	}
+	return err
+}
+
+// claudeBodyIndicatesFastModeCredits matches Anthropic's fast-mode entitlement
+// refusal without matching a genuine rate limit, which never mentions fast mode.
+func claudeBodyIndicatesFastModeCredits(body []byte) bool {
+	message := strings.ToLower(gjson.GetBytes(body, "error.message").String())
+	if message == "" {
+		message = strings.ToLower(string(body))
+	}
+	return strings.Contains(message, "fast mode") &&
+		(strings.Contains(message, "usage credits") || strings.Contains(message, "credits are required"))
+}
+
 // claudeRequestedBetas collects every beta the caller asked for, from the
 // Anthropic-Beta header and from betas lifted out of the request body.
 func claudeRequestedBetas(incomingBetas string, extraBetas []string) map[string]bool {
