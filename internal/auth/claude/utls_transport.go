@@ -28,7 +28,10 @@ var claudeOAuthRefreshHeaderOrder = []string{
 	"Connection",
 }
 
-var claudeOAuthProfileHeaderOrder = []string{
+// claudeOAuthInspectHeaderOrder is the order the native client emits for the
+// authenticated Axios GET lookups on the OAuth control plane, covering both the
+// account profile and the claude_cli roles companion request.
+var claudeOAuthInspectHeaderOrder = []string{
 	"Accept",
 	"Content-Type",
 	"Authorization",
@@ -39,9 +42,20 @@ var claudeOAuthProfileHeaderOrder = []string{
 	"Connection",
 }
 
+// claudeOAuthInspectTargets are the authenticated control-plane GET paths that
+// use claudeOAuthInspectHeaderOrder.
+var claudeOAuthInspectTargets = []string{
+	"/api/oauth/profile",
+	"/api/oauth/claude_cli/roles",
+}
+
 func claudeOAuthRequestHeaderOrder(method, requestTarget string) []string {
-	if method == http.MethodGet && strings.HasPrefix(requestTarget, "/api/oauth/profile") {
-		return claudeOAuthProfileHeaderOrder
+	if method == http.MethodGet {
+		for _, target := range claudeOAuthInspectTargets {
+			if strings.HasPrefix(requestTarget, target) {
+				return claudeOAuthInspectHeaderOrder
+			}
+		}
 	}
 	return claudeOAuthRefreshHeaderOrder
 }

@@ -21,10 +21,15 @@ import (
 
 // OAuth configuration constants for Claude/Anthropic
 const (
-	AuthURL          = "https://claude.ai/oauth/authorize"
-	TokenURL         = "https://api.anthropic.com/v1/oauth/token"
-	RefreshTokenURL  = "https://platform.claude.com/v1/oauth/token"
-	ProfileURL       = "https://api.anthropic.com/api/oauth/profile"
+	AuthURL = "https://claude.ai/oauth/authorize"
+	// TokenURL is the authorization-code exchange endpoint. Claude Code 2.1.220
+	// posts the code exchange to platform.claude.com, not api.anthropic.com.
+	TokenURL        = "https://platform.claude.com/v1/oauth/token"
+	RefreshTokenURL = "https://platform.claude.com/v1/oauth/token"
+	ProfileURL      = "https://api.anthropic.com/api/oauth/profile"
+	// RolesURL is the claude_cli role endpoint the native client queries right
+	// after a successful token exchange, alongside the profile lookup.
+	RolesURL         = "https://api.anthropic.com/api/oauth/claude_cli/roles"
 	ClientID         = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	RedirectURI      = "http://localhost:54545/callback"
 	ClaudeOAuthScope = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
@@ -135,6 +140,18 @@ type tokenResponse struct {
 	} `json:"account"`
 }
 
+// authorizationCodeExchangeRequest is the authorization-code exchange body.
+// Field order is significant: it mirrors the key order observed in native
+// Claude Code 2.1.220 traffic to platform.claude.com/v1/oauth/token.
+type authorizationCodeExchangeRequest struct {
+	GrantType    string `json:"grant_type"`
+	Code         string `json:"code"`
+	RedirectURI  string `json:"redirect_uri"`
+	ClientID     string `json:"client_id"`
+	CodeVerifier string `json:"code_verifier"`
+	State        string `json:"state"`
+}
+
 // OAuthProfile is the account identity returned by Anthropic's OAuth profile endpoint.
 type OAuthProfile struct {
 	Account struct {
@@ -203,18 +220,19 @@ func applyClaudeOAuthAxiosHeaders(req *http.Request) {
 	req.Close = true
 }
 
-// FetchOAuthProfile retrieves the account identity associated with an OAuth access token.
-func (o *ClaudeAuth) FetchOAuthProfile(ctx context.Context, accessToken string) (*OAuthProfile, error) {
+// fetchOAuthControlPlaneJSON issues an Axios-shaped OAuth control-plane GET and
+// returns the decoded response body. label names the endpoint in error text.
+func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, accessToken, label string) ([]byte, error) {
 	if o == nil || o.httpClient == nil {
-		return nil, fmt.Errorf("fetch Claude OAuth profile: HTTP client is nil")
+		return nil, fmt.Errorf("fetch Claude OAuth %s: HTTP client is nil", label)
 	}
 	accessToken = strings.TrimSpace(accessToken)
 	if accessToken == "" {
-		return nil, fmt.Errorf("fetch Claude OAuth profile: access token is empty")
+		return nil, fmt.Errorf("fetch Claude OAuth %s: access token is empty", label)
 	}
-	req, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, ProfileURL, nil)
+	req, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if errRequest != nil {
-		return nil, fmt.Errorf("create Claude OAuth profile request: %w", errRequest)
+		return nil, fmt.Errorf("create Claude OAuth %s request: %w", label, errRequest)
 	}
 	applyClaudeOAuthAxiosHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -222,19 +240,28 @@ func (o *ClaudeAuth) FetchOAuthProfile(ctx context.Context, accessToken string) 
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
-		return nil, fmt.Errorf("fetch Claude OAuth profile: %w", errDo)
+		return nil, fmt.Errorf("fetch Claude OAuth %s: %w", label, errDo)
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("failed to close Claude OAuth profile response body: %v", errClose)
+			log.Errorf("failed to close Claude OAuth %s response body: %v", label, errClose)
 		}
 	}()
 	body, errRead := readClaudeOAuthResponseBody(resp)
 	if errRead != nil {
-		return nil, fmt.Errorf("read Claude OAuth profile response: %w", errRead)
+		return nil, fmt.Errorf("read Claude OAuth %s response: %w", label, errRead)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("fetch Claude OAuth profile failed with status %d", resp.StatusCode)
+		return nil, fmt.Errorf("fetch Claude OAuth %s failed with status %d", label, resp.StatusCode)
+	}
+	return body, nil
+}
+
+// FetchOAuthProfile retrieves the account identity associated with an OAuth access token.
+func (o *ClaudeAuth) FetchOAuthProfile(ctx context.Context, accessToken string) (*OAuthProfile, error) {
+	body, errFetch := o.fetchOAuthControlPlaneJSON(ctx, ProfileURL, accessToken, "profile")
+	if errFetch != nil {
+		return nil, errFetch
 	}
 	var profile OAuthProfile
 	if errUnmarshal := json.Unmarshal(body, &profile); errUnmarshal != nil {
@@ -244,6 +271,37 @@ func (o *ClaudeAuth) FetchOAuthProfile(ctx context.Context, accessToken string) 
 		return nil, fmt.Errorf("fetch Claude OAuth profile: response account UUID is empty")
 	}
 	return &profile, nil
+}
+
+// FetchOAuthRoles performs the claude_cli roles lookup the native client issues
+// alongside the profile query after a token exchange. Only the request shape is
+// covered by captured evidence, so the payload stays opaque and is returned raw
+// instead of being decoded into a guessed structure.
+func (o *ClaudeAuth) FetchOAuthRoles(ctx context.Context, accessToken string) (json.RawMessage, error) {
+	body, errFetch := o.fetchOAuthControlPlaneJSON(ctx, RolesURL, accessToken, "claude_cli roles")
+	if errFetch != nil {
+		return nil, errFetch
+	}
+	if !json.Valid(body) {
+		return nil, fmt.Errorf("parse Claude OAuth claude_cli roles response: body is not valid JSON")
+	}
+	return json.RawMessage(body), nil
+}
+
+// inspectOAuthAccount replays the login companion control-plane calls the native
+// client makes within roughly 500ms of a successful token exchange: the account
+// profile lookup followed by the claude_cli roles lookup. Both are advisory, so
+// failures are logged and never fail the surrounding login.
+func (o *ClaudeAuth) inspectOAuthAccount(ctx context.Context, accessToken string) *OAuthProfile {
+	profile, errProfile := o.FetchOAuthProfile(ctx, accessToken)
+	if errProfile != nil {
+		log.Warnf("fetch Claude OAuth profile after token exchange: %v", errProfile)
+		profile = nil
+	}
+	if _, errRoles := o.FetchOAuthRoles(ctx, accessToken); errRoles != nil {
+		log.Warnf("fetch Claude OAuth claude_cli roles after token exchange: %v", errRoles)
+	}
+	return profile
 }
 
 // GenerateAuthURL creates the OAuth authorization URL with PKCE.
@@ -315,19 +373,21 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	}
 	newCode, newState := o.parseCodeAndState(code)
 
-	// Prepare token exchange request
-	reqBody := map[string]interface{}{
-		"code":          newCode,
-		"state":         state,
-		"grant_type":    "authorization_code",
-		"client_id":     ClientID,
-		"redirect_uri":  RedirectURI,
-		"code_verifier": pkceCodes.CodeVerifier,
+	// Prepare token exchange request. The struct field order reproduces the key
+	// order Claude Code 2.1.220 emits on the wire; a map would be re-sorted
+	// alphabetically by encoding/json and change the serialized body bytes.
+	reqBody := authorizationCodeExchangeRequest{
+		GrantType:    "authorization_code",
+		Code:         newCode,
+		RedirectURI:  RedirectURI,
+		ClientID:     ClientID,
+		CodeVerifier: pkceCodes.CodeVerifier,
+		State:        state,
 	}
 
-	// Include state if present
+	// A state fragment appended to the callback code takes precedence.
 	if newState != "" {
-		reqBody["state"] = newState
+		reqBody.State = newState
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -341,8 +401,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	applyClaudeOAuthAxiosHeaders(req)
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
@@ -384,6 +443,23 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 		OrganizationUUID: tokenResp.Organization.UUID,
 		OrganizationName: tokenResp.Organization.Name,
 		Expire:           time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
+	}
+
+	// Replay the native login companion lookups and let the profile response win
+	// where it carries identity the token response omitted.
+	if profile := o.inspectOAuthAccount(ctx, tokenResp.AccessToken); profile != nil {
+		if value := strings.TrimSpace(profile.Account.UUID); value != "" {
+			tokenData.AccountUUID = value
+		}
+		if value := strings.TrimSpace(profile.Account.Email); value != "" {
+			tokenData.Email = value
+		}
+		if value := strings.TrimSpace(profile.Organization.UUID); value != "" {
+			tokenData.OrganizationUUID = value
+		}
+		if value := strings.TrimSpace(profile.Organization.Name); value != "" {
+			tokenData.OrganizationName = value
+		}
 	}
 
 	// Create auth bundle.
