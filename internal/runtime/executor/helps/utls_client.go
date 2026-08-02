@@ -11,6 +11,7 @@ import (
 
 	tls "github.com/refraction-networking/utls"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/httpwire"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
@@ -185,6 +186,79 @@ func claudeCodeTLSClientHelloSpec() *tls.ClientHelloSpec {
 	}
 }
 
+var claudeCodeRoundTripperCache sync.Map
+
+var claudeCodeMessagesHeaderOrder = []string{
+	"Accept",
+	"Authorization",
+	"Content-Type",
+	"User-Agent",
+	"X-Claude-Code-Session-Id",
+	"X-Stainless-Arch",
+	"X-Stainless-Lang",
+	"X-Stainless-OS",
+	"X-Stainless-Package-Version",
+	"X-Stainless-Retry-Count",
+	"X-Stainless-Runtime",
+	"X-Stainless-Runtime-Version",
+	"X-Stainless-Timeout",
+	"anthropic-beta",
+	"anthropic-dangerous-direct-browser-access",
+	"anthropic-version",
+	"x-app",
+	"x-client-request-id",
+	"Connection",
+	"Host",
+	"Accept-Encoding",
+	"Content-Length",
+}
+
+var claudeCodeCountTokensHeaderOrder = []string{
+	"Accept",
+	"Authorization",
+	"Content-Type",
+	"User-Agent",
+	"X-Claude-Code-Session-Id",
+	"X-Stainless-Arch",
+	"X-Stainless-Lang",
+	"X-Stainless-OS",
+	"X-Stainless-Package-Version",
+	"X-Stainless-Retry-Count",
+	"X-Stainless-Runtime",
+	"X-Stainless-Runtime-Version",
+	"anthropic-beta",
+	"anthropic-dangerous-direct-browser-access",
+	"anthropic-version",
+	"x-app",
+	"x-client-request-id",
+	"Connection",
+	"Host",
+	"Accept-Encoding",
+	"Content-Length",
+}
+
+func claudeCodeRequestHeaderOrder(_, requestTarget string) []string {
+	if strings.HasPrefix(requestTarget, "/v1/messages/count_tokens") {
+		return claudeCodeCountTokensHeaderOrder
+	}
+	return claudeCodeMessagesHeaderOrder
+}
+
+func cachedClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
+	if cached, ok := claudeCodeRoundTripperCache.Load(proxyURL); ok {
+		return cached.(http.RoundTripper)
+	}
+	created := newClaudeCodeRoundTripper(proxyURL)
+	actual, loaded := claudeCodeRoundTripperCache.LoadOrStore(proxyURL, created)
+	if loaded {
+		if transport, ok := created.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+		return actual.(http.RoundTripper)
+	}
+	return created
+}
+
 func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
 	var dialer proxy.Dialer = proxy.Direct
 	if proxyURL != "" {
@@ -232,7 +306,7 @@ func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
 				}
 				return nil, fmt.Errorf("claude tls: handshake upstream: %w", errHandshake)
 			}
-			return tlsConn, nil
+			return httpwire.NewOrderedRequestConn(tlsConn, claudeCodeRequestHeaderOrder), nil
 		},
 	}
 	return transport
@@ -277,7 +351,7 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 	}
 
 	var chromeRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
-	var anthropicRT http.RoundTripper = newClaudeCodeRoundTripper(proxyURL)
+	var anthropicRT http.RoundTripper = cachedClaudeCodeRoundTripper(proxyURL)
 	var standardTransport http.RoundTripper = http.DefaultTransport
 	if proxyURL != "" {
 		if transport := buildProxyTransport(proxyURL); transport != nil {

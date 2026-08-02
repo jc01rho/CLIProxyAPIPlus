@@ -1,38 +1,112 @@
-// Package claude provides authentication functionality for Anthropic's Claude API.
-// This file implements a custom HTTP transport using utls to bypass TLS fingerprinting.
 package claude
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	tls "github.com/refraction-networking/utls"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/httpwire"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/net/http2"
 	"golang.org/x/net/proxy"
 )
 
 type claudeRefreshHandshakeTimeoutContextKey struct{}
 
-// utlsRoundTripper implements http.RoundTripper using utls with Chrome fingerprint
-// to bypass Cloudflare's TLS fingerprinting on Anthropic domains.
-type utlsRoundTripper struct {
-	// mu protects the connections map and pending map
-	mu sync.Mutex
-	// connections caches HTTP/2 client connections per host
-	connections map[string]*http2.ClientConn
-	// pending tracks hosts that are currently being connected to (prevents race condition)
-	pending map[string]*sync.Cond
-	// dialer is used to create network connections, supporting proxies
-	dialer proxy.Dialer
+var claudeOAuthRefreshHeaderOrder = []string{
+	"Accept",
+	"Content-Type",
+	"User-Agent",
+	"Content-Length",
+	"Accept-Encoding",
+	"Host",
+	"Connection",
 }
 
-// newUtlsRoundTripper creates a new utls-based round tripper with optional proxy support
+var claudeOAuthProfileHeaderOrder = []string{
+	"Accept",
+	"Content-Type",
+	"Authorization",
+	"Cache-Control",
+	"User-Agent",
+	"Accept-Encoding",
+	"Host",
+	"Connection",
+}
+
+func claudeOAuthRequestHeaderOrder(method, requestTarget string) []string {
+	if method == http.MethodGet && strings.HasPrefix(requestTarget, "/api/oauth/profile") {
+		return claudeOAuthProfileHeaderOrder
+	}
+	return claudeOAuthRefreshHeaderOrder
+}
+
+// claudeOAuthTLSClientHelloSpec reproduces the compact Node/OpenSSL profile
+// Claude Code 2.1.220 uses for Axios OAuth control-plane requests. Unlike the
+// inference profile, it advertises no ALPN extension and therefore uses
+// HTTP/1.1 without negotiating a protocol.
+func claudeOAuthTLSClientHelloSpec() *tls.ClientHelloSpec {
+	return &tls.ClientHelloSpec{
+		TLSVersMin:         tls.VersionTLS12,
+		TLSVersMax:         tls.VersionTLS13,
+		CompressionMethods: []uint8{0},
+		CipherSuites: []uint16{
+			tls.TLS_AES_128_GCM_SHA256,
+			tls.TLS_AES_256_GCM_SHA384,
+			tls.TLS_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		},
+		Extensions: []tls.TLSExtension{
+			&tls.SNIExtension{},
+			&tls.ExtendedMasterSecretExtension{},
+			&tls.RenegotiationInfoExtension{Renegotiation: tls.RenegotiateOnceAsClient},
+			&tls.SupportedCurvesExtension{Curves: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}},
+			&tls.SupportedPointsExtension{SupportedPoints: []byte{0}},
+			&tls.SessionTicketExtension{},
+			&tls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []tls.SignatureScheme{
+				tls.ECDSAWithP256AndSHA256,
+				tls.PSSWithSHA256,
+				tls.PKCS1WithSHA256,
+				tls.ECDSAWithP384AndSHA384,
+				tls.PSSWithSHA384,
+				tls.PKCS1WithSHA384,
+				tls.PSSWithSHA512,
+				tls.PKCS1WithSHA512,
+				tls.PKCS1WithSHA1,
+			}},
+			&tls.KeyShareExtension{KeyShares: []tls.KeyShare{{Group: tls.X25519}}},
+			&tls.PSKKeyExchangeModesExtension{Modes: []uint8{tls.PskModeDHE}},
+			&tls.SupportedVersionsExtension{Versions: []uint16{tls.VersionTLS13, tls.VersionTLS12}},
+		},
+	}
+}
+
+// utlsRoundTripper uses Claude Code's OAuth control-plane TLS and HTTP/1.1
+// profile while retaining net/http proxy, cancellation, response parsing and
+// connection lifecycle semantics.
+type utlsRoundTripper struct {
+	dialer    proxy.Dialer
+	transport *http.Transport
+}
+
 func newUtlsRoundTripper(cfg *config.SDKConfig) *utlsRoundTripper {
 	var dialer proxy.Dialer = proxy.Direct
 	if cfg != nil {
@@ -44,137 +118,65 @@ func newUtlsRoundTripper(cfg *config.SDKConfig) *utlsRoundTripper {
 		}
 	}
 
-	return &utlsRoundTripper{
-		connections: make(map[string]*http2.ClientConn),
-		pending:     make(map[string]*sync.Cond),
-		dialer:      dialer,
+	roundTripper := &utlsRoundTripper{dialer: dialer}
+	roundTripper.transport = &http.Transport{
+		ForceAttemptHTTP2: false,
+		DialTLSContext:    roundTripper.dialTLSContext,
 	}
+	return roundTripper
 }
 
-// getOrCreateConnection gets an existing connection or creates a new one.
-// It uses a per-host locking mechanism to prevent multiple goroutines from
-// creating connections to the same host simultaneously.
-func (t *utlsRoundTripper) getOrCreateConnection(host, addr string, handshakeTimeout time.Duration) (*http2.ClientConn, error) {
-	t.mu.Lock()
-
-	// Check if connection exists and is usable
-	if h2Conn, ok := t.connections[host]; ok && h2Conn.CanTakeNewRequest() {
-		t.mu.Unlock()
-		return h2Conn, nil
+func (t *utlsRoundTripper) dialTLSContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	var (
+		conn net.Conn
+		err  error
+	)
+	if contextDialer, ok := t.dialer.(proxy.ContextDialer); ok {
+		conn, err = contextDialer.DialContext(ctx, network, addr)
+	} else {
+		conn, err = t.dialer.Dial(network, addr)
 	}
-
-	// Check if another goroutine is already creating a connection
-	if cond, ok := t.pending[host]; ok {
-		// Wait for the other goroutine to finish
-		cond.Wait()
-		// Check if connection is now available
-		if h2Conn, ok := t.connections[host]; ok && h2Conn.CanTakeNewRequest() {
-			t.mu.Unlock()
-			return h2Conn, nil
-		}
-		// Connection still not available, we'll create one
-	}
-
-	// Mark this host as pending
-	cond := sync.NewCond(&t.mu)
-	t.pending[host] = cond
-	t.mu.Unlock()
-
-	// Create connection outside the lock
-	h2Conn, err := t.createConnection(host, addr, handshakeTimeout)
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Remove pending marker and wake up waiting goroutines
-	delete(t.pending, host)
-	cond.Broadcast()
-
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("claude oauth tls: dial upstream: %w", err)
 	}
 
-	// Store the new connection
-	t.connections[host] = h2Conn
-	return h2Conn, nil
+	host, _, errSplit := net.SplitHostPort(addr)
+	if errSplit != nil {
+		if errClose := conn.Close(); errClose != nil {
+			log.Debugf("claude oauth tls: close failed connection: %v", errClose)
+		}
+		return nil, fmt.Errorf("claude oauth tls: split upstream address: %w", errSplit)
+	}
+	tlsConn := tls.UClient(conn, &tls.Config{ServerName: host}, tls.HelloCustom)
+	if errPreset := tlsConn.ApplyPreset(claudeOAuthTLSClientHelloSpec()); errPreset != nil {
+		if errClose := tlsConn.Close(); errClose != nil {
+			log.Debugf("claude oauth tls: close connection after preset failure: %v", errClose)
+		}
+		return nil, fmt.Errorf("claude oauth tls: apply ClientHello: %w", errPreset)
+	}
+	handshakeCtx := ctx
+	if handshakeTimeout, _ := ctx.Value(claudeRefreshHandshakeTimeoutContextKey{}).(time.Duration); handshakeTimeout > 0 {
+		var cancelHandshake context.CancelFunc
+		handshakeCtx, cancelHandshake = context.WithTimeout(ctx, handshakeTimeout)
+		defer cancelHandshake()
+	}
+	if errHandshake := tlsConn.HandshakeContext(handshakeCtx); errHandshake != nil {
+		if errClose := tlsConn.Close(); errClose != nil {
+			log.Debugf("claude oauth tls: close connection after handshake failure: %v", errClose)
+		}
+		return nil, fmt.Errorf("claude oauth tls: handshake upstream: %w", errHandshake)
+	}
+	return httpwire.NewOrderedRequestConn(tlsConn, claudeOAuthRequestHeaderOrder), nil
 }
 
-// createConnection creates a new HTTP/2 connection with Chrome TLS fingerprint.
-// Chrome's TLS fingerprint is closer to Node.js/OpenSSL (which real Claude Code uses)
-// than Firefox, reducing the mismatch between TLS layer and HTTP headers.
-func (t *utlsRoundTripper) createConnection(host, addr string, handshakeTimeout time.Duration) (*http2.ClientConn, error) {
-	conn, errDial := t.dialer.Dial("tcp", addr)
-	if errDial != nil {
-		return nil, errDial
-	}
-
-	if handshakeTimeout > 0 {
-		if errSetDeadline := conn.SetDeadline(time.Now().Add(handshakeTimeout)); errSetDeadline != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("failed to set TLS handshake deadline: %w", errSetDeadline)
-		}
-	}
-
-	tlsConfig := &tls.Config{ServerName: host}
-	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloChrome_Auto)
-
-	if errHandshake := tlsConn.Handshake(); errHandshake != nil {
-		_ = conn.Close()
-		return nil, errHandshake
-	}
-	if handshakeTimeout > 0 {
-		if errClearDeadline := conn.SetDeadline(time.Time{}); errClearDeadline != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("failed to clear TLS handshake deadline: %w", errClearDeadline)
-		}
-	}
-
-	tr := &http2.Transport{}
-	h2Conn, errClientConn := tr.NewClientConn(tlsConn)
-	if errClientConn != nil {
-		_ = tlsConn.Close()
-		return nil, errClientConn
-	}
-
-	return h2Conn, nil
-}
-
-// RoundTrip implements http.RoundTripper
 func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	host := req.URL.Host
-	addr := host
-	if !strings.Contains(addr, ":") {
-		addr += ":443"
-	}
-
-	// Get hostname without port for TLS ServerName
-	hostname := req.URL.Hostname()
-
-	handshakeTimeout, _ := req.Context().Value(claudeRefreshHandshakeTimeoutContextKey{}).(time.Duration)
-	h2Conn, err := t.getOrCreateConnection(hostname, addr, handshakeTimeout)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := h2Conn.RoundTrip(req)
-	if err != nil {
-		// Connection failed, remove it from cache
-		t.mu.Lock()
-		if cached, ok := t.connections[hostname]; ok && cached == h2Conn {
-			delete(t.connections, hostname)
-		}
-		t.mu.Unlock()
-		return nil, err
-	}
-
-	return resp, nil
+	return t.transport.RoundTrip(req)
 }
 
-// NewAnthropicHttpClient creates an HTTP client that bypasses TLS fingerprinting
-// for Anthropic domains by using utls with Chrome fingerprint.
-// It accepts optional SDK configuration for proxy settings.
+func (t *utlsRoundTripper) CloseIdleConnections() {
+	t.transport.CloseIdleConnections()
+}
+
 func NewAnthropicHttpClient(cfg *config.SDKConfig) *http.Client {
-	return &http.Client{
-		Transport: newUtlsRoundTripper(cfg),
-	}
+	return &http.Client{Transport: newUtlsRoundTripper(cfg)}
 }

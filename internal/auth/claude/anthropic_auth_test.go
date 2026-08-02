@@ -152,7 +152,8 @@ func TestRefreshTokens_DeduplicatesConcurrentRefresh(t *testing.T) {
 	resetClaudeRefreshState()
 	defer resetClaudeRefreshState()
 
-	var calls int32
+	var tokenCalls int32
+	var profileCalls int32
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
@@ -160,22 +161,38 @@ func TestRefreshTokens_DeduplicatesConcurrentRefresh(t *testing.T) {
 	auth := &ClaudeAuth{
 		httpClient: &http.Client{
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				atomic.AddInt32(&calls, 1)
-				once.Do(func() { close(started) })
-				<-release
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body: io.NopCloser(strings.NewReader(`{
-						"access_token":"new-access",
-						"refresh_token":"new-refresh",
-						"token_type":"Bearer",
-						"expires_in":3600,
-						"account":{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","email_address":"shared@example.com"},
-						"organization":{"uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","name":"Shared Org"}
-					}`)),
-					Header:  make(http.Header),
-					Request: req,
-				}, nil
+				switch req.URL.String() {
+				case RefreshTokenURL:
+					atomic.AddInt32(&tokenCalls, 1)
+					once.Do(func() { close(started) })
+					<-release
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body: io.NopCloser(strings.NewReader(`{
+							"access_token":"new-access",
+							"refresh_token":"new-refresh",
+							"token_type":"Bearer",
+							"expires_in":3600,
+							"scope":"user:profile user:inference"
+						}`)),
+						Header:  make(http.Header),
+						Request: req,
+					}, nil
+				case ProfileURL:
+					atomic.AddInt32(&profileCalls, 1)
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body: io.NopCloser(strings.NewReader(`{
+							"account":{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","email":"shared@example.com"},
+							"organization":{"uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","name":"Shared Org"}
+						}`)),
+						Header:  make(http.Header),
+						Request: req,
+					}, nil
+				default:
+					t.Fatalf("unexpected OAuth request URL %s", req.URL)
+					return nil, nil
+				}
 			}),
 		},
 	}
@@ -193,7 +210,7 @@ func TestRefreshTokens_DeduplicatesConcurrentRefresh(t *testing.T) {
 
 	<-started
 	time.Sleep(20 * time.Millisecond)
-	if got := atomic.LoadInt32(&calls); got != 1 {
+	if got := atomic.LoadInt32(&tokenCalls); got != 1 {
 		t.Fatalf("expected concurrent refresh to share a single upstream call, got %d", got)
 	}
 	close(release)
@@ -213,8 +230,83 @@ func TestRefreshTokens_DeduplicatesConcurrentRefresh(t *testing.T) {
 			t.Fatalf("organization = %q/%q, want OAuth response organization", td.OrganizationUUID, td.OrganizationName)
 		}
 	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
+	if got := atomic.LoadInt32(&tokenCalls); got != 1 {
 		t.Fatalf("expected exactly 1 upstream refresh call, got %d", got)
+	}
+	if got := atomic.LoadInt32(&profileCalls); got != 1 {
+		t.Fatalf("expected exactly 1 OAuth profile call, got %d", got)
+	}
+}
+
+func TestRefreshTokensUsesNative220ControlPlaneShape(t *testing.T) {
+	resetClaudeRefreshState()
+	defer resetClaudeRefreshState()
+
+	const refreshToken = "placeholder-refresh"
+	auth := &ClaudeAuth{
+		httpClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.String() {
+				case RefreshTokenURL:
+					if req.Method != http.MethodPost {
+						t.Fatalf("refresh method = %s, want POST", req.Method)
+					}
+					body, errRead := io.ReadAll(req.Body)
+					if errRead != nil {
+						t.Fatal(errRead)
+					}
+					wantBody := `{"client_id":"` + ClientID + `","grant_type":"refresh_token","refresh_token":"` + refreshToken + `","scope":"` + ClaudeOAuthScope + `"}`
+					if got := string(body); got != wantBody {
+						t.Fatalf("refresh body = %q, want %q", got, wantBody)
+					}
+					wantHeaders := map[string]string{
+						"Accept":          "application/json, text/plain, */*",
+						"Content-Type":    "application/json",
+						"User-Agent":      "axios/1.15.2",
+						"Accept-Encoding": "gzip, compress, deflate, br",
+						"Connection":      "close",
+					}
+					for name, want := range wantHeaders {
+						if got := req.Header.Get(name); got != want {
+							t.Fatalf("%s = %q, want %q", name, got, want)
+						}
+					}
+					if !req.Close {
+						t.Fatal("refresh request Close = false, want true")
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body:       io.NopCloser(strings.NewReader(`{"access_token":"new-access","expires_in":3600}`)),
+						Header:     make(http.Header),
+						Request:    req,
+					}, nil
+				case ProfileURL:
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body: io.NopCloser(strings.NewReader(`{
+							"account":{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","email":"shared@example.com"},
+							"organization":{"uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","name":"Shared Org"}
+						}`)),
+						Header:  make(http.Header),
+						Request: req,
+					}, nil
+				default:
+					t.Fatalf("unexpected OAuth request URL %s", req.URL)
+					return nil, nil
+				}
+			}),
+		},
+	}
+
+	tokenData, errRefresh := auth.RefreshTokens(t.Context(), refreshToken)
+	if errRefresh != nil {
+		t.Fatalf("RefreshTokens() error = %v", errRefresh)
+	}
+	if tokenData.RefreshToken != refreshToken {
+		t.Fatalf("refresh token fallback = %q, want original placeholder", tokenData.RefreshToken)
+	}
+	if tokenData.AccountUUID == "" || tokenData.Email == "" || tokenData.OrganizationUUID == "" {
+		t.Fatalf("profile identity was not populated: %#v", tokenData)
 	}
 }
 
@@ -227,6 +319,22 @@ func TestFetchOAuthProfile(t *testing.T) {
 				}
 				if got := req.Header.Get("Authorization"); got != "Bearer test-access" {
 					t.Fatalf("Authorization = %q, want bearer token", got)
+				}
+				wantHeaders := map[string]string{
+					"Accept":          "application/json, text/plain, */*",
+					"Content-Type":    "application/json",
+					"Cache-Control":   "no-cache",
+					"User-Agent":      "axios/1.15.2",
+					"Accept-Encoding": "gzip, compress, deflate, br",
+					"Connection":      "close",
+				}
+				for name, want := range wantHeaders {
+					if got := req.Header.Get(name); got != want {
+						t.Fatalf("%s = %q, want %q", name, got, want)
+					}
+				}
+				if !req.Close {
+					t.Fatal("profile request Close = false, want true")
 				}
 				return &http.Response{
 					StatusCode: http.StatusOK,
@@ -255,6 +363,7 @@ func TestFetchOAuthProfile(t *testing.T) {
 
 func TestUpdateTokenStoragePreservesAccountWhenRefreshOmitsIt(t *testing.T) {
 	storage := &ClaudeTokenStorage{
+		Email:            "user@example.com",
 		AccountUUID:      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		OrganizationUUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 		OrganizationName: "Example Org",
@@ -262,10 +371,12 @@ func TestUpdateTokenStoragePreservesAccountWhenRefreshOmitsIt(t *testing.T) {
 	(&ClaudeAuth{}).UpdateTokenStorage(storage, &ClaudeTokenData{
 		AccessToken:  "new-access",
 		RefreshToken: "new-refresh",
-		Email:        "user@example.com",
 		Expire:       "2099-01-01T00:00:00Z",
 	})
 
+	if storage.Email != "user@example.com" {
+		t.Fatalf("email = %q, want preserved", storage.Email)
+	}
 	if storage.AccountUUID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
 		t.Fatalf("account UUID = %q, want preserved", storage.AccountUUID)
 	}

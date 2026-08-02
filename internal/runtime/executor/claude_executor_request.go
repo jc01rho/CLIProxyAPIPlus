@@ -16,6 +16,7 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -35,6 +36,8 @@ const (
 	claudeContext1MBeta          = "context-1m-2025-08-07"
 	claudeMidConvSystemBeta      = "mid-conversation-system-2026-04-07"
 	claudeAdvancedToolUseBeta    = "advanced-tool-use-2025-11-20"
+	claudeAdvisorToolBeta        = "advisor-tool-2026-03-01"
+	claudeCacheDiagnosisBeta     = "cache-diagnosis-2026-04-07"
 	claudeEffortBeta             = "effort-2025-11-24"
 	claudeServerSideFallbackBeta = "server-side-fallback-2026-06-01"
 	claudeFallbackCreditBeta     = "fallback-credit-2026-06-01"
@@ -82,14 +85,14 @@ var claudeCodeTrailingBetas = []string{
 //	 7 context-management-2025-06-27
 //	 8 prompt-caching-scope-2026-01-05
 //	 9 mid-conversation-system-2026-04-07  models accepting a role=system turn
-//	10 advanced-tool-use-2025-11-20        requests declaring tools
+//	10 advisor-tool-2026-03-01             current OAuth tool profile
+//	   advanced-tool-use-2025-11-20       captured API-key tool profile
 //	11 effort-2025-11-24
 //	12 server-side-fallback-2026-06-01
 //	13 fallback-credit-2026-06-01
-//	14 extended-cache-ttl-2025-04-11      OAuth credentials only, always last
-//
-// fast-mode-2026-02-01 has no captured position; it is emitted just before the
-// OAuth trailer so the one measured invariant, extended-cache-ttl last, holds.
+//	14 fast-mode-2026-02-01               speed:fast requests only
+//	15 extended-cache-ttl-2025-04-11      OAuth credentials only
+//	16 cache-diagnosis-2026-04-07         current OAuth profile trailer
 //
 // An empty body keeps the optimistic role=system default, matching the cloaking
 // policy for unknown and future model IDs.
@@ -107,9 +110,16 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 		betas = append(betas, claudeMidConvSystemBeta)
 	}
 	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() && len(tools.Array()) > 0 {
-		betas = append(betas, claudeAdvancedToolUseBeta)
+		if oauthToken {
+			betas = append(betas, claudeAdvisorToolBeta)
+		} else {
+			betas = append(betas, claudeAdvancedToolUseBeta)
+		}
 	}
 	betas = append(betas, claudeEffortBeta)
+	if oauthToken && !requested[claudeFallbackCreditBeta] {
+		betas = append(betas, claudeFallbackCreditBeta)
+	}
 	for _, beta := range claudeCodeTrailingBetas {
 		if requested[beta] {
 			betas = append(betas, beta)
@@ -119,7 +129,7 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 		betas = append(betas, claudeFastModeBeta)
 	}
 	if oauthToken {
-		betas = append(betas, claudeExtendedCacheTTLBeta)
+		betas = append(betas, claudeExtendedCacheTTLBeta, claudeCacheDiagnosisBeta)
 	}
 	return strings.Join(betas, ",")
 }
@@ -149,8 +159,40 @@ var claudeCountTokensBetas = []string{
 	claudeTokenCountingBeta,
 }
 
-// withClaudeOAuthCredentialBetas restores the two betas that describe the
-// upstream credential rather than the caller's capabilities.
+func claudeCountTokensBetasForCredential(oauthToken bool) string {
+	betas := make([]string, 0, len(claudeCountTokensBetas)+1)
+	betas = append(betas, claudeCodeBeta)
+	if oauthToken {
+		betas = append(betas, claudeOAuthBeta)
+	}
+	betas = append(betas, claudeCountTokensBetas[1:]...)
+	return strings.Join(betas, ",")
+}
+
+func withClaudeCountTokensOAuthBeta(betas string) string {
+	parts := make([]string, 0, len(claudeCountTokensBetas)+1)
+	seen := make(map[string]bool)
+	for _, beta := range strings.Split(betas, ",") {
+		if beta = strings.TrimSpace(beta); beta != "" && !seen[beta] {
+			parts = append(parts, beta)
+			seen[beta] = true
+		}
+	}
+	if seen[claudeOAuthBeta] {
+		return strings.Join(parts, ",")
+	}
+	insertAt := 0
+	if len(parts) > 0 && parts[0] == claudeCodeBeta {
+		insertAt = 1
+	}
+	parts = append(parts, "")
+	copy(parts[insertAt+1:], parts[insertAt:])
+	parts[insertAt] = claudeOAuthBeta
+	return strings.Join(parts, ",")
+}
+
+// withClaudeOAuthCredentialBetas restores the credential-scoped betas that
+// describe the selected upstream OAuth account rather than caller capability.
 //
 // A confirmed native client authenticates to CPA with whatever key the user
 // configured and cannot know that CPA will select an OAuth credential upstream,
@@ -181,7 +223,20 @@ func withClaudeOAuthCredentialBetas(betas string) string {
 		parts[insertAt] = claudeOAuthBeta
 	}
 	if !seen[claudeExtendedCacheTTLBeta] {
-		parts = append(parts, claudeExtendedCacheTTLBeta)
+		insertAt := len(parts)
+		for index, beta := range parts {
+			if beta == claudeCacheDiagnosisBeta {
+				insertAt = index
+				break
+			}
+		}
+		parts = append(parts, "")
+		copy(parts[insertAt+1:], parts[insertAt:])
+		parts[insertAt] = claudeExtendedCacheTTLBeta
+		seen[claudeExtendedCacheTTLBeta] = true
+	}
+	if !seen[claudeCacheDiagnosisBeta] {
+		parts = append(parts, claudeCacheDiagnosisBeta)
 	}
 	return strings.Join(parts, ",")
 }
@@ -494,12 +549,16 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	countTokens := r.URL != nil && strings.HasSuffix(r.URL.Path, "/count_tokens")
 	baseBetas := claudeCodeCLIBetas(body, claudeRequestedBetas(incomingBetas, extraBetas), oauthToken)
 	if countTokens {
-		baseBetas = strings.Join(claudeCountTokensBetas, ",")
+		baseBetas = claudeCountTokensBetasForCredential(oauthToken)
 	}
 	if confirmedClaudeCode && incomingBetas != "" {
 		baseBetas = incomingBetas
-		if oauthToken && !countTokens {
-			baseBetas = withClaudeOAuthCredentialBetas(baseBetas)
+		if oauthToken {
+			if countTokens {
+				baseBetas = withClaudeCountTokensOAuthBeta(baseBetas)
+			} else {
+				baseBetas = withClaudeOAuthCredentialBetas(baseBetas)
+			}
 		}
 	}
 	existingSet := make(map[string]bool)
@@ -526,12 +585,6 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		for _, beta := range strings.Split(incomingBetas, ",") {
 			appendBeta(beta)
 		}
-	}
-	// The OAuth betas have known positions on /v1/messages and are placed by
-	// claudeCodeCLIBetas. count_tokens was only captured over an API key, so its
-	// OAuth shape keeps the previous appended form until it can be measured.
-	if oauthToken && countTokens {
-		appendBeta(claudeOAuthBeta)
 	}
 	// Betas lifted out of the body follow the same policy as header-supplied ones.
 	// Known betas already reached the assembled baseline through the requested map,
@@ -709,10 +762,8 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 		apiKey = a.Attributes["api_key"]
 		baseURL = a.Attributes["base_url"]
 	}
-	if apiKey == "" && a.Metadata != nil {
-		if v, ok := a.Metadata["access_token"].(string); ok {
-			apiKey = v
-		}
+	if apiKey == "" {
+		apiKey = claudeauth.ReadMetadataString(&a.Metadata, "access_token")
 	}
 	return
 }

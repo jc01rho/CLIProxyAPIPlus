@@ -66,6 +66,36 @@ func TestClaudeExecutorPrepareRequestAuthIsRaceFreeOnSharedCredential(t *testing
 // TestClaudeExecutorSharedCredentialMetadataMixedAccess drives the request-path
 // readers against the profile writer at the same time, which is the shape that
 // produced the reported data races.
+func TestClaudeExecutorSharedCredentialMetadataReadersUseOneLock(t *testing.T) {
+	auth := &cliproxyauth.Auth{ID: "claude-race-all-readers", Metadata: map[string]any{
+		"access_token":          "sk-ant-oat-race-probe",
+		"cloak_mode":            "always",
+		"cloak_sensitive_words": "secret",
+	}}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if i%3 == 0 {
+				claudeauth.StoreMetadataValue(&auth.Metadata, "access_token", "sk-ant-oat-race-probe")
+				claudeauth.StoreMetadataValue(&auth.Metadata, "cloak_mode", "always")
+				return
+			}
+			if i%3 == 1 {
+				_, _ = claudeCreds(auth)
+				return
+			}
+			_, _, _, _ = getCloakConfigFromAuth(auth)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+}
+
 func TestClaudeExecutorSharedCredentialMetadataMixedAccess(t *testing.T) {
 	executor := NewClaudeExecutor(&config.Config{})
 	executor.oauthProfileFetcher = func(context.Context, *cliproxyauth.Auth, string) (*claudeauth.OAuthProfile, error) {

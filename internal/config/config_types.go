@@ -107,6 +107,7 @@ type ClaudeHeaderDefaults struct {
 	OS                     string `yaml:"os" json:"os"`
 	Arch                   string `yaml:"arch" json:"arch"`
 	Timeout                string `yaml:"timeout" json:"timeout"`
+	Timezone               string `yaml:"timezone" json:"timezone"`
 	StabilizeDeviceProfile *bool  `yaml:"stabilize-device-profile,omitempty" json:"stabilize-device-profile,omitempty"`
 }
 

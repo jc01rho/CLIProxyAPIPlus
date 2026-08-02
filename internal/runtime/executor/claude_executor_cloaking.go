@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -65,10 +66,8 @@ func getCloakConfigFromAuth(auth *cliproxyauth.Auth) (cloakMode string, strictMo
 				return value
 			}
 		}
-		if auth.Metadata != nil {
-			if value, ok := auth.Metadata[key].(string); ok {
-				return strings.TrimSpace(value)
-			}
+		if value := claudeauth.ReadMetadataString(&auth.Metadata, key); value != "" {
+			return strings.TrimSpace(value)
 		}
 		return ""
 	}
@@ -213,6 +212,10 @@ func checkSystemInstructionsWithMode(payload []byte, strictMode bool) []byte {
 // Claude models give it operator-level authority without changing the cached
 // top-level prefix.
 func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, cchSigning bool, version, entrypoint, workload string) []byte {
+	return checkSystemInstructionsWithSigningModeAt(payload, strictMode, cchSigning, version, entrypoint, workload, time.Now())
+}
+
+func checkSystemInstructionsWithSigningModeAt(payload []byte, strictMode bool, cchSigning bool, version, entrypoint, workload string, now time.Time) []byte {
 	system := gjson.GetBytes(payload, "system")
 	messageText := claudeBillingFingerprintMessageText(payload)
 
@@ -221,12 +224,12 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, cch
 	agentBlock := buildTextBlock(claudeCodeCLIIdentity, map[string]string{"type": "ephemeral"})
 	payload, _ = sjson.SetRawBytes(payload, "system", []byte("["+billingBlock+","+agentBlock+"]"))
 	if strictMode {
-		return injectClaudeCodeCurrentDate(payload, time.Now())
+		return injectClaudeCodeCurrentDate(payload, now)
 	}
 
 	forwardedSystem := collectForwardedClaudeSystemPrompt(system)
 	if strings.TrimSpace(forwardedSystem) == "" {
-		return injectClaudeCodeCurrentDate(payload, time.Now())
+		return injectClaudeCodeCurrentDate(payload, now)
 	}
 	if claudeUsesLegacySystemReminder(payload) {
 		payload = prependClaudeSystemReminderToFirstUserMessage(payload, forwardedSystem)
@@ -236,7 +239,7 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, cch
 		// stay on the user-reminder compatibility path.
 		payload = insertClaudeMidConversationSystemMessage(payload, forwardedSystem)
 	}
-	return injectClaudeCodeCurrentDate(payload, time.Now())
+	return injectClaudeCodeCurrentDate(payload, now)
 }
 
 // claudeLegacySystemReminderModels lists the official Anthropic model IDs and
@@ -429,6 +432,42 @@ func claudeMessageContentText(content gjson.Result) string {
 func claudeCodeLocalDate(now time.Time) string {
 	year, month, day := now.Date()
 	return fmt.Sprintf("%04d-%02d-%02d", year, int(month), day)
+}
+
+func claudeCodeCurrentTime(cfg *config.Config, auth *cliproxyauth.Auth) time.Time {
+	return time.Now().In(claudeCodeTimezone(cfg, auth))
+}
+
+func claudeCodeTimezone(cfg *config.Config, auth *cliproxyauth.Auth) *time.Location {
+	if timezone := claudeCredentialTimezone(auth); timezone != "" {
+		if location, errLocation := time.LoadLocation(timezone); errLocation == nil {
+			return location
+		}
+	}
+	if cfg == nil {
+		return time.Local
+	}
+	timezone := strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timezone)
+	if timezone == "" {
+		return time.Local
+	}
+	location, errLocation := time.LoadLocation(timezone)
+	if errLocation != nil {
+		return time.Local
+	}
+	return location
+}
+
+func claudeCredentialTimezone(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Attributes != nil {
+		if timezone := strings.TrimSpace(auth.Attributes["timezone"]); timezone != "" {
+			return timezone
+		}
+	}
+	return strings.TrimSpace(claudeauth.ReadMetadataString(&auth.Metadata, "timezone"))
 }
 
 func claudeCodeCurrentDateReminder(now time.Time) string {
@@ -639,7 +678,7 @@ func applyCloaking(
 
 	billingVersion := helps.DefaultClaudeVersion(cfg)
 	workload := getWorkloadFromContext(ctx)
-	payload = checkSystemInstructionsWithSigningMode(payload, settings.strictMode, cchSigning, billingVersion, "cli", workload)
+	payload = checkSystemInstructionsWithSigningModeAt(payload, settings.strictMode, cchSigning, billingVersion, "cli", workload, claudeCodeCurrentTime(cfg, auth))
 
 	// OAuth metadata is rewritten after credential selection and all remaining
 	// body mutations. Non-OAuth cloaking keeps the legacy generated identity.

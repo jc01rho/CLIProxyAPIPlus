@@ -447,6 +447,7 @@ nonstream-keepalive-interval: 0
 #   os: "MacOS"
 #   arch: "arm64"
 #   timeout: "600"
+#   timezone: "Asia/Singapore"  # fallback IANA timezone for cloaked currentDate; a credential JSON "timezone" takes priority
 #   stabilize-device-profile: false  # optional, default false; set true to enable per-auth/API-key fingerprint pinning
 
 # Default headers for Codex OAuth model requests.

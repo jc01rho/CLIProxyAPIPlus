@@ -78,8 +78,12 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	// Only the Messages endpoint on Anthropic itself was captured; count_tokens
 	// keeps its own shape and other gateways never see this field.
+	diagnosticsState := claudeDiagnosticsRequestState{}
 	if cloaked && isAnthropicUpstreamBase(baseURL) {
 		body = injectClaudeCodeContextManagement(body)
+		if oauthToken {
+			body, diagnosticsState = injectClaudeDiagnostics(body, apiKey, claudeSessionID)
+		}
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
@@ -125,8 +129,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 			return resp, fmt.Errorf("apply Claude credential metadata: %w", err)
 		}
 	}
+	fallbackBilling := ""
 	if cchSigning {
-		fallbackBilling := claudeCCHFallbackBillingHeader(ctx, e.cfg, bodyForUpstream, claudeCodeDetection.Entrypoint)
+		fallbackBilling = claudeCCHFallbackBillingHeader(ctx, e.cfg, bodyForUpstream, claudeCodeDetection.Entrypoint)
 		bodyForUpstream, err = finalizeAnthropicMessagesBodyCCH(bodyForUpstream, fallbackBilling)
 		if err != nil {
 			return resp, fmt.Errorf("finalize Claude CCH: %w", err)
@@ -140,12 +145,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, upstreamStream, extraBetas, bodyForUpstream, e.cfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
 		return resp, errHeaders
 	}
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
+	authID, authLabel, authType, authValue := claudeAuthLogIdentity(auth)
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -166,6 +166,22 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	httpResp, bodyForUpstream, _, err = e.retryClaudeFastModeRefusal(httpReq, httpClient, httpResp, claudeFastFallbackOptions{
+		auth:                     auth,
+		apiKey:                   apiKey,
+		stream:                   upstreamStream,
+		extraBetas:               extraBetas,
+		body:                     bodyForUpstream,
+		fallbackBilling:          fallbackBilling,
+		cchSigning:               cchSigning,
+		incomingHeaders:          incomingHeaders,
+		confirmedNative:          confirmedClaudeCode && !cloaked,
+		sessionID:                claudeSessionID,
+		allowEntitlementFallback: oauthToken && cloaked && isAnthropicUpstreamBase(baseURL),
+	})
+	if err != nil {
+		return resp, err
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		// Decompress error responses — pass the Content-Encoding value (may be empty)
 		// and let decodeResponseBody handle both header-declared and magic-byte-detected
@@ -216,6 +232,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 			helps.RecordAPIResponseError(ctx, e.cfg, errValidate)
 			return resp, errValidate
 		}
+		commitClaudeDiagnostics(diagnosticsState, claudeMessageIDFromSSE(data))
 		lines := bytes.Split(data, []byte("\n"))
 		for i, line := range lines {
 			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
@@ -225,6 +242,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 		data = bytes.Join(lines, []byte("\n"))
 	} else {
+		commitClaudeDiagnostics(diagnosticsState, claudeMessageIDFromResponse(data))
 		reporter.Publish(ctx, helps.ParseClaudeUsage(data))
 		data = restoreClaudeOAuthToolNamesFromResponse(data, oauthToolNamesReverseMap)
 	}

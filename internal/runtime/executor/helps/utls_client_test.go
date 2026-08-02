@@ -119,6 +119,33 @@ func TestClaudeCodeTLSClientHelloSpecMatches220Capture(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeRequestHeaderOrderMatchesNative220Capture(t *testing.T) {
+	t.Parallel()
+
+	if got, want := claudeCodeRequestHeaderOrder(http.MethodPost, "/v1/messages?beta=true"), claudeCodeMessagesHeaderOrder; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Messages header order = %v, want %v", got, want)
+	}
+	if got, want := claudeCodeRequestHeaderOrder(http.MethodPost, "/v1/messages/count_tokens?beta=true"), claudeCodeCountTokensHeaderOrder; !reflect.DeepEqual(got, want) {
+		t.Fatalf("count_tokens header order = %v, want %v", got, want)
+	}
+	for _, name := range claudeCodeCountTokensHeaderOrder {
+		if name == "X-Stainless-Timeout" {
+			t.Fatal("count_tokens header order unexpectedly contains X-Stainless-Timeout")
+		}
+	}
+}
+
+func TestCachedClaudeCodeRoundTripperReusesTransport(t *testing.T) {
+	t.Parallel()
+
+	const proxyURL = "http://127.0.0.1:29653"
+	first := cachedClaudeCodeRoundTripper(proxyURL)
+	second := cachedClaudeCodeRoundTripper(proxyURL)
+	if first != second {
+		t.Fatal("Claude Code transport cache returned different transports for one proxy")
+	}
+}
+
 func TestClaudeCodeTLSClientHelloCapture(t *testing.T) {
 	proxyURL := os.Getenv("CPA_TLS_FP_PROXY")
 	if proxyURL == "" {

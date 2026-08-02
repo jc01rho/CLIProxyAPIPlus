@@ -115,9 +115,9 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 	claudeauth.EnsureMetadataMap(&auth.Metadata)
 	claudeauth.StoreMetadataValue(&auth.Metadata, "access_token", td.AccessToken)
 	claudeauth.StoreMetadataString(&auth.Metadata, "refresh_token", td.RefreshToken)
-	// email is written unconditionally to preserve the previous reset-on-refresh
-	// behaviour; the remaining optional fields keep their prior value when absent.
-	claudeauth.StoreMetadataValue(&auth.Metadata, "email", td.Email)
+	// Profile fields are optional when token rotation succeeds but the follow-up
+	// profile lookup fails. Never erase the previously resolved credential identity.
+	claudeauth.StoreMetadataString(&auth.Metadata, "email", td.Email)
 	claudeauth.StoreMetadataString(&auth.Metadata, "account_uuid", td.AccountUUID)
 	claudeauth.StoreMetadataString(&auth.Metadata, "organization_uuid", td.OrganizationUUID)
 	claudeauth.StoreMetadataString(&auth.Metadata, "organization_name", td.OrganizationName)

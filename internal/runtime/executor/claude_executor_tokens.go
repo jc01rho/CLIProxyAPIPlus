@@ -113,6 +113,10 @@ func validateClaudeTokenCountRequest(body []byte) error {
 
 // countTokensUpstream preserves native token counting for Claude-compatible
 // providers that expose their own count_tokens endpoint.
+func shouldFinalizeClaudeCountTokensCCH(cchSigning, directAnthropic bool) bool {
+	return cchSigning && !directAnthropic
+}
+
 func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	upstreamModel := e.upstreamModel(baseModel)
@@ -151,19 +155,25 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 		body = rebuildMidSystemMessagesToTopLevel(body)
 	}
 
+	directAnthropic := isAnthropicUpstreamBase(baseURL)
 	var cloaked bool
-	var errCloaking error
-	body, cloaked, errCloaking = applyCloaking(
-		ctx,
-		e.cfg,
-		auth,
-		body,
-		apiKey,
-		confirmedClaudeCode,
-		cchSigning,
-	)
-	if errCloaking != nil {
-		return cliproxyexecutor.Response{}, errCloaking
+	if directAnthropic {
+		policy, _ := resolveClaudeWirePolicy(e.cfg, auth, apiKey, confirmedClaudeCode)
+		cloaked = policy.Cloak
+	} else {
+		var errCloaking error
+		body, cloaked, errCloaking = applyCloaking(
+			ctx,
+			e.cfg,
+			auth,
+			body,
+			apiKey,
+			confirmedClaudeCode,
+			cchSigning,
+		)
+		if errCloaking != nil {
+			return cliproxyexecutor.Response{}, errCloaking
+		}
 	}
 
 	// Keep count_tokens requests compatible with Anthropic cache-control constraints too.
@@ -183,10 +193,12 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	// Claude Code never sends metadata on count_tokens, and Anthropic rejects the
 	// field outright there ("metadata: Extra inputs are not permitted"). The
 	// Messages path still carries the credential identity; this endpoint must not.
-	if isAnthropicUpstreamBase(baseURL) {
+	if directAnthropic {
 		body, _ = sjson.DeleteBytes(body, "metadata")
+		body, _ = sjson.DeleteBytes(body, "context_management")
+		body, _ = sjson.DeleteBytes(body, "diagnostics")
 	}
-	if cchSigning {
+	if shouldFinalizeClaudeCountTokensCCH(cchSigning, directAnthropic) {
 		fallbackBilling := claudeCCHFallbackBillingHeader(ctx, e.cfg, body, claudeCodeDetection.Entrypoint)
 		var errCCH error
 		body, errCCH = finalizeAnthropicMessagesBodyCCH(body, fallbackBilling)

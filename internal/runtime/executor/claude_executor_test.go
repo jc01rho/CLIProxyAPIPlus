@@ -1855,6 +1855,29 @@ func TestClaudeExecutor_CountTokensExcludesInvalidOpenAIThinking(t *testing.T) {
 	}
 }
 
+func TestClaudeCountTokensBetasForCredentialMatchesNativeOAuth220(t *testing.T) {
+	want := "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,token-counting-2024-11-01"
+	if got := claudeCountTokensBetasForCredential(true); got != want {
+		t.Fatalf("OAuth count_tokens betas = %q, want %q", got, want)
+	}
+	wantAPIKey := "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,token-counting-2024-11-01"
+	if got := claudeCountTokensBetasForCredential(false); got != wantAPIKey {
+		t.Fatalf("API-key count_tokens betas = %q, want %q", got, wantAPIKey)
+	}
+	if got := withClaudeCountTokensOAuthBeta(wantAPIKey); got != want {
+		t.Fatalf("confirmed-client count_tokens betas = %q, want %q", got, want)
+	}
+}
+
+func TestShouldFinalizeClaudeCountTokensCCHSkipsDirectAnthropic(t *testing.T) {
+	if shouldFinalizeClaudeCountTokensCCH(true, true) {
+		t.Fatal("direct Anthropic count_tokens must not receive CPA CCH")
+	}
+	if !shouldFinalizeClaudeCountTokensCCH(true, false) {
+		t.Fatal("custom-gateway count_tokens should retain existing CCH behavior")
+	}
+}
+
 func TestClaudeExecutor_CountTokensOAuthUsesUpstreamCLIShape(t *testing.T) {
 	var upstreamAlias string
 	var upstreamBody []byte
@@ -1909,7 +1932,7 @@ func TestClaudeExecutor_CountTokensOAuthUsesUpstreamCLIShape(t *testing.T) {
 		t.Fatalf("count_tokens User-Agent = %q, want CLI identity", got)
 	}
 	// count_tokens carries its own much smaller profile, not the inference baseline.
-	wantBetas := strings.Join(claudeCountTokensBetas, ",") + "," + claudeOAuthBeta
+	wantBetas := claudeCountTokensBetasForCredential(true)
 	if got := upstreamHeaders.Get("Anthropic-Beta"); got != wantBetas {
 		t.Fatalf("count_tokens Anthropic-Beta = %q, want %q", got, wantBetas)
 	}
@@ -2117,6 +2140,86 @@ func TestClaudeExecutor_CountTokensUpstreamConfirmedVSCodePreservesCustomTool(t 
 	}
 	if upstreamName != "search_web" {
 		t.Fatalf("confirmed VSCode count_tokens tool name = %q, want unchanged", upstreamName)
+	}
+}
+
+func TestClaudeExecutor_CountTokensCloakMatchesMeasuredDirectAnthropicShape(t *testing.T) {
+	var upstreamBody []byte
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		var errRead error
+		upstreamBody, errRead = io.ReadAll(req.Body)
+		if errRead != nil {
+			t.Fatal(errRead)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"input_tokens":34}`)), Request: req}, nil
+	})
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-oat-cloaked-count-shape"}}
+	payload := []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":[{"type":"text","text":"x"}]}],"tools":[{"name":"search_web","input_schema":{"type":"object"}}],"metadata":{"user_id":"remove"},"context_management":{"edits":[]},"diagnostics":{"previous_message_id":"remove"}}`)
+	_, errCount := NewClaudeExecutor(&config.Config{}).countTokensUpstream(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: payload}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+	if errCount != nil {
+		t.Fatalf("countTokensUpstream() error = %v", errCount)
+	}
+	if got := gjson.GetBytes(upstreamBody, "system"); got.Exists() {
+		t.Fatalf("cloaked direct count system = %s, want absent", got.Raw)
+	}
+	for _, field := range []string{"metadata", "context_management", "diagnostics", "betas"} {
+		if got := gjson.GetBytes(upstreamBody, field); got.Exists() {
+			t.Fatalf("cloaked direct count %s = %s, want absent", field, got.Raw)
+		}
+	}
+	if got := gjson.GetBytes(upstreamBody, "tools.0.name").String(); !helps.IsClaudeMCPToolName(got) {
+		t.Fatalf("cloaked direct count tool = %q, want OAuth MCP alias", got)
+	}
+}
+
+func TestClaudeExecutor_CountTokensConfirmedNativePreservesMeasuredOAuthBody(t *testing.T) {
+	var upstreamBody []byte
+	var upstreamHeaders http.Header
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		var errRead error
+		upstreamBody, errRead = io.ReadAll(req.Body)
+		if errRead != nil {
+			t.Fatal(errRead)
+		}
+		upstreamHeaders = req.Header.Clone()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"input_tokens":34}`)),
+			Request:    req,
+		}, nil
+	})
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-oat-native-count-shape"}}
+	payload := []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":[{"type":"text","text":"x"}]}],"tools":[]}`)
+	incomingBetas := "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,token-counting-2024-11-01"
+	wantBetas := "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,token-counting-2024-11-01"
+	_, errCount := executor.countTokensUpstream(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: payload}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+		Headers: http.Header{
+			"User-Agent":     {"claude-cli/2.1.220 (external, cli)"},
+			"X-App":          {"cli"},
+			"Anthropic-Beta": {incomingBetas},
+		},
+	})
+	if errCount != nil {
+		t.Fatalf("countTokensUpstream() error = %v", errCount)
+	}
+	if !bytes.Equal(upstreamBody, payload) {
+		t.Fatalf("confirmed native count body changed\n got: %s\nwant: %s", upstreamBody, payload)
+	}
+	for _, field := range []string{"system", "metadata", "context_management", "betas"} {
+		if got := gjson.GetBytes(upstreamBody, field); got.Exists() {
+			t.Fatalf("confirmed native count body %s = %s, want absent", field, got.Raw)
+		}
+	}
+	if got := strings.Join(upstreamHeaders["anthropic-beta"], ","); got != wantBetas {
+		t.Fatalf("confirmed native count beta = %q, want %q", got, wantBetas)
+	}
+	if got := upstreamHeaders.Get("X-Stainless-Timeout"); got != "" {
+		t.Fatalf("confirmed native count timeout = %q, want absent", got)
 	}
 }
 
@@ -3373,6 +3476,26 @@ func TestClaudeCodeLocalDateMatchesNativeLocalCalendarAlgorithm(t *testing.T) {
 	wantReminder := "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-08-01.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
 	if got := claudeCodeCurrentDateReminder(instant.In(kiritimati)); got != wantReminder {
 		t.Fatalf("currentDate reminder = %q, want exact native text %q", got, wantReminder)
+	}
+}
+
+func TestClaudeCodeTimezoneUsesCredentialThenConfiguredProfile(t *testing.T) {
+	instant := time.Date(2026, time.August, 2, 1, 30, 0, 0, time.UTC)
+	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{Timezone: "Asia/Tokyo"}}
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{"timezone": "Pacific/Honolulu"}}
+	if got := claudeCodeLocalDate(instant.In(claudeCodeTimezone(cfg, auth))); got != "2026-08-01" {
+		t.Fatalf("credential currentDate = %q, want 2026-08-01", got)
+	}
+	if got := claudeCodeLocalDate(instant.In(claudeCodeTimezone(cfg, nil))); got != "2026-08-02" {
+		t.Fatalf("configured currentDate = %q, want 2026-08-02", got)
+	}
+	invalidAuth := &cliproxyauth.Auth{Metadata: map[string]any{"timezone": "not/a-timezone"}}
+	if got := claudeCodeTimezone(cfg, invalidAuth).String(); got != "Asia/Tokyo" {
+		t.Fatalf("invalid credential timezone = %q, want config fallback", got)
+	}
+	invalid := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{Timezone: "not/a-timezone"}}
+	if got := claudeCodeTimezone(invalid, nil); got != time.Local {
+		t.Fatalf("invalid timezone location = %v, want time.Local", got)
 	}
 }
 
@@ -4741,14 +4864,15 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 			want: constants + ",effort-2025-11-24",
 		},
 		{
-			name:  "oauth sits second and extended-cache-ttl last",
+			name:  "oauth uses the current advisor fallback and cache diagnosis profile",
 			body:  `{"model":"claude-opus-4-6","tools":[{"name":"Read"}]}`,
 			oauth: true,
 			want: "claude-code-20250219,oauth-2025-04-20," +
 				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
 				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20," +
-				"effort-2025-11-24,extended-cache-ttl-2025-04-11",
+				"prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01," +
+				"effort-2025-11-24,fallback-credit-2026-06-01," +
+				"extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
 		},
 		{
 			name:  "oauth precedes context-1m",
@@ -4763,9 +4887,9 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
 				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
 				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07," +
-				"advanced-tool-use-2025-11-20,effort-2025-11-24," +
+				"advisor-tool-2026-03-01,effort-2025-11-24," +
 				"server-side-fallback-2026-06-01,fallback-credit-2026-06-01," +
-				"extended-cache-ttl-2025-04-11",
+				"extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
 		},
 		{
 			name: "api key path sends neither oauth beta",
