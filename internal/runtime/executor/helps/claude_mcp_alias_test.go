@@ -45,11 +45,11 @@ func TestClaudeMCPToolAlias(t *testing.T) {
 	if !IsClaudeMCPToolName(first) {
 		t.Fatalf("generated alias %q is not a valid MCP tool name", first)
 	}
-	if strings.Contains(first, "search") || strings.Contains(first, "web") {
-		t.Fatalf("generated alias %q reveals the original tool name", first)
+	if !strings.HasSuffix(first, "_search_web") {
+		t.Fatalf("generated alias %q does not preserve the semantic suffix", first)
 	}
-	if matched, _ := regexp.MatchString(`^mcp__[a-z2-7]{12}__[a-z2-7]{16}$`, first); !matched {
-		t.Fatalf("generated alias %q is not keyed lowercase Base32", first)
+	if matched, _ := regexp.MatchString(`^mcp__[a-z2-7]{12}__[a-z2-7]{12}_search_web$`, first); !matched {
+		t.Fatalf("generated alias %q does not contain keyed IDs plus semantics", first)
 	}
 	server := strings.Split(first, "__")[1]
 	if got := strings.Split(caseDistinct, "__")[1]; got != server {
@@ -60,5 +60,36 @@ func TestClaudeMCPToolAlias(t *testing.T) {
 	}
 	if got := strings.Split(ClaudeMCPToolAlias("other-caller", "search_web", 0), "__")[1]; got == server {
 		t.Fatalf("different caller unexpectedly shared server %q", server)
+	}
+}
+
+func TestClaudeMCPToolAlias_SemanticSuffixIsSafeAndBounded(t *testing.T) {
+	tests := []struct {
+		name         string
+		original     string
+		wantSuffix   string
+		wantAliasLen int
+	}{
+		{name: "invalid separators", original: "browser.open URL", wantSuffix: "_browser_open_URL"},
+		{name: "unicode mixed", original: "search.网页/tool with spaces", wantSuffix: "_search_tool_with_spaces"},
+		{name: "unicode only", original: "搜索网页", wantSuffix: "_tool"},
+		{name: "maximum length", original: strings.Repeat("a", 100), wantSuffix: "_" + strings.Repeat("a", 32), wantAliasLen: 64},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			alias := ClaudeMCPToolAlias("credential-secret", tt.original, 0)
+			if !IsClaudeMCPToolName(alias) {
+				t.Fatalf("generated alias %q is not a valid MCP tool name", alias)
+			}
+			if len(alias) > 64 {
+				t.Fatalf("generated alias length = %d, want <= 64: %q", len(alias), alias)
+			}
+			if tt.wantAliasLen > 0 && len(alias) != tt.wantAliasLen {
+				t.Fatalf("generated alias length = %d, want %d", len(alias), tt.wantAliasLen)
+			}
+			if !strings.HasSuffix(alias, tt.wantSuffix) {
+				t.Fatalf("generated alias %q does not end in %q", alias, tt.wantSuffix)
+			}
+		})
 	}
 }

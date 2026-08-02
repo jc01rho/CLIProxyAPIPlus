@@ -3991,8 +3991,11 @@ func TestRemapOAuthToolNames_AllClientToolsAsMCP(t *testing.T) {
 	if got := gjson.GetBytes(out, "tools.6.name").String(); got != searchAlias {
 		t.Fatalf("repeated declaration alias = %q, want %q", got, searchAlias)
 	}
-	if strings.Contains(searchAlias, "search") || strings.Contains(searchAlias, "web") {
-		t.Fatalf("alias %q reveals original name", searchAlias)
+	if !strings.HasSuffix(searchAlias, "_search_web") || !strings.HasSuffix(caseAlias, "_Search_Web") {
+		t.Fatalf("generated aliases lost semantic suffixes: %q, %q", searchAlias, caseAlias)
+	}
+	if len(searchAlias) > 64 || len(caseAlias) > 64 {
+		t.Fatalf("generated aliases exceed 64 characters: %q, %q", searchAlias, caseAlias)
 	}
 	if got := gjson.GetBytes(out, "tools.4.description").String(); got != "unknown one" {
 		t.Fatalf("description = %q, want preserved", got)
@@ -4113,6 +4116,34 @@ func TestRemapOAuthToolNames_MCPAliasIsMandatory(t *testing.T) {
 	}
 	if reverseMap[alias] != "search_web" {
 		t.Fatalf("reverseMap = %v, want alias -> search_web", reverseMap)
+	}
+}
+
+func TestRemapOAuthToolNames_SemanticAliasRestoresLongOriginal(t *testing.T) {
+	original := "Read.file/with a very long semantic name and Unicode 网页内容 that exceeds the wire limit"
+	body := []byte(`{"tools":[{"name":` + fmt.Sprintf("%q", original) + `,"input_schema":{"type":"object"}}]}`)
+	options := claudeMCPAliasOptions{secret: "stable-caller"}
+
+	out, reverseMap := remapOAuthToolNamesWithOptions(body, options)
+	alias := gjson.GetBytes(out, "tools.0.name").String()
+	if !helps.IsClaudeMCPToolName(alias) || len(alias) > 64 {
+		t.Fatalf("semantic alias is invalid or too long: len=%d name=%q", len(alias), alias)
+	}
+	if !strings.Contains(alias, "_Read_file_with_a_very_long") {
+		t.Fatalf("semantic alias %q does not expose the truncated original meaning", alias)
+	}
+	if reverseMap[alias] != original {
+		t.Fatalf("reverseMap lost exact original: got %q, want %q", reverseMap[alias], original)
+	}
+
+	second, _ := remapOAuthToolNamesWithOptions(body, options)
+	if got := gjson.GetBytes(second, "tools.0.name").String(); got != alias {
+		t.Fatalf("semantic alias is not stable across requests: %q != %q", got, alias)
+	}
+	response := []byte(`{"content":[{"type":"tool_use","id":"toolu_1","name":` + fmt.Sprintf("%q", alias) + `,"input":{}}]}`)
+	restored := reverseRemapOAuthToolNames(response, reverseMap)
+	if got := gjson.GetBytes(restored, "content.0.name").String(); got != original {
+		t.Fatalf("restored tool name = %q, want exact original %q", got, original)
 	}
 }
 
@@ -4292,8 +4323,8 @@ func TestClaudeExecutor_ExecuteOpenAINonStreamRestoresOAuthToolNames(t *testing.
 	if !upstream.stream {
 		t.Fatal("upstream stream = false, want true")
 	}
-	if !helps.IsClaudeMCPToolName(upstream.toolName) {
-		t.Fatalf("upstream tools.0.name = %q, want MCP alias", upstream.toolName)
+	if !helps.IsClaudeMCPToolName(upstream.toolName) || !strings.HasSuffix(upstream.toolName, "_bash") {
+		t.Fatalf("upstream tools.0.name = %q, want semantic MCP alias", upstream.toolName)
 	}
 	if got := gjson.GetBytes(resp.Payload, "choices.0.message.tool_calls.0.function.name").String(); got != "bash" {
 		t.Fatalf("tool_calls.0.function.name = %q, want %q; payload=%s", got, "bash", string(resp.Payload))
@@ -4330,8 +4361,8 @@ func TestClaudeExecutor_ExecuteOAuthCustomToolMCPAliasRoundTrip(t *testing.T) {
 	if errExecute != nil {
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
-	if !helps.IsClaudeMCPToolName(upstreamAlias) || strings.HasPrefix(upstreamAlias, "proxy_") {
-		t.Fatalf("upstream tool name = %q, want mcp__ alias", upstreamAlias)
+	if !helps.IsClaudeMCPToolName(upstreamAlias) || strings.HasPrefix(upstreamAlias, "proxy_") || !strings.HasSuffix(upstreamAlias, "_search_web") {
+		t.Fatalf("upstream tool name = %q, want semantic mcp__ alias", upstreamAlias)
 	}
 	if got := gjson.GetBytes(resp.Payload, "content.0.name").String(); got != "search_web" {
 		t.Fatalf("client response tool name = %q, want search_web; payload=%s", got, resp.Payload)
@@ -4410,8 +4441,8 @@ func TestClaudeExecutor_ExecuteStreamOAuthCustomToolMCPAliasRoundTrip(t *testing
 		}
 		downstream.Write(chunk.Payload)
 	}
-	if !helps.IsClaudeMCPToolName(upstreamAlias) {
-		t.Fatalf("upstream tool name = %q, want mcp__ alias", upstreamAlias)
+	if !helps.IsClaudeMCPToolName(upstreamAlias) || !strings.HasSuffix(upstreamAlias, "_fetch_url") {
+		t.Fatalf("upstream tool name = %q, want semantic mcp__ alias", upstreamAlias)
 	}
 	if _, ok := claudeBillingCCHDigitsOffset(upstreamBody); !ok {
 		t.Fatalf("streaming Claude OAuth custom BaseURL body is missing CCH: %s", upstreamBody)

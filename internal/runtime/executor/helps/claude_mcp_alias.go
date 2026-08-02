@@ -31,16 +31,45 @@ func IsClaudeMCPToolName(name string) bool {
 	return true
 }
 
-// ClaudeMCPToolAlias derives an opaque Claude Code-style MCP tool name. All
-// aliases created with the same caller secret share one virtual server name;
-// original tool names affect only the tool component. A higher attempt changes
-// the tool component when a request-local collision must be avoided.
+// ClaudeMCPToolAlias derives a Claude Code-style MCP tool name. Aliases from
+// one caller share a virtual server component. The tool component combines a
+// stable keyed ID with a truncated semantic suffix so the model can distinguish
+// tools by name while the request-local symbol table restores the exact original.
+// A higher attempt changes the stable ID when a collision must be avoided.
 func ClaudeMCPToolAlias(secret, original string, attempt uint32) string {
 	serverDigest := claudeMCPAliasDigest(secret, "server", "", 0)
 	toolDigest := claudeMCPAliasDigest(secret, "tool", original, attempt)
 	server := claudeMCPBase32.EncodeToString(serverDigest[:])[:12]
-	tool := claudeMCPBase32.EncodeToString(toolDigest[:])[:16]
-	return "mcp__" + server + "__" + tool
+	toolID := claudeMCPBase32.EncodeToString(toolDigest[:])[:12]
+	semantic := claudeMCPToolSemanticSuffix(original, 32)
+	return "mcp__" + server + "__" + toolID + "_" + semantic
+}
+
+func claudeMCPToolSemanticSuffix(original string, maxLength int) string {
+	var semantic strings.Builder
+	semantic.Grow(min(len(original), maxLength))
+	pendingSeparator := false
+	for _, char := range original {
+		valid := (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '_' || char == '-'
+		if !valid {
+			pendingSeparator = semantic.Len() > 0
+			continue
+		}
+		if pendingSeparator && semantic.Len()+1 < maxLength {
+			semantic.WriteByte('_')
+		}
+		pendingSeparator = false
+		if semantic.Len() >= maxLength {
+			break
+		}
+		semantic.WriteRune(char)
+	}
+	result := strings.Trim(semantic.String(), "_-")
+	if result == "" {
+		return "tool"
+	}
+	return result
 }
 
 func claudeMCPAliasDigest(secret, purpose, original string, attempt uint32) [sha256.Size]byte {

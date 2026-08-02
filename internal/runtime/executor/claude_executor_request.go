@@ -512,9 +512,9 @@ func restoreClaudeOAuthToolNamesFromStreamLine(line []byte, reverseMap map[strin
 	return reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
 }
 
-// remapOAuthToolNames represents every declared third-party client tool as an
-// opaque Claude Code MCP extension. Existing valid MCP names and explicit typed
-// Anthropic tools remain unchanged.
+// remapOAuthToolNames represents every declared third-party client tool as a
+// semantic Claude Code MCP extension. Existing valid MCP names and explicit
+// typed Anthropic tools remain unchanged.
 //
 // It operates on tools[].name, tool_choice.name, and all declared
 // tool_use/tool_reference references in messages.
@@ -525,18 +525,6 @@ func restoreClaudeOAuthToolNamesFromStreamLine(line []byte, reverseMap map[strin
 // response. A global reverse map would mix symbols from unrelated callers.
 func remapOAuthToolNames(body []byte) ([]byte, map[string]string) {
 	return remapOAuthToolNamesWithOptions(body, claudeMCPAliasOptions{secret: "cpa-claude-mcp-default-caller"})
-}
-
-func claudeMCPAliasRevealsOriginal(alias, original string) bool {
-	alias = strings.ToLower(alias)
-	for _, fragment := range strings.FieldsFunc(strings.ToLower(original), func(char rune) bool {
-		return !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9'))
-	}) {
-		if len(fragment) >= 4 && strings.Contains(alias, fragment) {
-			return true
-		}
-	}
-	return false
 }
 
 func remapOAuthToolNamesWithOptions(body []byte, mcpAliases claudeMCPAliasOptions) ([]byte, map[string]string) {
@@ -580,7 +568,7 @@ func remapOAuthToolNamesWithOptions(body []byte, mcpAliases claudeMCPAliasOption
 			}
 			for attempt := uint32(0); ; attempt++ {
 				alias := helps.ClaudeMCPToolAlias(mcpAliases.secret, name, attempt)
-				if reservedNames[alias] || claudeMCPAliasRevealsOriginal(alias, name) {
+				if reservedNames[alias] {
 					continue
 				}
 				forwardMap[name] = alias
