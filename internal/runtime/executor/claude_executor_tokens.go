@@ -221,7 +221,7 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	})
 
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
-	resp, err := httpClient.Do(httpReq)
+	resp, err := doClaudeUpstreamRequest(httpClient, httpReq)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return cliproxyexecutor.Response{}, err

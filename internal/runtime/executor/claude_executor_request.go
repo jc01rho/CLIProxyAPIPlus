@@ -646,6 +646,60 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	return nil
 }
 
+// doClaudeUpstreamRequest is the single send boundary for every Claude upstream
+// call. Folding the wire-casing pass in here makes it structurally impossible
+// for one of the three request paths to drift away from the others, which is
+// exactly how the streaming and non-streaming beta sets diverged before.
+func doClaudeUpstreamRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	applyClaudeWireHeaderCasing(req)
+	return client.Do(req)
+}
+
+// claudeWireHeaderCasing maps Go's canonical header name to the exact casing
+// Claude Code 2.1.220 puts on the wire. Only the names that differ are listed;
+// the other twelve already survive canonicalisation unchanged.
+var claudeWireHeaderCasing = map[string]string{
+	"X-Stainless-Os":      "X-Stainless-OS",
+	"Anthropic-Beta":      "anthropic-beta",
+	"Anthropic-Version":   "anthropic-version",
+	"X-App":               "x-app",
+	"X-Client-Request-Id": "x-client-request-id",
+
+	"Anthropic-Dangerous-Direct-Browser-Access": "anthropic-dangerous-direct-browser-access",
+}
+
+// applyClaudeWireHeaderCasing restores the header name casing of the real client.
+//
+// CPA negotiates ALPN http/1.1 with Anthropic, so header names reach the server
+// verbatim rather than lowercased by HPACK, which makes casing observable. Go
+// canonicalises every name passed through Header.Set, turning the client's
+// anthropic-beta and x-app into Anthropic-Beta and X-App. Writing the map keys
+// directly is the only way to keep the original casing.
+//
+// This also fixes ordering for free: Go sorts header names bytewise when it
+// serialises them, and the real client's order is exactly that same bytewise
+// sort, so correct casing reproduces the correct order. Host, User-Agent and
+// Content-Length remain misplaced because Go writes them ahead of the sorted
+// block; that needs transport-level surgery and is out of scope here.
+//
+// Call this immediately before handing the request to the client and nowhere
+// else. The rewritten keys are unreachable through Header.Get, which
+// canonicalises its argument, so running it any earlier would silently hide
+// these headers from the rest of the pipeline.
+func applyClaudeWireHeaderCasing(r *http.Request) {
+	if r == nil || r.Header == nil || !isAnthropicUpstreamURL(r.URL) {
+		return
+	}
+	for canonical, wire := range claudeWireHeaderCasing {
+		values, ok := r.Header[canonical]
+		if !ok {
+			continue
+		}
+		delete(r.Header, canonical)
+		r.Header[wire] = values
+	}
+}
+
 func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 	if a == nil {
 		return "", ""
