@@ -22,11 +22,22 @@ func readClaudeOAuthResponseBody(resp *http.Response) ([]byte, error) {
 	if errRead != nil {
 		return nil, errRead
 	}
-	encoding := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Encoding"), ",")[0]))
-	if encoding == "" || encoding == "identity" {
-		return encoded, nil
+	encodings := strings.Split(strings.Join(resp.Header.Values("Content-Encoding"), ","), ",")
+	for index := len(encodings) - 1; index >= 0; index-- {
+		encoding := strings.ToLower(strings.TrimSpace(encodings[index]))
+		if encoding == "" || encoding == "identity" {
+			continue
+		}
+		var errDecode error
+		encoded, errDecode = decodeClaudeOAuthEncoding(encoded, encoding)
+		if errDecode != nil {
+			return nil, errDecode
+		}
 	}
+	return encoded, nil
+}
 
+func decodeClaudeOAuthEncoding(encoded []byte, encoding string) ([]byte, error) {
 	var reader io.ReadCloser
 	switch encoding {
 	case "gzip":

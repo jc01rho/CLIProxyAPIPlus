@@ -36,7 +36,7 @@ func (e *ClaudeExecutor) retryClaudeFastModeRefusal(
 		return initialResp, options.body, false, nil
 	}
 
-	errorBody, errDecode := decodeResponseBody(initialResp.Body, initialResp.Header.Get("Content-Encoding"))
+	errorBody, errDecode := decodeResponseBody(initialResp.Body, claudeResponseContentEncoding(initialResp.Header))
 	if errDecode != nil {
 		return nil, options.body, false, fmt.Errorf("decode Claude Fast refusal: %w", errDecode)
 	}

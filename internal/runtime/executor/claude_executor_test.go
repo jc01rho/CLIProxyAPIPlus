@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
@@ -3128,6 +3129,42 @@ func TestClaudeExecutor_ExecuteStream_GzipSuccessBodyDecoded(t *testing.T) {
 	}
 	if !strings.Contains(combined.String(), "message_stop") {
 		t.Errorf("expected SSE content in chunks, got: %q", combined.String())
+	}
+}
+
+func TestDecodeResponseBodyStackedRepeatedHeaders(t *testing.T) {
+	payload := []byte("stacked Claude response")
+	var gzipOutput bytes.Buffer
+	gzipWriter := gzip.NewWriter(&gzipOutput)
+	if _, errWrite := gzipWriter.Write(payload); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errClose := gzipWriter.Close(); errClose != nil {
+		t.Fatal(errClose)
+	}
+	var brotliOutput bytes.Buffer
+	brotliWriter := brotli.NewWriter(&brotliOutput)
+	if _, errWrite := brotliWriter.Write(gzipOutput.Bytes()); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errClose := brotliWriter.Close(); errClose != nil {
+		t.Fatal(errClose)
+	}
+
+	header := make(http.Header)
+	header.Add("Content-Encoding", "gzip")
+	header.Add("Content-Encoding", "br")
+	decoded, errDecode := decodeResponseBody(io.NopCloser(bytes.NewReader(brotliOutput.Bytes())), claudeResponseContentEncoding(header))
+	if errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	defer decoded.Close()
+	got, errRead := io.ReadAll(decoded)
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("decoded body = %q, want %q", got, payload)
 	}
 }
 

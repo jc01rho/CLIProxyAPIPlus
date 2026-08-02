@@ -10,6 +10,43 @@ import (
 	"github.com/andybalholm/brotli"
 )
 
+func TestReadClaudeOAuthResponseBodyDecodesStackedRepeatedHeaders(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"account":{"uuid":"test"}}`)
+	var gzipOutput bytes.Buffer
+	gzipWriter := gzip.NewWriter(&gzipOutput)
+	if _, errWrite := gzipWriter.Write(payload); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errClose := gzipWriter.Close(); errClose != nil {
+		t.Fatal(errClose)
+	}
+	var brotliOutput bytes.Buffer
+	brotliWriter := brotli.NewWriter(&brotliOutput)
+	if _, errWrite := brotliWriter.Write(gzipOutput.Bytes()); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errClose := brotliWriter.Close(); errClose != nil {
+		t.Fatal(errClose)
+	}
+
+	header := make(http.Header)
+	header.Add("Content-Encoding", "gzip")
+	header.Add("Content-Encoding", "br")
+	resp := &http.Response{
+		Header: header,
+		Body:   io.NopCloser(bytes.NewReader(brotliOutput.Bytes())),
+	}
+	got, errRead := readClaudeOAuthResponseBody(resp)
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("decoded body = %q, want %q", got, payload)
+	}
+}
+
 func TestReadClaudeOAuthResponseBodyDecodesAdvertisedEncodings(t *testing.T) {
 	t.Parallel()
 

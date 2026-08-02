@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"fmt"
 	"io"
@@ -402,6 +403,10 @@ func (p *peekableBody) Close() error {
 	return p.closer.Close()
 }
 
+func claudeResponseContentEncoding(header http.Header) string {
+	return strings.Join(header.Values("Content-Encoding"), ",")
+}
+
 func decodeResponseBody(body io.ReadCloser, contentEncoding string) (io.ReadCloser, error) {
 	if body == nil {
 		return nil, fmt.Errorf("response body is nil")
@@ -448,58 +453,83 @@ func decodeResponseBody(body io.ReadCloser, contentEncoding string) (io.ReadClos
 		return pb, nil
 	}
 	encodings := strings.Split(contentEncoding, ",")
-	for _, raw := range encodings {
-		encoding := strings.TrimSpace(strings.ToLower(raw))
+	reader := io.Reader(body)
+	decoderClosers := make([]func() error, 0, len(encodings))
+	cleanup := func() {
+		for i := len(decoderClosers) - 1; i >= 0; i-- {
+			_ = decoderClosers[i]()
+		}
+		_ = body.Close()
+	}
+	for index := len(encodings) - 1; index >= 0; index-- {
+		encoding := strings.TrimSpace(strings.ToLower(encodings[index]))
 		switch encoding {
 		case "", "identity":
 			continue
 		case "gzip":
-			gzipReader, err := gzip.NewReader(body)
-			if err != nil {
-				_ = body.Close()
-				return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+			gzipReader, errGzip := gzip.NewReader(reader)
+			if errGzip != nil {
+				cleanup()
+				return nil, fmt.Errorf("failed to create gzip reader: %w", errGzip)
 			}
-			return &compositeReadCloser{
-				Reader: gzipReader,
-				closers: []func() error{
-					gzipReader.Close,
-					func() error { return body.Close() },
-				},
-			}, nil
+			reader = gzipReader
+			decoderClosers = append(decoderClosers, gzipReader.Close)
 		case "deflate":
-			deflateReader := flate.NewReader(body)
-			return &compositeReadCloser{
-				Reader: deflateReader,
-				closers: []func() error{
-					deflateReader.Close,
-					func() error { return body.Close() },
-				},
-			}, nil
-		case "br":
-			return &compositeReadCloser{
-				Reader: brotli.NewReader(body),
-				closers: []func() error{
-					func() error { return body.Close() },
-				},
-			}, nil
-		case "zstd":
-			decoder, err := zstd.NewReader(body)
-			if err != nil {
-				_ = body.Close()
-				return nil, fmt.Errorf("failed to create zstd reader: %w", err)
+			deflateReader, errDeflate := newClaudeDeflateReader(reader)
+			if errDeflate != nil {
+				cleanup()
+				return nil, errDeflate
 			}
-			return &compositeReadCloser{
-				Reader: decoder,
-				closers: []func() error{
-					func() error { decoder.Close(); return nil },
-					func() error { return body.Close() },
-				},
-			}, nil
+			reader = deflateReader
+			decoderClosers = append(decoderClosers, deflateReader.Close)
+		case "br":
+			reader = brotli.NewReader(reader)
+		case "zstd":
+			decoder, errZstd := zstd.NewReader(reader)
+			if errZstd != nil {
+				cleanup()
+				return nil, fmt.Errorf("failed to create zstd reader: %w", errZstd)
+			}
+			reader = decoder
+			decoderClosers = append(decoderClosers, func() error {
+				decoder.Close()
+				return nil
+			})
 		default:
-			continue
+			cleanup()
+			return nil, fmt.Errorf("unsupported content encoding %q", encoding)
 		}
 	}
-	return body, nil
+	if len(decoderClosers) == 0 && reader == body {
+		return body, nil
+	}
+	closers := make([]func() error, 0, len(decoderClosers)+1)
+	for index := len(decoderClosers) - 1; index >= 0; index-- {
+		closers = append(closers, decoderClosers[index])
+	}
+	closers = append(closers, body.Close)
+	return &compositeReadCloser{Reader: reader, closers: closers}, nil
+}
+
+func newClaudeDeflateReader(reader io.Reader) (io.ReadCloser, error) {
+	buffered := bufio.NewReader(reader)
+	header, errPeek := buffered.Peek(2)
+	if errPeek == nil && isZlibHeader(header) {
+		zlibReader, errZlib := zlib.NewReader(buffered)
+		if errZlib != nil {
+			return nil, fmt.Errorf("failed to create zlib deflate reader: %w", errZlib)
+		}
+		return zlibReader, nil
+	}
+	return flate.NewReader(buffered), nil
+}
+
+func isZlibHeader(header []byte) bool {
+	if len(header) < 2 {
+		return false
+	}
+	cmf, flg := header[0], header[1]
+	return cmf&0x0f == 8 && cmf>>4 <= 7 && (uint16(cmf)<<8|uint16(flg))%31 == 0
 }
 
 func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string, stream bool, extraBetas []string, body []byte, cfg *config.Config, incomingHeaders http.Header, confirmedClaudeCode bool, sessionIDs ...string) error {
