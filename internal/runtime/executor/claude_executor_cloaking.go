@@ -242,6 +242,38 @@ func checkSystemInstructionsWithSigningModeAt(payload []byte, strictMode bool, c
 	return injectClaudeCodeCurrentDate(payload, now)
 }
 
+// relocateClaudeSystemPromptForCountTokens keeps a cloaked count_tokens request
+// in Claude Code's measured shape, which carries only model, messages and tools.
+// The Claude Code system blocks are therefore not installed here, but a caller's
+// system prompt still has to be accounted for, so it is relocated into messages
+// using the same positional mapping as the Messages path. That keeps the counted
+// tokens aligned with the request the caller is about to send while preventing a
+// third-party system prompt from reaching Anthropic in the system slot.
+func relocateClaudeSystemPromptForCountTokens(payload []byte, strictMode bool) []byte {
+	system := gjson.GetBytes(payload, "system")
+	if !system.Exists() {
+		return payload
+	}
+	// Strict mode drops caller prompts on the Messages path, so it must not
+	// reintroduce them here either.
+	forwardedSystem := ""
+	if !strictMode {
+		forwardedSystem = collectForwardedClaudeSystemPrompt(system)
+	}
+	updated, errDelete := sjson.DeleteBytes(payload, "system")
+	if errDelete != nil {
+		return payload
+	}
+	payload = updated
+	if strings.TrimSpace(forwardedSystem) == "" {
+		return payload
+	}
+	if claudeUsesLegacySystemReminder(payload) {
+		return prependClaudeSystemReminderToFirstUserMessage(payload, forwardedSystem)
+	}
+	return insertClaudeMidConversationSystemMessage(payload, forwardedSystem)
+}
+
 // claudeLegacySystemReminderModels lists the official Anthropic model IDs and
 // aliases that reject a mid-conversation role=system message. Entries mirror the
 // "claude" provider in internal/registry/models/models.json plus Anthropic's own

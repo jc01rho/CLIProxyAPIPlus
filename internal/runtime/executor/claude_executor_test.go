@@ -2189,6 +2189,131 @@ func TestClaudeExecutor_CountTokensCloakMatchesMeasuredDirectAnthropicShape(t *t
 	}
 }
 
+// TestClaudeExecutor_CountTokensCloakRelocatesCallerSystemAndObfuscates asserts
+// that a cloaked direct-Anthropic count_tokens request keeps Claude Code's
+// measured shape (no system field) while still accounting for the caller's
+// system prompt and honouring sensitive-word obfuscation.
+func TestClaudeExecutor_CountTokensCloakRelocatesCallerSystemAndObfuscates(t *testing.T) {
+	const callerSystem = "third party ACMECORP orchestrator rules"
+	const sensitiveWord = "ACMECORP"
+
+	testCases := []struct {
+		name          string
+		model         string
+		wantSystemMsg bool
+	}{
+		{name: "mid conversation system role", model: "claude-opus-5", wantSystemMsg: true},
+		{name: "legacy system reminder", model: "claude-sonnet-4-5", wantSystemMsg: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var upstreamBody []byte
+			transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				var errRead error
+				upstreamBody, errRead = io.ReadAll(req.Body)
+				if errRead != nil {
+					t.Fatal(errRead)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"input_tokens":34}`)),
+					Request:    req,
+				}, nil
+			})
+			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+			auth := &cliproxyauth.Auth{Attributes: map[string]string{
+				"api_key":               "sk-ant-oat-count-relocate",
+				"cloak_sensitive_words": sensitiveWord,
+			}}
+			payload := []byte(`{"model":"` + testCase.model + `","system":[{"type":"text","text":"` + callerSystem + `"}],` +
+				`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"tools":[]}`)
+
+			_, errCount := NewClaudeExecutor(&config.Config{}).countTokensUpstream(ctx, auth,
+				cliproxyexecutor.Request{Model: testCase.model, Payload: payload},
+				cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+			if errCount != nil {
+				t.Fatalf("countTokensUpstream() error = %v", errCount)
+			}
+
+			// Claude Code's count_tokens never carries a system field.
+			if got := gjson.GetBytes(upstreamBody, "system"); got.Exists() {
+				t.Fatalf("cloaked count system = %s, want absent", got.Raw)
+			}
+			// The caller's system prompt must still be counted, relocated into messages.
+			// Compare decoded text so JSON escaping does not affect the assertions.
+			var decodedTexts []string
+			sawSystemRole := false
+			gjson.GetBytes(upstreamBody, "messages").ForEach(func(_, message gjson.Result) bool {
+				if message.Get("role").String() == "system" {
+					sawSystemRole = true
+				}
+				message.Get("content").ForEach(func(_, block gjson.Result) bool {
+					decodedTexts = append(decodedTexts, block.Get("text").String())
+					return true
+				})
+				return true
+			})
+			joinedTexts := strings.Join(decodedTexts, "\n")
+			if !strings.Contains(joinedTexts, "orchestrator rules") {
+				t.Fatalf("caller system prompt was dropped from the counted body: %s", upstreamBody)
+			}
+			if testCase.wantSystemMsg {
+				if !sawSystemRole {
+					t.Fatalf("expected a mid-conversation system message, got %s", upstreamBody)
+				}
+			} else if !strings.Contains(joinedTexts, "<system-reminder>") {
+				t.Fatalf("expected a legacy system reminder, got %s", upstreamBody)
+			}
+			// Sensitive words must not reach Anthropic verbatim on this endpoint either.
+			if strings.Contains(joinedTexts, sensitiveWord) {
+				t.Fatalf("sensitive word %q leaked to count_tokens: %s", sensitiveWord, upstreamBody)
+			}
+		})
+	}
+}
+
+// TestClaudeExecutor_CountTokensCloakStrictModeDropsCallerSystem mirrors the
+// Messages path: strict mode keeps only Claude Code identity, so a caller's
+// system prompt must not be reintroduced into the counted body.
+func TestClaudeExecutor_CountTokensCloakStrictModeDropsCallerSystem(t *testing.T) {
+	var upstreamBody []byte
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		var errRead error
+		upstreamBody, errRead = io.ReadAll(req.Body)
+		if errRead != nil {
+			t.Fatal(errRead)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"input_tokens":34}`)),
+			Request:    req,
+		}, nil
+	})
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":           "sk-ant-oat-count-strict",
+		"cloak_strict_mode": "true",
+	}}
+	payload := []byte(`{"model":"claude-opus-5","system":[{"type":"text","text":"caller only secret directive"}],` +
+		`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"tools":[]}`)
+
+	_, errCount := NewClaudeExecutor(&config.Config{}).countTokensUpstream(ctx, auth,
+		cliproxyexecutor.Request{Model: "claude-opus-5", Payload: payload},
+		cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+	if errCount != nil {
+		t.Fatalf("countTokensUpstream() error = %v", errCount)
+	}
+	if got := gjson.GetBytes(upstreamBody, "system"); got.Exists() {
+		t.Fatalf("strict cloaked count system = %s, want absent", got.Raw)
+	}
+	if strings.Contains(string(upstreamBody), "secret directive") {
+		t.Fatalf("strict mode must not forward the caller system prompt: %s", upstreamBody)
+	}
+}
+
 func TestClaudeExecutor_CountTokensConfirmedNativePreservesMeasuredOAuthBody(t *testing.T) {
 	var upstreamBody []byte
 	var upstreamHeaders http.Header

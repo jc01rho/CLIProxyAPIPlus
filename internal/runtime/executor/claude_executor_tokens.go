@@ -158,8 +158,18 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	directAnthropic := isAnthropicUpstreamBase(baseURL)
 	var cloaked bool
 	if directAnthropic {
-		policy, _ := resolveClaudeWirePolicy(e.cfg, auth, apiKey, confirmedClaudeCode)
+		// Claude Code's count_tokens carries only model, messages and tools, so the
+		// full Messages cloaking must not run here. Apply the parts that still have
+		// to hold: relocate the caller's system prompt into messages so its tokens
+		// stay counted, and obfuscate sensitive words exactly like the Messages path.
+		policy, settings := resolveClaudeWirePolicy(e.cfg, auth, apiKey, confirmedClaudeCode)
 		cloaked = policy.Cloak
+		if cloaked {
+			body = relocateClaudeSystemPromptForCountTokens(body, settings.strictMode)
+			if len(settings.sensitiveWords) > 0 {
+				body = helps.ObfuscateSensitiveWords(body, helps.BuildSensitiveWordMatcher(settings.sensitiveWords))
+			}
+		}
 	} else {
 		var errCloaking error
 		body, cloaked, errCloaking = applyCloaking(
