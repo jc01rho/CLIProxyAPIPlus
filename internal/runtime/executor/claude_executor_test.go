@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1716,6 +1717,124 @@ func TestClaudeExecutor_ExecuteStreamStripsOpenAIEncryptedThinkingBeforeUpstream
 	}
 	if strings.Contains(string(seenBody), "gAAAAABopenai-encrypted-content") || strings.Contains(string(seenBody), "codex reasoning") {
 		t.Fatalf("invalid thinking block was forwarded: %s", string(seenBody))
+	}
+}
+
+func claudeOAuthCancellationTestMetadata() map[string]any {
+	return map[string]any{
+		"account_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		claudeauth.ClaudeDeviceIDsMetadataKey: []string{
+			"0000000000000000000000000000000000000000000000000000000000000000",
+		},
+	}
+}
+
+func TestClaudeExecutor_ExecuteStreamOAuthStartupCancellationIsRequestScoped(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(started)
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID: "oauth-stream-startup-cancellation",
+		Attributes: map[string]string{
+			"api_key":  "sk-ant-oat-stream-startup-cancellation",
+			"base_url": server.URL,
+		},
+		Metadata: claudeOAuthCancellationTestMetadata(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, errStream := executor.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+			Model:   "claude-opus-5",
+			Payload: []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hello"}],"stream":true}`),
+		}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+		errCh <- errStream
+	}()
+	<-started
+	cancel()
+
+	select {
+	case errStream := <-errCh:
+		if !errors.Is(errStream, context.Canceled) {
+			t.Fatalf("ExecuteStream() error = %v, want context.Canceled", errStream)
+		}
+		var requestErr cliproxyexecutor.RequestScopedError
+		if !errors.As(errStream, &requestErr) || requestErr == nil || !requestErr.IsRequestScoped() {
+			t.Fatalf("ExecuteStream() error = %T %v, want request-scoped cancellation", errStream, errStream)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for startup cancellation")
+	}
+}
+
+func TestClaudeExecutor_ExecuteStreamOAuthCancellationIsRequestScoped(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID: "oauth-stream-cancellation",
+		Attributes: map[string]string{
+			"api_key":  "sk-ant-oat-stream-cancellation",
+			"base_url": server.URL,
+		},
+		Metadata: claudeOAuthCancellationTestMetadata(),
+	}
+	payload := []byte(`{"model":"claude-opus-5","system":"system prompt","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	result, errStream := executor.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "claude-opus-5",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+	if errStream != nil {
+		cancel()
+		t.Fatalf("ExecuteStream() error = %v", errStream)
+	}
+	<-started
+	cancel()
+
+	var cancellationErr error
+	deadline := time.After(2 * time.Second)
+	for cancellationErr == nil {
+		select {
+		case chunk, ok := <-result.Chunks:
+			if !ok {
+				t.Fatal("stream closed without a cancellation result")
+			}
+			cancellationErr = chunk.Err
+		case <-deadline:
+			t.Fatal("timed out waiting for cancellation result")
+		}
+	}
+	if !errors.Is(cancellationErr, context.Canceled) {
+		t.Fatalf("stream error = %v, want context.Canceled", cancellationErr)
+	}
+	var requestErr cliproxyexecutor.RequestScopedError
+	if !errors.As(cancellationErr, &requestErr) || requestErr == nil || !requestErr.IsRequestScoped() {
+		t.Fatalf("stream error = %T %v, want request-scoped cancellation", cancellationErr, cancellationErr)
+	}
+	var statusErr interface{ StatusCode() int }
+	if errors.As(cancellationErr, &statusErr) {
+		t.Fatalf("stream cancellation unexpectedly exposes HTTP status %d", statusErr.StatusCode())
+	}
+	for range result.Chunks {
 	}
 }
 

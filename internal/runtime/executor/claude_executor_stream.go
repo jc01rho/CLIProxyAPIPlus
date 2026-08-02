@@ -31,6 +31,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
 	oauthToken := isClaudeOAuthToken(apiKey)
+	defer func() {
+		if cancelErr := newClaudeOAuthCancellationError(ctx, oauthToken, err); cancelErr != nil {
+			err = cancelErr
+		}
+	}()
 	cchSigning := claudeCCHSigningEnabled(apiKey, claudeCCHUpstreamAnthropic, url)
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
@@ -210,7 +215,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 		return nil, err
 	}
-	out := make(chan cliproxyexecutor.StreamChunk)
+	out := make(chan cliproxyexecutor.StreamChunk, 1)
 	go func() {
 		defer close(out)
 		defer func() {
@@ -218,6 +223,19 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				log.Errorf("response body close error: %v", errClose)
 			}
 		}()
+		emitCancellation := func(cause error) bool {
+			cancelErr := newClaudeOAuthCancellationError(ctx, oauthToken, cause)
+			if cancelErr == nil {
+				return false
+			}
+			helps.RecordAPIResponseError(ctx, e.cfg, cancelErr)
+			reporter.PublishFailure(ctx, cancelErr)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: cancelErr}:
+			default:
+			}
+			return true
+		}
 
 		// If the response target is Claude, directly forward complete SSE events without translation.
 		if responseFormat == to {
@@ -251,10 +269,15 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				event.Write(line)
 				event.WriteByte('\n')
 				if len(bytes.TrimSpace(line)) == 0 && !flushEvent() {
+					emitCancellation(ctx.Err())
 					return
 				}
 			}
 			if !flushEvent() {
+				emitCancellation(ctx.Err())
+				return
+			}
+			if emitCancellation(scanner.Err()) {
 				return
 			}
 			if errScan := scanner.Err(); errScan != nil {
@@ -301,9 +324,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 				case <-ctx.Done():
+					emitCancellation(ctx.Err())
 					return
 				}
 			}
+		}
+		if emitCancellation(scanner.Err()) {
+			return
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
