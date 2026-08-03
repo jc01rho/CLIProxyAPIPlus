@@ -173,7 +173,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				return
 			}
 		}
-		if !failed {
+		if !failed && (ephemeralResult || claudeOAuthRequestCancellation(ctx, auth, nil) == nil) {
 			m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true}, auth, ephemeralResult)
 		}
 	}()
@@ -224,6 +224,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 			}
 		}
+		if !ephemeralResult {
+			if errCancel := claudeOAuthRequestCancellation(ctx, auth, errStream); errCancel != nil {
+				return nil, errCancel
+			}
+		}
 		if errStream == nil && (streamResult == nil || streamResult.Chunks == nil) {
 			errStream = &Error{Code: "empty_stream", Message: "upstream stream has no source", Retryable: true}
 		}
@@ -262,6 +267,12 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 						buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks)
 					}
 				}
+			}
+		}
+		if !ephemeralResult {
+			if errCancel := claudeOAuthRequestCancellation(ctx, auth, bootstrapErr); errCancel != nil {
+				discardStreamChunks(streamResult.Chunks)
+				return nil, errCancel
 			}
 		}
 		if bootstrapErr != nil {
