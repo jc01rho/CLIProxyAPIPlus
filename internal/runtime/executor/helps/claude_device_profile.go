@@ -234,8 +234,8 @@ func pinClaudeDeviceProfilePlatform(profile, baseline ClaudeDeviceProfile) Claud
 	return profile
 }
 
-// normalizeClaudeDeviceProfile keeps stabilized profiles pinned to the current
-// baseline platform and enforces the baseline software fingerprint as a floor.
+// normalizeClaudeDeviceProfile pins stabilized profiles to the configured platform
+// and replaces any software tuple that does not exactly match the measured baseline.
 func normalizeClaudeDeviceProfile(profile, baseline ClaudeDeviceProfile) ClaudeDeviceProfile {
 	profile = pinClaudeDeviceProfilePlatform(profile, baseline)
 	if !meetsClaudeDeviceProfileBaseline(profile, baseline) {

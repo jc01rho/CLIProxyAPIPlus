@@ -432,14 +432,14 @@ nonstream-keepalive-interval: 0
 # anything else is dropped so the outgoing set stays one a real client could produce.
 # Other Anthropic-compatible upstreams still forward caller betas verbatim.
 #
-# Default headers for Claude API requests. Update when Claude Code releases new versions.
-# Unconfirmed clients use this minimum CLI baseline; verified native Claude Code CLI,
-# sdk-cli, and VSCode requests preserve or may upgrade their real software fingerprint. In legacy mode,
-# user-agent/package-version/runtime-version/timeout are used as fallbacks
-# when the client omits them, while OS/arch remain runtime-derived. When
-# stabilize-device-profile is enabled, OS/arch stay pinned to the baseline values below,
-# while user-agent/package-version/runtime-version seed per-subclient software fingerprints
-# that can still upgrade independently for verified CLI and VSCode entrypoints.
+# Default headers for Claude API requests. Update only after measuring a new Claude Code release.
+# Unconfirmed clients use this CLI baseline. Verified native Claude Code CLI, sdk-cli,
+# and VSCode requests preserve their measured entrypoint and software shape only when the
+# Claude Code version, package version, and runtime version exactly match this configured
+# baseline; unmeasured versions fall back to it. In legacy mode, timeout is a fallback and
+# verified native OS/arch values remain client-supplied. When stabilize-device-profile is
+# enabled, OS/arch are pinned to the values below and cached profiles remain constrained to
+# the same exact software baseline rather than learning newer client versions.
 # claude-header-defaults:
 #   user-agent: "claude-cli/2.1.220 (external, cli)"
 #   package-version: "0.94.0"
