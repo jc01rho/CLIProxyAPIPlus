@@ -476,30 +476,84 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 		return OAuthModelAliasResult{}
 	}
 	if channel == "" {
-		log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: empty channel for provider=%s", auth.Provider)
 		return OAuthModelAliasResult{}
 	}
-
-	requestResult, candidates := modelAliasLookupCandidates(requestedModel)
-	baseModel := requestResult.ModelName
 
 	raw := m.oauthModelAlias.Load()
 	table, _ := raw.(*oauthModelAliasTable)
 	if table == nil || table.reverse == nil {
-		log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: no alias table loaded")
 		return OAuthModelAliasResult{}
 	}
-	rev := table.reverse[channel]
-	if rev == nil {
-		var availableChannels []string
-		for k := range table.reverse {
-			availableChannels = append(availableChannels, k)
-		}
-		log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: no entries for channel=%s, available=%v", channel, availableChannels)
-		return OAuthModelAliasResult{}
-	}
-	log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: channel=%s has %d aliases, looking for candidates=%v", channel, len(rev), candidates)
 
+	// Use the snapshot-local cache for the auth-independent phases
+	// (force-mapping, upstream-model match, alias match). The auth-specific
+	// registry lookup runs live between the force-mapping phase and the
+	// tail phases so it is never served from cache.
+	cached := table.resolveTableOnly(channel, requestedModel)
+	if cached.forceMappingHit {
+		return cached.forceResult
+	}
+
+	requestResult, candidates := modelAliasLookupCandidates(requestedModel)
+	if resolved := resolveRequestedModelForAuth(m, auth, channel, candidates, requestResult); strings.TrimSpace(resolved) != "" {
+		return OAuthModelAliasResult{UpstreamModel: resolved}
+	}
+
+	return cached.tailResult
+}
+
+// resolveTableOnly returns the memoized auth-independent alias table
+// resolution for (channel, requestedModel). The result is cached on the
+// snapshot, so config reloads (which publish a new table pointer) auto-
+// matically invalidate it. Negative results are cached as zero-value
+// tailResult entries; entries are never stored as nil pointers.
+func (t *oauthModelAliasTable) resolveTableOnly(channel, requestedModel string) oauthAliasCacheValue {
+	key := oauthAliasCacheKey{
+		channel:        strings.ToLower(strings.TrimSpace(channel)),
+		requestedModel: strings.TrimSpace(requestedModel),
+	}
+	t.cacheMu.RLock()
+	value, ok := t.cache[key]
+	t.cacheMu.RUnlock()
+	if ok {
+		return value
+	}
+	value = t.computeTableOnly(channel, requestedModel)
+	t.cacheMu.Lock()
+	if t.cache == nil {
+		t.cache = make(map[oauthAliasCacheKey]oauthAliasCacheValue)
+	}
+	if _, exists := t.cache[key]; !exists {
+		if len(t.cache) >= oauthAliasCacheMaxEntries {
+			// The table is an immutable snapshot, so clearing only affects the
+			// optimization and cannot change alias resolution semantics.
+			clear(t.cache)
+		}
+		t.cache[key] = value
+		t.cacheComputes.Add(1)
+	}
+	t.cacheMu.Unlock()
+	return value
+}
+
+// computeTableOnly evaluates the auth-independent phases of the alias table
+// resolution: force-mapping aliases first, then the "requested model is an
+// upstream model" phase (precomputed upstreamIndex set lookup), then plain
+// alias resolution. The auth-specific registry lookup is intentionally
+// excluded; the caller runs it between the force-mapping phase and the
+// tail phases so its result never pollutes the cache.
+func (t *oauthModelAliasTable) computeTableOnly(channel, requestedModel string) oauthAliasCacheValue {
+	rev := t.reverse[channel]
+	if len(rev) == 0 {
+		return oauthAliasCacheValue{}
+	}
+	requestResult, candidates := modelAliasLookupCandidates(requestedModel)
+	if len(candidates) == 0 {
+		return oauthAliasCacheValue{}
+	}
+	baseModel := requestResult.ModelName
+
+	// Phase 0: force-mapping aliases win before the auth-specific registry path.
 	for _, candidate := range candidates {
 		key := strings.ToLower(strings.TrimSpace(candidate))
 		if key == "" {
@@ -513,38 +567,32 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 		if targetModel == "" {
 			continue
 		}
-		return OAuthModelAliasResult{
-			UpstreamModel: preserveResolvedModelSuffix(targetModel, requestResult),
-			ForceMapping:  entry.forceMapping,
-			OriginalAlias: oauthModelAliasForceMappingResponseModel(entry.configAlias),
+		return oauthAliasCacheValue{
+			forceMappingHit: true,
+			forceResult: OAuthModelAliasResult{
+				UpstreamModel: preserveResolvedModelSuffix(targetModel, requestResult),
+				ForceMapping:  entry.forceMapping,
+				OriginalAlias: oauthModelAliasForceMappingResponseModel(entry.configAlias),
+			},
 		}
 	}
 
-	if resolved := resolveRequestedModelForAuth(m, auth, channel, candidates, requestResult); strings.TrimSpace(resolved) != "" {
-		return OAuthModelAliasResult{UpstreamModel: resolved}
-	}
-
-	// ✅ PHASE 1 (NEW): Check if any candidate IS an upstream model (original-first)
+	// Phase 1: requested model is itself a configured upstream model
+	// (precomputed index lookup instead of a per-request scan).
+	upstreamIdx := t.upstreamIndex[channel]
 	for _, candidate := range candidates {
 		key := strings.ToLower(strings.TrimSpace(candidate))
 		if key == "" {
 			continue
 		}
-		// Check if this key matches any upstream model name (value) in the reverse table
-		for _, entry := range rev {
-			upstreamKey := strings.ToLower(strings.TrimSpace(entry.upstreamModel))
-			if upstreamKey == "" {
-				continue
-			}
-			if strings.EqualFold(upstreamKey, key) {
-				// Found: requested model matches an upstream model name
-				log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: candidate %s matches upstream model, returning as-is", candidate)
-				return OAuthModelAliasResult{UpstreamModel: preserveResolvedModelSuffix(candidate, requestResult)}
+		if _, ok := upstreamIdx[key]; ok {
+			return oauthAliasCacheValue{
+				tailResult: OAuthModelAliasResult{UpstreamModel: preserveResolvedModelSuffix(candidate, requestResult)},
 			}
 		}
 	}
 
-	// PHASE 2: Check if any candidate is an ALIAS
+	// Phase 2: requested model is a configured alias.
 	for _, candidate := range candidates {
 		key := strings.ToLower(strings.TrimSpace(candidate))
 		if key == "" {
@@ -562,12 +610,14 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 
 		if strings.EqualFold(targetModel, baseModel) {
 			if !entry.forceMapping {
-				return OAuthModelAliasResult{}
+				return oauthAliasCacheValue{}
 			}
-			return OAuthModelAliasResult{
-				UpstreamModel: preserveResolvedModelSuffix(targetModel, requestResult),
-				ForceMapping:  entry.forceMapping,
-				OriginalAlias: oauthModelAliasForceMappingResponseModel(entry.configAlias),
+			return oauthAliasCacheValue{
+				tailResult: OAuthModelAliasResult{
+					UpstreamModel: preserveResolvedModelSuffix(targetModel, requestResult),
+					ForceMapping:  entry.forceMapping,
+					OriginalAlias: oauthModelAliasForceMappingResponseModel(entry.configAlias),
+				},
 			}
 		}
 
@@ -584,14 +634,26 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 		if entry.forceMapping {
 			originalAlias = oauthModelAliasForceMappingResponseModel(entry.configAlias)
 		}
-		return OAuthModelAliasResult{
-			UpstreamModel: upstreamModel,
-			ForceMapping:  entry.forceMapping,
-			OriginalAlias: originalAlias,
+		return oauthAliasCacheValue{
+			tailResult: OAuthModelAliasResult{
+				UpstreamModel: upstreamModel,
+				ForceMapping:  entry.forceMapping,
+				OriginalAlias: originalAlias,
+			},
 		}
 	}
 
-	return OAuthModelAliasResult{}
+	return oauthAliasCacheValue{}
+}
+
+// tableOnlyComputeCount reports how many table-only alias resolutions were
+// actually computed (cache misses) for this snapshot. Tests use it to verify
+// memoization reuse without injecting test-only hooks into the hot path.
+func (t *oauthModelAliasTable) tableOnlyComputeCount() int64 {
+	if t == nil {
+		return 0
+	}
+	return t.cacheComputes.Load()
 }
 
 func resolveRequestedModelForAuth(m *Manager, auth *Auth, channel string, candidates []string, requestResult thinking.SuffixResult) string {
