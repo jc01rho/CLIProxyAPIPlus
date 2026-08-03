@@ -3,6 +3,8 @@ package auth
 import (
 	"encoding/json"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -11,6 +13,11 @@ import (
 )
 
 const oauthModelAliasesAttributeKey = "model_aliases"
+
+// oauthAliasCacheMaxEntries bounds snapshot-local positive and negative alias
+// resolutions. Requested model names are client-controlled, so an unbounded
+// negative cache would allow a long-lived snapshot to retain arbitrary keys.
+const oauthAliasCacheMaxEntries = 1024
 
 type modelAliasEntry interface {
 	GetName() string
@@ -26,9 +33,44 @@ type oauthModelAliasEntry struct {
 	forceMapping  bool
 }
 
+// oauthAliasCacheKey scopes memoized table-only resolutions per channel and
+// requested model so distinct channels/auths never contaminate each other.
+type oauthAliasCacheKey struct {
+	channel        string
+	requestedModel string
+}
+
+// oauthAliasCacheValue stores the auth-independent part of the alias table
+// resolution.
+//
+// forceMappingHit marks the force-mapping phase result, which the caller returns
+// before consulting the auth-specific registry path. tailResult carries the
+// upstream-model/alias phase result, which the caller returns after the registry
+// path produced nothing. A zero value (forceMappingHit=false, empty tailResult)
+// represents a safe negative (miss) entry; values are never nil pointers.
+type oauthAliasCacheValue struct {
+	forceMappingHit bool
+	forceResult     OAuthModelAliasResult
+	tailResult      OAuthModelAliasResult
+}
+
 type oauthModelAliasTable struct {
 	// reverse maps channel -> alias (lower) -> entry with upstream model and flags.
 	reverse map[string]map[string]oauthModelAliasEntry
+	// upstreamIndex maps channel -> set of lowercased upstream model keys. It is
+	// precomputed at compile time so the "requested model is an upstream model"
+	// phase is a set lookup instead of a per-request scan over every alias entry.
+	upstreamIndex map[string]map[string]struct{}
+
+	// cache is a snapshot-local memoization of the auth-independent alias table
+	// resolution. It is discarded automatically whenever SetOAuthModelAlias
+	// publishes a new table pointer on config reload, so neither positive nor
+	// negative entries outlive their snapshot.
+	cacheMu sync.RWMutex
+	cache   map[oauthAliasCacheKey]oauthAliasCacheValue
+	// cacheComputes counts table-only resolutions inserted after cache misses.
+	// It is diagnostic-only; the bounded cache may clear and later recompute a key.
+	cacheComputes atomic.Int64
 }
 
 // OAuthModelAliasResult contains the resolved upstream model and mapping metadata.
@@ -43,7 +85,8 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 		return &oauthModelAliasTable{}
 	}
 	out := &oauthModelAliasTable{
-		reverse: make(map[string]map[string]oauthModelAliasEntry, len(aliases)),
+		reverse:       make(map[string]map[string]oauthModelAliasEntry, len(aliases)),
+		upstreamIndex: make(map[string]map[string]struct{}, len(aliases)),
 	}
 	for rawChannel, entries := range aliases {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
@@ -73,12 +116,30 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 		}
 		if len(rev) > 0 {
 			out.reverse[channel] = rev
+			out.upstreamIndex[channel] = compileUpstreamModelIndex(rev)
 		}
 	}
 	if len(out.reverse) == 0 {
 		out.reverse = nil
+		out.upstreamIndex = nil
 	}
 	return out
+}
+
+// compileUpstreamModelIndex builds the set of lowercased upstream model keys for a
+// channel's alias entries. It is precomputed once per snapshot so the
+// "requested model is itself an upstream model" phase is a set lookup rather than
+// a per-request scan over every alias entry.
+func compileUpstreamModelIndex(rev map[string]oauthModelAliasEntry) map[string]struct{} {
+	index := make(map[string]struct{}, len(rev))
+	for _, entry := range rev {
+		upstreamKey := strings.ToLower(strings.TrimSpace(entry.upstreamModel))
+		if upstreamKey == "" {
+			continue
+		}
+		index[upstreamKey] = struct{}{}
+	}
+	return index
 }
 
 // SetOAuthModelAlias updates the OAuth model name alias table used during execution.
@@ -100,14 +161,24 @@ func (m *Manager) SetOAuthModelAlias(aliases map[string][]internalconfig.OAuthMo
 // If an alias exists, the returned model is the upstream model.
 func (m *Manager) applyOAuthModelAlias(auth *Auth, requestedModel string) string {
 	channel := modelAliasChannel(auth)
-	log.Debugf("[DEBUG] applyOAuthModelAlias: provider=%s model=%s channel=%s auth_kind=%v", auth.Provider, requestedModel, channel, auth.Attributes)
+	provider, authID := oauthAliasLogIdentity(auth)
 	upstreamModel := m.resolveOAuthUpstreamModel(auth, requestedModel)
 	if upstreamModel == "" {
-		log.Debugf("[DEBUG] applyOAuthModelAlias: no alias found, returning original model=%s", requestedModel)
+		log.Debugf("[DEBUG] applyOAuthModelAlias: provider=%s channel=%s auth_id=%s no alias for model=%s", provider, channel, authID, requestedModel)
 		return requestedModel
 	}
-	log.Debugf("[DEBUG] applyOAuthModelAlias: resolved %s -> %s", requestedModel, upstreamModel)
+	log.Debugf("[DEBUG] applyOAuthModelAlias: provider=%s channel=%s auth_id=%s resolved %s -> %s", provider, channel, authID, requestedModel, upstreamModel)
 	return upstreamModel
+}
+
+// oauthAliasLogIdentity returns only the safe, non-secret identifiers of an auth
+// (provider and auth ID) for debug logging. The auth attribute/metadata maps can
+// carry credentials and must never be rendered into logs.
+func oauthAliasLogIdentity(auth *Auth) (provider, authID string) {
+	if auth == nil {
+		return "", ""
+	}
+	return strings.TrimSpace(auth.Provider), strings.TrimSpace(auth.ID)
 }
 
 func modelAliasLookupCandidates(requestedModel string) (thinking.SuffixResult, []string) {

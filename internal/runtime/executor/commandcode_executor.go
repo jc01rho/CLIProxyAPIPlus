@@ -135,12 +135,8 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, err
 	}
 
-	// Collect NDJSON events into a single response body.
-	var textContent strings.Builder
-	var inputTokens, outputTokens int64
-	var toolCalls []map[string]any
-	toolCallIndex := 0
-	finishReason := "stop"
+	// Collect NDJSON events into the shared stream accumulator.
+	acc := newCommandCodeStreamAccumulator()
 	var rawLines [][]byte
 
 	scanner := bufio.NewScanner(httpResp.Body)
@@ -153,69 +149,41 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			continue
 		}
 		rawLines = append(rawLines, append([]byte(nil), trimmed...))
-		switch gjson.GetBytes(trimmed, "type").String() {
-		case "text-delta":
-			textContent.WriteString(gjson.GetBytes(trimmed, "text").String())
-		case "reasoning-delta":
-			// Do not expose hidden reasoning through the generic fallback.
-		case "tool-call":
-			inputRaw := gjson.GetBytes(trimmed, "input").Raw
-			if inputRaw == "" {
-				inputRaw = "{}"
-			}
-			toolCalls = append(toolCalls, map[string]any{
-				"index": toolCallIndex,
-				"id":    gjson.GetBytes(trimmed, "toolCallId").String(),
-				"type":  "function",
-				"function": map[string]any{
-					"name":      gjson.GetBytes(trimmed, "toolName").String(),
-					"arguments": inputRaw,
-				},
-			})
-			toolCallIndex++
-		case "finish-step":
-			inputTokens += gjson.GetBytes(trimmed, "usage.inputTokens").Int()
-			outputTokens += gjson.GetBytes(trimmed, "usage.outputTokens").Int()
-		case "finish":
-			if u := gjson.GetBytes(trimmed, "totalUsage.inputTokens").Int(); u > 0 {
-				inputTokens = u
-			}
-			if u := gjson.GetBytes(trimmed, "totalUsage.outputTokens").Int(); u > 0 {
-				outputTokens = u
-			}
-			if fr := gjson.GetBytes(trimmed, "finishReason").String(); fr != "" {
-				finishReason = fr
-			}
-		default:
-			// Fallback: upstream may rename event fields or emit an
-			// unrecognized event type. Try common text-bearing fields so
-			// we never silently drop content.
-			if text := commandCodeFallbackText(trimmed); text != "" {
-				textContent.WriteString(text)
-			}
+		acc.feed(decodeCommandCodeStreamEvent(trimmed))
+		if acc.terminal != commandCodeTerminalNone {
+			break
 		}
 	}
 	if errScan := scanner.Err(); errScan != nil {
 		recordAPIResponseError(ctx, e.cfg, errScan)
 		return resp, errScan
 	}
+	if acc.err != nil {
+		recordAPIResponseError(ctx, e.cfg, acc.err)
+		err = acc.err
+		return resp, err
+	}
 
-	// Fallback: if structured NDJSON parsing produced no text and no tool
-	// calls, the upstream may have returned a single JSON envelope (legacy
-	// or format drift). Attempt to recover content from the raw body.
-	if textContent.Len() == 0 && len(toolCalls) == 0 {
+	// Legacy fallback: a body without any recognized NDJSON event may be a
+	// single JSON envelope. Recover its text before declaring truncation.
+	if !acc.sawKnownEvent {
 		if fallbackText := commandCodeRecoverFromRawBody(rawLines); fallbackText != "" {
-			textContent.WriteString(fallbackText)
+			acc.adoptLegacyText(fallbackText)
 		}
+	}
+	if errEOF := acc.finishEOF(); errEOF != nil {
+		recordAPIResponseError(ctx, e.cfg, errEOF)
+		err = errEOF
+		return resp, err
 	}
 
 	// Build an OpenAI-shaped response to feed through the translator.
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	message := map[string]any{
 		"role":    "assistant",
-		"content": textContent.String(),
+		"content": acc.text.String(),
 	}
-	if len(toolCalls) > 0 {
+	if toolCalls := acc.openAIToolCalls(); len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 	}
 	openAIResp := map[string]any{
@@ -227,14 +195,10 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			{
 				"index":         0,
 				"message":       message,
-				"finish_reason": finishReason,
+				"finish_reason": acc.stopReason,
 			},
 		},
-		"usage": map[string]any{
-			"prompt_tokens":     inputTokens,
-			"completion_tokens": outputTokens,
-			"total_tokens":      inputTokens + outputTokens,
-		},
+		"usage": commandCodeOpenAIUsage(acc.usage()),
 	}
 	body, err := json.Marshal(openAIResp)
 	if err != nil {
@@ -336,6 +300,7 @@ func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		scanner.Buffer(nil, 52_428_800)
 		var param any
 		toolCallIndex := 0
+		acc := newCommandCodeStreamAccumulator()
 
 		sendSSELine := func(sseLine []byte) {
 			appendAPIResponseChunk(ctx, e.cfg, sseLine)
@@ -352,6 +317,14 @@ func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			}
 		}
 
+		emitChunk := func(payload map[string]any) {
+			b, errMarshal := json.Marshal(payload)
+			if errMarshal != nil {
+				return
+			}
+			sendSSELine(append([]byte("data: "), b...))
+		}
+
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			trimmed := bytes.TrimSpace(line)
@@ -359,58 +332,35 @@ func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				continue
 			}
 
-			eventType := gjson.GetBytes(trimmed, "type").String()
-			switch eventType {
-			case "text-delta":
-				text := gjson.GetBytes(trimmed, "text").String()
-				chunk := commandCodeStreamChunk(chatID, baseModel, map[string]any{
-					"role":    "assistant",
-					"content": text,
-				}, "")
-				b, errMarshal := json.Marshal(chunk)
-				if errMarshal != nil {
-					continue
+			event := decodeCommandCodeStreamEvent(trimmed)
+			acc.feed(event)
+			switch event.kind {
+			case commandCodeEventTextDelta, commandCodeEventToolResult:
+				if event.text != "" {
+					emitChunk(commandCodeStreamChunk(chatID, baseModel, map[string]any{
+						"role":    "assistant",
+						"content": event.text,
+					}, ""))
 				}
-				sendSSELine(append([]byte("data: "), b...))
 
-			case "reasoning-delta":
-				// Skip reasoning deltas; not surfaced to downstream clients.
-
-			case "tool-call":
-				toolCallID := gjson.GetBytes(trimmed, "toolCallId").String()
-				toolName := gjson.GetBytes(trimmed, "toolName").String()
-				inputRaw := gjson.GetBytes(trimmed, "input").Raw
-				if inputRaw == "" {
-					inputRaw = "{}"
-				}
-				chunk := commandCodeStreamChunk(chatID, baseModel, map[string]any{
+			case commandCodeEventToolCall:
+				emitChunk(commandCodeStreamChunk(chatID, baseModel, map[string]any{
 					"tool_calls": []map[string]any{
 						{
 							"index": toolCallIndex,
-							"id":    toolCallID,
+							"id":    event.toolCallID,
 							"type":  "function",
 							"function": map[string]any{
-								"name":      toolName,
-								"arguments": inputRaw,
+								"name":      event.toolName,
+								"arguments": string(event.toolInput),
 							},
 						},
 					},
-				}, "")
+				}, ""))
 				toolCallIndex++
-				b, errMarshal := json.Marshal(chunk)
-				if errMarshal != nil {
-					continue
-				}
-				sendSSELine(append([]byte("data: "), b...))
 
-			case "finish":
-				inputTokens := gjson.GetBytes(trimmed, "totalUsage.inputTokens").Int()
-				outputTokens := gjson.GetBytes(trimmed, "totalUsage.outputTokens").Int()
-				fr := gjson.GetBytes(trimmed, "finishReason").String()
-				if fr == "" {
-					fr = "stop"
-				}
-				finishChunk := map[string]any{
+			case commandCodeEventFinish, commandCodeEventAbort:
+				emitChunk(map[string]any{
 					"id":      chatID,
 					"object":  "chat.completion.chunk",
 					"created": time.Now().Unix(),
@@ -419,20 +369,15 @@ func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 						{
 							"index":         0,
 							"delta":         map[string]any{},
-							"finish_reason": fr,
+							"finish_reason": acc.stopReason,
 						},
 					},
-					"usage": map[string]any{
-						"prompt_tokens":     inputTokens,
-						"completion_tokens": outputTokens,
-						"total_tokens":      inputTokens + outputTokens,
-					},
-				}
-				b, errMarshal := json.Marshal(finishChunk)
-				if errMarshal == nil {
-					sendSSELine(append([]byte("data: "), b...))
-				}
+					"usage": commandCodeOpenAIUsage(acc.usage()),
+				})
 				sendSSELine([]byte("data: [DONE]"))
+			}
+			if acc.terminal != commandCodeTerminalNone {
+				break
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
@@ -440,6 +385,19 @@ func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			reporter.publishFailure(ctx)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
+			return
+		}
+		streamErr := acc.err
+		if streamErr == nil {
+			streamErr = acc.finishEOF()
+		}
+		if streamErr != nil {
+			recordAPIResponseError(ctx, e.cfg, streamErr)
+			reporter.publishFailure(ctx)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 			case <-ctx.Done():
 			}
 			return
@@ -502,108 +460,6 @@ func applyCommandCodeHeaders(req *http.Request, apiKey string) {
 	req.Header.Set("x-co-flag", "false")
 }
 
-// buildCommandCodePayload constructs the CommandCode envelope from an OpenAI-format payload.
-// It extracts system/developer messages into the top-level system field, converts tools and
-// tool-related messages to CommandCode format, and removes system messages from the messages array.
-func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([]byte, error) {
-	var systemContent string
-	var filteredMessages []json.RawMessage
-
-	messagesRaw := gjson.GetBytes(openAIPayload, "messages")
-	if messagesRaw.Exists() && messagesRaw.IsArray() {
-		for _, msg := range messagesRaw.Array() {
-			role := msg.Get("role").String()
-			if role == "system" || role == "developer" {
-				content := commandCodeMessageContentString(msg)
-				if systemContent == "" {
-					systemContent = content
-				} else {
-					systemContent += "\n" + content
-				}
-				continue
-			}
-			// Convert message to CommandCode format.
-			convertedMsg := convertCommandCodeMessage(msg, role)
-			if convertedMsg != nil {
-				b, _ := json.Marshal(convertedMsg)
-				filteredMessages = append(filteredMessages, json.RawMessage(b))
-			}
-		}
-	}
-	if filteredMessages == nil {
-		filteredMessages = []json.RawMessage{}
-	}
-
-	if model == "" {
-		model = gjson.GetBytes(openAIPayload, "model").String()
-	}
-
-	maxTokens := gjson.GetBytes(openAIPayload, "max_tokens").Int()
-	if maxTokens == 0 {
-		maxTokens = 16384
-	}
-
-	// Convert tools from OpenAI format to CommandCode format.
-	var convertedTools []json.RawMessage
-	toolsRaw := gjson.GetBytes(openAIPayload, "tools")
-	if toolsRaw.Exists() && toolsRaw.IsArray() {
-		for _, tool := range toolsRaw.Array() {
-			funcObj := tool.Get("function")
-			name := funcObj.Get("name").String()
-			description := funcObj.Get("description").String()
-			parameters := funcObj.Get("parameters").Raw
-			if parameters == "" || parameters == "null" {
-				parameters = `{"type":"object","properties":{}}`
-			}
-			ccTool := map[string]any{
-				"type":         "function",
-				"name":         name,
-				"description":  description,
-				"input_schema": json.RawMessage(parameters),
-			}
-			b, _ := json.Marshal(ccTool)
-			convertedTools = append(convertedTools, json.RawMessage(b))
-		}
-	}
-
-	params := map[string]any{
-		"model":      model,
-		"messages":   filteredMessages,
-		"max_tokens": maxTokens,
-		"stream":     stream,
-	}
-	if systemContent != "" {
-		params["system"] = systemContent
-	}
-	if len(convertedTools) > 0 {
-		params["tools"] = convertedTools
-	}
-	if temp := gjson.GetBytes(openAIPayload, "temperature"); temp.Exists() {
-		params["temperature"] = temp.Float()
-	}
-
-	now := time.Now()
-	envelope := map[string]any{
-		"config": map[string]any{
-			"workingDir":    "/tmp",
-			"date":          now.Format("2006-01-02"),
-			"environment":   "terminal",
-			"structure":     []any{},
-			"isGitRepo":     false,
-			"currentBranch": "",
-			"mainBranch":    "",
-			"gitStatus":     "",
-			"recentCommits": []any{},
-		},
-		"memory":         "",
-		"taste":          "",
-		"skills":         nil,
-		"permissionMode": "standard",
-		"params":         params,
-	}
-	return json.Marshal(envelope)
-}
-
 // resolveCommandCodeModelName resolves a model alias to the actual upstream model name
 // by looking up the CommandCodeKey configuration. If the model is not an alias, it returns
 // the model unchanged.
@@ -623,153 +479,6 @@ func resolveCommandCodeModelName(cfg *config.Config, auth *cliproxyauth.Auth, mo
 		}
 	}
 	return model
-}
-
-func flattenCommandCodeContentBlocks(blocks []map[string]any) string {
-	if len(blocks) == 0 {
-		return ""
-	}
-	var parts []string
-	for _, block := range blocks {
-		blockType, ok := block["type"].(string)
-		if !ok {
-			continue
-		}
-		switch blockType {
-		case "text", "input_text", "output_text":
-			if text, ok := block["text"].(string); ok && text != "" {
-				parts = append(parts, text)
-			}
-		case "tool_use":
-			name, _ := block["name"].(string)
-			input := commandCodeJSONText(block["input"])
-			if name != "" {
-				parts = append(parts, strings.TrimSpace("tool call "+name+" "+input))
-			}
-		case "tool_result":
-			parts = append(parts, flattenCommandCodeToolResult(block["content"]))
-		default:
-			if text, ok := block["text"].(string); ok && text != "" {
-				parts = append(parts, text)
-			}
-		}
-	}
-	return strings.Join(compactCommandCodeTextParts(parts), "\n")
-}
-
-// convertCommandCodeMessage converts an OpenAI message to CommandCode format.
-// CommandCode expects role to be "user" or "assistant" and content to be a string.
-func convertCommandCodeMessage(msg gjson.Result, role string) map[string]any {
-	// Map OpenAI roles to CommandCode roles.
-	ccRole := role
-	if role == "user" || role == "assistant" {
-		ccRole = role
-	} else if role == "tool" {
-		// Skip tool messages; they are handled separately.
-		return nil
-	} else {
-		// For other roles (function, etc.), default to user.
-		ccRole = "user"
-	}
-
-	content := commandCodeMessageContentString(msg)
-	if content == "" {
-		// Handle tool_call messages.
-		if toolCalls := msg.Get("tool_calls"); toolCalls.Exists() && toolCalls.IsArray() {
-			for _, tc := range toolCalls.Array() {
-				funcName := tc.Get("function.name").String()
-				funcArgsRaw := tc.Get("function.arguments").Raw
-				if funcName != "" {
-					content = appendCommandCodeText(content, commandCodeToolCallText(funcName, funcArgsRaw))
-				}
-			}
-		}
-		// Handle tool_result messages.
-		if toolCallID := msg.Get("tool_call_id"); toolCallID.Exists() {
-			contentStr := msg.Get("content").String()
-			content = appendCommandCodeText(content, contentStr)
-		}
-	}
-
-	return map[string]any{
-		"role":    ccRole,
-		"content": content,
-	}
-}
-
-func commandCodeMessageContentString(msg gjson.Result) string {
-	content := msg.Get("content")
-	if !content.Exists() || content.Raw == "null" {
-		return ""
-	}
-	if content.Type == gjson.String {
-		return content.String()
-	}
-	var blocks []map[string]any
-	if err := json.Unmarshal([]byte(content.Raw), &blocks); err != nil {
-		return content.String()
-	}
-	return flattenCommandCodeContentBlocks(blocks)
-}
-
-func flattenCommandCodeToolResult(content any) string {
-	switch value := content.(type) {
-	case string:
-		return value
-	case []any:
-		var blocks []map[string]any
-		for _, item := range value {
-			block, ok := item.(map[string]any)
-			if ok {
-				blocks = append(blocks, block)
-			}
-		}
-		return flattenCommandCodeContentBlocks(blocks)
-	case []map[string]any:
-		return flattenCommandCodeContentBlocks(value)
-	default:
-		return commandCodeJSONText(value)
-	}
-}
-
-func commandCodeToolCallText(name, argumentsRaw string) string {
-	return strings.TrimSpace("tool call " + name + " " + commandCodeToolCallArguments(argumentsRaw))
-}
-
-func commandCodeToolCallArguments(argumentsRaw string) string {
-	trimmed := strings.TrimSpace(argumentsRaw)
-	if strings.HasPrefix(trimmed, "{") {
-		return trimmed
-	}
-	var parsed string
-	if err := json.Unmarshal([]byte(argumentsRaw), &parsed); err == nil {
-		trimmed = strings.TrimSpace(parsed)
-		if strings.HasPrefix(trimmed, "{") {
-			return trimmed
-		}
-	}
-	return "{}"
-}
-
-func commandCodeJSONText(value any) string {
-	if value == nil {
-		return ""
-	}
-	b, err := json.Marshal(value)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-func appendCommandCodeText(base, next string) string {
-	if next == "" {
-		return base
-	}
-	if base == "" {
-		return next
-	}
-	return base + "\n" + next
 }
 
 func compactCommandCodeTextParts(parts []string) []string {
