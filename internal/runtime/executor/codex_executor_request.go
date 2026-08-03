@@ -23,9 +23,9 @@ import (
 )
 
 const (
-codexVersion               = "0.146.0"
-	codexUserAgent             = "codex-tui/" + codexVersion + " (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; " + codexVersion + ")"
-	codexOriginator            = "codex-tui"
+	codexVersion               = "0.146.0"
+	codexUserAgent             = "codex_exec/" + codexVersion + " (Debian 12.0.0; aarch64) unknown (codex_exec; " + codexVersion + ")"
+	codexOriginator            = "codex_exec"
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
@@ -412,6 +412,10 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
 	applyCodexCloakingHeaders(r.Header, cfg)
+	if attrs != nil && strings.EqualFold(strings.TrimSpace(attrs["gitlab_duo_gateway"]), "true") {
+		// GitLab Duo requires its gateway identity after Codex cloaking defaults.
+		util.ApplyCustomHeadersFromAttrs(r, attrs)
+	}
 }
 
 func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config) {
