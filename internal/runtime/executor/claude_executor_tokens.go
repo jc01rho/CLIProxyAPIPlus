@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -22,11 +23,10 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
-	endpoint := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
-	// Claude Code uses the native endpoint for OAuth and first-party Anthropic
-	// credentials. Keep local counting for custom API-key gateways that may not
-	// implement count_tokens.
-	if apiKey != "" && claudeCCHSigningEnabled(apiKey, claudeCCHUpstreamAnthropic, endpoint) {
+	// Only Anthropic's first-party origin has the measured native count_tokens
+	// contract. Every custom/third-party base URL keeps local estimation,
+	// regardless of whether the credential is OAuth or an API key.
+	if shouldUseClaudeUpstreamTokenCount(apiKey, baseURL) {
 		return e.countTokensUpstream(ctx, auth, req, opts)
 	}
 
@@ -111,12 +111,11 @@ func validateClaudeTokenCountRequest(body []byte) error {
 	return nil
 }
 
-// countTokensUpstream preserves native token counting for Claude-compatible
-// providers that expose their own count_tokens endpoint.
-func shouldFinalizeClaudeCountTokensCCH(cchSigning, directAnthropic bool) bool {
-	return cchSigning && !directAnthropic
+func shouldUseClaudeUpstreamTokenCount(apiKey, baseURL string) bool {
+	return strings.TrimSpace(apiKey) != "" && isAnthropicUpstreamBase(baseURL)
 }
 
+// countTokensUpstream preserves Anthropic's native token-counting contract.
 func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	upstreamModel := e.upstreamModel(baseModel)
@@ -127,7 +126,6 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	}
 	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
 	oauthToken := isClaudeOAuthToken(apiKey)
-	cchSigning := claudeCCHSigningEnabled(apiKey, claudeCCHUpstreamAnthropic, url)
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -179,7 +177,7 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 			body,
 			apiKey,
 			confirmedClaudeCode,
-			cchSigning,
+			false,
 		)
 		if errCloaking != nil {
 			return cliproxyexecutor.Response{}, errCloaking
@@ -208,15 +206,6 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 		body, _ = sjson.DeleteBytes(body, "context_management")
 		body, _ = sjson.DeleteBytes(body, "diagnostics")
 	}
-	if shouldFinalizeClaudeCountTokensCCH(cchSigning, directAnthropic) {
-		fallbackBilling := claudeCCHFallbackBillingHeader(ctx, e.cfg, body, claudeCodeDetection.Entrypoint)
-		var errCCH error
-		body, errCCH = finalizeAnthropicMessagesBodyCCH(body, fallbackBilling)
-		if errCCH != nil {
-			return cliproxyexecutor.Response{}, fmt.Errorf("finalize Claude CCH: %w", errCCH)
-		}
-	}
-
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
