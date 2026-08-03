@@ -3639,24 +3639,29 @@ func assertClaudeLegacySystemReminderLayout(t *testing.T, body []byte, wantSyste
 	}
 	content := gjson.GetBytes(body, "messages.0.content").Array()
 	if len(content) != 3 {
-		t.Fatalf("user content has %d blocks, want caller reminder, currentDate, and user text", len(content))
+		t.Fatalf("user content has %d blocks, want currentDate, caller reminder, and user text", len(content))
 	}
-	if got := content[0].Get("text").String(); got != claudeCallerSystemReminder(wantSystem) {
+	assertClaudeCodeCurrentDateBlock(t, content[0])
+	if got := content[1].Get("text").String(); got != claudeCallerSystemReminder(wantSystem) {
 		t.Fatalf("caller reminder lost system prompt: got len %d, want len %d", len(got), len(wantSystem))
 	}
-	if content[0].Get("cache_control").Exists() {
-		t.Fatalf("caller reminder unexpectedly has cache_control: %s", content[0].Raw)
+	if content[1].Get("cache_control").Exists() {
+		t.Fatalf("caller reminder unexpectedly has cache_control: %s", content[1].Raw)
 	}
-	assertClaudeCodeCurrentDateBlock(t, content[1])
 	assertEphemeralUserTextBlock(t, content[2], wantUser)
 }
 
 func assertClaudeCodeCurrentDateBlock(t *testing.T, block gjson.Result) {
 	t.Helper()
+	assertClaudeCodeCurrentDateBlockAt(t, block, time.Now())
+}
+
+func assertClaudeCodeCurrentDateBlockAt(t *testing.T, block gjson.Result, now time.Time) {
+	t.Helper()
 	if got := block.Get("type").String(); got != "text" {
 		t.Fatalf("currentDate block type = %q, want text", got)
 	}
-	if got, want := block.Get("text").String(), claudeCodeCurrentDateReminder(time.Now()); got != want {
+	if got, want := block.Get("text").String(), claudeCodeCurrentDateReminder(now); got != want {
 		t.Fatalf("currentDate reminder = %q, want %q", got, want)
 	}
 	if block.Get("cache_control").Exists() {
@@ -3753,29 +3758,38 @@ func TestInjectClaudeCodeCurrentDateIsIdempotentAndAlignsFirstUserCache(t *testi
 	assertEphemeralUserTextBlock(t, content[1], "hello")
 }
 
-func TestInjectClaudeCodeCurrentDateFollowsLeadingRemindersAndToolResults(t *testing.T) {
+func TestInjectClaudeCodeCurrentDateMovesExistingCopyToFirstBlock(t *testing.T) {
+	fixed := time.Date(2026, time.August, 1, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+	dateBlock := buildTextBlock(claudeCodeCurrentDateReminder(fixed), nil)
+	payload := []byte(`{"messages":[{"role":"user","content":[` +
+		`{"type":"text","text":"hello"},` + dateBlock + `]}]}`)
+
+	out := injectClaudeCodeCurrentDate(payload, fixed)
+	content := gjson.GetBytes(out, "messages.0.content").Array()
+	if len(content) != 2 {
+		t.Fatalf("content has %d blocks, want one currentDate and user text: %s", len(content), out)
+	}
+	assertClaudeCodeCurrentDateBlockAt(t, content[0], fixed)
+	assertEphemeralUserTextBlock(t, content[1], "hello")
+}
+
+func TestInjectClaudeCodeCurrentDatePrecedesExistingReminder(t *testing.T) {
 	fixed := time.Date(2026, time.August, 1, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
 	reminder := "<system-reminder>\ncaller instructions\n</system-reminder>"
 	payload := []byte(`{"messages":[{"role":"user","content":[` +
-		`{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"},` +
 		buildTextBlock(reminder, nil) + `,` +
 		`{"type":"text","text":"continue","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`)
 
 	out := injectClaudeCodeCurrentDate(payload, fixed)
 	content := gjson.GetBytes(out, "messages.0.content").Array()
-	if len(content) != 4 {
-		t.Fatalf("content has %d blocks, want tool_result, reminder, currentDate, user text: %s", len(content), out)
+	if len(content) != 3 {
+		t.Fatalf("content has %d blocks, want currentDate, reminder, and user text: %s", len(content), out)
 	}
-	if got := content[0].Get("type").String(); got != "tool_result" {
-		t.Fatalf("content[0].type = %q, want tool_result", got)
-	}
+	assertClaudeCodeCurrentDateBlockAt(t, content[0], fixed)
 	if got := content[1].Get("text").String(); got != reminder {
 		t.Fatalf("content[1].text = %q, want standalone reminder", got)
 	}
-	if got := content[2].Get("text").String(); got != claudeCodeCurrentDateReminder(fixed) {
-		t.Fatalf("content[2].text = %q, want currentDate after reminder", got)
-	}
-	assertEphemeralUserTextBlock(t, content[3], "continue")
+	assertEphemeralUserTextBlock(t, content[2], "continue")
 }
 
 // Test case 1: String system prompt becomes an authoritative mid-conversation
@@ -3865,16 +3879,40 @@ func TestCheckSystemInstructionsWithMode_LegacyModelUsesSystemReminder(t *testin
 	}
 	content := gjson.GetBytes(out, "messages.0.content").Array()
 	if len(content) != 3 {
-		t.Fatalf("user content has %d blocks, want caller reminder, currentDate, and user text", len(content))
+		t.Fatalf("user content has %d blocks, want currentDate, caller reminder, and user text", len(content))
 	}
-	if got := content[0].Get("text").String(); got != claudeCallerSystemReminder("legacy instructions") {
+	assertClaudeCodeCurrentDateBlock(t, content[0])
+	if got := content[1].Get("text").String(); got != claudeCallerSystemReminder("legacy instructions") {
 		t.Fatalf("caller system reminder = %q", got)
 	}
-	if content[0].Get("cache_control").Exists() {
-		t.Fatalf("caller system reminder unexpectedly has cache_control: %s", content[0].Raw)
+	if content[1].Get("cache_control").Exists() {
+		t.Fatalf("caller system reminder unexpectedly has cache_control: %s", content[1].Raw)
 	}
-	assertClaudeCodeCurrentDateBlock(t, content[1])
 	assertEphemeralUserTextBlock(t, content[2], "hi")
+}
+
+func TestCheckSystemInstructionsWithMode_LegacyModelKeepsSystemBlocksSeparate(t *testing.T) {
+	payload := []byte(`{"model":"claude-opus-4-6","system":[` +
+		`{"type":"text","text":"first guidance","cache_control":{"type":"ephemeral","ttl":"1h"}},` +
+		`{"type":"text","text":"second guidance"}],` +
+		`"messages":[{"role":"user","content":"hi"}]}`)
+
+	out := checkSystemInstructionsWithMode(payload, false)
+	content := gjson.GetBytes(out, "messages.0.content").Array()
+	if len(content) != 4 {
+		t.Fatalf("user content has %d blocks, want currentDate, two caller reminders, and user text: %s", len(content), out)
+	}
+	assertClaudeCodeCurrentDateBlock(t, content[0])
+	for idx, want := range []string{"first guidance", "second guidance"} {
+		block := content[idx+1]
+		if got := block.Get("text").String(); got != claudeCallerSystemReminder(want) {
+			t.Fatalf("content[%d].text = %q, want separate caller reminder %q", idx+1, got, want)
+		}
+		if block.Get("cache_control").Exists() {
+			t.Fatalf("content[%d] caller reminder unexpectedly has cache_control: %s", idx+1, block.Raw)
+		}
+	}
+	assertEphemeralUserTextBlock(t, content[3], "hi")
 }
 
 // Test case 2: Strict mode keeps only the injected Claude Code system blocks.
@@ -3930,6 +3968,72 @@ func TestCheckSystemInstructionsWithMode_ArraySystemStillWorks(t *testing.T) {
 	assertClaudeCodeCurrentDateBlock(t, content[0])
 	assertEphemeralUserTextBlock(t, content[1], "hi")
 	assertClaudeMidConversationSystemMessage(t, out, 1, "Be concise.")
+}
+
+func TestCheckSystemInstructionsWithMode_ArraySystemKeepsBlocksAsSeparateMessages(t *testing.T) {
+	payload := []byte(`{"model":"claude-opus-5","system":[` +
+		`{"type":"text","text":"first guidance","cache_control":{"type":"ephemeral","ttl":"1h"}},` +
+		`{"type":"text","text":"second guidance"}],` +
+		`"messages":[{"role":"user","content":"hi"}]}`)
+
+	out := checkSystemInstructionsWithMode(payload, false)
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 3 {
+		t.Fatalf("message count = %d, want user and two separate system messages: %s", got, out)
+	}
+	content := gjson.GetBytes(out, "messages.0.content").Array()
+	if len(content) != 2 {
+		t.Fatalf("user content has %d blocks, want currentDate and user text: %s", len(content), out)
+	}
+	assertClaudeCodeCurrentDateBlock(t, content[0])
+	assertEphemeralUserTextBlock(t, content[1], "hi")
+	assertClaudeMidConversationSystemMessage(t, out, 1, "first guidance")
+	assertClaudeMidConversationSystemMessage(t, out, 2, "second guidance")
+}
+
+func TestRelocateClaudeSystemPromptForCountTokensKeepsBlocksSeparate(t *testing.T) {
+	tests := []struct {
+		name   string
+		model  string
+		legacy bool
+	}{
+		{name: "mid-system model", model: "claude-opus-5"},
+		{name: "legacy model", model: "claude-opus-4-6", legacy: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := []byte(`{"model":"` + test.model + `","system":[` +
+				`{"type":"text","text":"first guidance"},` +
+				`{"type":"text","text":"second guidance"}],` +
+				`"messages":[{"role":"user","content":"hi"}]}`)
+
+			out := relocateClaudeSystemPromptForCountTokens(payload, false)
+			if gjson.GetBytes(out, "system").Exists() {
+				t.Fatalf("count_tokens system must be absent: %s", out)
+			}
+			if test.legacy {
+				content := gjson.GetBytes(out, "messages.0.content").Array()
+				if len(content) != 3 {
+					t.Fatalf("legacy content has %d blocks, want two reminders and user text: %s", len(content), out)
+				}
+				if got := content[0].Get("text").String(); got != claudeCallerSystemReminder("first guidance") {
+					t.Fatalf("first caller reminder = %q", got)
+				}
+				if got := content[1].Get("text").String(); got != claudeCallerSystemReminder("second guidance") {
+					t.Fatalf("second caller reminder = %q", got)
+				}
+				if got := content[2].Get("text").String(); got != "hi" {
+					t.Fatalf("user text = %q, want hi", got)
+				}
+				return
+			}
+			if got := gjson.GetBytes(out, "messages.#").Int(); got != 3 {
+				t.Fatalf("message count = %d, want user and two system messages: %s", got, out)
+			}
+			assertClaudeMidConversationSystemMessage(t, out, 1, "first guidance")
+			assertClaudeMidConversationSystemMessage(t, out, 2, "second guidance")
+		})
+	}
 }
 
 // Test case 5: Special characters survive the mid-conversation system move.
@@ -4925,42 +5029,42 @@ func TestClaudeExecutor_ExecuteStreamOAuthCustomToolMCPAliasRoundTrip(t *testing
 	}
 }
 
-func TestPrependClaudeSystemReminder_FollowsToolResultsAndIsIdempotent(t *testing.T) {
-	fixed := time.Date(2026, time.August, 1, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+func TestPrependClaudeSystemReminders_FollowsToolResultsAndIsIdempotent(t *testing.T) {
 	payload := []byte(`{"messages":[` +
 		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}]},` +
 		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"},{"type":"text","text":"continue"}]}` +
 		`]}`)
 
-	first := prependClaudeSystemReminderToFirstUserMessage(payload, "legacy guidance")
-	second := prependClaudeSystemReminderToFirstUserMessage(first, "legacy guidance")
+	texts := []string{"first guidance", "second guidance"}
+	first := prependClaudeSystemRemindersToFirstUserMessage(payload, texts)
+	second := prependClaudeSystemRemindersToFirstUserMessage(first, texts)
 	if !bytes.Equal(first, second) {
 		t.Fatalf("caller reminder insertion is not idempotent:\nfirst:  %s\nsecond: %s", first, second)
 	}
-	out := injectClaudeCodeCurrentDate(first, fixed)
-	content := gjson.GetBytes(out, "messages.1.content").Array()
+	content := gjson.GetBytes(first, "messages.1.content").Array()
 	if len(content) != 4 {
-		t.Fatalf("content has %d blocks, want tool_result, caller reminder, currentDate, and user text", len(content))
+		t.Fatalf("content has %d blocks, want tool_result, two caller reminders, and user text", len(content))
 	}
 	if got := content[0].Get("type").String(); got != "tool_result" {
 		t.Fatalf("content[0].type = %q, want tool_result", got)
 	}
-	if got := content[1].Get("text").String(); got != claudeCallerSystemReminder("legacy guidance") {
-		t.Fatalf("content[1].text = %q, want caller reminder", got)
+	for idx, text := range texts {
+		if got := content[idx+1].Get("text").String(); got != claudeCallerSystemReminder(text) {
+			t.Fatalf("content[%d].text = %q, want caller reminder %q", idx+1, got, text)
+		}
 	}
-	if got := content[2].Get("text").String(); got != claudeCodeCurrentDateReminder(fixed) {
-		t.Fatalf("content[2].text = %q, want currentDate", got)
+	if got := content[3].Get("text").String(); got != "continue" {
+		t.Fatalf("content[3].text = %q, want user text", got)
 	}
-	assertEphemeralUserTextBlock(t, content[3], "continue")
 }
 
-func TestInsertClaudeMidConversationSystemMessage_FollowsToolResultUserTurn(t *testing.T) {
+func TestInsertClaudeMidConversationSystemMessages_FollowsToolResultUserTurn(t *testing.T) {
 	payload := []byte(`{"messages":[` +
 		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}]},` +
 		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}` +
 		`]}`)
 
-	out := insertClaudeMidConversationSystemMessage(payload, "guidance")
+	out := insertClaudeMidConversationSystemMessages(payload, []string{"guidance"})
 	if got := gjson.GetBytes(out, "messages.#").Int(); got != 3 {
 		t.Fatalf("message count = %d, want 3: %s", got, out)
 	}
@@ -4974,14 +5078,14 @@ func TestInsertClaudeMidConversationSystemMessage_FollowsToolResultUserTurn(t *t
 	assertClaudeMidConversationSystemMessage(t, out, 2, "guidance")
 }
 
-func TestInsertClaudeMidConversationSystemMessage_PrecedesExistingAssistantTurn(t *testing.T) {
+func TestInsertClaudeMidConversationSystemMessages_PrecedesExistingAssistantTurn(t *testing.T) {
 	payload := []byte(`{"messages":[` +
 		`{"role":"user","content":"hello"},` +
 		`{"role":"assistant","content":"answer"},` +
 		`{"role":"user","content":"continue"}` +
 		`]}`)
 
-	out := insertClaudeMidConversationSystemMessage(payload, "guidance")
+	out := insertClaudeMidConversationSystemMessages(payload, []string{"guidance"})
 	roles := gjson.GetBytes(out, "messages.#.role").Array()
 	wantRoles := []string{"user", "system", "assistant", "user"}
 	if len(roles) != len(wantRoles) {
@@ -4995,14 +5099,14 @@ func TestInsertClaudeMidConversationSystemMessage_PrecedesExistingAssistantTurn(
 	assertClaudeMidConversationSystemMessage(t, out, 1, "guidance")
 }
 
-func TestInsertClaudeMidConversationSystemMessage_FollowsConsecutiveUserRun(t *testing.T) {
+func TestInsertClaudeMidConversationSystemMessages_FollowsConsecutiveUserRun(t *testing.T) {
 	payload := []byte(`{"messages":[` +
 		`{"role":"user","content":"first"},` +
 		`{"role":"user","content":"second"},` +
 		`{"role":"assistant","content":"answer"}` +
 		`]}`)
 
-	out := insertClaudeMidConversationSystemMessage(payload, "guidance")
+	out := insertClaudeMidConversationSystemMessages(payload, []string{"guidance"})
 	roles := gjson.GetBytes(out, "messages.#.role").Array()
 	wantRoles := []string{"user", "user", "system", "assistant"}
 	if len(roles) != len(wantRoles) {
@@ -5016,13 +5120,19 @@ func TestInsertClaudeMidConversationSystemMessage_FollowsConsecutiveUserRun(t *t
 	assertClaudeMidConversationSystemMessage(t, out, 2, "guidance")
 }
 
-func TestInsertClaudeMidConversationSystemMessage_IsIdempotent(t *testing.T) {
+func TestInsertClaudeMidConversationSystemMessages_IsIdempotent(t *testing.T) {
 	payload := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
-	first := insertClaudeMidConversationSystemMessage(payload, "guidance")
-	second := insertClaudeMidConversationSystemMessage(first, "guidance")
+	texts := []string{"first guidance", "second guidance"}
+	first := insertClaudeMidConversationSystemMessages(payload, texts)
+	second := insertClaudeMidConversationSystemMessages(first, texts)
 	if !bytes.Equal(first, second) {
 		t.Fatalf("mid-conversation system insertion is not idempotent:\nfirst:  %s\nsecond: %s", first, second)
 	}
+	if got := gjson.GetBytes(first, "messages.#").Int(); got != 3 {
+		t.Fatalf("message count = %d, want user and two system messages: %s", got, first)
+	}
+	assertClaudeMidConversationSystemMessage(t, first, 1, texts[0])
+	assertClaudeMidConversationSystemMessage(t, first, 2, texts[1])
 }
 
 // TestClaudeCodeCLIBetas_MatchesObservedClientMatrix pins the Anthropic-Beta

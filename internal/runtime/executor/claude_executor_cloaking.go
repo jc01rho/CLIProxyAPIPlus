@@ -207,7 +207,7 @@ func checkSystemInstructionsWithMode(payload []byte, strictMode bool) []byte {
 }
 
 // checkSystemInstructionsWithSigningMode keeps the top-level system in Claude
-// Code's minimal CLI shape. A caller's complete system text is preserved as a
+// Code's minimal CLI shape. Each caller system block is preserved as a separate
 // mid-conversation system message after the first user turn, where supported
 // Claude models give it operator-level authority without changing the cached
 // top-level prefix.
@@ -227,25 +227,25 @@ func checkSystemInstructionsWithSigningModeAt(payload []byte, strictMode bool, c
 		return injectClaudeCodeCurrentDate(payload, now)
 	}
 
-	forwardedSystem := collectForwardedClaudeSystemPrompt(system)
-	if strings.TrimSpace(forwardedSystem) == "" {
+	forwardedSystemBlocks := collectForwardedClaudeSystemPromptBlocks(system)
+	if len(forwardedSystemBlocks) == 0 {
 		return injectClaudeCodeCurrentDate(payload, now)
 	}
 	if claudeUsesLegacySystemReminder(payload) {
-		payload = prependClaudeSystemReminderToFirstUserMessage(payload, forwardedSystem)
+		payload = prependClaudeSystemRemindersToFirstUserMessage(payload, forwardedSystemBlocks)
 	} else {
 		// Unknown and future model IDs optimistically use the authoritative
 		// mid-conversation system role. Only empirically unsupported legacy IDs
 		// stay on the user-reminder compatibility path.
-		payload = insertClaudeMidConversationSystemMessage(payload, forwardedSystem)
+		payload = insertClaudeMidConversationSystemMessages(payload, forwardedSystemBlocks)
 	}
 	return injectClaudeCodeCurrentDate(payload, now)
 }
 
 // relocateClaudeSystemPromptForCountTokens keeps a cloaked count_tokens request
 // in Claude Code's measured shape, which carries only model, messages and tools.
-// The Claude Code system blocks are therefore not installed here, but a caller's
-// system prompt still has to be accounted for, so it is relocated into messages
+// The Claude Code system blocks are therefore not installed here, but each caller
+// system block still has to be accounted for, so it is relocated into messages
 // using the same positional mapping as the Messages path. That keeps the counted
 // tokens aligned with the request the caller is about to send while preventing a
 // third-party system prompt from reaching Anthropic in the system slot.
@@ -256,22 +256,22 @@ func relocateClaudeSystemPromptForCountTokens(payload []byte, strictMode bool) [
 	}
 	// Strict mode drops caller prompts on the Messages path, so it must not
 	// reintroduce them here either.
-	forwardedSystem := ""
+	var forwardedSystemBlocks []string
 	if !strictMode {
-		forwardedSystem = collectForwardedClaudeSystemPrompt(system)
+		forwardedSystemBlocks = collectForwardedClaudeSystemPromptBlocks(system)
 	}
 	updated, errDelete := sjson.DeleteBytes(payload, "system")
 	if errDelete != nil {
 		return payload
 	}
 	payload = updated
-	if strings.TrimSpace(forwardedSystem) == "" {
+	if len(forwardedSystemBlocks) == 0 {
 		return payload
 	}
 	if claudeUsesLegacySystemReminder(payload) {
-		return prependClaudeSystemReminderToFirstUserMessage(payload, forwardedSystem)
+		return prependClaudeSystemRemindersToFirstUserMessage(payload, forwardedSystemBlocks)
 	}
-	return insertClaudeMidConversationSystemMessage(payload, forwardedSystem)
+	return insertClaudeMidConversationSystemMessages(payload, forwardedSystemBlocks)
 }
 
 // claudeLegacySystemReminderModels lists the official Anthropic model IDs and
@@ -309,13 +309,13 @@ func claudeUsesLegacySystemReminder(payload []byte) bool {
 	return legacy
 }
 
-func collectForwardedClaudeSystemPrompt(system gjson.Result) string {
-	var parts []string
+func collectForwardedClaudeSystemPromptBlocks(system gjson.Result) []string {
+	var blocks []string
 	appendText := func(text string) {
 		if strings.TrimSpace(text) == "" || util.IsClaudeCodeAttributionSystemText(text) || text == claudeCodeCLIIdentity {
 			return
 		}
-		parts = append(parts, text)
+		blocks = append(blocks, text)
 	}
 
 	if system.IsArray() {
@@ -328,7 +328,7 @@ func collectForwardedClaudeSystemPrompt(system gjson.Result) string {
 	} else if system.Type == gjson.String {
 		appendText(system.String())
 	}
-	return strings.Join(parts, "\n\n")
+	return blocks
 }
 
 // buildTextBlock constructs a JSON text block with JSON.stringify-compatible
@@ -354,42 +354,62 @@ func marshalJSONStringWithoutHTMLEscape(value string) string {
 	return strings.TrimSuffix(encoded.String(), "\n")
 }
 
-func prependClaudeSystemReminderToFirstUserMessage(payload []byte, text string) []byte {
+func prependClaudeSystemRemindersToFirstUserMessage(payload []byte, texts []string) []byte {
 	firstUserIdx := firstClaudeUserMessageIndex(payload)
-	if firstUserIdx < 0 {
+	if firstUserIdx < 0 || len(texts) == 0 {
 		return payload
 	}
 
-	reminderText := claudeCallerSystemReminder(text)
-	reminderBlock := buildTextBlock(reminderText, nil)
+	reminderTexts := make([]string, 0, len(texts))
+	for _, text := range texts {
+		reminderTexts = append(reminderTexts, claudeCallerSystemReminder(text))
+	}
+
 	contentPath := fmt.Sprintf("messages.%d.content", firstUserIdx)
 	content := gjson.GetBytes(payload, contentPath)
 	if content.IsArray() {
 		blocks := content.Array()
+		existing := make(map[string]int, len(blocks))
 		for _, block := range blocks {
-			if block.Get("type").String() == "text" && block.Get("text").String() == reminderText {
-				return payload
+			if block.Get("type").String() == "text" {
+				existing[block.Get("text").String()]++
 			}
+		}
+
+		reminderBlocks := make([]string, 0, len(reminderTexts))
+		for _, reminderText := range reminderTexts {
+			if existing[reminderText] > 0 {
+				existing[reminderText]--
+				continue
+			}
+			reminderBlocks = append(reminderBlocks, buildTextBlock(reminderText, nil))
+		}
+		if len(reminderBlocks) == 0 {
+			return payload
 		}
 
 		insertAt := 0
 		for insertAt < len(blocks) && blocks[insertAt].Get("type").String() == "tool_result" {
 			insertAt++
 		}
-		rawBlocks := make([]string, 0, len(blocks)+1)
+		rawBlocks := make([]string, 0, len(blocks)+len(reminderBlocks))
 		for idx, block := range blocks {
 			if idx == insertAt {
-				rawBlocks = append(rawBlocks, reminderBlock)
+				rawBlocks = append(rawBlocks, reminderBlocks...)
 			}
 			rawBlocks = append(rawBlocks, block.Raw)
 		}
 		if insertAt == len(blocks) {
-			rawBlocks = append(rawBlocks, reminderBlock)
+			rawBlocks = append(rawBlocks, reminderBlocks...)
 		}
 		payload, _ = sjson.SetRawBytes(payload, contentPath, []byte("["+strings.Join(rawBlocks, ",")+"]"))
 	} else if content.Type == gjson.String {
-		userBlock := buildTextBlock(content.String(), nil)
-		payload, _ = sjson.SetRawBytes(payload, contentPath, []byte("["+reminderBlock+","+userBlock+"]"))
+		rawBlocks := make([]string, 0, len(reminderTexts)+1)
+		for _, reminderText := range reminderTexts {
+			rawBlocks = append(rawBlocks, buildTextBlock(reminderText, nil))
+		}
+		rawBlocks = append(rawBlocks, buildTextBlock(content.String(), nil))
+		payload, _ = sjson.SetRawBytes(payload, contentPath, []byte("["+strings.Join(rawBlocks, ",")+"]"))
 	}
 	return payload
 }
@@ -405,9 +425,9 @@ func claudeCallerSystemReminder(text string) string {
 	return reminder.String()
 }
 
-func insertClaudeMidConversationSystemMessage(payload []byte, text string) []byte {
+func insertClaudeMidConversationSystemMessages(payload []byte, texts []string) []byte {
 	firstUserIdx := firstClaudeUserMessageIndex(payload)
-	if firstUserIdx < 0 {
+	if firstUserIdx < 0 || len(texts) == 0 {
 		return payload
 	}
 
@@ -415,28 +435,39 @@ func insertClaudeMidConversationSystemMessage(payload []byte, text string) []byt
 	if !messages.IsArray() {
 		return payload
 	}
-	for _, message := range messages.Array() {
-		if message.Get("role").String() == "system" && claudeMessageContentText(message.Get("content")) == text {
-			return payload
-		}
-	}
-
-	content := "[" + buildTextBlock(text, map[string]string{"type": "ephemeral"}) + "]"
-	systemMessage := `{"role":"system","content":` + content + "}"
 	messageBlocks := messages.Array()
 	insertAt := firstUserIdx + 1
 	for insertAt < len(messageBlocks) && messageBlocks[insertAt].Get("role").String() == "user" {
 		insertAt++
 	}
-	rawMessages := make([]string, 0, len(messageBlocks)+1)
+	if len(messageBlocks)-insertAt >= len(texts) {
+		matches := true
+		for idx, text := range texts {
+			message := messageBlocks[insertAt+idx]
+			if message.Get("role").String() != "system" || claudeMessageContentText(message.Get("content")) != text {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return payload
+		}
+	}
+
+	systemMessages := make([]string, 0, len(texts))
+	for _, text := range texts {
+		content := "[" + buildTextBlock(text, map[string]string{"type": "ephemeral"}) + "]"
+		systemMessages = append(systemMessages, `{"role":"system","content":`+content+"}")
+	}
+	rawMessages := make([]string, 0, len(messageBlocks)+len(systemMessages))
 	for idx, message := range messageBlocks {
 		if idx == insertAt {
-			rawMessages = append(rawMessages, systemMessage)
+			rawMessages = append(rawMessages, systemMessages...)
 		}
 		rawMessages = append(rawMessages, message.Raw)
 	}
 	if insertAt == len(messageBlocks) {
-		rawMessages = append(rawMessages, systemMessage)
+		rawMessages = append(rawMessages, systemMessages...)
 	}
 	payload, _ = sjson.SetRawBytes(payload, "messages", []byte("["+strings.Join(rawMessages, ",")+"]"))
 	return payload
@@ -578,22 +609,9 @@ func injectClaudeCodeCurrentDate(payload []byte, now time.Time) []byte {
 		rawBlocks = append(rawBlocks, block.Raw)
 	}
 
-	insertAt := 0
-	for insertAt < len(rawBlocks) {
-		block := gjson.Parse(rawBlocks[insertAt])
-		if block.Get("type").String() == "tool_result" {
-			insertAt++
-			continue
-		}
-		if block.Get("type").String() == "text" && isClaudeCodeContextReminder(block.Get("text").String()) {
-			insertAt++
-			continue
-		}
-		break
-	}
 	rawBlocks = append(rawBlocks, "")
-	copy(rawBlocks[insertAt+1:], rawBlocks[insertAt:])
-	rawBlocks[insertAt] = dateBlock
+	copy(rawBlocks[1:], rawBlocks)
+	rawBlocks[0] = dateBlock
 	payload, _ = sjson.SetRawBytes(payload, contentPath, []byte("["+strings.Join(rawBlocks, ",")+"]"))
 	return payload
 }
