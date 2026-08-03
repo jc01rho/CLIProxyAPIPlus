@@ -30,8 +30,10 @@ const (
 	ClaudeUserAgent      = "axios/1.15.2"
 	RefreshScope         = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 
-	claudeRefreshMinBackoff = 5 * time.Second
-	claudeRefreshMaxBackoff = 5 * time.Minute
+	claudeRefreshMinBackoff       = 5 * time.Second
+	claudeRefreshMaxBackoff       = 5 * time.Minute
+	claudeRefreshTimeout          = 30 * time.Second
+	claudeRefreshHandshakeTimeout = 10 * time.Second
 )
 
 var (
@@ -420,6 +422,9 @@ func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*C
 	if refreshToken == "" {
 		return nil, fmt.Errorf("refresh token is required")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if blockedUntil := claudeRefreshBlockedUntil(refreshToken); blockedUntil.After(time.Now()) {
 		return nil, &refreshHTTPError{
 			status:    http.StatusTooManyRequests,
@@ -429,7 +434,10 @@ func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*C
 	}
 
 	result, err, _ := claudeRefreshGroup.Do(refreshToken, func() (interface{}, error) {
-		return o.refreshTokensSingleFlight(context.WithoutCancel(ctx), refreshToken)
+		refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), claudeRefreshTimeout)
+		defer cancelRefresh()
+		refreshCtx = context.WithValue(refreshCtx, claudeRefreshHandshakeTimeoutContextKey{}, claudeRefreshHandshakeTimeout)
+		return o.refreshTokensSingleFlight(refreshCtx, refreshToken)
 	})
 	if err != nil {
 		return nil, err

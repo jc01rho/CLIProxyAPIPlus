@@ -233,12 +233,17 @@ func resolveModelAliasPoolFromConfigModels(requestedModel string, models []model
 	out := make([]string, 0)
 	seen := make(map[string]struct{})
 
-	// PRECEDENCE: Check alias matches FIRST (alias takes priority over direct name)
-	for i := range models {
-		name := strings.TrimSpace(models[i].GetName())
-		alias := strings.TrimSpace(models[i].GetAlias())
-		for _, candidate := range candidates {
-			if candidate == "" || alias == "" || !strings.EqualFold(alias, candidate) {
+	// PRECEDENCE: Check alias matches FIRST (alias takes priority over direct name).
+	// Collect EVERY configured model whose alias matches a request candidate so
+	// the resulting pool is the fallback set when the primary upstream fails.
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		for i := range models {
+			name := strings.TrimSpace(models[i].GetName())
+			alias := strings.TrimSpace(models[i].GetAlias())
+			if alias == "" || !strings.EqualFold(alias, candidate) {
 				continue
 			}
 			resolved := candidate
@@ -248,10 +253,10 @@ func resolveModelAliasPoolFromConfigModels(requestedModel string, models []model
 			resolved = preserveResolvedModelSuffix(resolved, requestResult)
 			key := strings.ToLower(strings.TrimSpace(resolved))
 			if key == "" {
-				continue
+				break
 			}
 			if _, exists := seen[key]; exists {
-				continue
+				break
 			}
 			seen[key] = struct{}{}
 			out = append(out, resolved)
@@ -261,7 +266,9 @@ func resolveModelAliasPoolFromConfigModels(requestedModel string, models []model
 		}
 	}
 
-	// FALLBACK: Check direct name matches SECOND
+	// FALLBACK: Check direct name matches SECOND. Direct-name hits return a
+	// single-element pool so the alias pool semantics stay intact when the
+	// alias phase collected nothing.
 	for i := range models {
 		name := strings.TrimSpace(models[i].GetName())
 		for _, candidate := range candidates {
