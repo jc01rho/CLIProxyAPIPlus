@@ -1,6 +1,10 @@
 package helps
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+	"time"
+)
 
 func TestClaudeDiagnosticsTracksCompletedMessagePerCredentialSession(t *testing.T) {
 	resetClaudeDiagnosticsForTest()
@@ -20,6 +24,66 @@ func TestClaudeDiagnosticsTracksCompletedMessagePerCredentialSession(t *testing.
 	_, _, otherCredential := BeginClaudeDiagnostics("credential-b", "session-a")
 	if otherSession != "" || otherCredential != "" {
 		t.Fatalf("diagnostics leaked across identity: session=%q credential=%q", otherSession, otherCredential)
+	}
+}
+
+func TestClaudeDiagnosticsRejectsExpiredGenerationCommit(t *testing.T) {
+	resetClaudeDiagnosticsForTest()
+	defer resetClaudeDiagnosticsForTest()
+
+	key, expiredSequence, _ := BeginClaudeDiagnostics("credential", "session")
+	claudeDiagnosticsState.Lock()
+	entry := claudeDiagnosticsState.entries[key]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	claudeDiagnosticsState.entries[key] = entry
+	claudeDiagnosticsState.Unlock()
+
+	newKey, currentSequence, previous := BeginClaudeDiagnostics("credential", "session")
+	if newKey != key || currentSequence <= expiredSequence || previous != "" {
+		t.Fatalf("new generation = %q/%d/%q, want same key/new sequence/empty", newKey, currentSequence, previous)
+	}
+	CommitClaudeDiagnostics(newKey, currentSequence, "msg_current")
+	CommitClaudeDiagnostics(key, expiredSequence, "msg_expired")
+	_, _, previous = BeginClaudeDiagnostics("credential", "session")
+	if previous != "msg_current" {
+		t.Fatalf("previous message = %q, want current generation", previous)
+	}
+}
+
+func TestClaudeDiagnosticsCacheEvictsOldestEntriesWithinCapacity(t *testing.T) {
+	resetClaudeDiagnosticsForTest()
+	defer resetClaudeDiagnosticsForTest()
+
+	firstKey, firstSequence, _ := BeginClaudeDiagnostics("credential", "session-0")
+	var newestKey string
+	for index := 1; index <= claudeDiagnosticsMaxEntries; index++ {
+		newestKey, _, _ = BeginClaudeDiagnostics("credential", fmt.Sprintf("session-%d", index))
+	}
+
+	claudeDiagnosticsState.Lock()
+	entryCount := len(claudeDiagnosticsState.entries)
+	_, firstFound := claudeDiagnosticsState.entries[firstKey]
+	_, newestFound := claudeDiagnosticsState.entries[newestKey]
+	claudeDiagnosticsState.Unlock()
+	if entryCount > claudeDiagnosticsMaxEntries {
+		t.Fatalf("cache entries = %d, want at most %d", entryCount, claudeDiagnosticsMaxEntries)
+	}
+	if firstFound {
+		t.Fatal("oldest diagnostics entry was not evicted")
+	}
+	if !newestFound {
+		t.Fatal("newest diagnostics entry was evicted")
+	}
+
+	newKey, newSequence, _ := BeginClaudeDiagnostics("credential", "session-0")
+	if newKey != firstKey || newSequence <= firstSequence {
+		t.Fatalf("recreated generation = %q/%d, want same key after sequence %d", newKey, newSequence, firstSequence)
+	}
+	CommitClaudeDiagnostics(newKey, newSequence, "msg_recreated")
+	CommitClaudeDiagnostics(firstKey, firstSequence, "msg_evicted")
+	_, _, previous := BeginClaudeDiagnostics("credential", "session-0")
+	if previous != "msg_recreated" {
+		t.Fatalf("previous message = %q, want recreated generation", previous)
 	}
 }
 

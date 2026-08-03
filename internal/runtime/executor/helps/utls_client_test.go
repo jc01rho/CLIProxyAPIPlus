@@ -174,6 +174,20 @@ func TestCachedClaudeCodeRoundTripperReusesTransport(t *testing.T) {
 	}
 }
 
+func TestCachedClaudeCodeRoundTripperBoundsProxyCardinality(t *testing.T) {
+	firstProxy := fmt.Sprintf("http://127.0.0.1:%d", 30000)
+	first := cachedClaudeCodeRoundTripper(firstProxy)
+	for index := 1; index <= claudeCodeRoundTripperCacheCapacity; index++ {
+		cachedClaudeCodeRoundTripper(fmt.Sprintf("http://127.0.0.1:%d", 30000+index))
+	}
+	if got := claudeCodeRoundTripperCache.Len(); got > claudeCodeRoundTripperCacheCapacity {
+		t.Fatalf("transport cache entries = %d, want at most %d", got, claudeCodeRoundTripperCacheCapacity)
+	}
+	if recreated := cachedClaudeCodeRoundTripper(firstProxy); recreated == first {
+		t.Fatal("least recently used proxy transport was not evicted")
+	}
+}
+
 func TestClaudeCodeTLSClientHelloCapture(t *testing.T) {
 	proxyURL := os.Getenv("CPA_TLS_FP_PROXY")
 	if proxyURL == "" {
@@ -220,6 +234,10 @@ func TestFallbackRoundTripperSelectsProviderFingerprint(t *testing.T) {
 		want string
 	}{
 		{name: "Anthropic HTTPS", url: "https://api.anthropic.com/v1/messages", want: "anthropic"},
+		{name: "Anthropic explicit HTTPS port", url: "https://api.anthropic.com:443/v1/messages", want: "anthropic"},
+		{name: "Anthropic custom port", url: "https://api.anthropic.com:8443/v1/messages", want: "fallback"},
+		{name: "Anthropic userinfo", url: "https://caller@api.anthropic.com/v1/messages", want: "fallback"},
+		{name: "Anthropic lookalike", url: "https://api.anthropic.com.example/v1/messages", want: "fallback"},
 		{name: "ChatGPT HTTPS", url: "https://chatgpt.com/backend-api/codex/responses", want: "chrome"},
 		{name: "Other HTTPS", url: "https://example.com/v1/messages", want: "fallback"},
 		{name: "Anthropic HTTP", url: "http://api.anthropic.com/v1/messages", want: "fallback"},

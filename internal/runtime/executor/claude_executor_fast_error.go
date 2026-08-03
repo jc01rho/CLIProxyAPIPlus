@@ -33,7 +33,7 @@ func (e *claudeFastRequestError) Unwrap() error {
 }
 
 func (e *claudeFastRequestError) StatusCode() int {
-	if e == nil {
+	if e == nil || (e.status >= http.StatusOK && e.status < http.StatusMultipleChoices) {
 		return 0
 	}
 	return e.status

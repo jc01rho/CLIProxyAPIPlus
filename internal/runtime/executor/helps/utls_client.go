@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tls "github.com/refraction-networking/utls"
+	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/httpwire"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -208,7 +209,16 @@ func claudeCodeTLSClientHelloSpec() *tls.ClientHelloSpec {
 	}
 }
 
-var claudeCodeRoundTripperCache sync.Map
+const claudeCodeRoundTripperCacheCapacity = 64
+
+var claudeCodeRoundTripperCache = internalcache.NewBoundedLRU[string, http.RoundTripper](
+	claudeCodeRoundTripperCacheCapacity,
+	func(_ string, roundTripper http.RoundTripper) {
+		if transport, ok := roundTripper.(interface{ CloseIdleConnections() }); ok {
+			transport.CloseIdleConnections()
+		}
+	},
+)
 
 var claudeCodeMessagesHeaderOrder = []string{
 	"Accept",
@@ -267,18 +277,9 @@ func claudeCodeRequestHeaderOrder(_, requestTarget string) []string {
 }
 
 func cachedClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
-	if cached, ok := claudeCodeRoundTripperCache.Load(proxyURL); ok {
-		return cached.(http.RoundTripper)
-	}
-	created := newClaudeCodeRoundTripper(proxyURL)
-	actual, loaded := claudeCodeRoundTripperCache.LoadOrStore(proxyURL, created)
-	if loaded {
-		if transport, ok := created.(*http.Transport); ok {
-			transport.CloseIdleConnections()
-		}
-		return actual.(http.RoundTripper)
-	}
-	return created
+	return claudeCodeRoundTripperCache.GetOrAdd(proxyURL, func() http.RoundTripper {
+		return newClaudeCodeRoundTripper(proxyURL)
+	})
 }
 
 func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
@@ -346,13 +347,11 @@ type fallbackRoundTripper struct {
 }
 
 func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.URL.Scheme == "https" {
-		switch strings.ToLower(req.URL.Hostname()) {
-		case "api.anthropic.com":
-			return f.anthropic.RoundTrip(req)
-		case "chatgpt.com":
-			return f.chrome.RoundTrip(req)
-		}
+	if IsAnthropicUpstreamURL(req.URL) {
+		return f.anthropic.RoundTrip(req)
+	}
+	if req.URL.Scheme == "https" && strings.EqualFold(req.URL.Hostname(), "chatgpt.com") {
+		return f.chrome.RoundTrip(req)
 	}
 	return f.fallback.RoundTrip(req)
 }

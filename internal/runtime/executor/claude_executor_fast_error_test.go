@@ -137,6 +137,75 @@ func TestClaudeExecutorFastHTTPErrorPassesThroughWithoutRetry(t *testing.T) {
 	}
 }
 
+func TestClaudeExecutorFastSuccessfulHTTPDecodeErrorDoesNotExposeSuccessStatus(t *testing.T) {
+	testCases := []struct {
+		name string
+		run  func(context.Context, *ClaudeExecutor, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) error
+	}{
+		{
+			name: "execute",
+			run: func(ctx context.Context, executor *ClaudeExecutor, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) error {
+				_, errExecute := executor.Execute(ctx, auth, req, opts)
+				return errExecute
+			},
+		},
+		{
+			name: "stream",
+			run: func(ctx context.Context, executor *ClaudeExecutor, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) error {
+				_, errStream := executor.ExecuteStream(ctx, auth, req, opts)
+				return errStream
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				attempts.Add(1)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}, "Content-Encoding": []string{"gzip"}},
+					Body:       io.NopCloser(strings.NewReader("not-a-gzip-stream")),
+					Request:    req,
+				}, nil
+			})
+			ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
+			auth := &cliproxyauth.Auth{
+				ID:         "fast-success-decode-error",
+				Attributes: map[string]string{"api_key": "sk-ant-oat-fast-success-decode-error"},
+				Metadata:   claudeOAuthTestMetadata(),
+			}
+			request := cliproxyexecutor.Request{
+				Model:   "claude-opus-5",
+				Payload: []byte(`{"model":"claude-opus-5","max_tokens":16,"speed":"fast","messages":[{"role":"user","content":"reply OK"}]}`),
+			}
+			errRun := testCase.run(ctx, NewClaudeExecutor(&config.Config{}), auth, request, cliproxyexecutor.Options{
+				Stream:         testCase.name == "stream",
+				SourceFormat:   sdktranslator.FormatClaude,
+				ResponseFormat: sdktranslator.FormatClaude,
+			})
+			if errRun == nil {
+				t.Fatal("Fast decode error = nil")
+			}
+			if got := attempts.Load(); got != 1 {
+				t.Fatalf("upstream attempts = %d, want 1", got)
+			}
+			var requestErr cliproxyexecutor.RequestScopedError
+			if !errors.As(errRun, &requestErr) || requestErr == nil || !requestErr.IsRequestScoped() {
+				t.Fatalf("Fast decode error = %T %v, want request-scoped", errRun, errRun)
+			}
+			var statusErr interface{ StatusCode() int }
+			if !errors.As(errRun, &statusErr) || statusErr == nil {
+				t.Fatalf("Fast decode error = %T %v, want status provider", errRun, errRun)
+			}
+			if got := statusErr.StatusCode(); got != 0 {
+				t.Fatalf("Fast decode status = %d, want 0 instead of upstream success", got)
+			}
+		})
+	}
+}
+
 func TestClaudeExecutorFastTransportErrorIsRequestScopedWithoutRetry(t *testing.T) {
 	upstreamErr := errors.New("transport unavailable")
 	var attempts atomic.Int32

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -180,6 +181,10 @@ func TestApplyClaudeCredentialMetadataRejectsDuplicateIdentityContainers(t *test
 		body string
 	}{
 		{
+			name: "invalid request JSON",
+			body: `{"messages":[],"metadata":`,
+		},
+		{
 			name: "duplicate top-level metadata",
 			body: `{"messages":[],"metadata":{"user_id":"{}"},"metadata":{"user_id":"{}"}}`,
 		},
@@ -194,8 +199,17 @@ func TestApplyClaudeCredentialMetadataRejectsDuplicateIdentityContainers(t *test
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, _, errApply := ApplyClaudeCredentialMetadata([]byte(test.body), auth, sessionID); errApply == nil {
+			_, _, errApply := ApplyClaudeCredentialMetadata([]byte(test.body), auth, sessionID)
+			if errApply == nil {
 				t.Fatal("ApplyClaudeCredentialMetadata() error = nil, want duplicate-key rejection")
+			}
+			var requestErr cliproxyexecutor.RequestScopedError
+			if !errors.As(errApply, &requestErr) || requestErr == nil || !requestErr.IsRequestScoped() {
+				t.Fatalf("ApplyClaudeCredentialMetadata() error = %T %v, want request-scoped", errApply, errApply)
+			}
+			var statusErr interface{ StatusCode() int }
+			if !errors.As(errApply, &statusErr) || statusErr.StatusCode() != http.StatusBadRequest {
+				t.Fatalf("ApplyClaudeCredentialMetadata() error = %T %v, want HTTP 400", errApply, errApply)
 			}
 		})
 	}
@@ -207,11 +221,16 @@ func TestApplyClaudeCredentialMetadataRequiresAccountUUID(t *testing.T) {
 			"0000000000000000000000000000000000000000000000000000000000000000",
 		},
 	}}
-	if _, _, errApply := ApplyClaudeCredentialMetadata(
+	_, _, errApply := ApplyClaudeCredentialMetadata(
 		[]byte(`{"messages":[]}`),
 		auth,
 		"11111111-2222-4333-8444-555555555555",
-	); errApply == nil {
+	)
+	if errApply == nil {
 		t.Fatal("ApplyClaudeCredentialMetadata() error = nil, want missing account UUID rejection")
+	}
+	var requestErr cliproxyexecutor.RequestScopedError
+	if errors.As(errApply, &requestErr) && requestErr != nil && requestErr.IsRequestScoped() {
+		t.Fatalf("missing credential identity error = %T %v, want credential-scoped", errApply, errApply)
 	}
 }

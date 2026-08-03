@@ -6,10 +6,10 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	tls "github.com/refraction-networking/utls"
+	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/httpwire"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
@@ -64,7 +64,10 @@ func claudeOAuthRequestHeaderOrder(method, requestTarget string) []string {
 // claudeOAuthSessionCacheCapacity bounds one proxy's TLS session cache. The
 // OAuth control plane only talks to platform.claude.com and api.anthropic.com,
 // so a small cache covers every reachable server.
-const claudeOAuthSessionCacheCapacity = 8
+const (
+	claudeOAuthSessionCacheCapacity      = 8
+	claudeOAuthProxySessionCacheCapacity = 64
+)
 
 // claudeOAuthSessionCaches keys one session cache per effective proxy URL.
 //
@@ -76,15 +79,15 @@ const claudeOAuthSessionCacheCapacity = 8
 // server rather than a credential, and connections are already pooled per proxy
 // on the inference plane, so this adds no new cross-credential linkage.
 
-var claudeOAuthSessionCaches sync.Map
+var claudeOAuthSessionCaches = internalcache.NewBoundedLRU[string, tls.ClientSessionCache](
+	claudeOAuthProxySessionCacheCapacity,
+	nil,
+)
 
 func claudeOAuthSessionCache(proxyURL string) tls.ClientSessionCache {
-	if cached, ok := claudeOAuthSessionCaches.Load(proxyURL); ok {
-		return cached.(tls.ClientSessionCache)
-	}
-	created := tls.NewLRUClientSessionCache(claudeOAuthSessionCacheCapacity)
-	actual, _ := claudeOAuthSessionCaches.LoadOrStore(proxyURL, created)
-	return actual.(tls.ClientSessionCache)
+	return claudeOAuthSessionCaches.GetOrAdd(proxyURL, func() tls.ClientSessionCache {
+		return tls.NewLRUClientSessionCache(claudeOAuthSessionCacheCapacity)
+	})
 }
 
 // newClaudeOAuthTLSConfig builds the uTLS config for one control-plane dial.

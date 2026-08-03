@@ -145,6 +145,20 @@ func TestClaudeOAuthTLSResumptionIsWireSafe(t *testing.T) {
 	}
 }
 
+func TestClaudeOAuthSessionCacheBoundsProxyCardinality(t *testing.T) {
+	firstProxy := "http://127.0.0.1:31000"
+	first := claudeOAuthSessionCache(firstProxy)
+	for index := 1; index <= claudeOAuthProxySessionCacheCapacity; index++ {
+		claudeOAuthSessionCache("http://127.0.0.1:" + strconv.Itoa(31000+index))
+	}
+	if got := claudeOAuthSessionCaches.Len(); got > claudeOAuthProxySessionCacheCapacity {
+		t.Fatalf("OAuth session caches = %d, want at most %d", got, claudeOAuthProxySessionCacheCapacity)
+	}
+	if recreated := claudeOAuthSessionCache(firstProxy); recreated == first {
+		t.Fatal("least recently used OAuth proxy session cache was not evicted")
+	}
+}
+
 func TestClaudeOAuthRequestHeaderOrderMatchesNative220Capture(t *testing.T) {
 	t.Parallel()
 

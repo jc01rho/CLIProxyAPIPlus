@@ -3,27 +3,33 @@ package helps
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	claudeDiagnosticsTTL           = time.Hour
-	claudeDiagnosticsCleanupPeriod = 15 * time.Minute
+	claudeDiagnosticsTTL            = time.Hour
+	claudeDiagnosticsCleanupPeriod  = 15 * time.Minute
+	claudeDiagnosticsMaxEntries     = 4096
+	claudeDiagnosticsEvictBatchSize = 256
 )
 
 type claudeDiagnosticsEntry struct {
 	previousMessageID string
-	nextSequence      uint64
+	minimumSequence   uint64
 	committedSequence uint64
+	lastAccess        uint64
 	expiresAt         time.Time
 }
 
 var claudeDiagnosticsState = struct {
 	sync.Mutex
-	entries     map[string]claudeDiagnosticsEntry
-	lastCleanup time.Time
+	entries      map[string]claudeDiagnosticsEntry
+	lastCleanup  time.Time
+	nextSequence uint64
+	nextAccess   uint64
 }{entries: make(map[string]claudeDiagnosticsEntry)}
 
 // BeginClaudeDiagnostics starts one request generation for a stable credential
@@ -43,27 +49,29 @@ func BeginClaudeDiagnostics(credentialIdentity, sessionID string) (key string, s
 
 	claudeDiagnosticsState.Lock()
 	defer claudeDiagnosticsState.Unlock()
-	if claudeDiagnosticsState.lastCleanup.IsZero() || now.Sub(claudeDiagnosticsState.lastCleanup) >= claudeDiagnosticsCleanupPeriod {
-		for candidateKey, candidate := range claudeDiagnosticsState.entries {
-			if !candidate.expiresAt.IsZero() && now.After(candidate.expiresAt) {
-				delete(claudeDiagnosticsState.entries, candidateKey)
-			}
-		}
-		claudeDiagnosticsState.lastCleanup = now
+	cleanupClaudeDiagnosticsLocked(now)
+
+	entry, found := claudeDiagnosticsState.entries[key]
+	newGeneration := !found || (!entry.expiresAt.IsZero() && now.After(entry.expiresAt))
+	if newGeneration && !found {
+		evictClaudeDiagnosticsLocked()
 	}
-	entry := claudeDiagnosticsState.entries[key]
-	if !entry.expiresAt.IsZero() && now.After(entry.expiresAt) {
-		entry = claudeDiagnosticsEntry{}
+
+	claudeDiagnosticsState.nextSequence++
+	sequence = claudeDiagnosticsState.nextSequence
+	if newGeneration {
+		entry = claudeDiagnosticsEntry{minimumSequence: sequence}
 	}
-	entry.nextSequence++
+	claudeDiagnosticsState.nextAccess++
+	entry.lastAccess = claudeDiagnosticsState.nextAccess
 	entry.expiresAt = now.Add(claudeDiagnosticsTTL)
 	claudeDiagnosticsState.entries[key] = entry
-	return key, entry.nextSequence, entry.previousMessageID
+	return key, sequence, entry.previousMessageID
 }
 
 // CommitClaudeDiagnostics advances continuity only after a response completes.
 // A response from an older concurrently-started request cannot overwrite a
-// newer committed generation.
+// newer committed generation, including after TTL expiry or capacity eviction.
 func CommitClaudeDiagnostics(key string, sequence uint64, messageID string) {
 	key = strings.TrimSpace(key)
 	messageID = strings.TrimSpace(messageID)
@@ -75,13 +83,48 @@ func CommitClaudeDiagnostics(key string, sequence uint64, messageID string) {
 	claudeDiagnosticsState.Lock()
 	defer claudeDiagnosticsState.Unlock()
 	entry, ok := claudeDiagnosticsState.entries[key]
-	if !ok || sequence < entry.committedSequence {
+	if !ok || sequence < entry.minimumSequence || sequence < entry.committedSequence {
 		return
 	}
+	claudeDiagnosticsState.nextAccess++
 	entry.previousMessageID = messageID
 	entry.committedSequence = sequence
+	entry.lastAccess = claudeDiagnosticsState.nextAccess
 	entry.expiresAt = now.Add(claudeDiagnosticsTTL)
 	claudeDiagnosticsState.entries[key] = entry
+}
+
+func cleanupClaudeDiagnosticsLocked(now time.Time) {
+	if !claudeDiagnosticsState.lastCleanup.IsZero() && now.Sub(claudeDiagnosticsState.lastCleanup) < claudeDiagnosticsCleanupPeriod {
+		return
+	}
+	for key, entry := range claudeDiagnosticsState.entries {
+		if !entry.expiresAt.IsZero() && now.After(entry.expiresAt) {
+			delete(claudeDiagnosticsState.entries, key)
+		}
+	}
+	claudeDiagnosticsState.lastCleanup = now
+}
+
+func evictClaudeDiagnosticsLocked() {
+	if len(claudeDiagnosticsState.entries) < claudeDiagnosticsMaxEntries {
+		return
+	}
+	type candidate struct {
+		key        string
+		lastAccess uint64
+	}
+	candidates := make([]candidate, 0, len(claudeDiagnosticsState.entries))
+	for key, entry := range claudeDiagnosticsState.entries {
+		candidates = append(candidates, candidate{key: key, lastAccess: entry.lastAccess})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].lastAccess < candidates[j].lastAccess
+	})
+	count := min(claudeDiagnosticsEvictBatchSize, len(candidates))
+	for _, candidate := range candidates[:count] {
+		delete(claudeDiagnosticsState.entries, candidate.key)
+	}
 }
 
 func resetClaudeDiagnosticsForTest() {
@@ -89,4 +132,6 @@ func resetClaudeDiagnosticsForTest() {
 	defer claudeDiagnosticsState.Unlock()
 	claudeDiagnosticsState.entries = make(map[string]claudeDiagnosticsEntry)
 	claudeDiagnosticsState.lastCleanup = time.Time{}
+	claudeDiagnosticsState.nextSequence = 0
+	claudeDiagnosticsState.nextAccess = 0
 }

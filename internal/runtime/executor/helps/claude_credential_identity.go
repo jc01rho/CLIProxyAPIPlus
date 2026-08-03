@@ -199,6 +199,42 @@ func ClaudeCredentialAccountUUID(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
+type claudeCredentialMetadataRequestError struct {
+	cause error
+}
+
+func (e *claudeCredentialMetadataRequestError) Error() string {
+	if e == nil || e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e *claudeCredentialMetadataRequestError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *claudeCredentialMetadataRequestError) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return http.StatusBadRequest
+}
+
+func (e *claudeCredentialMetadataRequestError) IsRequestScoped() bool {
+	return e != nil
+}
+
+func newClaudeCredentialMetadataRequestError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &claudeCredentialMetadataRequestError{cause: err}
+}
+
 // ApplyClaudeCredentialMetadata rewrites the identity exception shared by native and cloaked OAuth requests.
 func ApplyClaudeCredentialMetadata(payload []byte, auth *cliproxyauth.Auth, sessionID string) ([]byte, string, error) {
 	if auth == nil {
@@ -206,7 +242,7 @@ func ApplyClaudeCredentialMetadata(payload []byte, auth *cliproxyauth.Auth, sess
 	}
 	metadata, metadataPresent, errMetadata := uniqueClaudeJSONObjectMember(payload, "metadata")
 	if errMetadata != nil {
-		return nil, "", fmt.Errorf("apply Claude credential metadata: %w", errMetadata)
+		return nil, "", newClaudeCredentialMetadataRequestError(fmt.Errorf("apply Claude credential metadata: %w", errMetadata))
 	}
 	var existing string
 	if metadataPresent {
@@ -214,7 +250,7 @@ func ApplyClaudeCredentialMetadata(payload []byte, auth *cliproxyauth.Auth, sess
 		if len(trimmedMetadata) >= 2 && trimmedMetadata[0] == '{' {
 			userID, userIDPresent, errUserID := uniqueClaudeJSONObjectMember(trimmedMetadata, "user_id")
 			if errUserID != nil {
-				return nil, "", fmt.Errorf("apply Claude credential metadata: metadata: %w", errUserID)
+				return nil, "", newClaudeCredentialMetadataRequestError(fmt.Errorf("apply Claude credential metadata: metadata: %w", errUserID))
 			}
 			if userIDPresent && json.Unmarshal(userID, &existing) != nil {
 				existing = ""
@@ -237,7 +273,7 @@ func ApplyClaudeCredentialMetadata(payload []byte, auth *cliproxyauth.Auth, sess
 
 	encoded, errIdentity := rebuildClaudeMetadataUserID(existing, deviceID, accountUUID, sessionID)
 	if errIdentity != nil {
-		return nil, "", fmt.Errorf("apply Claude credential metadata: %w", errIdentity)
+		return nil, "", newClaudeCredentialMetadataRequestError(fmt.Errorf("apply Claude credential metadata: %w", errIdentity))
 	}
 	updated, errSet := sjson.SetBytes(payload, "metadata.user_id", string(encoded))
 	if errSet != nil {
