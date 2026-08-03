@@ -41,6 +41,7 @@ func TestInjectClaudeDiagnosticsMatchesNativeFieldOrderAndContinuity(t *testing.
 
 func TestClaudeExecutorDiagnosticsAdvancesAfterSuccessfulResponse(t *testing.T) {
 	var previousValues []gjson.Result
+	var betaValues []string
 	call := 0
 	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		body, errRead := io.ReadAll(req.Body)
@@ -48,6 +49,11 @@ func TestClaudeExecutorDiagnosticsAdvancesAfterSuccessfulResponse(t *testing.T) 
 			t.Fatal(errRead)
 		}
 		previousValues = append(previousValues, gjson.GetBytes(body, "diagnostics.previous_message_id"))
+		betas := req.Header.Get("Anthropic-Beta")
+		if betas == "" {
+			betas = strings.Join(req.Header["anthropic-beta"], ",")
+		}
+		betaValues = append(betaValues, betas)
 		call++
 		response := `{"id":"msg_diagnostics_` + string(rune('0'+call)) + `","type":"message","model":"claude-opus-5","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(response)), Request: req}, nil
@@ -82,6 +88,12 @@ func TestClaudeExecutorDiagnosticsAdvancesAfterSuccessfulResponse(t *testing.T) 
 	}
 	if got := previousValues[1].String(); got != "msg_diagnostics_1" {
 		t.Fatalf("second diagnostics previous_message_id = %q, want first upstream response ID", got)
+	}
+	wantTrailer := claudeExtendedCacheTTLBeta + "," + claudeCacheDiagnosisBeta
+	for turn, betas := range betaValues {
+		if !strings.HasSuffix(betas, wantTrailer) {
+			t.Fatalf("turn %d Anthropic-Beta = %q, want native diagnostics trailer %q", turn+1, betas, wantTrailer)
+		}
 	}
 }
 

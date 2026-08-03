@@ -42,6 +42,7 @@ const (
 	claudeFallbackCreditBeta     = "fallback-credit-2026-06-01"
 	claudeStructuredOutputsBeta  = "structured-outputs-2025-12-15"
 	claudeExtendedCacheTTLBeta   = "extended-cache-ttl-2025-04-11"
+	claudeCacheDiagnosisBeta     = "cache-diagnosis-2026-04-07"
 )
 
 // claudeCodeCLIConstantBetas are the betas Claude Code 2.1.220 sends on every
@@ -91,11 +92,12 @@ var claudeCodeTrailingBetas = []string{
 //	13 fallback-credit-2026-06-01
 //	14 fast-mode-2026-02-01               speed:fast requests only
 //	15 extended-cache-ttl-2025-04-11      OAuth credentials only
+//	16 cache-diagnosis-2026-04-07         requests with diagnostics only
 //
 // An empty body keeps the optimistic role=system default, matching the cloaking
 // policy for unknown and future model IDs.
 func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool) string {
-	betas := make([]string, 0, len(claudeCodeCLIConstantBetas)+len(claudeCodeTrailingBetas)+6)
+	betas := make([]string, 0, len(claudeCodeCLIConstantBetas)+len(claudeCodeTrailingBetas)+7)
 	betas = append(betas, claudeCodeBeta)
 	if oauthToken {
 		betas = append(betas, claudeOAuthBeta)
@@ -124,6 +126,9 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 	}
 	if oauthToken {
 		betas = append(betas, claudeExtendedCacheTTLBeta)
+	}
+	if diagnostics := gjson.GetBytes(body, "diagnostics"); diagnostics.IsObject() {
+		betas = append(betas, claudeCacheDiagnosisBeta)
 	}
 	return strings.Join(betas, ",")
 }

@@ -48,10 +48,11 @@ func TestApplyClaudeHeaders_ConfirmedClientKeepsOAuthCredentialBetas(t *testing.
 	if parts[len(parts)-1] != claudeExtendedCacheTTLBeta {
 		t.Fatalf("Anthropic-Beta = %q, want OAuth cache trailer %s", got, claudeExtendedCacheTTLBeta)
 	}
-	for _, stale := range []string{"advisor-tool-2026-03-01", "cache-diagnosis-2026-04-07"} {
-		if strings.Contains(got, stale) {
-			t.Fatalf("Anthropic-Beta = %q, contains stale OAuth beta %s", got, stale)
-		}
+	if strings.Contains(got, "advisor-tool-2026-03-01") {
+		t.Fatalf("Anthropic-Beta = %q, contains stale OAuth tool beta", got)
+	}
+	if strings.Contains(got, claudeCacheDiagnosisBeta) {
+		t.Fatalf("Anthropic-Beta = %q, contains %s without a diagnostics body", got, claudeCacheDiagnosisBeta)
 	}
 	// The caller's own betas survive the restoration.
 	for _, want := range []string{"interleaved-thinking-2025-05-14", claudeEffortBeta} {
@@ -221,8 +222,24 @@ func TestApplyClaudeHeaders_FastModePrecedesOAuthTrailer(t *testing.T) {
 	if parts[len(parts)-2] != claudeFastModeBeta {
 		t.Fatalf("Anthropic-Beta = %q, want %s before the OAuth cache trailer", got, claudeFastModeBeta)
 	}
-	if strings.Contains(got, "cache-diagnosis-2026-04-07") {
-		t.Fatalf("Anthropic-Beta = %q, contains stale cache diagnosis beta", got)
+	if strings.Contains(got, claudeCacheDiagnosisBeta) {
+		t.Fatalf("Anthropic-Beta = %q, contains %s without a diagnostics body", got, claudeCacheDiagnosisBeta)
+	}
+}
+
+func TestApplyClaudeHeaders_DiagnosticsBetaFollowsBodyInNativeOrder(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		req := newClaudeHeaderTestRequest(t, nil)
+		body := []byte(`{"model":"claude-opus-5","diagnostics":{"previous_message_id":null}}`)
+		if err := applyClaudeHeaders(req, claudeOAuthAuthForBetaPolicy(), claudeRaceProbeOAuthKey, stream, nil,
+			body, nil, nil, false); err != nil {
+			t.Fatalf("applyClaudeHeaders(stream=%v) error = %v", stream, err)
+		}
+		got := req.Header.Get("Anthropic-Beta")
+		wantTrailer := claudeExtendedCacheTTLBeta + "," + claudeCacheDiagnosisBeta
+		if !strings.HasSuffix(got, wantTrailer) {
+			t.Fatalf("stream=%v: Anthropic-Beta = %q, want native diagnostics trailer %q", stream, got, wantTrailer)
+		}
 	}
 }
 
