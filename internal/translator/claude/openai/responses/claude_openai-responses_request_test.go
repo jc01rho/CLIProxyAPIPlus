@@ -383,3 +383,120 @@ func TestConvertOpenAIResponsesRequestToClaude_PreservesContentPartCacheControl(
 		t.Fatalf("content.1 should not have cache_control. Output: %s", result)
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToClaude_SystemLevelInputsBecomeSeparateSystemBlocks(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"instructions": "I1",
+		"input": [
+			{"type": "message", "role": "system", "content": [{"type": "input_text", "text": "S1"}]},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "U1"}]},
+			{"type": "message", "role": "developer", "content": "D1"},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "A1"}]},
+			{"type": "message", "role": "system", "content": [{"type": "input_text", "text": "S2"}]}
+		]
+	}`
+
+	result := ConvertOpenAIResponsesRequestToClaude("claude-opus-5", []byte(inputJSON), false)
+	root := gjson.ParseBytes(result)
+
+	system := root.Get("system").Array()
+	if len(system) != 4 {
+		t.Fatalf("system blocks = %d, want 4. system: %s", len(system), root.Get("system").Raw)
+	}
+	for idx, want := range []string{"I1", "S1", "D1", "S2"} {
+		if got := system[idx].Get("type").String(); got != "text" {
+			t.Fatalf("system[%d].type = %q, want text", idx, got)
+		}
+		if got := system[idx].Get("text").String(); got != want {
+			t.Fatalf("system[%d].text = %q, want %q", idx, got, want)
+		}
+	}
+
+	messages := root.Get("messages").Array()
+	if len(messages) != 2 {
+		t.Fatalf("messages = %d, want 2. messages: %s", len(messages), root.Get("messages").Raw)
+	}
+	if got := messages[0].Get("role").String(); got != "user" {
+		t.Fatalf("messages[0].role = %q, want user", got)
+	}
+	if got := messages[1].Get("role").String(); got != "assistant" {
+		t.Fatalf("messages[1].role = %q, want assistant", got)
+	}
+	if strings.Contains(root.Get("messages").Raw, "I1") ||
+		strings.Contains(root.Get("messages").Raw, "S1") ||
+		strings.Contains(root.Get("messages").Raw, "D1") {
+		t.Fatalf("system-level text must not be downgraded into messages: %s", root.Get("messages").Raw)
+	}
+	if strings.Contains(root.Get("messages").Raw, `"role":"system"`) {
+		t.Fatalf("translator must not emit role=system messages: %s", root.Get("messages").Raw)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_SystemOnlyInputKeepsFallbackUserMessage(t *testing.T) {
+	inputJSON := `{"model": "gpt-4.1", "instructions": "I1"}`
+
+	root := gjson.ParseBytes(ConvertOpenAIResponsesRequestToClaude("claude-opus-5", []byte(inputJSON), false))
+	if got := len(root.Get("system").Array()); got != 1 {
+		t.Fatalf("system blocks = %d, want 1", got)
+	}
+	messages := root.Get("messages").Array()
+	if len(messages) != 1 {
+		t.Fatalf("messages = %d, want 1. messages: %s", len(messages), root.Get("messages").Raw)
+	}
+	if got := messages[0].Get("role").String(); got != "user" {
+		t.Fatalf("messages[0].role = %q, want user", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_SystemNonTextPartKeptAsTypedMarker(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"input": [
+			{"type": "message", "role": "developer", "content": [
+				{"type": "input_text", "text": "D1"},
+				{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
+			]},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "U1"}]}
+		]
+	}`
+
+	root := gjson.ParseBytes(ConvertOpenAIResponsesRequestToClaude("claude-opus-5", []byte(inputJSON), false))
+	system := root.Get("system").Array()
+	if len(system) != 2 {
+		t.Fatalf("system blocks = %d, want 2. system: %s", len(system), root.Get("system").Raw)
+	}
+	if got := system[0].Get("text").String(); got != "D1" {
+		t.Fatalf("system[0].text = %q, want D1", got)
+	}
+	if got := system[1].Get("type").String(); got != "input_image" {
+		t.Fatalf("system[1].type = %q, want input_image", got)
+	}
+	if system[1].Get("source").Exists() {
+		t.Fatalf("unsupported marker must not copy the payload: %s", system[1].Raw)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_SystemItemCacheControlAppliesToLastBlock(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"input": [
+			{"type": "message", "role": "system", "cache_control": {"type": "ephemeral"}, "content": [
+				{"type": "input_text", "text": "S1"},
+				{"type": "input_text", "text": "S2"}
+			]},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "U1"}]}
+		]
+	}`
+
+	system := gjson.ParseBytes(ConvertOpenAIResponsesRequestToClaude("claude-opus-5", []byte(inputJSON), false)).Get("system").Array()
+	if len(system) != 2 {
+		t.Fatalf("system blocks = %d, want 2", len(system))
+	}
+	if system[0].Get("cache_control").Exists() {
+		t.Fatalf("system[0] must not carry cache_control: %s", system[0].Raw)
+	}
+	if got := system[1].Get("cache_control.type").String(); got != "ephemeral" {
+		t.Fatalf("system[1].cache_control.type = %q, want ephemeral", got)
+	}
+}

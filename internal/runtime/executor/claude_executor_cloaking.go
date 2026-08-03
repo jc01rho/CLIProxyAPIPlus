@@ -309,6 +309,55 @@ func claudeUsesLegacySystemReminder(payload []byte) bool {
 	return legacy
 }
 
+// claudeCallerSystemBlockError reports a caller system block that Claude cannot
+// carry in any system slot. It is request-scoped: no other credential or upstream
+// model can accept the same body, so the request must not be retried.
+type claudeCallerSystemBlockError struct {
+	statusErr
+}
+
+func (claudeCallerSystemBlockError) IsRequestScoped() bool {
+	return true
+}
+
+func newClaudeCallerSystemBlockError(index int, blockType string) error {
+	if blockType == "" {
+		blockType = "unknown"
+	}
+	return claudeCallerSystemBlockError{statusErr{
+		code: http.StatusBadRequest,
+		msg: fmt.Sprintf("invalid_request_error: system.%d.type: Input should be 'text'. "+
+			"System instructions support text only, but this block has type %q. "+
+			"Move non-text content into a user message.", index, blockType),
+	}}
+}
+
+// validateClaudeCallerSystemBlocks rejects caller system content that cannot keep
+// its operator authority. Verified against api.anthropic.com on 2026-08-03: the
+// top-level system field answers "system.<i>.type: Input should be 'text'" for
+// image, document and unknown block types, and a role=system message answers
+// "role 'system' supports text, tool_addition, and tool_removal blocks only".
+// Cloaking relocates caller blocks into one of those two slots, so a non-text
+// block has no destination. Failing here keeps the caller's instructions from
+// being silently dropped, and costs no upstream attempt.
+func validateClaudeCallerSystemBlocks(system gjson.Result) error {
+	if !system.IsArray() {
+		// A string system prompt is text by definition.
+		return nil
+	}
+	var blockErr error
+	index := 0
+	system.ForEach(func(_, part gjson.Result) bool {
+		if strings.TrimSpace(part.Get("type").String()) != "text" {
+			blockErr = newClaudeCallerSystemBlockError(index, strings.TrimSpace(part.Get("type").String()))
+			return false
+		}
+		index++
+		return true
+	})
+	return blockErr
+}
+
 func collectForwardedClaudeSystemPromptBlocks(system gjson.Result) []string {
 	var blocks []string
 	appendText := func(text string) {
@@ -724,6 +773,13 @@ func applyCloaking(
 	policy, settings := resolveClaudeWirePolicy(cfg, auth, apiKey, confirmedClaudeCode)
 	if !policy.Cloak {
 		return payload, false, nil
+	}
+	// Strict mode drops caller system prompts entirely, so nothing needs a
+	// destination and an unusable block cannot lose information.
+	if !settings.strictMode {
+		if errSystem := validateClaudeCallerSystemBlocks(gjson.GetBytes(payload, "system")); errSystem != nil {
+			return nil, false, errSystem
+		}
 	}
 
 	billingVersion := helps.DefaultClaudeVersion(cfg)

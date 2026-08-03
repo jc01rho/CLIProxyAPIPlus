@@ -5358,3 +5358,146 @@ func TestInjectClaudeCodeContextManagement(t *testing.T) {
 		t.Fatalf("caller context_management was modified: %s", got)
 	}
 }
+
+func TestValidateClaudeCallerSystemBlocksAcceptsTextOnly(t *testing.T) {
+	tests := []struct {
+		name   string
+		system string
+	}{
+		{name: "string", system: `"S1"`},
+		{name: "text blocks", system: `[{"type":"text","text":"S1"},{"type":"text","text":"S2"}]`},
+		{name: "absent", system: ``},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := `{"model":"claude-opus-5"}`
+			if test.system != "" {
+				payload = `{"model":"claude-opus-5","system":` + test.system + `}`
+			}
+			if err := validateClaudeCallerSystemBlocks(gjson.Get(payload, "system")); err != nil {
+				t.Fatalf("validateClaudeCallerSystemBlocks() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// Anthropic rejects every non-text block in both system slots, verified live on
+// 2026-08-03: the top-level field answers "system.<i>.type: Input should be
+// 'text'" and a role=system message answers "role 'system' supports text,
+// tool_addition, and tool_removal blocks only". Cloaking has no third slot, so
+// the request has to fail here instead of losing the caller's instructions.
+func TestValidateClaudeCallerSystemBlocksRejectsNonTextBlock(t *testing.T) {
+	tests := []struct {
+		name      string
+		system    string
+		wantIndex string
+		wantType  string
+	}{
+		{
+			name:      "image",
+			system:    `[{"type":"text","text":"S1"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]`,
+			wantIndex: "system.1.type",
+			wantType:  `"image"`,
+		},
+		{
+			name:      "responses marker",
+			system:    `[{"type":"input_file"}]`,
+			wantIndex: "system.0.type",
+			wantType:  `"input_file"`,
+		},
+		{
+			name:      "missing type",
+			system:    `[{"text":"S1"}]`,
+			wantIndex: "system.0.type",
+			wantType:  `"unknown"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateClaudeCallerSystemBlocks(gjson.Parse(test.system))
+			if err == nil {
+				t.Fatal("validateClaudeCallerSystemBlocks() error = nil, want rejection")
+			}
+			var statusCoder interface{ StatusCode() int }
+			if !errors.As(err, &statusCoder) || statusCoder.StatusCode() != http.StatusBadRequest {
+				t.Fatalf("error status = %v, want 400", err)
+			}
+			var scoped interface{ IsRequestScoped() bool }
+			if !errors.As(err, &scoped) || !scoped.IsRequestScoped() {
+				t.Fatalf("error %v must be request scoped so no other credential is tried", err)
+			}
+			if got := err.Error(); !strings.Contains(got, test.wantIndex) || !strings.Contains(got, test.wantType) {
+				t.Fatalf("error = %q, want it to name %s and %s", got, test.wantIndex, test.wantType)
+			}
+		})
+	}
+}
+
+func TestApplyCloakingRejectsNonTextCallerSystemBlock(t *testing.T) {
+	cfg := &config.Config{}
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-123"}}
+	payload := []byte(`{"model":"claude-opus-5","system":[{"type":"text","text":"S1"},{"type":"input_image"}],"messages":[{"role":"user","content":[{"type":"text","text":"U1"}]}]}`)
+
+	out, cloaked, errCloaking := applyCloaking(context.Background(), cfg, auth, payload, "key-123", false, true)
+	if errCloaking == nil {
+		t.Fatal("applyCloaking() error = nil, want rejection")
+	}
+	if out != nil {
+		t.Fatalf("applyCloaking() payload = %s, want nil", out)
+	}
+	if cloaked {
+		t.Fatal("applyCloaking() cloaked = true, want false")
+	}
+}
+
+// Strict mode never forwards caller system prompts, so an unusable block cannot
+// lose information and must not fail the request.
+func TestApplyCloakingStrictModeIgnoresNonTextCallerSystemBlock(t *testing.T) {
+	cfg := &config.Config{
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey: "key-123",
+			Cloak:  &config.CloakConfig{StrictMode: true},
+		}},
+	}
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-123"}}
+	payload := []byte(`{"model":"claude-opus-5","system":[{"type":"input_image"}],"messages":[{"role":"user","content":[{"type":"text","text":"U1"}]}]}`)
+
+	out, cloaked, errCloaking := applyCloaking(context.Background(), cfg, auth, payload, "key-123", false, true)
+	if errCloaking != nil {
+		t.Fatalf("applyCloaking() error = %v, want nil", errCloaking)
+	}
+	if !cloaked {
+		t.Fatal("applyCloaking() cloaked = false, want true")
+	}
+	if got := len(gjson.GetBytes(out, "system").Array()); got != 2 {
+		t.Fatalf("system blocks = %d, want the 2 Claude Code blocks", got)
+	}
+}
+
+// A cloaked direct-Anthropic count_tokens request relocates caller system blocks
+// into messages, so a non-text block has no destination there either and must be
+// rejected before any upstream call.
+func TestClaudeExecutor_CountTokensRejectsNonTextCallerSystemBlock(t *testing.T) {
+	upstreamCalled := false
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		upstreamCalled = true
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"input_tokens":1}`)), Request: req}, nil
+	})
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-oat-count-system-block"}}
+	payload := []byte(`{"model":"claude-opus-5","system":[{"type":"text","text":"S1"},{"type":"input_image"}],"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`)
+
+	_, errCount := NewClaudeExecutor(&config.Config{}).countTokensUpstream(ctx, auth,
+		cliproxyexecutor.Request{Model: "claude-opus-5", Payload: payload},
+		cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+	if errCount == nil {
+		t.Fatal("countTokensUpstream() error = nil, want rejection")
+	}
+	var statusCoder interface{ StatusCode() int }
+	if !errors.As(errCount, &statusCoder) || statusCoder.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("countTokensUpstream() error = %v, want 400", errCount)
+	}
+	if upstreamCalled {
+		t.Fatal("countTokensUpstream() called upstream, want local rejection")
+	}
+}
