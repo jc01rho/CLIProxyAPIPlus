@@ -37,8 +37,6 @@ const (
 	claudeContext1MBeta          = "context-1m-2025-08-07"
 	claudeMidConvSystemBeta      = "mid-conversation-system-2026-04-07"
 	claudeAdvancedToolUseBeta    = "advanced-tool-use-2025-11-20"
-	claudeAdvisorToolBeta        = "advisor-tool-2026-03-01"
-	claudeCacheDiagnosisBeta     = "cache-diagnosis-2026-04-07"
 	claudeEffortBeta             = "effort-2025-11-24"
 	claudeServerSideFallbackBeta = "server-side-fallback-2026-06-01"
 	claudeFallbackCreditBeta     = "fallback-credit-2026-06-01"
@@ -73,8 +71,9 @@ var claudeCodeTrailingBetas = []string{
 // 2.1.220 does: the list is per-request, not a fixed string. requested holds the
 // betas the caller asked for, which decide the capability flags below.
 //
-// Verified 2026-08-01 against api.anthropic.com with isolated 2.1.220 profiles on
-// both the API-key and OAuth paths, across 11 model IDs and the [1m] variants.
+// Verified against api.anthropic.com with isolated 2.1.220 profiles on both
+// API-key and OAuth paths. A 2026-08-03 A/B capture with two distinct OAuth
+// accounts confirmed the current tool beta and OAuth trailer below.
 // The full observed order is:
 //
 //	 1 claude-code-20250219
@@ -86,14 +85,12 @@ var claudeCodeTrailingBetas = []string{
 //	 7 context-management-2025-06-27
 //	 8 prompt-caching-scope-2026-01-05
 //	 9 mid-conversation-system-2026-04-07  models accepting a role=system turn
-//	10 advisor-tool-2026-03-01             current OAuth tool profile
-//	   advanced-tool-use-2025-11-20       captured API-key tool profile
+//	10 advanced-tool-use-2025-11-20       requests with tools
 //	11 effort-2025-11-24
 //	12 server-side-fallback-2026-06-01
 //	13 fallback-credit-2026-06-01
 //	14 fast-mode-2026-02-01               speed:fast requests only
 //	15 extended-cache-ttl-2025-04-11      OAuth credentials only
-//	16 cache-diagnosis-2026-04-07         current OAuth profile trailer
 //
 // An empty body keeps the optimistic role=system default, matching the cloaking
 // policy for unknown and future model IDs.
@@ -111,11 +108,7 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 		betas = append(betas, claudeMidConvSystemBeta)
 	}
 	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() && len(tools.Array()) > 0 {
-		if oauthToken {
-			betas = append(betas, claudeAdvisorToolBeta)
-		} else {
-			betas = append(betas, claudeAdvancedToolUseBeta)
-		}
+		betas = append(betas, claudeAdvancedToolUseBeta)
 	}
 	betas = append(betas, claudeEffortBeta)
 	if oauthToken && !requested[claudeFallbackCreditBeta] {
@@ -130,7 +123,7 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 		betas = append(betas, claudeFastModeBeta)
 	}
 	if oauthToken {
-		betas = append(betas, claudeExtendedCacheTTLBeta, claudeCacheDiagnosisBeta)
+		betas = append(betas, claudeExtendedCacheTTLBeta)
 	}
 	return strings.Join(betas, ",")
 }
@@ -224,20 +217,7 @@ func withClaudeOAuthCredentialBetas(betas string) string {
 		parts[insertAt] = claudeOAuthBeta
 	}
 	if !seen[claudeExtendedCacheTTLBeta] {
-		insertAt := len(parts)
-		for index, beta := range parts {
-			if beta == claudeCacheDiagnosisBeta {
-				insertAt = index
-				break
-			}
-		}
-		parts = append(parts, "")
-		copy(parts[insertAt+1:], parts[insertAt:])
-		parts[insertAt] = claudeExtendedCacheTTLBeta
-		seen[claudeExtendedCacheTTLBeta] = true
-	}
-	if !seen[claudeCacheDiagnosisBeta] {
-		parts = append(parts, claudeCacheDiagnosisBeta)
+		parts = append(parts, claudeExtendedCacheTTLBeta)
 	}
 	return strings.Join(parts, ",")
 }

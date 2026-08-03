@@ -5093,8 +5093,8 @@ func TestInsertClaudeMidConversationSystemMessage_IsIdempotent(t *testing.T) {
 }
 
 // TestClaudeCodeCLIBetas_MatchesObservedClientMatrix pins the Anthropic-Beta
-// baseline to the Claude Code 2.1.220 behavior captured on 2026-08-01 against
-// api.anthropic.com with an isolated profile.
+// baseline to Claude Code 2.1.220 behavior captured against api.anthropic.com.
+// The OAuth profile was reverified on 2026-08-03 with two distinct accounts.
 func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 	const constants = "claude-code-20250219,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
 
@@ -5167,15 +5167,15 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 			want: constants + ",effort-2025-11-24",
 		},
 		{
-			name:  "oauth uses the current advisor fallback and cache diagnosis profile",
+			name:  "oauth uses advanced tools and the current cache TTL trailer",
 			body:  `{"model":"claude-opus-4-6","tools":[{"name":"Read"}]}`,
 			oauth: true,
 			want: "claude-code-20250219,oauth-2025-04-20," +
 				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
 				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01," +
+				"prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20," +
 				"effort-2025-11-24,fallback-credit-2026-06-01," +
-				"extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
+				"extended-cache-ttl-2025-04-11",
 		},
 		{
 			name:  "oauth precedes context-1m",
@@ -5190,9 +5190,9 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
 				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
 				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07," +
-				"advisor-tool-2026-03-01,effort-2025-11-24," +
+				"advanced-tool-use-2025-11-20,effort-2025-11-24," +
 				"server-side-fallback-2026-06-01,fallback-credit-2026-06-01," +
-				"extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
+				"extended-cache-ttl-2025-04-11",
 		},
 		{
 			name: "api key path sends neither oauth beta",

@@ -29,8 +29,7 @@ func claudeOAuthAuthForBetaPolicy() *cliproxyauth.Auth {
 
 // A confirmed native client authenticates to CPA with the user's configured key
 // and cannot know CPA will pick an OAuth credential upstream, so its header never
-// carries the OAuth betas. Passing it through verbatim produced a Bearer request
-// without the selected credential's OAuth/cache profile.
+// carries the credential-scoped OAuth and extended-cache betas.
 func TestApplyClaudeHeaders_ConfirmedClientKeepsOAuthCredentialBetas(t *testing.T) {
 	incoming := http.Header{}
 	incoming.Set("Anthropic-Beta", claudeCodeBeta+",interleaved-thinking-2025-05-14,"+claudeEffortBeta)
@@ -46,8 +45,13 @@ func TestApplyClaudeHeaders_ConfirmedClientKeepsOAuthCredentialBetas(t *testing.
 	if len(parts) < 2 || parts[0] != claudeCodeBeta || parts[1] != claudeOAuthBeta {
 		t.Fatalf("Anthropic-Beta = %q, want %s at position 2", got, claudeOAuthBeta)
 	}
-	if parts[len(parts)-1] != claudeCacheDiagnosisBeta || parts[len(parts)-2] != claudeExtendedCacheTTLBeta {
-		t.Fatalf("Anthropic-Beta = %q, want OAuth cache trailer %s,%s", got, claudeExtendedCacheTTLBeta, claudeCacheDiagnosisBeta)
+	if parts[len(parts)-1] != claudeExtendedCacheTTLBeta {
+		t.Fatalf("Anthropic-Beta = %q, want OAuth cache trailer %s", got, claudeExtendedCacheTTLBeta)
+	}
+	for _, stale := range []string{"advisor-tool-2026-03-01", "cache-diagnosis-2026-04-07"} {
+		if strings.Contains(got, stale) {
+			t.Fatalf("Anthropic-Beta = %q, contains stale OAuth beta %s", got, stale)
+		}
 	}
 	// The caller's own betas survive the restoration.
 	for _, want := range []string{"interleaved-thinking-2025-05-14", claudeEffortBeta} {
@@ -201,8 +205,8 @@ func TestApplyClaudeHeaders_FastModeBetaMatchesAcrossStreamModes(t *testing.T) {
 	}
 }
 
-// The current OAuth CLI profile places fast-mode before extended-cache-ttl and
-// appends cache-diagnosis after the cache TTL beta.
+// The current OAuth CLI profile places fast-mode immediately before the
+// extended-cache-ttl trailer.
 func TestApplyClaudeHeaders_FastModePrecedesOAuthTrailer(t *testing.T) {
 	req := newClaudeHeaderTestRequest(t, nil)
 	if err := applyClaudeHeaders(req, claudeOAuthAuthForBetaPolicy(), claudeRaceProbeOAuthKey, true, nil,
@@ -211,14 +215,14 @@ func TestApplyClaudeHeaders_FastModePrecedesOAuthTrailer(t *testing.T) {
 	}
 	got := req.Header.Get("Anthropic-Beta")
 	parts := strings.Split(got, ",")
-	if parts[len(parts)-1] != claudeCacheDiagnosisBeta {
-		t.Fatalf("Anthropic-Beta = %q, want %s last", got, claudeCacheDiagnosisBeta)
+	if parts[len(parts)-1] != claudeExtendedCacheTTLBeta {
+		t.Fatalf("Anthropic-Beta = %q, want %s last", got, claudeExtendedCacheTTLBeta)
 	}
-	if parts[len(parts)-2] != claudeExtendedCacheTTLBeta {
-		t.Fatalf("Anthropic-Beta = %q, want %s before cache diagnosis", got, claudeExtendedCacheTTLBeta)
-	}
-	if parts[len(parts)-3] != claudeFastModeBeta {
+	if parts[len(parts)-2] != claudeFastModeBeta {
 		t.Fatalf("Anthropic-Beta = %q, want %s before the OAuth cache trailer", got, claudeFastModeBeta)
+	}
+	if strings.Contains(got, "cache-diagnosis-2026-04-07") {
+		t.Fatalf("Anthropic-Beta = %q, contains stale cache diagnosis beta", got)
 	}
 }
 
