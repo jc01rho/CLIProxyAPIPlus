@@ -5272,6 +5272,31 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 			body: `{"model":"claude-future-9"}`,
 			want: constants + ",mid-conversation-system-2026-04-07,effort-2025-11-24",
 		},
+		{
+			name: "thinking display summarized drops redact-thinking",
+			body: `{"model":"claude-opus-5","thinking":{"type":"adaptive","display":"summarized"}}`,
+			want: "claude-code-20250219,interleaved-thinking-2025-05-14," +
+				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
+				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07," +
+				"effort-2025-11-24",
+		},
+		{
+			name: "thinking display omitted drops redact-thinking as well",
+			body: `{"model":"claude-opus-4-6","thinking":{"type":"enabled","budget_tokens":2048,"display":"omitted"}}`,
+			want: "claude-code-20250219,interleaved-thinking-2025-05-14," +
+				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
+				"prompt-caching-scope-2026-01-05,effort-2025-11-24",
+		},
+		{
+			name: "thinking without display keeps redact-thinking",
+			body: `{"model":"claude-opus-4-6","thinking":{"type":"adaptive"}}`,
+			want: constants + ",effort-2025-11-24",
+		},
+		{
+			name: "blank display value keeps redact-thinking",
+			body: `{"model":"claude-opus-4-6","thinking":{"type":"adaptive","display":"  "}}`,
+			want: constants + ",effort-2025-11-24",
+		},
 	}
 
 	for _, tt := range tests {

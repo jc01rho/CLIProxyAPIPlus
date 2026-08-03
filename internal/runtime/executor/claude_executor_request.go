@@ -43,6 +43,7 @@ const (
 	claudeStructuredOutputsBeta  = "structured-outputs-2025-12-15"
 	claudeExtendedCacheTTLBeta   = "extended-cache-ttl-2025-04-11"
 	claudeCacheDiagnosisBeta     = "cache-diagnosis-2026-04-07"
+	claudeRedactThinkingBeta     = "redact-thinking-2026-02-12"
 )
 
 // claudeCodeCLIConstantBetas are the betas Claude Code 2.1.220 sends on every
@@ -50,10 +51,11 @@ const (
 // leading claude-code-20250219.
 //
 // redact-thinking-2026-02-12 belongs here because cloaked requests always claim
-// cc_entrypoint=cli; the "sdk-cli" entrypoint omits it.
+// cc_entrypoint=cli; the "sdk-cli" entrypoint omits it. It is still dropped for
+// requests that carry thinking.display, see claudeThinkingDisplaySet.
 var claudeCodeCLIConstantBetas = []string{
 	"interleaved-thinking-2025-05-14",
-	"redact-thinking-2026-02-12",
+	claudeRedactThinkingBeta,
 	"thinking-token-count-2026-05-13",
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
@@ -81,7 +83,7 @@ var claudeCodeTrailingBetas = []string{
 //	 2 oauth-2025-04-20                  OAuth credentials only
 //	 3 context-1m-2025-08-07             [1m] model variants only
 //	 4 interleaved-thinking-2025-05-14
-//	 5 redact-thinking-2026-02-12        cli entrypoint only
+//	 5 redact-thinking-2026-02-12        cli entrypoint, no thinking.display
 //	 6 thinking-token-count-2026-05-13
 //	 7 context-management-2025-06-27
 //	 8 prompt-caching-scope-2026-01-05
@@ -105,7 +107,13 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 	if requested[claudeContext1MBeta] {
 		betas = append(betas, claudeContext1MBeta)
 	}
-	betas = append(betas, claudeCodeCLIConstantBetas...)
+	redactThinking := !claudeThinkingDisplaySet(body)
+	for _, beta := range claudeCodeCLIConstantBetas {
+		if beta == claudeRedactThinkingBeta && !redactThinking {
+			continue
+		}
+		betas = append(betas, beta)
+	}
 	if !claudeUsesLegacySystemReminder(body) {
 		betas = append(betas, claudeMidConvSystemBeta)
 	}
@@ -131,6 +139,21 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 		betas = append(betas, claudeCacheDiagnosisBeta)
 	}
 	return strings.Join(betas, ",")
+}
+
+// claudeThinkingDisplaySet reports whether the request carries a thinking.display
+// value. Claude Code 2.1.220 and redact-thinking-2026-02-12 are mutually
+// exclusive by construction: the beta is only appended while thinking summaries
+// are off, and the request builder removes it again whenever a display value is
+// attached. Sending both makes Anthropic honour the redaction and return thinking
+// blocks with an empty thinking field, so the caller's summary request would be
+// answered with a signature and no text. Verified on api.anthropic.com with
+// claude-opus-4-8: display=summarized yields thinking text only when the beta is
+// absent, and a native 2.1.220 CLI run with showThinkingSummaries enabled sends
+// display=summarized without the beta.
+func claudeThinkingDisplaySet(body []byte) bool {
+	display := gjson.GetBytes(body, "thinking.display")
+	return display.Type == gjson.String && strings.TrimSpace(display.String()) != ""
 }
 
 // claudeRequestUsesFastMode reports whether the request selects the fast service

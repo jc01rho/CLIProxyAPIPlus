@@ -127,6 +127,131 @@ func TestConvertOpenAIResponsesRequestToClaude_SignatureOnlyReasoningFlushesBefo
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToClaude_RedactedReasoningItemRestoresRedactedThinking(t *testing.T) {
+	const data = "EroBCkYIBRgCKkA"
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[
+			{
+				"type":"reasoning",
+				"encrypted_content":"` + ClaudeResponsesRedactedThinkingPrefix + data + `",
+				"summary":[]
+			},
+			{
+				"type":"message",
+				"role":"assistant",
+				"content":[{"type":"output_text","text":"visible answer"}]
+			},
+			{
+				"type":"message",
+				"role":"user",
+				"content":[{"type":"input_text","text":"continue"}]
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	root := gjson.ParseBytes(out)
+
+	block := root.Get("messages.0.content.0")
+	if got := block.Get("type").String(); got != "redacted_thinking" {
+		t.Fatalf("first content type = %q, want redacted_thinking. Output: %s", got, string(out))
+	}
+	if got := block.Get("data").String(); got != data {
+		t.Fatalf("redacted_thinking data = %q, want %q", got, data)
+	}
+	if block.Get("signature").Exists() {
+		t.Fatalf("redacted_thinking must not carry a signature. Output: %s", string(out))
+	}
+	if got := root.Get("messages.0.content.1.text").String(); got != "visible answer" {
+		t.Fatalf("assistant text = %q, want visible answer. Output: %s", got, string(out))
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_EmptyRedactedReasoningItemIsDropped(t *testing.T) {
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[
+			{
+				"type":"reasoning",
+				"encrypted_content":"` + ClaudeResponsesRedactedThinkingPrefix + `",
+				"summary":[]
+			},
+			{
+				"type":"message",
+				"role":"user",
+				"content":[{"type":"input_text","text":"continue"}]
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	root := gjson.ParseBytes(out)
+
+	if got := root.Get("messages.#").Int(); got != 1 {
+		t.Fatalf("message count = %d, want only the user turn. Output: %s", got, string(out))
+	}
+	if got := root.Get("messages.0.role").String(); got != "user" {
+		t.Fatalf("first message role = %q, want user. Output: %s", got, string(out))
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_ReasoningContentTextRebuildsThinking(t *testing.T) {
+	rawSignature, expectedSignature := testClaudeResponsesThinkingSignature(t)
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[
+			{
+				"type":"reasoning",
+				"encrypted_content":"` + rawSignature + `",
+				"summary":[],
+				"content":[{"type":"reasoning_text","text":"restored from content"}]
+			},
+			{
+				"type":"message",
+				"role":"user",
+				"content":[{"type":"input_text","text":"continue"}]
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	root := gjson.ParseBytes(out)
+
+	thinking := root.Get("messages.0.content.0")
+	if got := thinking.Get("thinking").String(); got != "restored from content" {
+		t.Fatalf("thinking text = %q, want restored from content. Output: %s", got, string(out))
+	}
+	if got := thinking.Get("signature").String(); got != expectedSignature {
+		t.Fatalf("thinking signature = %q, want %q", got, expectedSignature)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_SummaryWinsOverDuplicatedReasoningContent(t *testing.T) {
+	rawSignature, _ := testClaudeResponsesThinkingSignature(t)
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[
+			{
+				"type":"reasoning",
+				"encrypted_content":"` + rawSignature + `",
+				"summary":[{"type":"summary_text","text":"chain of thought"}],
+				"content":[{"type":"reasoning_text","text":"chain of thought"}]
+			},
+			{
+				"type":"message",
+				"role":"user",
+				"content":[{"type":"input_text","text":"continue"}]
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	if got := gjson.ParseBytes(out).Get("messages.0.content.0.thinking").String(); got != "chain of thought" {
+		t.Fatalf("thinking text = %q, want the summary text exactly once. Output: %s", got, string(out))
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToClaude_DropsIncompatibleReasoningSignature(t *testing.T) {
 	raw := []byte(`{
 		"model":"claude-test",

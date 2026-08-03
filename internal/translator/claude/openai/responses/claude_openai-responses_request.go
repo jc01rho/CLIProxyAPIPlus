@@ -533,31 +533,72 @@ func responsesSystemUnsupportedBlock(part gjson.Result) []byte {
 	return block
 }
 
+// convertResponsesReasoningToClaudeThinking rebuilds one Claude thinking block
+// from a Responses reasoning item so a replayed conversation keeps its chain of
+// thought. Anthropic requires a signature on every thinking block and rejects an
+// absent or empty one, so an item whose encrypted_content is missing or belongs
+// to another provider is dropped rather than replayed as an unsigned block.
+// Anthropic does not verify the text against the signature, which is what makes
+// the summarized text safe to restore alongside it.
 func convertResponsesReasoningToClaudeThinking(item gjson.Result) []byte {
-	signature, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderClaude, item.Get("encrypted_content").String())
+	encrypted := item.Get("encrypted_content").String()
+	if data, isRedacted := responsesRedactedThinkingData(encrypted); isRedacted {
+		if data == "" {
+			return nil
+		}
+		redactedPart := []byte(`{"type":"redacted_thinking","data":""}`)
+		redactedPart, _ = sjson.SetBytes(redactedPart, "data", data)
+		return redactedPart
+	}
+
+	signature, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderClaude, encrypted)
 	if !ok {
 		return nil
 	}
 
-	thinkingText := responsesReasoningSummaryText(item)
+	thinkingText := responsesReasoningText(item)
 	thinkingPart := []byte(`{"type":"thinking","thinking":"","signature":""}`)
 	thinkingPart, _ = sjson.SetBytes(thinkingPart, "thinking", thinkingText)
 	thinkingPart, _ = sjson.SetBytes(thinkingPart, "signature", signature)
 	return thinkingPart
 }
 
-func responsesReasoningSummaryText(item gjson.Result) string {
-	var builder strings.Builder
-	if summary := item.Get("summary"); summary.Exists() && summary.IsArray() {
-		summary.ForEach(func(_, part gjson.Result) bool {
-			if text := part.Get("text"); text.Exists() {
-				builder.WriteString(text.String())
-			} else if part.Type == gjson.String {
-				builder.WriteString(part.String())
-			}
-			return true
-		})
+// responsesRedactedThinkingData reports whether encrypted_content carries an
+// Anthropic redacted_thinking payload and returns that payload.
+func responsesRedactedThinkingData(encryptedContent string) (string, bool) {
+	trimmed := strings.TrimSpace(encryptedContent)
+	if !strings.HasPrefix(trimmed, ClaudeResponsesRedactedThinkingPrefix) {
+		return "", false
 	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, ClaudeResponsesRedactedThinkingPrefix)), true
+}
+
+// responsesReasoningText collects the reasoning text of a Responses item. OpenAI
+// splits it across summary[] parts of type summary_text and content[] parts of
+// type reasoning_text. Claude only ever produces summaries, but callers echo the
+// item back through whichever array their SDK models, so both are read. content[]
+// is only consulted when summary[] carried nothing, otherwise a client that
+// mirrors the text into both arrays would replay it twice.
+func responsesReasoningText(item gjson.Result) string {
+	if text := responsesReasoningPartsText(item.Get("summary")); text != "" {
+		return text
+	}
+	return responsesReasoningPartsText(item.Get("content"))
+}
+
+func responsesReasoningPartsText(parts gjson.Result) string {
+	if !parts.Exists() || !parts.IsArray() {
+		return ""
+	}
+	var builder strings.Builder
+	parts.ForEach(func(_, part gjson.Result) bool {
+		if text := part.Get("text"); text.Exists() {
+			builder.WriteString(text.String())
+		} else if part.Type == gjson.String {
+			builder.WriteString(part.String())
+		}
+		return true
+	})
 	return builder.String()
 }
 
