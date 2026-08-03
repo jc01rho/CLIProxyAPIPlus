@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -15,8 +14,9 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func Test_BuildCommandCodePayload_serializes_message_content_as_strings(t *testing.T) {
-	// Given
+func Test_BuildCommandCodePayload_serializes_typed_message_content_blocks(t *testing.T) {
+	// Given a payload that mixes system instructions, multimodal user content,
+	// a plain assistant answer, an assistant tool call, and its tool result.
 	payload := []byte(`{
 		"model": "parrot",
 		"messages": [
@@ -24,7 +24,7 @@ func Test_BuildCommandCodePayload_serializes_message_content_as_strings(t *testi
 			{"role": "user", "content": [
 				{"type": "text", "text": "hello"},
 				{"type": "text", "text": "world"},
-				{"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}
+				{"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}
 			]},
 			{"role": "assistant", "content": "plain answer"},
 			{"role": "assistant", "content": null, "tool_calls": [
@@ -37,7 +37,8 @@ func Test_BuildCommandCodePayload_serializes_message_content_as_strings(t *testi
 	// When
 	got, err := buildCommandCodePayload(payload, "nvidia/nemotron-3-ultra-550b-a55b", false)
 
-	// Then
+	// Then system content is extracted and every message survives with typed
+	// content blocks matching the command-code@1.6.0 wire contract.
 	if err != nil {
 		t.Fatalf("buildCommandCodePayload() error = %v", err)
 	}
@@ -46,25 +47,44 @@ func Test_BuildCommandCodePayload_serializes_message_content_as_strings(t *testi
 	}
 
 	messages := gjson.GetBytes(got, "params.messages").Array()
-	if len(messages) != 3 {
-		t.Fatalf("len(params.messages) = %d, want 3", len(messages))
+	if len(messages) != 4 {
+		t.Fatalf("len(params.messages) = %d, want 4 (tool result history must be preserved)", len(messages))
 	}
 	if got := messages[0].Get("role").String(); got != "user" {
 		t.Fatalf("messages[0].role = %q, want %q", got, "user")
 	}
-	assertCommandCodeMessageContent(t, messages[0], "hello\nworld")
-	assertCommandCodeMessageContent(t, messages[1], "plain answer")
-	assertCommandCodeMessageContent(t, messages[2], "tool call lookup {\"query\":\"sparrow\"}")
-
-	var envelope struct {
-		Params struct {
-			Messages []struct {
-				Content string `json:"content"`
-			} `json:"messages"`
-		} `json:"params"`
+	userTexts := messages[0].Get("content")
+	if !userTexts.IsArray() {
+		t.Fatalf("user content is not a typed JSON array; raw=%s", userTexts.Raw)
 	}
-	if err := json.Unmarshal(got, &envelope); err != nil {
-		t.Fatalf("unmarshal envelope with string message content: %v", err)
+	if got := userTexts.Get("0.text").String(); got != "hello" {
+		t.Fatalf("user content[0].text = %q, want %q", got, "hello")
+	}
+	if got := userTexts.Get("1.text").String(); got != "world" {
+		t.Fatalf("user content[1].text = %q, want %q", got, "world")
+	}
+	if got := commandCodeBlockByType(t, messages[0], "image").Get("image").String(); got != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("user image block data URL = %q, want %q", got, "data:image/png;base64,aGVsbG8=")
+	}
+	if got := commandCodeBlockByType(t, messages[1], "text").Get("text").String(); got != "plain answer" {
+		t.Fatalf("assistant text block = %q, want %q", got, "plain answer")
+	}
+	toolCall := commandCodeBlockByType(t, messages[2], "tool-call")
+	if got := toolCall.Get("toolCallId").String(); got != "call_1" {
+		t.Fatalf("tool-call toolCallId = %q, want %q", got, "call_1")
+	}
+	if got := toolCall.Get("toolName").String(); got != "lookup" {
+		t.Fatalf("tool-call toolName = %q, want %q", got, "lookup")
+	}
+	if got := toolCall.Get("input.query").String(); got != "sparrow" {
+		t.Fatalf("tool-call input.query = %q, want %q", got, "sparrow")
+	}
+	toolResult := commandCodeBlockByType(t, messages[3], "tool-result")
+	if got := toolResult.Get("toolCallId").String(); got != "call_1" {
+		t.Fatalf("tool-result toolCallId = %q, want %q", got, "call_1")
+	}
+	if got := toolResult.Get("output.value").String(); got != "tool output" {
+		t.Fatalf("tool-result output.value = %q, want %q", got, "tool output")
 	}
 }
 
@@ -166,16 +186,6 @@ func Test_CommandCodeAPIKey_accepts_provider_auth_field_aliases(t *testing.T) {
 				t.Fatalf("commandCodeAPIKey() = %q, want %q", got, tt.wantAPIKey)
 			}
 		})
-	}
-}
-
-func assertCommandCodeMessageContent(t *testing.T, message gjson.Result, want string) {
-	t.Helper()
-	if got := message.Get("content").Type; got != gjson.String {
-		t.Fatalf("message content type = %v, want %v; raw=%s", got, gjson.String, message.Raw)
-	}
-	if got := message.Get("content").String(); got != want {
-		t.Fatalf("message content = %q, want %q", got, want)
 	}
 }
 

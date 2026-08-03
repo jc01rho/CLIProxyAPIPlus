@@ -22,7 +22,17 @@ func resetAntigravityRefreshGroupForTest() {
 	antigravityRefreshGroup = singleflight.Group{}
 }
 
-func useAntigravityRefreshTestTransport(t *testing.T, targetHost string) {
+// useAntigravityRefreshTestTransport returns a context carrying a custom RoundTripper
+// that redirects every Antigravity HTTP call to the test server.
+//
+// Leak/hang fix: the redirect must flow through the "cliproxy.roundtripper" context
+// value. NewProxyAwareHTTPClient always installs its own bounded default transport, so
+// overriding the package-level antigravityTransport singleton never reaches the client —
+// the refresh request escaped to the real network, the error skipped the /token handler,
+// and the test blocked on <-started forever while the dangling httptest server's Accept
+// goroutine kept the package test binary alive. CloseIdleConnections on cleanup ensures
+// no keep-alive connection goroutines outlive the test.
+func useAntigravityRefreshTestTransport(t *testing.T, targetHost string) context.Context {
 	t.Helper()
 
 	transport := &http.Transport{
@@ -33,13 +43,10 @@ func useAntigravityRefreshTestTransport(t *testing.T, targetHost string) {
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 		ForceAttemptHTTP2: false,
 	}
-	antigravityTransport = transport
-	antigravityTransportOnce = sync.Once{}
-	antigravityTransportOnce.Do(func() {})
 	t.Cleanup(func() {
-		antigravityTransport = nil
-		antigravityTransportOnce = sync.Once{}
+		transport.CloseIdleConnections()
 	})
+	return context.WithValue(context.Background(), "cliproxy.roundtripper", transport)
 }
 
 func TestAntigravityRefresh_DeduplicatesConcurrentRefresh(t *testing.T) {
@@ -80,7 +87,7 @@ func TestAntigravityRefresh_DeduplicatesConcurrentRefresh(t *testing.T) {
 	if errParse != nil {
 		t.Fatalf("parse test server URL: %v", errParse)
 	}
-	useAntigravityRefreshTestTransport(t, serverURL.Host)
+	refreshCtx := useAntigravityRefreshTestTransport(t, serverURL.Host)
 
 	executor := &AntigravityExecutor{}
 	authA := &cliproxyauth.Auth{
@@ -106,7 +113,7 @@ func TestAntigravityRefresh_DeduplicatesConcurrentRefresh(t *testing.T) {
 		if launched != nil {
 			close(launched)
 		}
-		updated, errRefresh := executor.Refresh(context.Background(), auth)
+		updated, errRefresh := executor.Refresh(refreshCtx, auth)
 		results <- updated
 		errs <- errRefresh
 	}
