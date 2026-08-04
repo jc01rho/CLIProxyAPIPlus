@@ -208,7 +208,6 @@ func TestDeleteAuthFile_BatchQuery(t *testing.T) {
 
 func TestUploadAuthFile_PopulatesBillingClassAttributeImmediately(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	authDir := t.TempDir()
 	manager := coreauth.NewManager(nil, nil, nil)

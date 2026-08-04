@@ -72,6 +72,11 @@ func (s *Service) Run(ctx context.Context) error {
 
 	s.applyRetryConfig(s.cfg)
 	s.configureCooldownStateStore(s.cfg)
+	s.usageExportRuntime.SetSnapshotSource(s.keeperExportSnapshot)
+	usage.RegisterNamedPlugin("keeper-export", &s.usageExportRuntime)
+	if errUsageExport := s.usageExportRuntime.Apply(ctx, s.cfg.UsageExport); errUsageExport != nil {
+		log.WithError(errUsageExport).Error("usage export outbox unavailable; proxy will continue without durable export append")
+	}
 
 	s.registerPluginAuthParser()
 	if s.coreManager != nil && !homeEnabled {
@@ -116,6 +121,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
+	s.serverOptions = append(s.serverOptions, api.WithUsageExportRuntime(&s.usageExportRuntime))
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
@@ -305,6 +311,12 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if s.authQueueStop != nil {
 			s.authQueueStop()
 			s.authQueueStop = nil
+		}
+		if errUsageExport := s.usageExportRuntime.Close(); errUsageExport != nil {
+			log.WithError(errUsageExport).Error("failed to close usage export outbox")
+			if shutdownErr == nil {
+				shutdownErr = errUsageExport
+			}
 		}
 
 		if errShutdownPprof := s.shutdownPprof(ctx); errShutdownPprof != nil {

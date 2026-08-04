@@ -1,0 +1,41 @@
+{
+  "protocolVersion": "keeper-export/v1",
+  "settings": {
+    "enabled": true,
+    "mode": "push",
+    "keeper": {
+      "url": "https://keeper.example.com",
+      "tokenEnv": "CPA_KEEPER_INGEST_TOKEN",
+      "tokenConfigured": true,
+      "caFile": null,
+      "clientCertFile": null,
+      "clientKeyFile": null
+    },
+    "outbox": {
+      "path": "/var/lib/cliproxy/keeper-outbox.db",
+      "maxBytes": 1073741824
+    },
+    "delivery": {
+      "maxBatchEvents": 500,
+      "maxBatchBytes": 1048576,
+      "flushIntervalMs": 1000,
+      "requestTimeoutMs": 15000,
+      "initialBackoffMs": 1000,
+      "maxBackoffMs": 60000
+    },
+    "metadata": {
+      "enabled": true,
+      "intervalMs": 300000,
+      "categories": [
+        "auth_files",
+        "api_keys",
+        "provider_identities"
+      ]
+    },
+    "privacy": {
+      "includeClientIp": false,
+      "includeForwardedFor": false,
+      "includeUserAgent": false
+    }
+  }
+}

@@ -125,6 +125,41 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
+# Durable outbound Keeper export. Disabled by default.
+# Store only the environment-variable name in YAML; never put the ingest token here.
+# Uncomment the complete block when following docs/keeper-export.md.
+# usage-export:
+#   enabled: false
+#   mode: disabled
+#   keeper:
+#     url: "https://keeper.example.com"
+#     token-env: "CPA_KEEPER_INGEST_TOKEN"
+#     ca-file: null
+#     client-cert-file: null
+#     client-key-file: null
+#   outbox:
+#     # Must be absolute. Use a durable, owner-only path unique to this CPA instance.
+#     path: "/var/lib/cli-proxy-api/keeper-export/outbox.db"
+#     max-bytes: 1073741824
+#   delivery:
+#     max-batch-events: 500
+#     max-batch-bytes: 1048576
+#     flush-interval-ms: 1000
+#     request-timeout-ms: 15000
+#     initial-backoff-ms: 1000
+#     max-backoff-ms: 60000
+#   metadata:
+#     enabled: true
+#     interval-ms: 300000
+#     categories:
+#       - auth_files
+#       - api_keys
+#       - provider_identities
+#   privacy:
+#     include-client-ip: false
+#     include-forwarded-for: false
+#     include-user-agent: false
+
 # How long (in seconds) usage queue items are retained in memory for the Management API.
 # The local Redis RESP usage output is disabled.
 # Default: 60. Max: 3600.

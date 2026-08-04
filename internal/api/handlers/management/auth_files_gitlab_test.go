@@ -16,7 +16,6 @@ import (
 
 func TestRequestGitLabPATToken_SavesAuthRecord(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer glpat-test-token" {
@@ -115,7 +114,6 @@ func TestRequestGitLabPATToken_SavesAuthRecord(t *testing.T) {
 
 func TestPostOAuthCallback_GitLabWritesPendingCallbackFile(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	authDir := t.TempDir()
 	state := "gitlab-state-123"

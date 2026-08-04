@@ -1,0 +1,30 @@
+{
+  "protocolVersion": "keeper-export/v1",
+  "revision": 1,
+  "complete": true,
+  "generatedAt": "2026-08-03T12:36:00.000Z",
+  "items": [
+    {
+      "authIndex": "provider-auth-index",
+      "providerType": "openai-compatibility",
+      "displayName": "OpenRouter",
+      "prefix": "openrouter",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "priority": 4,
+      "disabled": false,
+      "note": "shared",
+      "apiKeyFingerprint": "akf1_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "authIndex": "provider-auth-index-2",
+      "providerType": "openai-compatibility",
+      "displayName": "OpenRouter",
+      "prefix": "openrouter-eu",
+      "baseUrl": null,
+      "priority": null,
+      "disabled": null,
+      "note": null,
+      "apiKeyFingerprint": null
+    }
+  ]
+}

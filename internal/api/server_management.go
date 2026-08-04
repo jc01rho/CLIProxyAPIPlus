@@ -60,6 +60,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 
+		mgmt.GET("/usage-export/settings", s.mgmt.GetUsageExportSettings)
+		mgmt.PUT("/usage-export/settings", s.mgmt.PutUsageExportSettings)
+		mgmt.POST("/usage-export/test", s.mgmt.TestUsageExportConnection)
+		mgmt.GET("/usage-export/status", s.mgmt.GetUsageExportStatus)
+
 		mgmt.GET("/proxy-url", s.mgmt.GetProxyURL)
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)

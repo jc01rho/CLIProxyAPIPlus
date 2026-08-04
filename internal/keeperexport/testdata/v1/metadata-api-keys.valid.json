@@ -1,0 +1,18 @@
+{
+  "protocolVersion": "keeper-export/v1",
+  "revision": 1,
+  "complete": true,
+  "generatedAt": "2026-08-03T12:36:00.000Z",
+  "items": [
+    {
+      "fingerprint": "akf1_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "displayKey": "sk-...cdef",
+      "alias": "team-a"
+    },
+    {
+      "fingerprint": "akf1_fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "displayKey": "sk-...1234",
+      "alias": ""
+    }
+  ]
+}

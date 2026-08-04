@@ -268,7 +268,6 @@ func (e *oauthAliasDeleteExecutor) HttpRequest(context.Context, *coreauth.Auth, 
 
 func TestDeleteOAuthModelAlias_SyncsAuthManager(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(&oauthAliasDeleteExecutor{})

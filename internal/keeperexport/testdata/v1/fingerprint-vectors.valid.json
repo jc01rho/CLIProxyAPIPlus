@@ -1,0 +1,13 @@
+{
+  "fingerprintSecretHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "vectors": [
+    {
+      "fingerprint": "akf1_294e384e158b4de177580af545663bbaf72ef8ae28e0fdf5678b14bb8eead0fc",
+      "rawKeyUtf8": "sk-fixture-exact"
+    },
+    {
+      "fingerprint": null,
+      "rawKeyUtf8": ""
+    }
+  ]
+}

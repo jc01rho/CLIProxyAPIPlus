@@ -1,0 +1,8 @@
+{
+  "protocolVersion": "keeper-export/v1",
+  "streamId": "0198aa11-1055-7f12-8a00-e843d1e17522",
+  "acknowledgedThrough": 10,
+  "nextExpectedSequence": 11,
+  "acceptedCount": 1,
+  "replayedCount": 0
+}

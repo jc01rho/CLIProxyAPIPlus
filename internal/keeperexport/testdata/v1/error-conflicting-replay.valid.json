@@ -1,0 +1,8 @@
+{
+  "protocolVersion": "keeper-export/v1",
+  "error": {
+    "code": "conflicting_replay",
+    "message": "sequence was previously accepted with different payload",
+    "retryable": false
+  }
+}

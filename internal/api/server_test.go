@@ -1121,6 +1121,33 @@ func TestNewServerWithoutPluginHostLeavesHandlerInterceptorsDisabled(t *testing.
 	}
 }
 
+func TestManagementUsageExportRoutesRequireManagementAuth(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	server := newTestServer(t)
+
+	for _, path := range []string{
+		"/v0/management/usage-export/settings",
+		"/v0/management/usage-export/status",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated %s status=%d body=%s", path, rr.Code, rr.Body.String())
+		}
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		rr = httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("authenticated %s status=%d body=%s", path, rr.Code, rr.Body.String())
+		}
+		if rr.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s Cache-Control=%q", path, rr.Header().Get("Cache-Control"))
+		}
+	}
+}
+
 func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 

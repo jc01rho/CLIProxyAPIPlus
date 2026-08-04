@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/keeperexport"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
@@ -26,6 +27,7 @@ type serverOptionConfig struct {
 	postAuthPersistHook   auth.PostAuthHook
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
+	usageExportRuntime    *keeperexport.Runtime
 	exampleAPIKeySafeMode bool
 }
 
@@ -124,6 +126,13 @@ func WithPluginHost(host *pluginhost.Host) ServerOption {
 func WithConfigReloadHook(hook func(context.Context, *config.Config)) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.configReloadHook = hook
+	}
+}
+
+// WithUsageExportRuntime exposes the hot-reloadable Keeper exporter to management status handlers.
+func WithUsageExportRuntime(runtime *keeperexport.Runtime) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.usageExportRuntime = runtime
 	}
 }
 

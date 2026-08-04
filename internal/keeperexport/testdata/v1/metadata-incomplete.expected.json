@@ -1,0 +1,8 @@
+{
+  "protocolVersion": "keeper-export/v1",
+  "error": {
+    "code": "incomplete_snapshot",
+    "message": "metadata snapshot must be complete",
+    "retryable": false
+  }
+}

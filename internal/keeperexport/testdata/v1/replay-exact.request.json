@@ -1,0 +1,126 @@
+{
+  "protocolVersion": "keeper-export/v1",
+  "streamId": "0198aa11-1055-7f12-8a00-e843d1e17522",
+  "events": [
+    {
+      "sequence": 1,
+      "payload": {
+        "timestamp": "2026-08-03T12:34:56.789Z",
+        "latency_ms": 123,
+        "ttft_ms": 45,
+        "source": "openai",
+        "auth_index": "auth-stable-index",
+        "client_ip": null,
+        "x_forwarded_for": null,
+        "user_agent": null,
+        "tokens": {
+          "input_tokens": 10,
+          "output_tokens": 4,
+          "reasoning_tokens": 1,
+          "cached_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_read_tokens_present": true,
+          "cache_creation_tokens": 0,
+          "total_tokens": 15
+        },
+        "failed": false,
+        "generate": true,
+        "fail": {
+          "status_code": 200,
+          "code": null
+        },
+        "accounting_version": 1,
+        "token_breakdown": {
+          "input": 10,
+          "cached": 0,
+          "cache_read": 0,
+          "cache_creation": 0,
+          "reasoning": 1,
+          "output": 4
+        },
+        "provider": "openai",
+        "executor_type": "CodexExecutor",
+        "model": "gpt-5.6",
+        "alias": "gpt-5.6",
+        "endpoint": "/v1/responses",
+        "auth_type": "apikey",
+        "api_key_fingerprint": "akf1_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "request_id": "req-correlation-only",
+        "reasoning_effort": "medium",
+        "service_tier": "default",
+        "response_service_tier": null,
+        "response_headers": {
+          "x-codex-primary-reset-after-seconds": [
+            "120"
+          ],
+          "x-codex-primary-used-percent": [
+            "12"
+          ],
+          "x-codex-primary-window-minutes": [
+            "300"
+          ]
+        }
+      }
+    },
+    {
+      "sequence": 2,
+      "payload": {
+        "timestamp": "2026-08-03T12:34:57.101Z",
+        "latency_ms": 210,
+        "ttft_ms": 45,
+        "source": "openai",
+        "auth_index": "auth-stable-index",
+        "client_ip": null,
+        "x_forwarded_for": null,
+        "user_agent": null,
+        "tokens": {
+          "input_tokens": 20,
+          "output_tokens": 8,
+          "reasoning_tokens": 1,
+          "cached_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_read_tokens_present": true,
+          "cache_creation_tokens": 0,
+          "total_tokens": 29
+        },
+        "failed": false,
+        "generate": true,
+        "fail": {
+          "status_code": 200,
+          "code": null
+        },
+        "accounting_version": 1,
+        "token_breakdown": {
+          "input": 20,
+          "cached": 0,
+          "cache_read": 0,
+          "cache_creation": 0,
+          "reasoning": 1,
+          "output": 8
+        },
+        "provider": "openai",
+        "executor_type": "CodexExecutor",
+        "model": "gpt-5.6",
+        "alias": "gpt-5.6",
+        "endpoint": "/v1/responses",
+        "auth_type": "apikey",
+        "api_key_fingerprint": "akf1_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "request_id": "req-correlation-only",
+        "reasoning_effort": "medium",
+        "service_tier": "default",
+        "response_service_tier": null,
+        "response_headers": {
+          "x-codex-primary-reset-after-seconds": [
+            "120"
+          ],
+          "x-codex-primary-used-percent": [
+            "12"
+          ],
+          "x-codex-primary-window-minutes": [
+            "300"
+          ]
+        }
+      }
+    }
+  ]
+}

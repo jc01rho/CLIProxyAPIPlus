@@ -145,6 +145,11 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if !s.applyManagerConfig(ctx, commit) {
 		return false
 	}
+	if errUsageExport := s.usageExportRuntime.Apply(ctx, cfg.UsageExport); errUsageExport != nil {
+		// The previous outbox remains active when opening replacement state fails.
+		// Keeper/local storage faults must not reject proxy config application.
+		log.WithError(errUsageExport).Error("failed to reconcile usage export outbox; retaining previous runtime")
+	}
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}

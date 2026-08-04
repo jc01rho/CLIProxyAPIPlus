@@ -53,7 +53,6 @@ func TestPutConfigYAML_AppliesRuntimeConfigCallback(t *testing.T) {
 }
 
 func setupTestRouter(h *Handler) *gin.Engine {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	return r
 }
