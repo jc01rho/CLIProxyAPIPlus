@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalantigravity "github.com/router-for-me/CLIProxyAPI/v7/internal/antigravity"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -408,89 +409,10 @@ func prependClaudeSystemRemindersToFirstUserMessage(payload []byte, texts []stri
 	if firstUserIdx < 0 || len(texts) == 0 {
 		return payload
 	}
-	if oauthMode {
-		withIdentity := prependClaudeCodeIdentityToSystem(payload)
-		identitySystem := gjson.GetBytes(withIdentity, "system")
-		includeBilling := claudeMessagesHaveUserRole(withIdentity)
-		systemResult := "["
-		first := true
-		if includeBilling {
-			billingText := generateBillingHeader(payload, experimentalCCHSigning, version, messageText, entrypoint, workload)
-			systemResult += buildTextBlock(billingText, nil)
-			first = false
-		}
-		if identitySystem.IsArray() {
-			identitySystem.ForEach(func(_, block gjson.Result) bool {
-				if !first {
-					systemResult += ","
-				}
-				systemResult += block.Raw
-				first = false
-				return true
-			})
-		}
-		systemResult += "]"
-		out, err := sjson.SetRawBytes(withIdentity, "system", []byte(systemResult))
-		if err != nil {
-			return withIdentity
-		}
-		return out
-	}
 
-	includeBilling := claudeMessagesHaveUserRole(payload)
-	billingBlock := ""
-	if includeBilling {
-		billingText := generateBillingHeader(payload, experimentalCCHSigning, version, messageText, entrypoint, workload)
-		billingBlock = buildTextBlock(billingText, nil)
-	}
-
-	// Build system blocks matching real Claude Code structure.
-	// Important: Claude Code's internal cacheScope='org' does NOT serialize to
-	// scope='org' in the API request. Only scope='global' is sent explicitly.
-	// The system prompt prefix block is sent without cache_control.
-	agentBlock := buildTextBlock("You are Claude Code, Anthropic's official CLI for Claude.", nil)
-	staticPrompt := strings.Join([]string{
-		helps.ClaudeCodeIntro,
-		helps.ClaudeCodeSystem,
-		helps.ClaudeCodeDoingTasks,
-		helps.ClaudeCodeToneAndStyle,
-		helps.ClaudeCodeOutputEfficiency,
-	}, "\n\n")
-	staticBlock := buildTextBlock(staticPrompt, nil)
-
-	systemResult := "["
-	if includeBilling {
-		systemResult += billingBlock + ","
-	}
-	systemResult += agentBlock + "," + staticBlock + "]"
-	payload, _ = sjson.SetRawBytes(payload, "system", []byte(systemResult))
-
-	// Collect user system instructions and prepend to first user message
-	if !strictMode {
-		var userSystemParts []string
-		if system.IsArray() {
-			system.ForEach(func(_, part gjson.Result) bool {
-				if part.Get("type").String() == "text" {
-					txt := strings.TrimSpace(part.Get("text").String())
-					if txt != "" {
-						userSystemParts = append(userSystemParts, txt)
-					}
-				}
-				return true
-			})
-		} else if system.Type == gjson.String && strings.TrimSpace(system.String()) != "" {
-			userSystemParts = append(userSystemParts, strings.TrimSpace(system.String()))
-		}
-
-		if len(userSystemParts) > 0 {
-			combined := strings.Join(userSystemParts, "\n\n")
-			if oauthMode {
-				combined = sanitizeForwardedSystemPrompt(combined)
-			}
-			if strings.TrimSpace(combined) != "" {
-				payload = prependToFirstUserMessage(payload, combined)
-			}
-		}
+	reminderTexts := make([]string, 0, len(texts))
+	for _, text := range texts {
+		reminderTexts = append(reminderTexts, claudeCallerSystemReminder(text))
 	}
 
 	contentPath := fmt.Sprintf("messages.%d.content", firstUserIdx)

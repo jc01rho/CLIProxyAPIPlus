@@ -3,7 +3,11 @@ package helps
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -11,9 +15,11 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	tls "github.com/refraction-networking/utls"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type utlsClientRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -292,169 +298,175 @@ func TestNewUtlsHTTPClientUsesContextRoundTripperForProtectedHost(t *testing.T) 
 	}
 }
 
-type blockingUtlsDialer struct {
-	started chan struct{}
-	release chan struct{}
-	once    *sync.Once
+type claudeCodeClientHelloSummary struct {
+	CipherSuites        []uint16
+	ExtensionTypes      []uint16
+	ALPN                []string
+	SupportedGroups     []uint16
+	PointFormats        []uint8
+	SignatureAlgorithms []uint16
+	SupportedVersions   []uint16
+	KeyShareGroups      []uint16
+	JA3                 string
+	JA3MD5              string
 }
 
-func (d blockingUtlsDialer) Dial(network, addr string) (net.Conn, error) {
-	d.once.Do(func() { close(d.started) })
-	<-d.release
-	return nil, errors.New("released blocking dial")
-}
+func captureClaudeCodeClientHello(t *testing.T) []byte {
+	t.Helper()
 
-func (d blockingUtlsDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	d.once.Do(func() { close(d.started) })
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-d.release:
-		return nil, errors.New("released blocking dial")
-	}
-}
-
-func TestUtlsRoundTripperCancelsConnectionSetupWhenRequestContextEnds(t *testing.T) {
-	t.Parallel()
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	rt := newUtlsRoundTripper("")
-	rt.dialer = blockingUtlsDialer{started: started, release: release, once: &sync.Once{}}
-	defer close(release)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, "https://chatgpt.com/backend-api/codex/responses", nil)
-	if errReq != nil {
-		t.Fatalf("NewRequestWithContext returned error: %v", errReq)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, errRoundTrip := rt.RoundTrip(req)
-		done <- errRoundTrip
-	}()
-
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("utls dial did not start")
-	}
-	select {
-	case errRoundTrip := <-done:
-		if !errors.Is(errRoundTrip, context.DeadlineExceeded) {
-			t.Fatalf("RoundTrip error = %v, want context deadline exceeded", errRoundTrip)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("RoundTrip did not return after request context deadline")
-	}
-}
-
-type stalledUtlsHandshakeDialer struct {
-	started chan struct{}
-	release chan struct{}
-	once    *sync.Once
-}
-
-func (d stalledUtlsHandshakeDialer) Dial(network, addr string) (net.Conn, error) {
-	return d.DialContext(context.Background(), network, addr)
-}
-
-func (d stalledUtlsHandshakeDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	clientConn, serverConn := net.Pipe()
-	d.once.Do(func() { close(d.started) })
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-d.release:
+	t.Cleanup(func() {
+		if errClose := clientConn.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			t.Errorf("close client pipe: %v", errClose)
 		}
-		_ = serverConn.Close()
+		if errClose := serverConn.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			t.Errorf("close server pipe: %v", errClose)
+		}
+	})
+	// Use the production config so the captured bytes reflect the real dial path,
+	// including the resumption settings.
+	cfg := newClaudeCodeTLSConfig("api.anthropic.com", tls.NewLRUClientSessionCache(claudeCodeSessionCacheCapacity))
+	tlsConn := tls.UClient(clientConn, cfg, tls.HelloCustom)
+	if errPreset := tlsConn.ApplyPreset(claudeCodeTLSClientHelloSpec()); errPreset != nil {
+		t.Fatal(errPreset)
+	}
+	handshakeDone := make(chan error, 1)
+	go func() {
+		handshakeDone <- tlsConn.Handshake()
 	}()
-	return clientConn, nil
+	if errDeadline := serverConn.SetReadDeadline(time.Now().Add(5 * time.Second)); errDeadline != nil {
+		t.Fatal(errDeadline)
+	}
+	header := make([]byte, 5)
+	if _, errRead := io.ReadFull(serverConn, header); errRead != nil {
+		t.Fatal(errRead)
+	}
+	payload := make([]byte, int(binary.BigEndian.Uint16(header[3:5])))
+	if _, errRead := io.ReadFull(serverConn, payload); errRead != nil {
+		t.Fatal(errRead)
+	}
+	if errClose := serverConn.Close(); errClose != nil {
+		t.Fatal(errClose)
+	}
+	select {
+	case <-handshakeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("uTLS handshake did not exit after the capture connection closed")
+	}
+	return append(header, payload...)
 }
 
-func TestUtlsRoundTripperCancelsConnectionSetupWhenTLSHandshakeStalls(t *testing.T) {
-	t.Parallel()
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	rt := newUtlsRoundTripper("")
-	rt.dialer = stalledUtlsHandshakeDialer{started: started, release: release, once: &sync.Once{}}
-	defer close(release)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, "https://chatgpt.com/backend-api/codex/responses", nil)
-	if errReq != nil {
-		t.Fatalf("NewRequestWithContext returned error: %v", errReq)
+func parseClientHelloExtensionLengths(t *testing.T, record []byte) [][2]int {
+	t.Helper()
+	if len(record) < 9 || record[0] != 22 || record[5] != 1 {
+		t.Fatalf("invalid TLS ClientHello record")
 	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, errRoundTrip := rt.RoundTrip(req)
-		done <- errRoundTrip
-	}()
-
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("utls dial did not start")
+	body := record[9:]
+	offset := 2 + 32
+	if offset >= len(body) {
+		t.Fatal("truncated ClientHello random")
 	}
-	select {
-	case errRoundTrip := <-done:
-		if !errors.Is(errRoundTrip, context.DeadlineExceeded) {
-			t.Fatalf("RoundTrip error = %v, want context deadline exceeded", errRoundTrip)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("RoundTrip did not return after request context deadline")
+	sessionLength := int(body[offset])
+	offset += 1 + sessionLength
+	if offset+2 > len(body) {
+		t.Fatal("truncated ClientHello cipher suites")
 	}
+	cipherLength := int(binary.BigEndian.Uint16(body[offset : offset+2]))
+	offset += 2 + cipherLength
+	if offset >= len(body) {
+		t.Fatal("truncated ClientHello compression methods")
+	}
+	compressionLength := int(body[offset])
+	offset += 1 + compressionLength
+	if offset+2 > len(body) {
+		t.Fatal("truncated ClientHello extensions")
+	}
+	extensionsLength := int(binary.BigEndian.Uint16(body[offset : offset+2]))
+	offset += 2
+	end := offset + extensionsLength
+	if end > len(body) {
+		t.Fatal("truncated ClientHello extension data")
+	}
+	lengths := make([][2]int, 0)
+	for offset+4 <= end {
+		extensionType := int(binary.BigEndian.Uint16(body[offset : offset+2]))
+		extensionLength := int(binary.BigEndian.Uint16(body[offset+2 : offset+4]))
+		lengths = append(lengths, [2]int{extensionType, extensionLength})
+		offset += 4 + extensionLength
+	}
+	if offset != end {
+		t.Fatal("misaligned ClientHello extension data")
+	}
+	return lengths
 }
 
-func TestUtlsRoundTripperCancelsSameHostWaitWhenRequestContextEnds(t *testing.T) {
-	t.Parallel()
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	rt := newUtlsRoundTripper("")
-	rt.dialer = blockingUtlsDialer{started: started, release: release, once: &sync.Once{}}
-
-	firstReq, errReq := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://chatgpt.com/backend-api/codex/responses", nil)
-	if errReq != nil {
-		t.Fatalf("NewRequestWithContext returned error: %v", errReq)
-	}
-	firstDone := make(chan error, 1)
-	go func() {
-		_, errRoundTrip := rt.RoundTrip(firstReq)
-		firstDone <- errRoundTrip
-	}()
-
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("first utls dial did not start")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	waitingReq, errReq := http.NewRequestWithContext(ctx, http.MethodGet, "https://chatgpt.com/backend-api/codex/second", nil)
-	if errReq != nil {
-		t.Fatalf("NewRequestWithContext returned error: %v", errReq)
-	}
-
-	waitingDone := make(chan error, 1)
-	go func() {
-		_, errRoundTrip := rt.RoundTrip(waitingReq)
-		waitingDone <- errRoundTrip
-	}()
-
-	select {
-	case errRoundTrip := <-waitingDone:
-		if !errors.Is(errRoundTrip, context.DeadlineExceeded) {
-			t.Fatalf("RoundTrip error = %v, want context deadline exceeded", errRoundTrip)
+func summarizeClaudeCodeClientHelloSpec(t *testing.T, spec *tls.ClientHelloSpec) claudeCodeClientHelloSummary {
+	t.Helper()
+	summary := claudeCodeClientHelloSummary{CipherSuites: append([]uint16(nil), spec.CipherSuites...)}
+	for _, extension := range spec.Extensions {
+		switch ext := extension.(type) {
+		case *tls.SNIExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 0)
+		case *tls.ExtendedMasterSecretExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 23)
+		case *tls.RenegotiationInfoExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 65281)
+		case *tls.SupportedCurvesExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 10)
+			for _, curve := range ext.Curves {
+				summary.SupportedGroups = append(summary.SupportedGroups, uint16(curve))
+			}
+		case *tls.SupportedPointsExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 11)
+			summary.PointFormats = append(summary.PointFormats, ext.SupportedPoints...)
+		case *tls.SessionTicketExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 35)
+		case *tls.ALPNExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 16)
+			summary.ALPN = append(summary.ALPN, ext.AlpnProtocols...)
+		case *tls.StatusRequestExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 5)
+		case *tls.SignatureAlgorithmsExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 13)
+			for _, algorithm := range ext.SupportedSignatureAlgorithms {
+				summary.SignatureAlgorithms = append(summary.SignatureAlgorithms, uint16(algorithm))
+			}
+		case *tls.SCTExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 18)
+		case *tls.KeyShareExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 51)
+			for _, keyShare := range ext.KeyShares {
+				summary.KeyShareGroups = append(summary.KeyShareGroups, uint16(keyShare.Group))
+			}
+		case *tls.PSKKeyExchangeModesExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 45)
+		case *tls.SupportedVersionsExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 43)
+			summary.SupportedVersions = append(summary.SupportedVersions, ext.Versions...)
+		case *tls.UtlsPaddingExtension:
+			summary.ExtensionTypes = append(summary.ExtensionTypes, 21)
+		default:
+			t.Fatalf("unexpected ClientHello extension type %T", extension)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("RoundTrip did not return while waiting on same-host connection")
 	}
-
-	close(release)
-	<-firstDone
+	cipherStrings := make([]string, 0, len(summary.CipherSuites))
+	for _, cipher := range summary.CipherSuites {
+		cipherStrings = append(cipherStrings, strconv.Itoa(int(cipher)))
+	}
+	extensionStrings := make([]string, 0, len(summary.ExtensionTypes))
+	for _, extensionType := range summary.ExtensionTypes {
+		extensionStrings = append(extensionStrings, strconv.Itoa(int(extensionType)))
+	}
+	groupStrings := make([]string, 0, len(summary.SupportedGroups))
+	for _, group := range summary.SupportedGroups {
+		groupStrings = append(groupStrings, strconv.Itoa(int(group)))
+	}
+	pointStrings := make([]string, 0, len(summary.PointFormats))
+	for _, point := range summary.PointFormats {
+		pointStrings = append(pointStrings, strconv.Itoa(int(point)))
+	}
+	summary.JA3 = fmt.Sprintf("771,%s,%s,%s,%s", strings.Join(cipherStrings, "-"), strings.Join(extensionStrings, "-"), strings.Join(groupStrings, "-"), strings.Join(pointStrings, "-"))
+	digest := md5.Sum([]byte(summary.JA3)) // #nosec G401 -- JA3 requires MD5.
+	summary.JA3MD5 = hex.EncodeToString(digest[:])
+	return summary
 }

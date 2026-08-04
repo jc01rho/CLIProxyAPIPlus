@@ -455,3 +455,18 @@ func writeClaudeJSONQuoted(output *bytes.Buffer, value string) {
 	encoded, _ := json.Marshal(value)
 	output.Write(encoded)
 }
+
+// PreFlightCheckDuplicateClaudeMetadata returns a 400 request-scoped error if
+// the top-level JSON body has a duplicate "metadata" key. Downstream pipeline
+// functions that re-serialize via sjson keep only one occurrence, so the
+// duplicate must be detected on the raw body before any re-serialization.
+func PreFlightCheckDuplicateClaudeMetadata(payload []byte) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	_, _, err := uniqueClaudeJSONObjectMember(payload, "metadata")
+	if err != nil {
+		return newClaudeCredentialMetadataRequestError(fmt.Errorf("apply Claude credential metadata: %w", err))
+	}
+	return nil
+}
