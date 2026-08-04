@@ -31,6 +31,18 @@ type ClaudeTokenStorage struct {
 	// Email is the Anthropic account email address associated with this token.
 	Email string `json:"email"`
 
+	// AccountUUID identifies the Anthropic account returned by OAuth.
+	AccountUUID string `json:"account_uuid"`
+
+	// OrganizationUUID identifies the Anthropic organization returned by OAuth.
+	OrganizationUUID string `json:"organization_uuid"`
+
+	// OrganizationName is the display name returned by OAuth.
+	OrganizationName string `json:"organization_name"`
+
+	// DeviceIDs contains the single device identity persisted with this credential.
+	DeviceIDs []string `json:"claude_device_ids"`
+
 	// BaseURL overrides the default Anthropic API host for runtime message requests.
 	BaseURL string `json:"base_url,omitempty"`
 

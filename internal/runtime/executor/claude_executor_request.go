@@ -896,6 +896,21 @@ func isClaudeOAuthToken(apiKey string) bool {
 	return strings.Contains(apiKey, "sk-ant-oat")
 }
 
+type claudeMCPAliasOptions struct {
+	secret string
+}
+
+func resolveClaudeMCPAliasOptions(ctx context.Context) claudeMCPAliasOptions {
+	// Alias identity belongs to the downstream caller, not to the selected
+	// upstream credential. This keeps names stable across OAuth refresh and auth
+	// failover while giving one caller a shared virtual MCP server component.
+	secret := strings.TrimSpace(helps.APIKeyFromContext(ctx))
+	if secret == "" {
+		secret = "cpa-claude-mcp-default-caller"
+	}
+	return claudeMCPAliasOptions{secret: secret}
+}
+
 // stripTrailingClaudeAssistantMessages removes trailing assistant messages from
 // the request body, mirroring cortexkit/anthropic-auth stripTrailingAssistantMessages.
 // Anthropic rejects assistant-message prefill on Claude Code OAuth models with
