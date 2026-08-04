@@ -199,8 +199,7 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	// Claude Code 2.1.220's beta.messages.countTokens() always appends this beta.
 	extraBetas = append(extraBetas, claudeTokenCountingBeta)
 	if oauthToken && cloaked {
-		mcpAliases := resolveClaudeMCPAliasOptions(ctx)
-		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, mcpAliases)
+		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel)
 	// Claude Code never sends metadata on count_tokens, and Anthropic rejects the

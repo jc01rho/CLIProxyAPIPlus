@@ -268,8 +268,8 @@ func applyClaudeDeviceProfileHeaders(r *http.Request, profile claudeDeviceProfil
 	helps.ApplyClaudeDeviceProfileHeaders(r, profile)
 }
 
-func applyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg *config.Config) {
-	helps.ApplyClaudeLegacyDeviceHeaders(r, ginHeaders, cfg)
+func applyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg *config.Config, confirmedClaudeCode bool) {
+	helps.ApplyClaudeLegacyDeviceHeaders(r, ginHeaders, cfg, confirmedClaudeCode)
 }
 
 func buildSensitiveWordMatcher(words []string) *helps.SensitiveWordMatcher {

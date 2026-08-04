@@ -115,7 +115,7 @@ func TestClaudeThinkingSignaturesSurviveUpstreamPreparation(t *testing.T) {
 		t.Fatal("applyCloaking() cloaked = false, want true")
 	}
 
-	prepared, reverseMap := prepareClaudeOAuthToolNamesForUpstream(cloaked, claudeMCPAliasOptions{secret: "signature-fixture-caller"})
+	prepared, reverseMap := prepareClaudeOAuthToolNamesForUpstreamWithAliases(cloaked, claudeMCPAliasOptions{secret: "signature-fixture-caller"})
 	if len(reverseMap) == 0 {
 		t.Fatal("expected the MCP alias pass to rewrite the declared tool")
 	}

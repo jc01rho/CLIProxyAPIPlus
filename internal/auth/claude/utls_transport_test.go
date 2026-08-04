@@ -1,7 +1,10 @@
 package claude
 
 import (
+	"crypto/md5"
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -33,6 +36,7 @@ func TestUtlsRoundTripperBoundsTLSHandshake(t *testing.T) {
 
 	transport := &utlsRoundTripper{dialer: claudeTestDialer{conn: clientConn}}
 	ctx := context.WithValue(context.Background(), claudeRefreshHandshakeTimeoutContextKey{}, 20*time.Millisecond)
+	_ = ctx
 	startedAt := time.Now()
 	_, err := transport.createConnection(context.Background(), "example.com", "unused", 20*time.Millisecond)
 	if err == nil {

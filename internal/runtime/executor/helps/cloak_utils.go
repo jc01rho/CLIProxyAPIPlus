@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -15,6 +16,19 @@ type claudeMetadataUserID struct {
 	DeviceID    string `json:"device_id"`
 	AccountUUID string `json:"account_uuid"`
 	SessionID   string `json:"session_id"`
+}
+
+// ShouldCloak determines if request should be cloaked based on config and client User-Agent.
+func ShouldCloak(cloakMode string, userAgent string) bool {
+	switch strings.ToLower(cloakMode) {
+	case "always":
+		return true
+	case "never":
+		return false
+	default: // "auto" or empty
+		// If client is Claude Code, don't cloak
+		return !strings.HasPrefix(userAgent, "claude-cli")
+	}
 }
 
 // generateFakeUserID generates metadata.user_id in the JSON string format used

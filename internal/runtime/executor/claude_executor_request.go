@@ -985,6 +985,13 @@ func orderClaudeCodeBody(body []byte) []byte {
 // transforms in the same order across request paths. Remap runs before prefixing
 // so any future non-empty prefix still composes correctly with the per-request
 // reverse map.
+// prepareClaudeOAuthToolNamesForUpstreamWithAliases wraps prepareClaudeOAuthToolNamesForUpstream
+// using a derived prefix from the alias options. Used by callers that have only
+// the MCP alias options (e.g., count_tokens path).
+func prepareClaudeOAuthToolNamesForUpstreamWithAliases(body []byte, aliases claudeMCPAliasOptions) ([]byte, map[string]string) {
+	return prepareClaudeOAuthToolNamesForUpstream(body, "proxy_"+aliases.secret, false)
+}
+
 func prepareClaudeOAuthToolNamesForUpstream(body []byte, prefix string, prefixDisabled bool) ([]byte, map[string]string) {
 	body, reverseMap := remapOAuthToolNames(body)
 	if !prefixDisabled {
