@@ -166,9 +166,19 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		}
 		models = applyExcludedModels(models, excluded)
 	case constant.Mistral:
-		if entry := s.resolveConfigMistralKey(a); entry != nil {
+		entry := s.resolveConfigMistralKey(a)
+		switch {
+		case entry != nil && len(entry.Models) > 0:
 			models = buildMistralConfigModels(entry)
 			excluded = entry.ExcludedModels
+		default:
+			// No explicit config models (or no matching credential entry) -
+			// fall back to the static Mistral catalog so a configured Mistral
+			// provider still surfaces its models through /v1/models.
+			models = registry.GetMistralModels()
+			if entry != nil {
+				excluded = entry.ExcludedModels
+			}
 		}
 		models = applyExcludedModels(models, excluded)
 	default:

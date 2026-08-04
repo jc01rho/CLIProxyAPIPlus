@@ -29,6 +29,7 @@ type staticModelsJSON struct {
 	Kimi        []*ModelInfo `json:"kimi"`
 	Antigravity []*ModelInfo `json:"antigravity"`
 	XAI         []*ModelInfo `json:"xai"`
+	Mistral     []*ModelInfo `json:"mistral"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -116,6 +117,10 @@ func GetXAIModels() []*ModelInfo {
 	return WithXAIBuiltins(cloneModelInfos(getModels().XAI))
 }
 
+// GetMistralModels returns the standard Mistral AI model definitions.
+func GetMistralModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Mistral)
+}
 
 // GetCodeBuddyModels returns the available models for CodeBuddy (Tencent).
 // These models are served through the copilot.tencent.com API.
@@ -370,7 +375,6 @@ func xaiBuiltinVideo15PreviewModelInfo() *ModelInfo {
 	}
 }
 
-
 func upsertModelInfos(models []*ModelInfo, extras ...*ModelInfo) []*ModelInfo {
 	if len(extras) == 0 {
 		return models
@@ -482,6 +486,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetClineModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
+	case "mistral":
+		return GetMistralModels()
 	default:
 		return nil
 	}
@@ -524,6 +530,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetCursorModels(),
 		GetClineModels(),
 		data.XAI,
+		data.Mistral,
 	}
 	for _, models := range allModels {
 		for _, m := range models {
