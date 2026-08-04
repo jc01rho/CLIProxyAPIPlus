@@ -660,9 +660,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens", inputTokens)
 			completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens_details.cached_tokens", cachedTokens)
 			completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens", outputTokens)
-			if reasoningTokens > 0 {
-				completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens_details.reasoning_tokens", reasoningTokens)
-			}
+			completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens_details.reasoning_tokens", reasoningTokens)
 			if totalTokens > 0 || st.Usage.HasUsage {
 				completed, _ = sjson.SetBytes(completed, "response.usage.total_tokens", totalTokens)
 			}
