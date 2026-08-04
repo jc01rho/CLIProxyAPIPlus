@@ -538,7 +538,6 @@ func TestSaveTokenRecord_AntigravityPrimaryHandoff_LegacyActivePrimaryStaysUniqu
 }
 
 func TestListAuthFiles_BackfillsAntigravityPrimaryInfoForLegacyRecords(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	cfg := &config.Config{AuthDir: tmpDir}
@@ -644,7 +643,6 @@ func TestListAuthFiles_BackfillsAntigravityPrimaryInfoForLegacyRecords(t *testin
 }
 
 func TestListAuthFiles_ExplicitPrimaryPreventsDuplicateFallbackPrimary(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	cfg := &config.Config{AuthDir: tmpDir}
@@ -735,7 +733,6 @@ func TestListAuthFiles_ExplicitPrimaryPreventsDuplicateFallbackPrimary(t *testin
 }
 
 func TestListAuthFiles_ReconcilesStaleStandbyAsSoleEnabledPrimary(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	cfg := &config.Config{AuthDir: tmpDir}
@@ -841,7 +838,6 @@ func TestListAuthFiles_ReconcilesStaleStandbyAsSoleEnabledPrimary(t *testing.T) 
 }
 
 func TestListAuthFilesFromDisk_ReconcilesStaleStandbyAsSoleEnabledPrimary(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	tmpDir := t.TempDir()
 	h := &Handler{cfg: &config.Config{AuthDir: tmpDir}}
 

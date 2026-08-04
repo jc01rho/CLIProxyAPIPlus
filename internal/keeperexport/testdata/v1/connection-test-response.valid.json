@@ -1,0 +1,15 @@
+{
+  "credentialScopes": [
+    "usage:push",
+    "metadata:push",
+    "identity:test"
+  ],
+  "instance": {
+    "displayName": "CPA production east",
+    "instanceId": "0198aa10-4d88-7a20-8f4e-8c8de4a9cb11"
+  },
+  "latencyMs": 42,
+  "ok": true,
+  "protocolVersion": "keeper-export/v1",
+  "testedAt": "2026-08-03T12:40:00.000Z"
+}

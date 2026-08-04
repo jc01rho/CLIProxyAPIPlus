@@ -1,5 +1,6 @@
 # Binaries
 cli-proxy-api
+/server
 *.exe
 
 # Configuration
@@ -30,6 +31,7 @@ auths/*
 
 # Documentation
 docs/*
+!docs/keeper-export.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md
@@ -59,6 +61,11 @@ _bmad-output/*
 
 # deepwork session state (local only)
 .slim/deepwork/
+
+# BEGIN oh-my-opencode-slim worktrees
+.slim/worktrees/
+.slim/worktrees.json
+# END oh-my-opencode-slim worktrees
 
 # 로컬 세션 산출물
 .gjc/

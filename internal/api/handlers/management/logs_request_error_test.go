@@ -25,7 +25,6 @@ func writeTestErrorLog(t *testing.T, dir, name string, modTime time.Time) {
 }
 
 func TestGetRequestErrorLogs_ReturnsFilesEvenWhenRequestLogEnabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	logsDir := t.TempDir()
 	older := time.Now().Add(-time.Hour)
 	newer := time.Now()

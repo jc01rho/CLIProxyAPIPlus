@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -57,7 +58,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "plugins", "configs")
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
-	mergeMappingPreserve(original.Content[0], generated.Content[0])
+	mergeMappingPreserveWithConfigDir(original.Content[0], generated.Content[0], filepath.Dir(configFile))
 	normalizeCollectionNodeStyles(original.Content[0])
 
 	// Write back.
@@ -179,6 +180,10 @@ func getOrCreateMapValue(mapNode *yaml.Node, key string) *yaml.Node {
 // key order and comments of existing keys in dst. New keys are only added if their
 // value is non-zero and not a known default to avoid polluting the config with defaults.
 func mergeMappingPreserve(dst, src *yaml.Node, path ...[]string) {
+	mergeMappingPreserveWithConfigDir(dst, src, "", path...)
+}
+
+func mergeMappingPreserveWithConfigDir(dst, src *yaml.Node, configDir string, path ...[]string) {
 	var currentPath []string
 	if len(path) > 0 {
 		currentPath = path[0]
@@ -201,12 +206,12 @@ func mergeMappingPreserve(dst, src *yaml.Node, path ...[]string) {
 		if idx >= 0 {
 			// Merge into existing value node (always update, even to zero values)
 			dv := dst.Content[idx+1]
-			mergeNodePreserve(dv, sv, childPath)
+			mergeNodePreserveWithConfigDir(dv, sv, configDir, childPath)
 		} else {
 			// New key: only add if value is non-zero and not a known default
 			candidate := deepCopyNode(sv)
-			pruneKnownDefaultsInNewNode(childPath, candidate)
-			if isKnownDefaultValue(childPath, candidate) {
+			pruneKnownDefaultsInNewNodeWithConfigDir(childPath, candidate, configDir)
+			if isKnownDefaultValueWithConfigDir(childPath, candidate, configDir) {
 				continue
 			}
 			dst.Content = append(dst.Content, deepCopyNode(sk), candidate)
@@ -218,6 +223,10 @@ func mergeMappingPreserve(dst, src *yaml.Node, path ...[]string) {
 // reusing destination nodes to keep comments and anchors. For sequences, it updates
 // in-place by index.
 func mergeNodePreserve(dst, src *yaml.Node, path ...[]string) {
+	mergeNodePreserveWithConfigDir(dst, src, "", path...)
+}
+
+func mergeNodePreserveWithConfigDir(dst, src *yaml.Node, configDir string, path ...[]string) {
 	var currentPath []string
 	if len(path) > 0 {
 		currentPath = path[0]
@@ -231,7 +240,7 @@ func mergeNodePreserve(dst, src *yaml.Node, path ...[]string) {
 		if dst.Kind != yaml.MappingNode {
 			copyNodeShallow(dst, src)
 		}
-		mergeMappingPreserve(dst, src, currentPath)
+		mergeMappingPreserveWithConfigDir(dst, src, configDir, currentPath)
 	case yaml.SequenceNode:
 		// Preserve explicit null style if dst was null and src is empty sequence
 		if dst.Kind == yaml.ScalarNode && dst.Tag == "!!null" && len(src.Content) == 0 {
@@ -254,7 +263,7 @@ func mergeNodePreserve(dst, src *yaml.Node, path ...[]string) {
 				dst.Content[i] = deepCopyNode(src.Content[i])
 				continue
 			}
-			mergeNodePreserve(dst.Content[i], src.Content[i], currentPath)
+			mergeNodePreserveWithConfigDir(dst.Content[i], src.Content[i], configDir, currentPath)
 			if dst.Content[i] != nil && src.Content[i] != nil &&
 				dst.Content[i].Kind == yaml.MappingNode && src.Content[i].Kind == yaml.MappingNode {
 				pruneMissingMapKeys(dst.Content[i], src.Content[i])
@@ -311,6 +320,17 @@ func appendPath(path []string, key string) []string {
 // represents a known default value that should not be written to the config file.
 // This prevents non-zero defaults from polluting the config.
 func isKnownDefaultValue(path []string, node *yaml.Node) bool {
+	return isKnownDefaultValueWithConfigDir(path, node, "")
+}
+
+func isKnownDefaultValueWithConfigDir(path []string, node *yaml.Node, configDir string) bool {
+	// An absent usage-export section must remain absent while the safe disabled
+	// defaults are effective. This avoids materializing a large untouched block
+	// during unrelated comment-preserving config saves.
+	if len(path) == 1 && path[0] == "usage-export" && isDisabledUsageExportNode(node, configDir) {
+		return true
+	}
+
 	// Weight is pointer-backed, so an explicit zero is meaningful and must be preserved.
 	if len(path) > 0 && path[len(path)-1] == "weight" && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!int" {
 		return false
@@ -356,6 +376,10 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 // pruneKnownDefaultsInNewNode removes default-valued descendants from a new node
 // before it is appended into the destination YAML tree.
 func pruneKnownDefaultsInNewNode(path []string, node *yaml.Node) {
+	pruneKnownDefaultsInNewNodeWithConfigDir(path, node, "")
+}
+
+func pruneKnownDefaultsInNewNodeWithConfigDir(path []string, node *yaml.Node, configDir string) {
 	if node == nil {
 		return
 	}
@@ -371,11 +395,11 @@ func pruneKnownDefaultsInNewNode(path []string, node *yaml.Node) {
 			}
 
 			childPath := appendPath(path, keyNode.Value)
-			if isKnownDefaultValue(childPath, valueNode) {
+			if isKnownDefaultValueWithConfigDir(childPath, valueNode, configDir) {
 				continue
 			}
 
-			pruneKnownDefaultsInNewNode(childPath, valueNode)
+			pruneKnownDefaultsInNewNodeWithConfigDir(childPath, valueNode, configDir)
 			if (valueNode.Kind == yaml.MappingNode || valueNode.Kind == yaml.SequenceNode) &&
 				len(valueNode.Content) == 0 {
 				continue
@@ -386,7 +410,7 @@ func pruneKnownDefaultsInNewNode(path []string, node *yaml.Node) {
 		node.Content = filtered
 	case yaml.SequenceNode:
 		for _, child := range node.Content {
-			pruneKnownDefaultsInNewNode(path, child)
+			pruneKnownDefaultsInNewNodeWithConfigDir(path, child, configDir)
 		}
 	}
 }
@@ -394,6 +418,17 @@ func pruneKnownDefaultsInNewNode(path []string, node *yaml.Node) {
 // isZeroValueNode returns true if the YAML node represents a zero/default value
 // that should not be written as a new key to preserve config cleanliness.
 // For mappings and sequences, recursively checks if all children are zero values.
+func isDisabledUsageExportNode(node *yaml.Node, configDir string) bool {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return false
+	}
+	var cfg UsageExportConfig
+	if err := node.Decode(&cfg); err != nil {
+		return false
+	}
+	return usageExportMatchesSafeDefaults(cfg, configDir)
+}
+
 func isZeroValueNode(node *yaml.Node) bool {
 	if node == nil {
 		return true

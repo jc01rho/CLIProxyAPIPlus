@@ -15,7 +15,6 @@ import (
 
 func TestGetAuthFileModelsAppliesAuthExcludedModels(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	manager := coreauth.NewManager(nil, nil, nil)
 	auth := &coreauth.Auth{
@@ -71,7 +70,6 @@ func TestGetAuthFileModelsAppliesAuthExcludedModels(t *testing.T) {
 
 func TestGetAuthFileModelsAllowsOnlySupportedCopilotModels(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	manager := coreauth.NewManager(nil, nil, nil)
 	auth := &coreauth.Auth{
@@ -127,7 +125,6 @@ func TestGetAuthFileModelsAllowsOnlySupportedCopilotModels(t *testing.T) {
 
 func TestGetAuthFileModelsAppliesCopilotAllowlistWithoutMatchedAuth(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	clientID := "github-copilot-unmatched-auth-test"
 	reg := registry.GetGlobalRegistry()
@@ -158,7 +155,6 @@ func TestGetAuthFileModelsAppliesCopilotAllowlistWithoutMatchedAuth(t *testing.T
 
 func TestGetAuthFileModelsAppliesGlobalOAuthExcludedModels(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	manager := coreauth.NewManager(nil, nil, nil)
 	auth := &coreauth.Auth{

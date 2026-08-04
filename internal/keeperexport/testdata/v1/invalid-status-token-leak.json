@@ -1,0 +1,27 @@
+{
+  "acknowledgedThrough": 12,
+  "backlogBytes": 0,
+  "backlogEvents": 0,
+  "enabled": true,
+  "instance": {
+    "displayName": "CPA production east",
+    "instanceId": "0198aa10-4d88-7a20-8f4e-8c8de4a9cb11"
+  },
+  "lastAttemptAt": "2026-08-03T12:39:59.000Z",
+  "lastError": null,
+  "lastSuccessAt": "2026-08-03T12:39:59.100Z",
+  "metadataRevisions": {
+    "api_keys": 3,
+    "auth_files": 7,
+    "provider_identities": 9
+  },
+  "nextExpectedSequence": 13,
+  "nextRetryAt": null,
+  "nextSequence": 13,
+  "oldestBacklogAt": null,
+  "protocolVersion": "keeper-export/v1",
+  "state": "connected",
+  "streamId": "0198aa11-1055-7f12-8a00-e843d1e17522",
+  "token": "fixture-secret-must-not-appear",
+  "tokenConfigured": true
+}

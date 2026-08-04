@@ -12,8 +12,11 @@ services:
     container_name: cli-proxy-api-plus
     # env_file:
     #   - .env
+    #   - ./secrets/keeper-export.env  # mode 0600; contains CPA_KEEPER_INGEST_TOKEN
     environment:
       DEPLOY: ${DEPLOY:-}
+      # The Keeper token value must never appear in config.yaml or this file.
+      # See docs/keeper-export.md for env_file/secret-store deployment.
     ports:
       - "8317:8317"
       - "8085:8085"
@@ -26,4 +29,7 @@ services:
       - ${CLI_PROXY_AUTH_PATH:-./auths}:/root/.cli-proxy-api
       - ${CLI_PROXY_LOG_PATH:-./logs}:/CLIProxyAPI/logs
       - ${CLI_PROXY_PLUGIN_PATH:-./plugins}:/CLIProxyAPI/plugins
+      # Durable, per-CPA Keeper outbox. Configure this absolute in-container path
+      # as usage-export.outbox.path; never share the volume between CPA instances.
+      - ${CLI_PROXY_KEEPER_OUTBOX_PATH:-./data/keeper-export}:/var/lib/cli-proxy-api/keeper-export
     restart: unless-stopped

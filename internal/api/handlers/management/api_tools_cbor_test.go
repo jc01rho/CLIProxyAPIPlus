@@ -12,7 +12,6 @@ import (
 )
 
 func TestAPICall_CBOR_Support(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	// Create a test handler
 	h := &Handler{}

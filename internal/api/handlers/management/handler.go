@@ -62,6 +62,7 @@ type Handler struct {
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginReleaseCacheMu    sync.Mutex
 	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+	usageExportRuntime      usageExportRuntime
 }
 
 type configReloadSnapshot struct {

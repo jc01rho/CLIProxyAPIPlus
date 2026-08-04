@@ -12,7 +12,6 @@ import (
 )
 
 func TestDetailedAPIErrorBodyLogFormatGetDefaultsToFull(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
@@ -27,7 +26,6 @@ func TestDetailedAPIErrorBodyLogFormatGetDefaultsToFull(t *testing.T) {
 }
 
 func TestDetailedAPIErrorBodyLogFormatPutAcceptsSummary(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	dir := t.TempDir()
 	configPath := dir + "/config.yaml"
 	if err := os.WriteFile(configPath, []byte("auth-dir: \""+dir+"\"\n"), 0o644); err != nil {
@@ -50,7 +48,6 @@ func TestDetailedAPIErrorBodyLogFormatPutAcceptsSummary(t *testing.T) {
 }
 
 func TestDetailedAPIErrorBodyLogFormatPutRejectsInvalidValue(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)

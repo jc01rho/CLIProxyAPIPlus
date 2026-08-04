@@ -1,0 +1,22 @@
+{
+  "credential": {
+    "createdAt": "2026-08-03T12:34:56.789Z",
+    "credentialId": "0198aa10-4d88-7a20-8f4e-8c8de4a9cb12",
+    "expiresAt": null,
+    "name": "primary exporter",
+    "scopes": [
+      "usage:push",
+      "metadata:push",
+      "identity:test"
+    ],
+    "token": "fixture_ingest_token_not_secret"
+  },
+  "instance": {
+    "createdAt": "2026-08-03T12:34:56.789Z",
+    "displayName": "CPA production east",
+    "enabled": true,
+    "instanceId": "0198aa10-4d88-7a20-8f4e-8c8de4a9cb11",
+    "updatedAt": "2026-08-03T12:34:56.789Z"
+  },
+  "protocolVersion": "keeper-export/v1"
+}

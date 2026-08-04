@@ -14,7 +14,6 @@ import (
 
 func TestGetUsageQueueDrainsValidJSONPayloads(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	prevQueueEnabled := redisqueue.Enabled()
 	prevUsageEnabled := redisqueue.UsageStatisticsEnabled()
@@ -55,7 +54,6 @@ func TestGetUsageQueueDrainsValidJSONPayloads(t *testing.T) {
 
 func TestGetUsageQueueMasksAPIKey(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
 
 	prevQueueEnabled := redisqueue.Enabled()
 	prevUsageEnabled := redisqueue.UsageStatisticsEnabled()
@@ -104,7 +102,6 @@ func TestMaskAPIKey(t *testing.T) {
 }
 
 func TestGetUsageQueueRejectsInvalidCount(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
 	rec := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(rec)

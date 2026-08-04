@@ -67,7 +67,6 @@ func TestAPIKeyIPBlacklistStoreManualBan(t *testing.T) {
 }
 
 func TestHandlerAPIKeyIPBlacklistEndpoints(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	h := NewHandler(&config.Config{}, "", nil)
 	base := time.Date(2026, time.April, 22, 12, 0, 0, 0, time.UTC)
 	h.apiKeyIPBlacklist.nowFn = func() time.Time { return base }
@@ -119,7 +118,6 @@ func TestHandlerAPIKeyIPBlacklistEndpoints(t *testing.T) {
 }
 
 func TestHandlerAPIKeyIPBlacklistManualBanValidation(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	h := NewHandler(&config.Config{}, "", nil)
 	r := gin.New()
 	r.POST("/api-key-ip-blacklist", h.PostAPIKeyIPBlacklist)

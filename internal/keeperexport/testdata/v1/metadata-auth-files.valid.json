@@ -1,0 +1,42 @@
+{
+  "protocolVersion": "keeper-export/v1",
+  "revision": 1,
+  "complete": true,
+  "generatedAt": "2026-08-03T12:36:00.000Z",
+  "items": [
+    {
+      "authIndex": "auth-stable-index",
+      "name": "codex-user.json",
+      "displayName": "user@example.com",
+      "type": "codex",
+      "provider": "codex",
+      "prefix": "team",
+      "priority": 7,
+      "disabled": false,
+      "note": "primary auth",
+      "accountId": "acct_123",
+      "projectId": null,
+      "xaiUserId": null,
+      "activeStart": "2026-08-01T00:00:00.000Z",
+      "activeUntil": "2026-09-01T00:00:00.000Z",
+      "planType": "team"
+    },
+    {
+      "authIndex": "auth-secondary-index",
+      "name": "gemini-user.json",
+      "displayName": "other@example.com",
+      "type": "gemini",
+      "provider": "gemini",
+      "prefix": "",
+      "priority": null,
+      "disabled": null,
+      "note": null,
+      "accountId": null,
+      "projectId": "proj_456",
+      "xaiUserId": null,
+      "activeStart": null,
+      "activeUntil": null,
+      "planType": null
+    }
+  ]
+}

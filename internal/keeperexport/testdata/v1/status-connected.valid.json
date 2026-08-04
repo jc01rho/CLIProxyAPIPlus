@@ -1,0 +1,26 @@
+{
+  "protocolVersion": "keeper-export/v1",
+  "state": "connected",
+  "enabled": true,
+  "tokenConfigured": true,
+  "instance": {
+    "instanceId": "0198aa10-4d88-7a20-8f4e-8c8de4a9cb11",
+    "displayName": "CPA production east"
+  },
+  "streamId": "0198aa11-1055-7f12-8a00-e843d1e17522",
+  "nextSequence": 13,
+  "acknowledgedThrough": 12,
+  "nextExpectedSequence": 13,
+  "backlogEvents": 0,
+  "backlogBytes": 0,
+  "oldestBacklogAt": null,
+  "lastAttemptAt": "2026-08-03T12:39:59.000Z",
+  "lastSuccessAt": "2026-08-03T12:39:59.100Z",
+  "nextRetryAt": null,
+  "metadataRevisions": {
+    "api_keys": 3,
+    "auth_files": 7,
+    "provider_identities": 9
+  },
+  "lastError": null
+}
