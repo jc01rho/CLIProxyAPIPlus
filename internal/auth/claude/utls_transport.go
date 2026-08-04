@@ -1,5 +1,3 @@
-// Package claude provides authentication functionality for Anthropic's Claude API.
-// This file implements a custom HTTP transport using utls to bypass TLS fingerprinting.
 package claude
 
 import (
@@ -8,14 +6,14 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	tls "github.com/refraction-networking/utls"
+	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/httpwire"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/net/http2"
 	"golang.org/x/net/proxy"
 )
 
@@ -34,10 +32,11 @@ type utlsRoundTripper struct {
 	dialer proxy.Dialer
 }
 
-// newUtlsRoundTripper creates a new utls-based round tripper with optional proxy support
 func newUtlsRoundTripper(cfg *config.SDKConfig) *utlsRoundTripper {
 	var dialer proxy.Dialer = proxy.Direct
+	var proxyURL string
 	if cfg != nil {
+		proxyURL = cfg.ProxyURL
 		proxyDialer, mode, errBuild := proxyutil.BuildDialer(cfg.ProxyURL)
 		if errBuild != nil {
 			log.Errorf("failed to configure proxy dialer for %q: %v", proxyutil.Redact(cfg.ProxyURL), errBuild)
@@ -51,6 +50,11 @@ func newUtlsRoundTripper(cfg *config.SDKConfig) *utlsRoundTripper {
 		pending:     make(map[string]chan struct{}),
 		dialer:      dialer,
 	}
+	roundTripper.transport = &http.Transport{
+		ForceAttemptHTTP2: false,
+		DialTLSContext:    roundTripper.dialTLSContext,
+	}
+	return roundTripper
 }
 
 // getOrCreateConnection gets an existing connection or creates a new one.
@@ -215,7 +219,5 @@ func dialUTLSContext(ctx context.Context, dialer proxy.Dialer, network, addr str
 // for Anthropic domains by using utls with Chrome fingerprint.
 // It accepts optional SDK configuration for proxy settings.
 func NewAnthropicHttpClient(cfg *config.SDKConfig) *http.Client {
-	return &http.Client{
-		Transport: newUtlsRoundTripper(cfg),
-	}
+	return &http.Client{Transport: newUtlsRoundTripper(cfg)}
 }
