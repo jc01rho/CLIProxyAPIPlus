@@ -2826,5 +2826,79 @@
       "context_length": 200000,
       "max_completion_tokens": 32768
     }
+  ],
+  "mistral": [
+    {
+      "id": "mistral-large-latest",
+      "object": "model",
+      "created": 1716163200,
+      "owned_by": "mistral",
+      "type": "mistral",
+      "display_name": "Mistral Large",
+      "name": "mistral-large-latest",
+      "description": "Mistral flagship general-purpose model.",
+      "context_length": 128000,
+      "max_completion_tokens": 8192
+    },
+    {
+      "id": "mistral-medium-latest",
+      "object": "model",
+      "created": 1716163200,
+      "owned_by": "mistral",
+      "type": "mistral",
+      "display_name": "Mistral Medium",
+      "name": "mistral-medium-latest",
+      "description": "Mistral balanced quality and speed model.",
+      "context_length": 32000,
+      "max_completion_tokens": 8192
+    },
+    {
+      "id": "mistral-small-latest",
+      "object": "model",
+      "created": 1716163200,
+      "owned_by": "mistral",
+      "type": "mistral",
+      "display_name": "Mistral Small",
+      "name": "mistral-small-latest",
+      "description": "Mistral low-latency model.",
+      "context_length": 32000,
+      "max_completion_tokens": 8192
+    },
+    {
+      "id": "codestral-latest",
+      "object": "model",
+      "created": 1716163200,
+      "owned_by": "mistral",
+      "type": "mistral",
+      "display_name": "Codestral",
+      "name": "codestral-latest",
+      "description": "Mistral code-generation model.",
+      "context_length": 32000,
+      "max_completion_tokens": 8192
+    },
+    {
+      "id": "open-mistral-nemo",
+      "object": "model",
+      "created": 1716163200,
+      "owned_by": "mistral",
+      "type": "mistral",
+      "display_name": "Mistral Nemo",
+      "name": "open-mistral-nemo",
+      "description": "Mistral open-weight Nemo model.",
+      "context_length": 128000,
+      "max_completion_tokens": 8192
+    },
+    {
+      "id": "open-mixtral-8x22b",
+      "object": "model",
+      "created": 1716163200,
+      "owned_by": "mistral",
+      "type": "mistral",
+      "display_name": "Mixtral 8x22B",
+      "name": "open-mixtral-8x22b",
+      "description": "Mistral open-weight Mixtral 8x22B model.",
+      "context_length": 64000,
+      "max_completion_tokens": 8192
+    }
   ]
 }
