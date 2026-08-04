@@ -239,6 +239,7 @@ func claudeCodeTLSClientHelloSpec() *tls.ClientHelloSpec {
 }
 
 const claudeCodeRoundTripperCacheCapacity = 64
+const claudeCodeSessionCacheCapacity = 8
 
 var claudeCodeRoundTripperCache = internalcache.NewBoundedLRU[string, http.RoundTripper](
 	claudeCodeRoundTripperCacheCapacity,
@@ -248,6 +249,15 @@ var claudeCodeRoundTripperCache = internalcache.NewBoundedLRU[string, http.Round
 		}
 	},
 )
+
+func newClaudeCodeTLSConfig(host string, sessionCache tls.ClientSessionCache) *tls.Config {
+	return &tls.Config{
+		ServerName:                         host,
+		ClientSessionCache:                 sessionCache,
+		OmitEmptyPsk:                       true,
+		PreferSkipResumptionOnNilExtension: true,
+	}
+}
 
 var claudeCodeMessagesHeaderOrder = []string{
 	"Accept",

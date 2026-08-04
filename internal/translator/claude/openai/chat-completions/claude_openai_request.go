@@ -210,7 +210,7 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						}
 					}
 				}
-			case "user", "assistant", "developer":
+			case "user", "assistant":
 				contentBlocks := make([][]byte, 0, 4)
 
 				// Handle content based on its type (string or array)
