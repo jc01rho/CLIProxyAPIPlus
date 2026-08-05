@@ -331,24 +331,62 @@ func (w *worker) deliverMetadata() error {
 		}
 	}
 	for _, item := range pending {
-		response, status, requestErr := w.request(http.MethodPut, "/api/v1/export/metadata/"+string(item.Category), item.Body)
-		if requestErr != nil {
-			return requestErr
+		recoveredConflict := false
+		for {
+			response, status, requestErr := w.request(http.MethodPut, "/api/v1/export/metadata/"+string(item.Category), item.Body)
+			if requestErr != nil {
+				return requestErr
+			}
+			if status != http.StatusOK {
+				requestErr = decodeRemoteFailure(status, response)
+				var remoteErr *Error
+				if recoveredConflict || !errors.As(requestErr, &remoteErr) || remoteErr.Code != "conflicting_revision" {
+					return requestErr
+				}
+				replacement, replacementErr := w.supersedeConflictingMetadata(item)
+				if replacementErr != nil {
+					return replacementErr
+				}
+				item = *replacement
+				recoveredConflict = true
+				continue
+			}
+			applied, perr := DecodeMetadataApplyResponse(response)
+			snapshot, snapshotErr := DecodeMetadataSnapshot(item.Body, item.Category)
+			if perr != nil || snapshotErr != nil || applied.Category != item.Category || applied.Revision != item.Revision || applied.ItemCount != metadataItemCount(snapshot, item.Category) {
+				return protocolError("keeper_invalid_response")
+			}
+			if err = w.outbox.AcknowledgeMetadata(w.ctx, item.Category, item.Revision); err != nil {
+				return err
+			}
+			w.recordSuccess()
+			break
 		}
-		if status != http.StatusOK {
-			return decodeRemoteFailure(status, response)
-		}
-		applied, perr := DecodeMetadataApplyResponse(response)
-		snapshot, snapshotErr := DecodeMetadataSnapshot(item.Body, item.Category)
-		if perr != nil || snapshotErr != nil || applied.Category != item.Category || applied.Revision != item.Revision || applied.ItemCount != metadataItemCount(snapshot, item.Category) {
-			return protocolError("keeper_invalid_response")
-		}
-		if err = w.outbox.AcknowledgeMetadata(w.ctx, item.Category, item.Revision); err != nil {
-			return err
-		}
-		w.recordSuccess()
 	}
 	return nil
+}
+
+func (w *worker) supersedeConflictingMetadata(item PreparedMetadata) (*PreparedMetadata, error) {
+	w.sourceMu.RLock()
+	source := w.source
+	w.sourceMu.RUnlock()
+	if source == nil {
+		return nil, protocolError("internal_error")
+	}
+	_, secret, bound, err := w.outbox.Binding(w.ctx)
+	if err != nil || !bound {
+		return nil, protocolError("storage_error")
+	}
+	defer func() {
+		for i := range secret {
+			secret[i] = 0
+		}
+	}()
+	body, digest, err := ProjectMetadata(source(), secret, item.Category, item.Revision+1, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	return w.outbox.SupersedePendingMetadata(w.ctx, item.Category, item.Revision, digest, body)
 }
 
 func (w *worker) recordAttempt() {

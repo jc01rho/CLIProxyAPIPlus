@@ -29,20 +29,22 @@ const (
 )
 
 type fakeKeeper struct {
-	mu             sync.Mutex
-	usageBodies    [][]byte
-	usageSequences []int64
-	metadataBodies map[string][][]byte
-	identitySeen   chan struct{}
-	usageSeen      chan struct{}
-	metadataSeen   chan struct{}
-	disconnectOnce atomic.Bool
-	invalidAck     atomic.Bool
-	expectedToken  atomic.Value
+	mu                      sync.Mutex
+	usageBodies             [][]byte
+	usageSequences          []int64
+	metadataBodies          map[string][][]byte
+	metadataRevisions       map[string][]int64
+	identitySeen            chan struct{}
+	usageSeen               chan struct{}
+	metadataSeen            chan struct{}
+	disconnectOnce          atomic.Bool
+	invalidAck              atomic.Bool
+	conflictingMetadataOnce atomic.Bool
+	expectedToken           atomic.Value
 }
 
 func newFakeKeeper() *fakeKeeper {
-	f := &fakeKeeper{identitySeen: make(chan struct{}, 16), usageSeen: make(chan struct{}, 16), metadataSeen: make(chan struct{}, 16), metadataBodies: make(map[string][][]byte)}
+	f := &fakeKeeper{identitySeen: make(chan struct{}, 16), usageSeen: make(chan struct{}, 16), metadataSeen: make(chan struct{}, 16), metadataBodies: make(map[string][][]byte), metadataRevisions: make(map[string][]int64)}
 	f.expectedToken.Store("token-one")
 	return f
 }
@@ -100,10 +102,15 @@ func (f *fakeKeeper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Lock()
 		f.metadataBodies[category] = append(f.metadataBodies[category], append([]byte(nil), body...))
+		f.metadataRevisions[category] = append(f.metadataRevisions[category], snapshot.Revision)
 		f.mu.Unlock()
 		select {
 		case f.metadataSeen <- struct{}{}:
 		default:
+		}
+		if f.conflictingMetadataOnce.CompareAndSwap(true, false) {
+			writeTestError(w, "conflicting_revision")
+			return
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		fmt.Fprintf(w, `{"protocolVersion":"keeper-export/v1","category":"%s","revision":%d,"applied":true,"itemCount":%d,"serverTime":"2026-08-03T12:36:01.000Z"}`, category, snapshot.Revision, metadataItemCount(snapshot, MetadataCategory(category)))
@@ -259,6 +266,31 @@ func TestExporterInvalidAckDoesNotCompactAndHotReloadRotatesToken(t *testing.T) 
 	awaitSignal(t, fake.identitySeen)
 	awaitSignal(t, fake.metadataSeen)
 	awaitSignal(t, acked)
+}
+
+func TestExporterRecoversConflictingMetadataRevision(t *testing.T) {
+	fake := newFakeKeeper()
+	fake.conflictingMetadataOnce.Store(true)
+	server := httptest.NewTLSServer(fake)
+	defer server.Close()
+	cfg := testExporterConfig(t, server)
+	t.Setenv(cfg.Keeper.TokenEnv, "token-one")
+	var runtime Runtime
+	runtime.SetSnapshotSource(func() SnapshotInput { return SnapshotInput{} })
+	if err := runtime.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	awaitSignal(t, fake.identitySeen)
+	for range 4 {
+		awaitSignal(t, fake.metadataSeen)
+	}
+	fake.mu.Lock()
+	revisions := append([]int64(nil), fake.metadataRevisions[string(CategoryAuthFiles)]...)
+	fake.mu.Unlock()
+	if len(revisions) != 2 || revisions[0] != 1 || revisions[1] != 2 {
+		t.Fatalf("auth_files revisions=%v, want [1 2]", revisions)
+	}
 }
 
 func TestMetadataProjectionPersistsIndependentRevisionsAndRedactsSecrets(t *testing.T) {

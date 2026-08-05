@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -102,7 +103,11 @@ usage-export:
 	t.Run("relative outbox resolves beside config", func(t *testing.T) {
 		dir := t.TempDir()
 		configPath := filepath.Join(dir, "config.yaml")
-		content := strings.Replace(valid, "OUTBOX", "outbox.db", 1)
+		relativeOutboxPath := "outbox.db"
+		if runtime.GOOS == "windows" {
+			relativeOutboxPath = `.\\outbox.db`
+		}
+		content := strings.Replace(valid, "OUTBOX", relativeOutboxPath, 1)
 		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}

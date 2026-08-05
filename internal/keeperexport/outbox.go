@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -106,14 +107,7 @@ func OpenOutbox(ctx context.Context, path string, maxBytes int64) (*Outbox, erro
 		return nil, fmt.Errorf("restrict outbox permissions: %w", err)
 	}
 
-	dsnURL := &url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
-	query := dsnURL.Query()
-	query.Set("_busy_timeout", "250")
-	query.Set("_foreign_keys", "on")
-	query.Set("_journal_mode", "WAL")
-	query.Set("_synchronous", "FULL")
-	dsnURL.RawQuery = query.Encode()
-	db, err := sql.Open("sqlite", dsnURL.String())
+	db, err := sql.Open("sqlite", sqliteFileDSN(path, runtime.GOOS == "windows"))
 	if err != nil {
 		return nil, fmt.Errorf("open outbox: %w", err)
 	}
@@ -129,6 +123,23 @@ func OpenOutbox(ctx context.Context, path string, maxBytes int64) (*Outbox, erro
 		return nil, err
 	}
 	return outbox, nil
+}
+
+func sqliteFileDSN(path string, windows bool) string {
+	uriPath := filepath.ToSlash(path)
+	if windows && len(uriPath) >= 2 && uriPath[1] == ':' {
+		// SQLite requires an absolute Windows drive path to have a leading
+		// slash in a file URI: file:///C:/... rather than file:C:/....
+		uriPath = "/" + uriPath
+	}
+	dsnURL := &url.URL{Scheme: "file", Path: uriPath}
+	query := dsnURL.Query()
+	query.Set("_busy_timeout", "250")
+	query.Set("_foreign_keys", "on")
+	query.Set("_journal_mode", "WAL")
+	query.Set("_synchronous", "FULL")
+	dsnURL.RawQuery = query.Encode()
+	return dsnURL.String()
 }
 
 func (o *Outbox) initialize(ctx context.Context) error {
@@ -454,6 +465,40 @@ func (o *Outbox) PrepareMetadata(ctx context.Context, category MetadataCategory,
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, o.fail(fmt.Errorf("commit metadata preparation: %w", err))
+	}
+	return &PreparedMetadata{Category: category, Revision: revision, Body: append([]byte(nil), body...), Pending: true}, nil
+}
+
+// SupersedePendingMetadata replaces a locally pending snapshot after Keeper
+// confirms that its matching revision was accepted with different content.
+// Advancing the revision preserves the remote snapshot until the replacement
+// has been durably acknowledged.
+func (o *Outbox) SupersedePendingMetadata(ctx context.Context, category MetadataCategory, previousRevision int64, itemDigest, body []byte) (*PreparedMetadata, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if previousRevision < 1 || previousRevision >= MaxSafeInteger || len(itemDigest) != 32 || len(body) == 0 || len(body) > MaxBodyBytes {
+		return nil, fmt.Errorf("invalid metadata supersession")
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return nil, ErrOutboxClosed
+	}
+	revision := previousRevision + 1
+	result, err := o.db.ExecContext(ctx, `UPDATE outbox_metadata
+		SET revision=?,item_digest=?,request_body=?,pending=1
+		WHERE category=? AND revision=? AND pending=1`,
+		revision, append([]byte(nil), itemDigest...), append([]byte(nil), body...), category, previousRevision)
+	if err != nil {
+		return nil, o.fail(fmt.Errorf("supersede metadata preparation: %w", err))
+	}
+	updated, err := result.RowsAffected()
+	if err != nil || updated != 1 {
+		return nil, o.fail(fmt.Errorf("metadata supersession does not match pending revision"))
 	}
 	return &PreparedMetadata{Category: category, Revision: revision, Body: append([]byte(nil), body...), Pending: true}, nil
 }
