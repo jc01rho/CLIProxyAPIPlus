@@ -246,7 +246,7 @@ func ValidateSettings(s *Settings) *Error {
 		if push {
 			return invalid()
 		}
-	} else if !isHTTPSOrigin(s.Keeper.URL) {
+	} else if !isHTTPOrigin(s.Keeper.URL) {
 		return invalid()
 	}
 	if s.Keeper.TokenEnv == "" {

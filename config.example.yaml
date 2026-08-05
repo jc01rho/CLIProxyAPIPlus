@@ -132,7 +132,7 @@ usage-statistics-enabled: false
 #   enabled: false
 #   mode: disabled
 #   keeper:
-#     url: "https://keeper.example.com"
+#     url: "http://192.0.2.10:8080"
 #     token-env: "CPA_KEEPER_INGEST_TOKEN"
 #     ca-file: null
 #     client-cert-file: null

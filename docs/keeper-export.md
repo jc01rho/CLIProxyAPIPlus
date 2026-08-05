@@ -11,7 +11,7 @@ operator browser
     v
 Management Center -> private CPA management API
                          |
-                         | outbound HTTPS only
+                          | outbound HTTP or HTTPS
                          | Bearer instance credential
                          v
                   public/private Keeper /api/v1/export/*
@@ -25,7 +25,7 @@ Management Center -> private CPA management API
 - The browser talks only to CPA's existing management API. It never receives the Keeper token, client private key, or resolved environment value.
 - The supported protocol is exactly `keeper-export/v1`. Do not place a JSON-rewriting, decompressing, or body-mutating proxy between CPA and Keeper.
 - Keeper accepts `application/json` without content encoding. CPA disables automatic compression and rejects redirects, including HTTPS-to-HTTPS redirects.
-- Keeper ingress must use HTTPS, including local QA. A private CA and optional mTLS are supported; there is no insecure HTTP or skip-verify mode.
+- Keeper ingress may use HTTP or HTTPS. HTTPS supports a private CA and optional mTLS; use HTTPS whenever the connection leaves a trusted network.
 - A Keeper credential is immutably bound to one CPA instance. Use a different instance and credential for every CPA, even if several CPAs have the same display name.
 - API-key fingerprints are HMACs bound to the Keeper instance identity. The same raw key used by two CPAs produces different fingerprints, so cross-instance correlation is intentionally unavailable.
 
@@ -36,7 +36,7 @@ Use this order. Do not enable a CPA exporter before Keeper migration and credent
 1. Stop Keeper and make a pre-migration SQLite backup.
 2. Start the new Keeper binary once and let its forward-only migrations complete.
 3. Create one Keeper instance per CPA and capture each one-time credential.
-4. Store each credential in that CPA's private environment and configure HTTPS trust, custom CA, and optional mTLS.
+4. Store each credential in that CPA's private environment and configure HTTP(S) connectivity, custom CA, and optional mTLS where applicable.
 5. Configure the durable outbox mount and save exporter settings while still disabled.
 6. Run the non-mutating connection test (`identity:test`).
 7. For the canary, stop/drain request traffic, finish and disable legacy pull, enable push, wait for first identity binding/healthy status, then resume traffic and verify ACK/backlog/revisions.

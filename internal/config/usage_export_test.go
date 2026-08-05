@@ -69,8 +69,8 @@ usage-export:
 		name string
 		edit func(string, string) string
 	}{
-		{name: "http URL", edit: func(s, outbox string) string {
-			return strings.Replace(strings.Replace(s, "OUTBOX", outbox, 1), "https://keeper.example.com/base", "http://keeper.example.com", 1)
+		{name: "unsupported URL scheme", edit: func(s, outbox string) string {
+			return strings.Replace(strings.Replace(s, "OUTBOX", outbox, 1), "https://keeper.example.com/base", "ftp://keeper.example.com", 1)
 		}},
 		{name: "unsafe env name", edit: func(s, outbox string) string {
 			return strings.Replace(strings.Replace(s, "OUTBOX", outbox, 1), "CPA_KEEPER_TOKEN", "keeper-token", 1)
@@ -88,6 +88,18 @@ usage-export:
 			return strings.Replace(s, "    client-key-file: null", "    client-key-file: null\n    tls-skip-verify: true", 1)
 		}},
 	}
+
+	t.Run("HTTP URL", func(t *testing.T) {
+		dir := t.TempDir()
+		content := strings.Replace(strings.Replace(valid, "OUTBOX", filepath.Join(dir, "outbox.db"), 1), "https://keeper.example.com/base", "http://192.0.2.10:8080/keeper", 1)
+		configPath := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfig(configPath); err != nil {
+			t.Fatalf("LoadConfig() HTTP keeper URL error = %v", err)
+		}
+	})
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
