@@ -653,6 +653,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
 		var streamUsage helps.StreamUsageBuffer
+		var seenDone bool
 		defer streamUsage.Publish(ctx, reporter)
 		validStreamData := false
 		terminalCompletion := false
@@ -697,6 +698,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				}
 				return true
 			}
+			// OpenAI SSE treats data: [DONE] as the terminal event. Process it
+			// once, then stop so trailing non-spec chunks (e.g. cost metadata
+			// after DONE) are not reordered ahead of the handler-emitted
+			// terminal marker.
+			dataPayload := bytes.TrimSpace(trimmedLine[len("data:"):])
+			isDone := bytes.Equal(dataPayload, []byte("[DONE]"))
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param, claudeInputTokens)
 			for i := range chunks {
 				select {
@@ -704,6 +711,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				case <-ctx.Done():
 					return false
 				}
+			}
+			if isDone {
+				seenDone = true
+				return false
 			}
 			return true
 		}
@@ -726,12 +737,17 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if retriedDeveloperRole && validStreamData && terminalCompletion {
 			e.rememberDeveloperRoleFallback(developerRoleKey)
 		}
-		chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param, claudeInputTokens)
-		for i := range chunks {
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-			case <-ctx.Done():
-				return
+		if !seenDone {
+			// Upstream closed without a terminal [DONE] marker. Feed a synthetic
+			// done marker through the translator so pending response.completed
+			// events are still emitted exactly once.
+			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param, claudeInputTokens)
+			for i := range chunks {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 		streamUsage.Publish(ctx, reporter)
