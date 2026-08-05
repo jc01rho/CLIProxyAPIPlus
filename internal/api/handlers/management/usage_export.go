@@ -6,7 +6,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -37,7 +36,7 @@ func (h *Handler) GetUsageExportSettings(c *gin.Context) {
 	}
 	settings := settingsFromConfig(h.cfg.UsageExport)
 	h.mu.Unlock()
-	settings.Keeper.TokenConfigured = tokenConfigured(settings.Keeper.TokenEnv)
+	settings.Keeper.TokenConfigured = h.cfg.UsageExport.Keeper.UsageExportTokenConfigured()
 	writeUsageExportJSON(c, http.StatusOK, mustSettingsResponse(settings))
 }
 
@@ -61,7 +60,7 @@ func (h *Handler) PutUsageExportSettings(c *gin.Context) {
 		return
 	}
 	previous := h.cfg.UsageExport
-	h.cfg.UsageExport = configFromSettings(*settings)
+	h.cfg.UsageExport = configFromSettings(*settings, previous.Keeper.Token)
 	if err := h.cfg.ValidateUsageExport(h.configFilePath); err != nil {
 		h.cfg.UsageExport = previous
 		h.mu.Unlock()
@@ -85,7 +84,7 @@ func (h *Handler) PutUsageExportSettings(c *gin.Context) {
 		reqCtx = c.Request.Context()
 	}
 	h.reloadConfigAfterManagementSaveAsync(reqCtx, snapshot)
-	effective.Keeper.TokenConfigured = tokenConfigured(effective.Keeper.TokenEnv)
+	effective.Keeper.TokenConfigured = updated.UsageExport.Keeper.UsageExportTokenConfigured()
 	writeUsageExportJSON(c, http.StatusOK, mustSettingsResponse(effective))
 }
 
@@ -112,7 +111,7 @@ func (h *Handler) TestUsageExportConnection(c *gin.Context) {
 		cfg = h.cfg.UsageExport
 		h.mu.Unlock()
 	} else {
-		cfg = configFromSettings(*settings)
+		cfg = configFromSettings(*settings, "")
 	}
 	validation := &config.Config{UsageStatisticsEnabled: true, UsageExport: cfg}
 	if err := validation.ValidateUsageExport(h.configFilePath); err != nil {
@@ -144,7 +143,7 @@ func (h *Handler) GetUsageExportStatus(c *gin.Context) {
 		}
 		if cfg != nil {
 			status.Enabled = cfg.UsageExport.Enabled
-			status.TokenConfigured = tokenConfigured(cfg.UsageExport.Keeper.TokenEnv)
+			status.TokenConfigured = cfg.UsageExport.Keeper.UsageExportTokenConfigured()
 			if status.Enabled {
 				status.State = keeperexport.StateStarting
 			}
@@ -220,14 +219,6 @@ func mustJSON(value any) []byte {
 	return encoded
 }
 
-func tokenConfigured(envName string) bool {
-	if envName == "" {
-		return false
-	}
-	value, ok := os.LookupEnv(envName)
-	return ok && strings.TrimSpace(value) != ""
-}
-
 func settingsFromConfig(cfg config.UsageExportConfig) keeperexport.Settings {
 	return keeperexport.Settings{
 		Enabled: cfg.Enabled, Mode: cfg.Mode,
@@ -239,10 +230,10 @@ func settingsFromConfig(cfg config.UsageExportConfig) keeperexport.Settings {
 	}
 }
 
-func configFromSettings(settings keeperexport.Settings) config.UsageExportConfig {
+func configFromSettings(settings keeperexport.Settings, directToken string) config.UsageExportConfig {
 	return config.UsageExportConfig{
 		Enabled: settings.Enabled, Mode: settings.Mode,
-		Keeper:   config.UsageExportKeeperConfig{URL: settings.Keeper.URL, TokenEnv: settings.Keeper.TokenEnv, CAFile: settings.Keeper.CAFile, ClientCertFile: settings.Keeper.ClientCertFile, ClientKeyFile: settings.Keeper.ClientKeyFile},
+		Keeper:   config.UsageExportKeeperConfig{URL: settings.Keeper.URL, Token: directToken, TokenEnv: settings.Keeper.TokenEnv, CAFile: settings.Keeper.CAFile, ClientCertFile: settings.Keeper.ClientCertFile, ClientKeyFile: settings.Keeper.ClientKeyFile},
 		Outbox:   config.UsageExportOutboxConfig{Path: settings.Outbox.Path, MaxBytes: settings.Outbox.MaxBytes},
 		Delivery: config.UsageExportDeliveryConfig{MaxBatchEvents: settings.Delivery.MaxBatchEvents, MaxBatchBytes: settings.Delivery.MaxBatchBytes, FlushIntervalMs: settings.Delivery.FlushIntervalMs, RequestTimeoutMs: settings.Delivery.RequestTimeoutMs, InitialBackoffMs: settings.Delivery.InitialBackoffMs, MaxBackoffMs: settings.Delivery.MaxBackoffMs},
 		Metadata: config.UsageExportMetadataConfig{Enabled: settings.Metadata.Enabled, IntervalMs: settings.Metadata.IntervalMs, Categories: append([]string(nil), settings.Metadata.Categories...)},

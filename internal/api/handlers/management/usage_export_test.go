@@ -80,6 +80,45 @@ func TestUsageExportSettingsRedactionPutPersistenceAndHotApply(t *testing.T) {
 	}
 }
 
+func TestUsageExportSettingsPreserveDirectToken(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("usage-statistics-enabled: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.UsageStatisticsEnabled = true
+	cfg.UsageExport.Keeper.Token = "direct-secret-token"
+	h := NewHandler(cfg, configPath, nil)
+	r := setupTestRouter(h)
+	r.GET("/settings", h.GetUsageExportSettings)
+	r.PUT("/settings", h.PutUsageExportSettings)
+
+	getRR := httptest.NewRecorder()
+	r.ServeHTTP(getRR, httptest.NewRequest(http.MethodGet, "/settings", nil))
+	if getRR.Code != http.StatusOK || strings.Contains(getRR.Body.String(), "direct-secret-token") || !strings.Contains(getRR.Body.String(), `"tokenConfigured":true`) {
+		t.Fatalf("direct token GET status=%d body=%s", getRR.Code, getRR.Body.String())
+	}
+
+	body := validUsageExportSettingsBody("http://192.168.0.50:8080", "", filepath.Join(dir, "outbox.db"), nil)
+	put := httptest.NewRequest(http.MethodPut, "/settings", bytes.NewReader(body))
+	put.Header.Set("Content-Type", "application/json")
+	putRR := httptest.NewRecorder()
+	r.ServeHTTP(putRR, put)
+	if putRR.Code != http.StatusOK {
+		t.Fatalf("direct token PUT status=%d body=%s", putRR.Code, putRR.Body.String())
+	}
+	if got := h.cfg.UsageExport.Keeper.Token; got != "direct-secret-token" {
+		t.Fatalf("direct token was not preserved: %q", got)
+	}
+	if strings.Contains(putRR.Body.String(), "direct-secret-token") {
+		t.Fatalf("direct token leaked in PUT response: %s", putRR.Body.String())
+	}
+}
+
 func TestUsageExportPutStrictHTTPAndStableErrors(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
@@ -111,7 +150,7 @@ func TestUsageExportPutStrictHTTPAndStableErrors(t *testing.T) {
 		{"missing privacy object", "application/json", "", removeUsageExportJSONKey(t, valid, []string{"settings"}, "privacy"), 400, "invalid_field"},
 		{"missing protocol version", "application/json", "", removeUsageExportJSONKey(t, valid, nil, "protocolVersion"), 400, "invalid_field"},
 		{"wrong protocol version", "application/json", "", bytes.Replace(valid, []byte(keeperexport.ProtocolVersion), []byte("keeper-export/v2"), 1), 422, "unsupported_protocol_version"},
-		{"invalid http URL", "application/json", "", bytes.Replace(valid, []byte("https://keeper.example.com"), []byte("http://keeper.example.com"), 1), 422, "invalid_settings"},
+		{"invalid URL scheme", "application/json", "", bytes.Replace(valid, []byte("https://keeper.example.com"), []byte("ftp://keeper.example.com"), 1), 422, "invalid_settings"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

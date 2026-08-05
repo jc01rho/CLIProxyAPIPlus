@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -218,7 +216,7 @@ func (r *Runtime) ManagementStatus(ctx context.Context) (StatusResponse, error) 
 	response := StatusResponse{
 		State:             StateDisabled,
 		Enabled:           enabled,
-		TokenConfigured:   cfg.Keeper.TokenEnv != "" && strings.TrimSpace(os.Getenv(cfg.Keeper.TokenEnv)) != "",
+		TokenConfigured:   cfg.Keeper.UsageExportTokenConfigured(),
 		MetadataRevisions: metadata,
 	}
 	if !enabled || cfg.Mode == config.UsageExportModeDisabled || outbox == nil {

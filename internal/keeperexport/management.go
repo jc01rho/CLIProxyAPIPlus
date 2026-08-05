@@ -53,7 +53,7 @@ func TestConnection(ctx context.Context, cfg config.UsageExportConfig) (*Connect
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	token := strings.TrimSpace(os.Getenv(cfg.Keeper.TokenEnv))
+	token := cfg.Keeper.UsageExportToken()
 	if token == "" {
 		return nil, protocolError("token_env_unset")
 	}

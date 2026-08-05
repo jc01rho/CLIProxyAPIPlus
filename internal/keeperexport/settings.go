@@ -249,11 +249,7 @@ func ValidateSettings(s *Settings) *Error {
 	} else if !isHTTPOrigin(s.Keeper.URL) {
 		return invalid()
 	}
-	if s.Keeper.TokenEnv == "" {
-		if push {
-			return invalid()
-		}
-	} else if !envVarNameRE.MatchString(s.Keeper.TokenEnv) {
+	if s.Keeper.TokenEnv != "" && !envVarNameRE.MatchString(s.Keeper.TokenEnv) {
 		return invalid()
 	}
 	for _, file := range []*string{s.Keeper.CAFile, s.Keeper.ClientCertFile, s.Keeper.ClientKeyFile} {

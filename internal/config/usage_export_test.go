@@ -122,6 +122,45 @@ usage-export:
 	}
 }
 
+func TestUsageExportAcceptsDirectKeeperToken(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(`usage-statistics-enabled: true
+usage-export:
+  enabled: true
+  mode: push
+  keeper:
+    url: http://192.168.0.50:8080
+    token: direct-ingest-token
+  outbox:
+    path: /tmp/keeper-outbox.db
+    max-bytes: 16777216
+  delivery:
+    max-batch-events: 100
+    max-batch-bytes: 65536
+    flush-interval-ms: 100
+    request-timeout-ms: 1000
+    initial-backoff-ms: 100
+    max-backoff-ms: 100
+  metadata:
+    enabled: true
+    interval-ms: 60000
+    categories: [auth_files, api_keys, provider_identities]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := cfg.UsageExport.Keeper.UsageExportToken(); got != "direct-ingest-token" {
+		t.Fatalf("direct keeper token = %q", got)
+	}
+	cfg.UsageExport.Keeper.TokenEnv = "CPA_KEEPER_INGEST_TOKEN"
+	if err := cfg.ValidateUsageExport(configPath); err == nil {
+		t.Fatal("expected direct token and token-env to be mutually exclusive")
+	}
+}
+
 func TestUsageExportSaveDoesNotMaterializeDisabledDefaults(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("# retained\nusage-statistics-enabled: false\n"), 0o600); err != nil {
