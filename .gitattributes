@@ -1,0 +1,20 @@
+# Normalize line endings: keeper-export golden fixtures and JSON must stay LF-only
+# so that SHA256 manifests computed on Linux/macOS match byte-for-byte on
+# Windows runners (where core.autocrlf=true would otherwise inject CRLF and
+# break the TestKeeperExportProtocolFixtures/Manifest byte-equality assertion).
+*.json text eol=lf
+*.sha256 text eol=lf
+*.go text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.css text eol=lf
+*.scss text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sql text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
