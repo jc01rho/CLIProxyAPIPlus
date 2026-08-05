@@ -15,7 +15,7 @@
       "clientCertFile": null,
       "clientKeyFile": null,
       "tokenEnv": "CPA_KEEPER_INGEST_TOKEN",
-      "url": "http://keeper.example.com"
+      "url": "ftp://keeper.example.com"
     },
     "metadata": {
       "categories": [

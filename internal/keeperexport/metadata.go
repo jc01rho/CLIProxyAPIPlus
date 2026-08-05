@@ -310,6 +310,22 @@ func isHTTPSOrigin(raw string) bool {
 		parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
+// isHTTPOrigin reports whether raw is an absolute http or https URL within the
+// byte limit, with no userinfo, query, or fragment. The keeper export URL may
+// target a plaintext HTTP endpoint (e.g. an RFC1918 address) when TLS is
+// terminated elsewhere; provider identity base URLs stay HTTPS-only.
+func isHTTPOrigin(raw string) bool {
+	if !stringLenInRange(raw, 1, 2048) {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != "" &&
+		parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
 // CheckMetadataRevision applies the revision arithmetic of contract section
 // 7.1 against the stored current revision and its exact request-body digest.
 // It returns nil when the snapshot must be applied (newer revision) or is an

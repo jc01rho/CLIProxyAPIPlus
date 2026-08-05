@@ -147,8 +147,8 @@ func (cfg *Config) ValidateUsageExport(configFile string) error {
 	}
 	if u.Keeper.URL != "" {
 		parsed, err := url.Parse(u.Keeper.URL)
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(u.Keeper.URL) > 2048 {
-			return fmt.Errorf("usage-export: keeper.url must be an absolute HTTPS URL without userinfo, query, or fragment")
+		if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(u.Keeper.URL) > 2048 {
+			return fmt.Errorf("usage-export: keeper.url must be an absolute HTTP or HTTPS URL without userinfo, query, or fragment")
 		}
 	} else if push {
 		return fmt.Errorf("usage-export: keeper.url is required in push mode")
