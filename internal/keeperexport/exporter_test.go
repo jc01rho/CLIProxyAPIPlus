@@ -195,6 +195,30 @@ func TestExporterDisconnectAfterCommitRetriesExactBatchAndCompacts(t *testing.T)
 	}
 }
 
+func TestExporterDeliversUsageWithDirectKeeperToken(t *testing.T) {
+	fake := newFakeKeeper()
+	server := httptest.NewTLSServer(fake)
+	defer server.Close()
+	cfg := testExporterConfig(t, server)
+	cfg.Keeper.Token = "token-one"
+	cfg.Keeper.TokenEnv = ""
+
+	var runtime Runtime
+	runtime.SetSnapshotSource(func() SnapshotInput { return SnapshotInput{} })
+	if err := runtime.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	awaitSignal(t, fake.identitySeen)
+	awaitSignal(t, fake.metadataSeen)
+
+	ctx := internallogging.WithRequestID(context.Background(), "req-direct-token")
+	runtime.HandleUsage(ctx, coreusage.Record{
+		Provider: "openai", Model: "gpt", AuthIndex: "a", Detail: coreusage.Detail{TotalTokens: 1},
+	})
+	awaitSignal(t, fake.usageSeen)
+}
+
 func TestExporterInvalidAckDoesNotCompactAndHotReloadRotatesToken(t *testing.T) {
 	fake := newFakeKeeper()
 	fake.invalidAck.Store(true)

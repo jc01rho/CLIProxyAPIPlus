@@ -81,7 +81,6 @@ usage-export:
 		{name: "invalid delivery range", edit: func(s, outbox string) string {
 			return strings.Replace(strings.Replace(s, "OUTBOX", outbox, 1), "max-batch-events: 100", "max-batch-events: 0", 1)
 		}},
-		{name: "relative outbox", edit: func(s, _ string) string { return strings.Replace(s, "OUTBOX", "relative.db", 1) }},
 		{name: "outbox parent is file", edit: func(s, outbox string) string { return strings.Replace(s, "OUTBOX", outbox, 1) }},
 		{name: "tls skip verify is unknown", edit: func(s, outbox string) string {
 			s = strings.Replace(s, "OUTBOX", outbox, 1)
@@ -98,6 +97,22 @@ usage-export:
 		}
 		if _, err := LoadConfig(configPath); err != nil {
 			t.Fatalf("LoadConfig() HTTP keeper URL error = %v", err)
+		}
+	})
+	t.Run("relative outbox resolves beside config", func(t *testing.T) {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "config.yaml")
+		content := strings.Replace(valid, "OUTBOX", "outbox.db", 1)
+		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadConfig() relative outbox error = %v", err)
+		}
+		want := filepath.Join(dir, "outbox.db")
+		if cfg.UsageExport.Outbox.Path != want {
+			t.Fatalf("outbox path = %q, want %q", cfg.UsageExport.Outbox.Path, want)
 		}
 	})
 	for _, tc := range tests {

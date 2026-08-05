@@ -119,6 +119,16 @@ func (cfg *Config) ValidateUsageExport(configFile string) error {
 	if cfg == nil {
 		return nil
 	}
+	if cfg.UsageExport.Outbox.Path == "" {
+		return fmt.Errorf("usage-export: outbox.path is required")
+	}
+	if !filepath.IsAbs(cfg.UsageExport.Outbox.Path) {
+		configDir, err := filepath.Abs(filepath.Dir(configFile))
+		if err != nil {
+			return fmt.Errorf("usage-export: resolve config directory: %w", err)
+		}
+		cfg.UsageExport.Outbox.Path = filepath.Clean(filepath.Join(configDir, cfg.UsageExport.Outbox.Path))
+	}
 	u := cfg.UsageExport
 	for name, value := range map[string]string{
 		"mode": u.Mode, "keeper.url": u.Keeper.URL, "keeper.token": u.Keeper.Token, "keeper.token-env": u.Keeper.TokenEnv, "outbox.path": u.Outbox.Path,
@@ -176,7 +186,7 @@ func (cfg *Config) ValidateUsageExport(configFile string) error {
 		return fmt.Errorf("usage-export: client certificate and key paths must be configured together")
 	}
 	if !filepath.IsAbs(u.Outbox.Path) || len(u.Outbox.Path) > 4096 {
-		return fmt.Errorf("usage-export: outbox.path must be absolute")
+		return fmt.Errorf("usage-export: outbox.path must resolve to an absolute path")
 	}
 	if u.Outbox.MaxBytes < 16<<20 || u.Outbox.MaxBytes > 1<<40 {
 		return fmt.Errorf("usage-export: outbox.max-bytes must be between 16 MiB and 1 TiB")
