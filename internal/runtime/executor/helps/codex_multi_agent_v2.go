@@ -6,6 +6,7 @@ import (
 
 	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
@@ -31,6 +32,17 @@ func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Hea
 // reports whether the collaboration namespace was renamed for upstream use.
 func OptimizeCodexMultiAgentV2Request(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) ([]byte, bool) {
 	return multiagentv2.OptimizeCodexMultiAgentV2Request(ctx, headers, payload, cfg)
+}
+
+// OptimizeCodexMultiAgentV2RequestForAuth applies the standard Codex MultiAgentV2
+// request optimization and, when the selected codex-api-key model has is-compat
+// enabled, also converts agent_message items into portable message/user input.
+func OptimizeCodexMultiAgentV2RequestForAuth(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config, auth *cliproxyauth.Auth, model string) ([]byte, bool) {
+	updated, optimized := multiagentv2.OptimizeCodexMultiAgentV2Request(ctx, headers, payload, cfg)
+	if cliproxyauth.CodexAPIKeyModelIsCompat(cfg, auth, model) {
+		updated = multiagentv2.RewriteCodexMultiAgentV2Input(ctx, headers, updated, cfg)
+	}
+	return updated, optimized
 }
 
 // RestoreCodexMultiAgentV2Response restores optimized collaboration namespace

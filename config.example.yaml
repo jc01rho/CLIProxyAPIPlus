@@ -351,6 +351,11 @@ nonstream-keepalive-interval: 0
 #         display-name: "Codex Latest" # optional catalog display name
 #         max-context-length: 1048576 # optional: override Codex client context window metadata
 #         force-mapping: true    # optional: rewrite response model fields back to the alias
+#         # When true and codex.optimize-multi-agent-v2 is also true, convert Codex
+#         # MultiAgentV2 agent_message items into portable Responses message/user input
+#         # for third-party Responses-compatible endpoints that reject agent_message.
+#         # Default false keeps agent_message unchanged for native OpenAI/Codex endpoints.
+#         is-compat: false
 #         thinking:              # optional: exact thinking capability for this configured model
 #           levels: ["xhigh", "high", "medium", "low"]
 #     excluded-models:
