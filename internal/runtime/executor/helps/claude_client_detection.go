@@ -47,9 +47,14 @@ var claudeCodeSubclientByEntrypoint = map[string]string{
 // pass-through. Other first-party-looking entrypoints are cloaked until their
 // CPA-reachable request shape has been captured and reviewed.
 var nativeClaudeEntrypoints = map[string]bool{
-	"cli":           true,
-	"sdk-cli":       true,
-	"claude-vscode": true,
+	"cli":                       true,
+	"sdk-cli":                   true,
+	"claude-vscode":             true,
+	"sdk-py":                    true,
+	"claude-desktop":            true,
+	"claude-desktop-3p":         true,
+	"remote":                    true,
+	"claude-code-github-action": true,
 }
 
 // ClaudeCodeRequestDetection records the strong signals and first-party
