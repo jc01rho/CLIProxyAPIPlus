@@ -60,13 +60,13 @@ func (r *Runtime) Apply(ctx context.Context, cfg config.UsageExportConfig) error
 
 	opened, err := OpenOutbox(ctx, cfg.Outbox.Path, cfg.Outbox.MaxBytes)
 	if err != nil {
-		r.recordApplyError(err)
+		r.recordApplyError(cfg, err)
 		return err
 	}
 	created, err := newWorker(cfg, opened, r.snapshot)
 	if err != nil {
 		_ = opened.Close()
-		r.recordApplyError(err)
+		r.recordApplyError(cfg, err)
 		return err
 	}
 
@@ -107,7 +107,11 @@ func (r *Runtime) HandleUsage(ctx context.Context, record coreusage.Record) {
 	}
 	r.mu.RLock()
 	if !r.enabled || r.outbox == nil {
+		applyFailed := r.lastApplyErr != nil
 		r.mu.RUnlock()
+		if applyFailed {
+			return
+		}
 		// A usage event arriving while the runtime is disabled is a real drop
 		// and must be observable through the sanitized status seam.
 		r.recordUsageError(protocolError("invalid_field"))
@@ -320,8 +324,17 @@ func (r *Runtime) assertCurrent(outbox *Outbox) error {
 	return nil
 }
 
-func (r *Runtime) recordApplyError(err error) {
+func (r *Runtime) recordApplyError(cfg config.UsageExportConfig, err error) {
 	r.mu.Lock()
+	// An initial outbox-open failure has no active runtime to retain. Keep the
+	// attempted config so the management status can accurately report that a
+	// direct Keeper token was loaded, rather than misleadingly showing the
+	// zero-value configuration. A failed hot reload keeps its working runtime
+	// and configuration unchanged.
+	if r.outbox == nil {
+		r.config = cfg
+		r.enabled = cfg.Enabled
+	}
 	r.lastApplyErr = statusErrorFromError(err)
 	r.mu.Unlock()
 }

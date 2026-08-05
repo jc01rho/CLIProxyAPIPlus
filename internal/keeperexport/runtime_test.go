@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 func TestRuntimeHotReloadEnableDisableAndAppendNeverHangs(t *testing.T) {
@@ -139,5 +140,39 @@ func TestRuntimeFailedReloadKeepsPreviousOutbox(t *testing.T) {
 	}
 	if status.BacklogEvents != 2 {
 		t.Fatalf("backlog events = %d, want 2", status.BacklogEvents)
+	}
+}
+
+func TestRuntimeInitialOutboxFailurePreservesConfigurationStatus(t *testing.T) {
+	var runtime Runtime
+	dir := t.TempDir()
+	parentFile := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(parentFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultUsageExportConfig(dir)
+	cfg.Enabled = true
+	cfg.Mode = config.UsageExportModePush
+	cfg.Keeper.Token = "direct-token"
+	cfg.Outbox.Path = filepath.Join(parentFile, "outbox.db")
+	cfg.Outbox.MaxBytes = 16 << 20
+
+	if err := runtime.Apply(context.Background(), cfg); err == nil {
+		t.Fatal("Apply(bad path) error = nil")
+	}
+	runtime.HandleUsage(context.Background(), coreusage.Record{})
+
+	status, err := runtime.ManagementStatus(context.Background())
+	if err != nil {
+		t.Fatalf("ManagementStatus() error = %v", err)
+	}
+	if !status.Enabled {
+		t.Fatal("status.Enabled = false, want true")
+	}
+	if !status.TokenConfigured {
+		t.Fatal("status.TokenConfigured = false, want true")
+	}
+	if status.LastError == nil || status.LastError.Code != "storage_error" {
+		t.Fatalf("status.LastError = %#v, want storage_error", status.LastError)
 	}
 }

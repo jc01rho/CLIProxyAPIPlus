@@ -4,12 +4,26 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestSQLiteFileDSNUsesAbsoluteWindowsURI(t *testing.T) {
+	dsn, err := url.Parse(sqliteFileDSN("C:/exception/outbox.db", true))
+	if err != nil {
+		t.Fatalf("parse Windows SQLite DSN: %v", err)
+	}
+	if dsn.Scheme != "file" || dsn.Path != "/C:/exception/outbox.db" {
+		t.Fatalf("Windows SQLite DSN = %q (scheme=%q path=%q), want file:///C:/exception/outbox.db", dsn.String(), dsn.Scheme, dsn.Path)
+	}
+	if dsn.Query().Get("_journal_mode") != "WAL" || dsn.Query().Get("_synchronous") != "FULL" {
+		t.Fatalf("SQLite pragmas missing from DSN: %q", dsn.String())
+	}
+}
 
 func TestOutboxRestartSequenceRawBytesAndPartialAck(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "outbox.db")
