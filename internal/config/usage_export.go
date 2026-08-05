@@ -24,7 +24,6 @@ const (
 var usageExportEnvName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
 
 // UsageExportConfig configures durable, outbound Keeper usage delivery.
-// It stores only the environment-variable name containing the Keeper token.
 type UsageExportConfig struct {
 	Enabled  bool                      `yaml:"enabled" json:"enabled"`
 	Mode     string                    `yaml:"mode" json:"mode"`
@@ -37,6 +36,7 @@ type UsageExportConfig struct {
 
 type UsageExportKeeperConfig struct {
 	URL            string  `yaml:"url" json:"url"`
+	Token          string  `yaml:"token" json:"-"`
 	TokenEnv       string  `yaml:"token-env" json:"token-env"`
 	CAFile         *string `yaml:"ca-file" json:"ca-file"`
 	ClientCertFile *string `yaml:"client-cert-file" json:"client-cert-file"`
@@ -121,7 +121,7 @@ func (cfg *Config) ValidateUsageExport(configFile string) error {
 	}
 	u := cfg.UsageExport
 	for name, value := range map[string]string{
-		"mode": u.Mode, "keeper.url": u.Keeper.URL, "keeper.token-env": u.Keeper.TokenEnv, "outbox.path": u.Outbox.Path,
+		"mode": u.Mode, "keeper.url": u.Keeper.URL, "keeper.token": u.Keeper.Token, "keeper.token-env": u.Keeper.TokenEnv, "outbox.path": u.Outbox.Path,
 	} {
 		if value != strings.TrimSpace(value) {
 			return fmt.Errorf("usage-export: %s must not contain leading or trailing whitespace", name)
@@ -153,12 +153,19 @@ func (cfg *Config) ValidateUsageExport(configFile string) error {
 	} else if push {
 		return fmt.Errorf("usage-export: keeper.url is required in push mode")
 	}
-	if u.Keeper.TokenEnv != "" {
+	if u.Keeper.Token != "" && u.Keeper.TokenEnv != "" {
+		return fmt.Errorf("usage-export: exactly one of keeper.token or keeper.token-env may be set")
+	}
+	if u.Keeper.Token != "" {
+		if len(u.Keeper.Token) > 4096 || strings.ContainsAny(u.Keeper.Token, "\r\n") {
+			return fmt.Errorf("usage-export: keeper.token must be a single-line token no longer than 4096 bytes")
+		}
+	} else if u.Keeper.TokenEnv != "" {
 		if !usageExportEnvName.MatchString(u.Keeper.TokenEnv) {
 			return fmt.Errorf("usage-export: keeper.token-env must be a safe POSIX environment name")
 		}
 	} else if push {
-		return fmt.Errorf("usage-export: keeper.token-env is required in push mode")
+		return fmt.Errorf("usage-export: one of keeper.token or keeper.token-env is required in push mode")
 	}
 	for name, value := range map[string]*string{"ca-file": u.Keeper.CAFile, "client-cert-file": u.Keeper.ClientCertFile, "client-key-file": u.Keeper.ClientKeyFile} {
 		if value != nil && (!filepath.IsAbs(*value) || *value == "" || len(*value) > 4096) {
@@ -197,6 +204,19 @@ func (cfg *Config) ValidateUsageExport(configFile string) error {
 	}
 	_ = configFile
 	return nil
+}
+
+// UsageExportToken returns the configured direct token, or falls back to the
+// configured environment variable. Callers must never log the returned value.
+func (cfg UsageExportKeeperConfig) UsageExportToken() string {
+	if cfg.Token != "" {
+		return cfg.Token
+	}
+	return strings.TrimSpace(os.Getenv(cfg.TokenEnv))
+}
+
+func (cfg UsageExportKeeperConfig) UsageExportTokenConfigured() bool {
+	return cfg.UsageExportToken() != ""
 }
 
 func usageExportMatchesSafeDefaults(cfg UsageExportConfig, configDir string) bool {

@@ -126,7 +126,8 @@ error-logs-max-files: 10
 usage-statistics-enabled: false
 
 # Durable outbound Keeper export. Disabled by default.
-# Store only the environment-variable name in YAML; never put the ingest token here.
+# Use exactly one credential source: token-env (recommended) or token (for a
+# restricted, owner-only config file). Never configure both.
 # Uncomment the complete block when following docs/keeper-export.md.
 # usage-export:
 #   enabled: false
@@ -134,6 +135,7 @@ usage-statistics-enabled: false
 #   keeper:
 #     url: "http://192.0.2.10:8080"
 #     token-env: "CPA_KEEPER_INGEST_TOKEN"
+#     # token: "paste-the-Keeper-bearer-token-here"
 #     ca-file: null
 #     client-cert-file: null
 #     client-key-file: null

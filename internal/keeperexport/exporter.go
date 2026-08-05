@@ -434,7 +434,7 @@ func (w *worker) statusSnapshot() workerStatusSnapshot {
 
 func (w *worker) request(method, path string, body []byte) ([]byte, int, error) {
 	w.recordAttempt()
-	token := strings.TrimSpace(os.Getenv(w.cfg.Keeper.TokenEnv))
+	token := w.cfg.Keeper.UsageExportToken()
 	if token == "" {
 		return nil, 0, protocolError("token_env_unset")
 	}
