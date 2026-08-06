@@ -53,6 +53,8 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 			return cliproxyexecutor.Response{}, errBind
 		}
 		execCtx = SetProviderAuthInContext(execCtx, selection.Provider, auth.ID, auth.Label)
+		// Enrich before auth preparation so prepare-stage usage records observe the client request.
+		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
