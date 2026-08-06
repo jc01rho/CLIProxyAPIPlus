@@ -348,15 +348,16 @@ func (m *Manager) executeWithRouteFallback(
 		source := m.fallbackSourceForModel(originalModel, fallbackModel)
 		resolvedActual := resolveActualModelName(fallbackModel)
 		logEntryWithRequestID(ctx).WithFields(log.Fields{
-			"requested_model":         strings.TrimSpace(originalModel),
-			"fallback_model":          strings.TrimSpace(fallbackModel),
-			"fallback_actual_model":   resolvedActual.actual,
+			"requested_model":        strings.TrimSpace(originalModel),
+			"fallback_model":         strings.TrimSpace(fallbackModel),
+			"fallback_actual_model":  resolvedActual.actual,
 			"fallback_model_is_alias": resolvedActual.isAlias,
-			"fallback_source":         strings.TrimSpace(source),
+			"fallback_source":        strings.TrimSpace(source),
 		}).Infof("fallback chain activated: %s -> %s via %s", originalModel, fallbackModel, source)
 		startedAt := time.Now()
 		fallbackReq := req
 		fallbackReq.Model = fallbackModel
+		ctx = SetFallbackInfoInContext(ctx, originalModel, fallbackModel)
 		fallbackProviders := m.ProvidersForRouteModel(fallbackModel)
 		if len(fallbackProviders) == 0 {
 			fallbackProviders = m.ProvidersForOAuthAliasWithoutRegisteredModels(fallbackModel)
@@ -404,6 +405,7 @@ func (m *Manager) executeStreamWithRouteFallback(
 		startedAt := time.Now()
 		fallbackReq := req
 		fallbackReq.Model = fallbackModel
+		ctx = SetFallbackInfoInContext(ctx, originalModel, fallbackModel)
 		fallbackProviders := m.ProvidersForRouteModel(fallbackModel)
 		if len(fallbackProviders) == 0 {
 			fallbackProviders = m.ProvidersForOAuthAliasWithoutRegisteredModels(fallbackModel)
