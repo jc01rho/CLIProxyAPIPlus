@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,9 +17,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cline"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -627,6 +630,225 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 	c.JSON(200, response)
 }
 
+// ClineOAuthService is the minimal subset of the Cline authenticator the
+// management handler depends on for the /v0/management/cline-auth-url flow.
+// It mirrors the seam used by the Codex handler so tests can stub the
+// network-bound parts without touching real Cline endpoints.
+type ClineOAuthService interface {
+	GenerateAuthURL(state, callbackURL string) string
+	ExchangeCode(ctx context.Context, code, redirectURI string) (*cline.TokenResponse, error)
+}
+
+var newClineOAuthService = func(cfg *config.Config) ClineOAuthService {
+	return cline.NewClineAuth(cfg)
+}
+
+// RequestClineToken implements the GET /v0/management/cline-auth-url handler.
+// It mirrors the Anthropic/Codex pattern: generate a state, register the
+// session, return the authorization URL, then wait in a goroutine for the
+// callback file written by the WebUI forwarder (port 7829) or the generic
+// /v0/management/oauth-callback endpoint and exchange the code for tokens.
+func (h *Handler) RequestClineToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	log.Info("Initializing Cline authentication")
+
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		log.Errorf("Failed to generate state parameter: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return
+	}
+
+	authSvc := newClineOAuthService(h.cfg)
+
+	// Cline WorkOS redirects the browser to the configured redirect_uri. For
+	// the WebUI flow a forwarder listens on clineCallbackPort and bounces the
+	// browser back to the generic management callback endpoint so the
+	// single OAuth callback contract writes the result exactly once.
+	callbackURL := fmt.Sprintf("http://localhost:%d/callback", clineCallbackPort)
+	isWebUI := isWebUIRequest(c)
+	var forwarder *callbackForwarder
+	if isWebUI {
+		targetURL, errTarget := h.managementCallbackURL("/v0/management/oauth-callback")
+		if errTarget != nil {
+			log.WithError(errTarget).Error("failed to compute cline callback target")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
+			return
+		}
+		var errStart error
+		if forwarder, errStart = startCallbackForwarder(clineCallbackPort, "cline", targetURL); errStart != nil {
+			log.WithError(errStart).Error("failed to start cline callback forwarder")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
+			return
+		}
+	}
+
+	authURL := authSvc.GenerateAuthURL(state, callbackURL)
+	RegisterOAuthSession(state, "cline")
+
+	go func() {
+		if isWebUI {
+			defer stopCallbackForwarderInstance(clineCallbackPort, forwarder)
+		}
+
+		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-cline-%s.oauth", state))
+		deadline := time.Now().Add(5 * time.Minute)
+		var code string
+		var resultErr string
+		for {
+			if !IsOAuthSessionPending(state, "cline") {
+				return
+			}
+			if time.Now().After(deadline) {
+				SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
+				log.Error("Timeout waiting for Cline OAuth callback")
+				return
+			}
+			if data, errR := os.ReadFile(waitFile); errR == nil {
+				var m map[string]string
+				_ = json.Unmarshal(data, &m)
+				_ = os.Remove(waitFile)
+				resultErr = m["error"]
+				if resultErr == "" {
+					code = m["code"]
+				}
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if resultErr != "" {
+			SetOAuthSessionError(state, resultErr)
+			log.WithFields(log.Fields{"provider": "cline", "stage": "callback"}).Error("Cline OAuth callback returned error")
+			return
+		}
+		if strings.TrimSpace(code) == "" {
+			SetOAuthSessionError(state, "Missing authorization code")
+			log.WithField("provider", "cline").Error("Cline OAuth callback missing authorization code")
+			return
+		}
+
+		// The 9Router contract delivers the token payload base64-encoded inside
+		// the code parameter. Decode it first; only fall back to a server-side
+		// token exchange when the payload is not a valid base64 token blob.
+		tokenResp, errResolve := resolveClineCallbackToken(ctx, authSvc, code, callbackURL)
+		if errResolve != nil {
+			SetOAuthSessionError(state, "Failed to exchange authorization code for tokens")
+			log.WithFields(log.Fields{"provider": "cline", "stage": "resolve"}).WithError(errResolve).Error("Failed to resolve Cline authorization code")
+			return
+		}
+		if tokenResp == nil || strings.TrimSpace(tokenResp.AccessToken) == "" {
+			SetOAuthSessionError(state, "Missing access token in response")
+			log.WithField("provider", "cline").Error("Cline token response missing access token")
+			return
+		}
+
+		email := strings.TrimSpace(tokenResp.UserEmail())
+		if email == "" {
+			SetOAuthSessionError(state, "Missing account email")
+			log.WithField("provider", "cline").Error("Cline token response missing account email")
+			return
+		}
+
+		expiresAt := cline.ParseExpiresAt(tokenResp.ExpiresAt)
+		storedAccess := strings.TrimPrefix(strings.TrimSpace(tokenResp.AccessToken), "workos:")
+
+		ts := &cline.ClineTokenStorage{
+			AccessToken:  storedAccess,
+			RefreshToken: strings.TrimSpace(tokenResp.RefreshToken),
+			ExpiresAt:    expiresAt,
+			Email:        email,
+			Type:         "cline",
+		}
+
+		fileName := cline.CredentialFileName(email)
+		metadata := cline.SyncMetadata(ts, map[string]any{
+			"email":           email,
+			"workos_prefixed": true,
+		})
+
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "cline",
+			FileName: fileName,
+			Storage:  ts,
+			Metadata: metadata,
+		}
+		if errGuard := guardOAuthSessionPendingForSave(state, "cline"); errGuard != nil {
+			return
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.WithField("provider", "cline").WithError(errSave).Error("Failed to save Cline authentication tokens")
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+		log.WithFields(log.Fields{"provider": "cline", "email": email, "path": savedPath}).Info("Cline authentication successful")
+		CompleteOAuthSession(state)
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+// resolveClineCallbackToken implements the 9Router contract for the management
+// flow: the Cline callback usually delivers the token payload base64-encoded
+// inside the code parameter, so decode it first and only fall back to the
+// server-side /api/v1/auth/token exchange when the payload is not a token blob.
+func resolveClineCallbackToken(ctx context.Context, authSvc ClineOAuthService, code, callbackURL string) (*cline.TokenResponse, error) {
+	if tokenResp, ok := decodeClineCallbackTokenPayload(code); ok {
+		return tokenResp, nil
+	}
+	tokenResp, errExchange := authSvc.ExchangeCode(ctx, code, callbackURL)
+	if errExchange != nil {
+		return nil, fmt.Errorf("cline token exchange failed: %w", errExchange)
+	}
+	return tokenResp, nil
+}
+
+// decodeClineCallbackTokenPayload mirrors sdk/auth's decodeClineBase64Token:
+// pad to a multiple of 4, decode (Std then URL variants), then JSON-parse up to
+// the final '}' to drop any trailing junk appended by the browser redirect.
+func decodeClineCallbackTokenPayload(code string) (*cline.TokenResponse, bool) {
+	trimmed := strings.TrimSpace(code)
+	if trimmed == "" {
+		return nil, false
+	}
+	if padding := 4 - (len(trimmed) % 4); padding != 4 {
+		trimmed += strings.Repeat("=", padding)
+	}
+
+	decoders := []*base64.Encoding{base64.StdEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.RawURLEncoding}
+	var decoded []byte
+	var decodeErr error
+	for _, enc := range decoders {
+		if buf, err := enc.DecodeString(trimmed); err == nil {
+			decoded = buf
+			decodeErr = nil
+			break
+		} else {
+			decodeErr = err
+		}
+	}
+	if decodeErr != nil || len(decoded) == 0 {
+		return nil, false
+	}
+
+	lastBrace := strings.LastIndex(string(decoded), "}")
+	if lastBrace == -1 {
+		return nil, false
+	}
+	var tokenResp cline.TokenResponse
+	if err := json.Unmarshal([]byte(string(decoded)[:lastBrace+1]), &tokenResp); err != nil {
+		return nil, false
+	}
+	if strings.TrimSpace(tokenResp.AccessToken) == "" {
+		return nil, false
+	}
+	return &tokenResp, true
+}
+
 func (h *Handler) RequestKimiToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
@@ -707,7 +929,6 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 			SetOAuthSessionError(state, "Failed to save authentication tokens")
 			return
 		}
-
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		fmt.Println("You can now use Kimi services through this CLI")
 		CompleteOAuthSession(state)

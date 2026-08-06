@@ -1138,6 +1138,51 @@ func TestOAuthCallbackRouteSkipsManagementKeyMiddleware(t *testing.T) {
 	}
 }
 
+// TestClineAuthURLRouteRequiresManagementKey verifies the cline-auth-url
+// management route is registered and gated behind the management key.
+func TestClineAuthURLRouteRequiresManagementKey(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/cline-auth-url", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (management key required) body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	}
+}
+
+// TestClineCallbackViaGenericOAuthCallback verifies the Cline browser
+// redirect flows through the single generic /v0/management/oauth-callback
+// endpoint (the same surface the WebUI forwarder targets), so there is no
+// separate public /cline/callback route to keep in sync.
+func TestClineCallbackViaGenericOAuthCallback(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	state := "cline-callback-state"
+	managementHandlers.RegisterOAuthSession(state, "cline")
+	defer managementHandlers.CompleteOAuthSession(state)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/oauth-callback?provider=cline&state="+state+"&code=test-cline-code", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	callbackPath := filepath.Join(server.cfg.AuthDir, ".oauth-cline-"+state+".oauth")
+	data, errRead := os.ReadFile(callbackPath)
+	if errRead != nil {
+		t.Fatalf("expected cline callback file to be written: %v", errRead)
+	}
+	if !strings.Contains(string(data), "test-cline-code") {
+		t.Fatalf("callback file does not contain code: %s", string(data))
+	}
+}
+
 func TestNewServerWithPluginHostInjectsHandlerInterceptors(t *testing.T) {
 	host := pluginhost.New()
 	server := newTestServerWithOptions(t, WithPluginHost(host))

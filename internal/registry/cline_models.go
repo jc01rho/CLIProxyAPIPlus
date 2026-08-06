@@ -1,20 +1,98 @@
 // Package registry provides model definitions for various AI service providers.
 package registry
 
-// GetClineModels returns the Cline model definitions
+// GetClineModels returns the Cline model definitions.
+// Model list is aligned with 9Router (decolua/9router master) as of 2026-07-30.
+// All models use OpenRouter format IDs and are owned by "cline".
 func GetClineModels() []*ModelInfo {
 	return []*ModelInfo{
-		// --- Base Models ---
 		{
-			ID:                  "cline/auto",
+			ID:                  "anthropic/claude-opus-4.7",
 			Object:              "model",
 			Created:             1732752000,
 			OwnedBy:             "cline",
 			Type:                "cline",
-			DisplayName:         "Cline Auto",
-			Description:         "Automatic model selection by Cline",
+			DisplayName:         "Claude Opus 4.7",
+			Description:         "Claude Opus 4.7 via Cline",
 			ContextLength:       200000,
 			MaxCompletionTokens: 64000,
+		},
+		{
+			ID:                  "anthropic/claude-sonnet-4.6",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "cline",
+			Type:                "cline",
+			DisplayName:         "Claude Sonnet 4.6",
+			Description:         "Claude Sonnet 4.6 via Cline",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+		},
+		{
+			ID:                  "anthropic/claude-opus-4.6",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "cline",
+			Type:                "cline",
+			DisplayName:         "Claude Opus 4.6",
+			Description:         "Claude Opus 4.6 via Cline",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+		},
+		{
+			ID:                  "openai/gpt-5.3-codex",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "cline",
+			Type:                "cline",
+			DisplayName:         "GPT-5.3 Codex",
+			Description:         "GPT-5.3 Codex via Cline",
+			ContextLength:       128000,
+			MaxCompletionTokens: 64000,
+		},
+		{
+			ID:                  "openai/gpt-5.4",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "cline",
+			Type:                "cline",
+			DisplayName:         "GPT-5.4",
+			Description:         "GPT-5.4 via Cline",
+			ContextLength:       128000,
+			MaxCompletionTokens: 64000,
+		},
+		{
+			ID:                  "google/gemini-3.1-pro-preview",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "cline",
+			Type:                "cline",
+			DisplayName:         "Gemini 3.1 Pro Preview",
+			Description:         "Gemini 3.1 Pro Preview via Cline",
+			ContextLength:       1000000,
+			MaxCompletionTokens: 64000,
+		},
+		{
+			ID:                  "google/gemini-3.1-flash-lite-preview",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "cline",
+			Type:                "cline",
+			DisplayName:         "Gemini 3.1 Flash Lite Preview",
+			Description:         "Gemini 3.1 Flash Lite Preview via Cline",
+			ContextLength:       1000000,
+			MaxCompletionTokens: 64000,
+		},
+		{
+			ID:                  "kwaipilot/kat-coder-pro",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "cline",
+			Type:                "cline",
+			DisplayName:         "KAT Coder Pro",
+			Description:         "KAT Coder Pro via Cline",
+			ContextLength:       128000,
+			MaxCompletionTokens: 32000,
 		},
 	}
 }

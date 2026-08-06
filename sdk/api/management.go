@@ -22,6 +22,7 @@ type ManagementTokenRequester interface {
 	RequestCodexToken(*gin.Context)
 	RequestAntigravityToken(*gin.Context)
 	RequestKimiToken(*gin.Context)
+	RequestClineToken(*gin.Context)
 	GetAuthStatus(c *gin.Context)
 	PostOAuthCallback(c *gin.Context)
 }
@@ -61,6 +62,10 @@ func (m *managementTokenRequester) RequestAntigravityToken(c *gin.Context) {
 
 func (m *managementTokenRequester) RequestKimiToken(c *gin.Context) {
 	m.handler.RequestKimiToken(c)
+}
+
+func (m *managementTokenRequester) RequestClineToken(c *gin.Context) {
+	m.handler.RequestClineToken(c)
 }
 
 func (m *managementTokenRequester) GetAuthStatus(c *gin.Context) {
