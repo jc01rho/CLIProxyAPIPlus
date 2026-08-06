@@ -138,7 +138,6 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
 	translated = normalizeMistralReasoningEffort(baseModel, translated)
-	translated = omitMiniMaxM3ThinkingType(baseModel, translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
 	}
@@ -422,7 +421,6 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
 	translated = resolveReasoningEffortConflict(translated)
 	translated = normalizeMistralReasoningEffort(baseModel, translated)
-	translated = omitMiniMaxM3ThinkingType(baseModel, translated)
 	if isMiMoModel(baseModel) {
 		translated = applyMiMoReasoningBackfill(translated)
 	}
@@ -1242,32 +1240,6 @@ func resolveReasoningEffortConflict(body []byte) []byte {
 func isOpenCodeZenProvider(baseURL string) bool {
 	lower := strings.ToLower(strings.TrimSpace(baseURL))
 	return strings.Contains(lower, "opencode.ai/zen/")
-}
-
-func isMiniMaxM3Model(model string) bool {
-	lower := strings.ToLower(strings.TrimSpace(model))
-	if lower == "" {
-		return false
-	}
-	return strings.Contains(lower, "minimax-m3")
-}
-
-func omitMiniMaxM3ThinkingType(model string, body []byte) []byte {
-	if !isMiniMaxM3Model(model) || len(body) == 0 || !gjson.ValidBytes(body) {
-		return body
-	}
-	updated, err := sjson.DeleteBytes(body, "thinking.type")
-	if err != nil {
-		return body
-	}
-	thinking := gjson.GetBytes(updated, "thinking")
-	if thinking.IsObject() && len(thinking.Map()) == 0 {
-		withoutThinking, errDelete := sjson.DeleteBytes(updated, "thinking")
-		if errDelete == nil {
-			return withoutThinking
-		}
-	}
-	return updated
 }
 
 // needsToolCallIDNormalization reports whether the model requires 9-char alphanumeric

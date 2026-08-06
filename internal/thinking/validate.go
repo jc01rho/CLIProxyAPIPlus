@@ -130,6 +130,9 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	}
 
 	if len(support.Levels) > 0 && config.Mode == ModeLevel {
+		if typeLevel, ok := fallbackOpenAIThinkingTypeLevel(config.Level, toFormat, support.Levels); ok {
+			config.Level = typeLevel
+		}
 		if !isLevelSupported(string(config.Level), support.Levels) {
 			if allowClampUnsupported {
 				config.Level = clampLevel(config.Level, modelInfo, toFormat)
@@ -256,6 +259,15 @@ func clampLevel(level ThinkingLevel, modelInfo *registry.ModelInfo, provider str
 	if len(supported) == 0 || isLevelSupported(string(level), supported) {
 		return level
 	}
+	if typeLevel, ok := fallbackOpenAIThinkingTypeLevel(level, provider, supported); ok {
+		log.WithFields(log.Fields{
+			"provider":       provider,
+			"model":          model,
+			"original_value": string(level),
+			"clamped_to":     string(typeLevel),
+		}).Debug("thinking: level mapped to compatible thinking type |")
+		return typeLevel
+	}
 
 	pos := levelIndex(string(level))
 	if pos == -1 {
@@ -282,6 +294,23 @@ func clampLevel(level ThinkingLevel, modelInfo *registry.ModelInfo, provider str
 		return clamped
 	}
 	return level
+}
+
+func fallbackOpenAIThinkingTypeLevel(level ThinkingLevel, provider string, supported []string) (ThinkingLevel, bool) {
+	if !strings.EqualFold(strings.TrimSpace(provider), "openai") {
+		return "", false
+	}
+	switch level {
+	case LevelEnable, LevelDisable, LevelAdaptive:
+		return "", false
+	}
+	if HasLevel(supported, string(LevelAdaptive)) {
+		return LevelAdaptive, true
+	}
+	if HasLevel(supported, string(LevelEnable)) {
+		return LevelEnable, true
+	}
+	return "", false
 }
 
 // clampBudget clamps a budget value to the model's supported range.

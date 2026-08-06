@@ -40,19 +40,26 @@ func init() {
 //	}
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
 	if thinking.IsUserDefinedModel(modelInfo) {
-		return applyCompatibleOpenAI(body, config)
+		return applyCompatibleOpenAI(body, config, modelInfo)
 	}
 	if modelInfo.Thinking == nil {
 		return body, nil
 	}
 
-	// Only handle ModeLevel and ModeNone; other modes pass through unchanged.
-	if config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone {
+	// Only handle discrete levels and explicit on/off/automatic modes.
+	if config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone && config.Mode != thinking.ModeAuto {
 		return body, nil
 	}
 
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		body = []byte(`{}`)
+	}
+
+	if thinkingType, ok := openAIThinkingType(config, modelInfo); ok {
+		return setOpenAIThinkingType(body, thinkingType), nil
+	}
+	if config.Mode == thinking.ModeAuto {
+		return body, nil
 	}
 
 	if config.Mode == thinking.ModeLevel {
@@ -81,9 +88,12 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 	return result, nil
 }
 
-func applyCompatibleOpenAI(body []byte, config thinking.ThinkingConfig) ([]byte, error) {
+func applyCompatibleOpenAI(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		body = []byte(`{}`)
+	}
+	if thinkingType, ok := openAIThinkingType(config, modelInfo); ok {
+		return setOpenAIThinkingType(body, thinkingType), nil
 	}
 
 	var effort string
@@ -114,4 +124,41 @@ func applyCompatibleOpenAI(body []byte, config thinking.ThinkingConfig) ([]byte,
 
 	result, _ := sjson.SetBytes(body, "reasoning_effort", effort)
 	return result, nil
+}
+
+func openAIThinkingType(config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) (string, bool) {
+	switch config.Mode {
+	case thinking.ModeLevel:
+		switch config.Level {
+		case thinking.LevelEnable:
+			return "enabled", true
+		case thinking.LevelDisable:
+			return "disabled", true
+		case thinking.LevelAdaptive:
+			return "adaptive", true
+		}
+	case thinking.ModeNone:
+		if modelInfo != nil && modelInfo.Thinking != nil && thinking.HasLevel(modelInfo.Thinking.Levels, string(thinking.LevelDisable)) {
+			return "disabled", true
+		}
+	case thinking.ModeAuto:
+		if modelInfo == nil || modelInfo.Thinking == nil {
+			return "", false
+		}
+		if thinking.HasLevel(modelInfo.Thinking.Levels, string(thinking.LevelAdaptive)) {
+			return "adaptive", true
+		}
+		if thinking.HasLevel(modelInfo.Thinking.Levels, string(thinking.LevelEnable)) {
+			return "enabled", true
+		}
+	}
+	return "", false
+}
+
+func setOpenAIThinkingType(body []byte, thinkingType string) []byte {
+	if withoutEffort, err := sjson.DeleteBytes(body, "reasoning_effort"); err == nil {
+		body = withoutEffort
+	}
+	result, _ := sjson.SetBytes(body, "thinking.type", thinkingType)
+	return result
 }

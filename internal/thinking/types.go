@@ -44,6 +44,12 @@ const (
 	LevelNone ThinkingLevel = "none"
 	// LevelAuto enables automatic/dynamic thinking
 	LevelAuto ThinkingLevel = "auto"
+	// LevelEnable enables thinking through an OpenAI-compatible thinking.type field.
+	LevelEnable ThinkingLevel = "enable"
+	// LevelDisable disables thinking through an OpenAI-compatible thinking.type field.
+	LevelDisable ThinkingLevel = "disable"
+	// LevelAdaptive delegates thinking effort to an OpenAI-compatible provider.
+	LevelAdaptive ThinkingLevel = "adaptive"
 	// LevelMinimal sets minimal thinking effort
 	LevelMinimal ThinkingLevel = "minimal"
 	// LevelLow sets low thinking effort

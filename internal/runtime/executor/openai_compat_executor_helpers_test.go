@@ -150,24 +150,22 @@ func TestStripOpenAICompatProviderUnsupportedFields_NonKimiUnchanged(t *testing.
 	}
 }
 
-func TestOmitMiniMaxM3ThinkingType_ForResolvedModel(t *testing.T) {
+func TestMiniMaxM3ThinkingTypeIsPreserved(t *testing.T) {
 	tests := []struct {
 		name         string
-		model        string
 		payload      string
 		wantType     string
 		wantThinking bool
 	}{
-		{name: "adaptive", model: "minimaxai/minimax-m3", payload: `{"thinking":{"type":"adaptive"}}`},
-		{name: "disabled", model: "minimax-m3", payload: `{"thinking":{"type":"disabled"}}`},
-		{name: "preserve other thinking fields", model: "vendor/minimax-m3-preview", payload: `{"thinking":{"type":"adaptive","budget_tokens":8192}}`, wantThinking: true},
-		{name: "missing", model: "vendor/minimax-m3-preview", payload: `{}`},
-		{name: "other model", model: "minimax-m2", payload: `{"thinking":{"type":"adaptive"}}`, wantType: "adaptive", wantThinking: true},
+		{name: "adaptive", payload: `{"thinking":{"type":"adaptive"}}`, wantType: "adaptive", wantThinking: true},
+		{name: "disabled", payload: `{"thinking":{"type":"disabled"}}`, wantType: "disabled", wantThinking: true},
+		{name: "preserve other thinking fields", payload: `{"thinking":{"type":"adaptive","budget_tokens":8192}}`, wantType: "adaptive", wantThinking: true},
+		{name: "missing", payload: `{}`},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := omitMiniMaxM3ThinkingType(tt.model, []byte(tt.payload))
+			got := resolveReasoningEffortConflict([]byte(tt.payload))
 			if thinkingType := gjson.GetBytes(got, "thinking.type").String(); thinkingType != tt.wantType {
 				t.Fatalf("thinking.type = %q, want %q; payload=%s", thinkingType, tt.wantType, got)
 			}
