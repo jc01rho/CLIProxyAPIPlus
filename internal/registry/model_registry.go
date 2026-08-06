@@ -84,6 +84,9 @@ type ModelInfo struct {
 	ExecutionTarget string `json:"-"`
 	// Alias is the user-defined alias name for this model (if different from ID).
 	Alias string `json:"alias,omitempty"`
+	// IsCompat enables compatibility handling for this configured API-key model.
+	// It is internal metadata and is not exposed in model listings.
+	IsCompat bool `json:"-"`
 }
 
 // GetName returns the model name for alias resolution.
