@@ -659,6 +659,10 @@ type OpenAICompatibilityModel struct {
 	// OutputModalities declares supported output modalities when known (e.g. text, image).
 	OutputModalities []string `yaml:"output-modalities,omitempty" json:"output-modalities,omitempty"`
 
+	// IsCompat preserves Claude thinking blocks for compatible upstreams.
+	// Default false keeps the normal signature validation behavior.
+	IsCompat bool `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
@@ -671,5 +675,6 @@ func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 func (m OpenAICompatibilityModel) GetDisplayName() string   { return m.DisplayName }
 func (m OpenAICompatibilityModel) GetMaxContextLength() int { return m.MaxContextLength }
 func (m OpenAICompatibilityModel) GetForceMapping() bool    { return m.ForceMapping }
+func (m OpenAICompatibilityModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
