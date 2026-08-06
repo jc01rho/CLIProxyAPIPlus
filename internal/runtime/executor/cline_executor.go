@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	clineauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cline"
@@ -19,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -28,21 +31,56 @@ import (
 )
 
 const (
-	clineVersion        = "3.0.0"
 	clineBaseURL        = "https://api.cline.bot/api/v1"
 	clineModelsEndpoint = "/ai/cline/models"
 	clineChatEndpoint   = "/chat/completions"
 )
 
-func clineTokenAuthValue(token string) string {
-	t := strings.TrimSpace(token)
-	if t == "" {
-		return ""
+// clineVersion is resolved at runtime to mirror 9Router's APP_VERSION. It
+// cannot be a const because it depends on the process environment.
+var clineVersion = clineClientVersion()
+
+// clineRefreshLocks enforces a per-auth single-flight around refresh-before-
+// expiry so concurrent requests against the same auth cannot both spend the
+// rotating refresh token. The map is bounded by auth.ID lifetime.
+var (
+	clineRefreshMu    sync.Mutex
+	clineRefreshLocks = make(map[string]*sync.Mutex)
+)
+
+func clineLockFor(id string) *sync.Mutex {
+	clineRefreshMu.Lock()
+	defer clineRefreshMu.Unlock()
+	if id == "" {
+		var empty sync.Mutex
+		return &empty
 	}
-	if strings.HasPrefix(t, "workos:") {
-		return "Bearer " + t
+	if m, ok := clineRefreshLocks[id]; ok {
+		return m
 	}
-	return "Bearer workos:" + t
+	m := &sync.Mutex{}
+	clineRefreshLocks[id] = m
+	return m
+}
+
+// persistClineAuth writes the current auth record back through the active
+// token store so rotated tokens survive process restart.
+func persistClineAuth(ctx context.Context, auth *cliproxyauth.Auth) error {
+	if auth == nil {
+		return nil
+	}
+	store := sdkauth.GetTokenStore()
+	if store == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := store.Save(ctx, auth); err != nil {
+		log.Debugf("cline: persist rotated auth failed: %v", err)
+		return err
+	}
+	return nil
 }
 
 // ClineExecutor handles requests to Cline API.
@@ -63,15 +101,12 @@ func (e *ClineExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
 	if req == nil {
 		return nil
 	}
-	accessToken, err := e.ensureFreshAccessToken(req.Context(), auth)
-	if err != nil {
-		return err
-	}
+	accessToken := e.authToken(auth)
 	if strings.TrimSpace(accessToken) == "" {
 		return fmt.Errorf("cline: missing access token")
 	}
 
-	req.Header.Set("Authorization", clineTokenAuthValue(accessToken))
+	req.Header.Set("Authorization", clineauth.GetBearerHeaderValue(accessToken))
 
 	var attrs map[string]string
 	if auth != nil {
@@ -104,10 +139,10 @@ func (e *ClineExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
 
-	accessToken, err := e.ensureFreshAccessToken(ctx, auth)
-	if err != nil {
+	if err := e.prepareAuth(ctx, auth); err != nil {
 		return resp, err
 	}
+	accessToken := e.authToken(auth)
 	if accessToken == "" {
 		return resp, fmt.Errorf("cline: missing access token")
 	}
@@ -201,10 +236,10 @@ func (e *ClineExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
 
-	accessToken, err := e.ensureFreshAccessToken(ctx, auth)
-	if err != nil {
+	if err := e.prepareAuth(ctx, auth); err != nil {
 		return nil, err
 	}
+	accessToken := e.authToken(auth)
 	if accessToken == "" {
 		return nil, fmt.Errorf("cline: missing access token")
 	}
@@ -319,10 +354,19 @@ func (e *ClineExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}, nil
 }
 
-// Refresh validates the Cline token.
+// Refresh validates the Cline token; when the token is near expiry the
+// executor triggers an expiry-aware rotation via the refresh endpoint
+// and writes the rotated values back into auth.Metadata.
 func (e *ClineExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("missing auth")
+	}
+	if err := e.prepareAuth(ctx, auth); err != nil {
+		return nil, err
+	}
+	// Ensure expiry metadata is seeded on first use.
+	if e.authToken(auth) != "" {
+		seedClineExpiryMetadata(auth)
 	}
 	return auth, nil
 }
@@ -332,124 +376,183 @@ func (e *ClineExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 	return cliproxyexecutor.Response{}, fmt.Errorf("cline: count tokens not supported")
 }
 
-// clineAccessToken extracts access token from auth.
-func clineAccessToken(auth *cliproxyauth.Auth) string {
-	if auth == nil {
-		return ""
-	}
-
-	// Check metadata first, then attributes
-	if auth.Metadata != nil {
-		if token, ok := auth.Metadata["accessToken"].(string); ok && token != "" {
-			return token
-		}
-		if token, ok := auth.Metadata["access_token"].(string); ok && token != "" {
-			return token
-		}
-		if token, ok := auth.Metadata["token"].(string); ok && token != "" {
-			return token
+// prepareAuth ensures the token stored in auth.Metadata carries the workos:
+// prefix required by the Cline API. It also triggers an expiry-aware refresh
+// whenever the token is near expiry or refresh is disabled.
+func (e *ClineExecutor) prepareAuth(ctx context.Context, auth *cliproxyauth.Auth) error {
+	if e.authToken(auth) == "" && e.shouldRefresh(auth) {
+		if err := e.refreshBeforeExpiry(ctx, auth); err != nil {
+			log.Warnf("cline: pre-request expiry-aware refresh failed: %v", err)
 		}
 	}
-
-	if auth.Attributes != nil {
-		if token := auth.Attributes["accessToken"]; token != "" {
-			return token
-		}
-		if token := auth.Attributes["access_token"]; token != "" {
-			return token
-		}
-		if token := auth.Attributes["token"]; token != "" {
-			return token
-		}
-	}
-
-	return ""
+	return nil
 }
 
-func clineRefreshToken(auth *cliproxyauth.Auth) string {
-	if auth == nil {
-		return ""
+func (e *ClineExecutor) shouldRefresh(auth *cliproxyauth.Auth) bool {
+	if auth == nil || auth.Metadata == nil {
+		return false
 	}
-	if auth.Metadata != nil {
-		if token, ok := auth.Metadata["refreshToken"].(string); ok && strings.TrimSpace(token) != "" {
-			return strings.TrimSpace(token)
-		}
-		if token, ok := auth.Metadata["refresh_token"].(string); ok && strings.TrimSpace(token) != "" {
-			return strings.TrimSpace(token)
-		}
+	expiryRaw := clineauth.MetadataExpiry(auth.Metadata)
+	if expiryRaw > 0 {
+		return clineauth.ShouldRefresh(expiryRaw)
 	}
-	if auth.Attributes != nil {
-		if token := strings.TrimSpace(auth.Attributes["refreshToken"]); token != "" {
-			return token
-		}
-		if token := strings.TrimSpace(auth.Attributes["refresh_token"]); token != "" {
-			return token
-		}
-	}
-	return ""
+	// Treat unset expiry as stale enough to retry once; the refresh will
+	// re-seed it.
+	return true
 }
 
-func (e *ClineExecutor) ensureFreshAccessToken(ctx context.Context, auth *cliproxyauth.Auth) (string, error) {
-	accessToken := clineAccessToken(auth)
-	if strings.TrimSpace(accessToken) == "" {
-		return "", fmt.Errorf("cline: missing access token")
+// refreshBeforeExpiry swaps the in-memory token for a freshly rotated one
+// using the refresh token available in the auth metadata. It enforces a
+// per-auth single-flight so concurrent requests cannot rotate the same
+// refresh token twice. After a successful rotation the new tokens are
+// persisted through the active token store so they survive a restart. The
+// auth metadata is the single source of truth so reload-from-disk flows
+// (where auth.Storage is nil) still find the refresh token.
+func (e *ClineExecutor) refreshBeforeExpiry(ctx context.Context, auth *cliproxyauth.Auth) error {
+	if e.cfg == nil || auth == nil {
+		return nil
+	}
+	if auth.Metadata == nil {
+		return nil
 	}
 
-	refreshToken := clineRefreshToken(auth)
-	if refreshToken == "" {
-		return accessToken, nil
+	lock := clineLockFor(auth.ID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Re-check after acquiring; another goroutine may have already rotated.
+	if e.authToken(auth) != "" && !clineauth.ShouldRefresh(effectiveExpiry(auth)) {
+		return nil
+	}
+
+	rt := e.refreshToken(auth)
+	if strings.TrimSpace(rt) == "" {
+		return fmt.Errorf("cline refresh token missing from auth metadata")
 	}
 
 	authSvc := clineauth.NewClineAuth(e.cfg)
-	refreshed, err := authSvc.RefreshToken(ctx, refreshToken)
+	refreshed, err := authSvc.RefreshToken(ctx, rt)
 	if err != nil {
-		log.Warnf("cline: token refresh failed, fallback to current token: %v", err)
-		return accessToken, nil
+		return err
 	}
 	if refreshed == nil || strings.TrimSpace(refreshed.AccessToken) == "" {
-		return accessToken, nil
+		return fmt.Errorf("empty refreshed access token")
 	}
 
-	newAccessToken := strings.TrimSpace(refreshed.AccessToken)
-	if auth.Metadata == nil {
-		auth.Metadata = make(map[string]any)
-	}
-	auth.Metadata["accessToken"] = newAccessToken
-	auth.Metadata["access_token"] = newAccessToken
-
-	if strings.TrimSpace(refreshed.RefreshToken) != "" {
-		newRefresh := strings.TrimSpace(refreshed.RefreshToken)
-		auth.Metadata["refreshToken"] = newRefresh
-		auth.Metadata["refresh_token"] = newRefresh
-	}
-
-	if strings.TrimSpace(refreshed.ExpiresAt) != "" {
-		if t, parseErr := time.Parse(time.RFC3339Nano, refreshed.ExpiresAt); parseErr == nil {
-			auth.Metadata["expiresAt"] = t.Unix()
-			auth.Metadata["expires_at"] = t.Format(time.RFC3339)
-		} else if t, parseErr2 := time.Parse(time.RFC3339, refreshed.ExpiresAt); parseErr2 == nil {
-			auth.Metadata["expiresAt"] = t.Unix()
-			auth.Metadata["expires_at"] = t.Format(time.RFC3339)
+	newAccess := clineauth.NormalizeAccessToken(strings.TrimSpace(refreshed.AccessToken))
+	storage, ok := auth.Storage.(*clineauth.ClineTokenStorage)
+	if ok && storage != nil {
+		storage.AccessToken = strings.TrimPrefix(newAccess, clineauth.WorkOSPrefix())
+		if strings.TrimSpace(refreshed.RefreshToken) != "" {
+			storage.RefreshToken = strings.TrimSpace(refreshed.RefreshToken)
 		}
+		expiresAt := clineauth.ParseExpiresAt(refreshed.ExpiresAt)
+		if expiresAt > 0 {
+			storage.ExpiresAt = expiresAt
+		}
+		if email := strings.TrimSpace(refreshed.UserEmail()); email != "" {
+			storage.Email = email
+		}
+		clineauth.SyncMetadata(storage, auth.Metadata)
+	} else {
+		// Reload path: synthesize a ClineTokenStorage from the new payload so
+		// SyncMetadata produces both snake_case and camelCase keys for the
+		// filestore to round-trip back.
+		synth := &clineauth.ClineTokenStorage{
+			AccessToken:  strings.TrimPrefix(newAccess, clineauth.WorkOSPrefix()),
+			RefreshToken: strings.TrimSpace(refreshed.RefreshToken),
+			ExpiresAt:    clineauth.ParseExpiresAt(refreshed.ExpiresAt),
+			Email:        strings.TrimSpace(refreshed.UserEmail()),
+			Type:         "cline",
+		}
+		clineauth.SyncMetadata(synth, auth.Metadata)
+		auth.Storage = synth
 	}
+	auth.Metadata["workos_prefixed"] = true
 
-	return newAccessToken, nil
+	return persistClineAuth(ctx, auth)
 }
 
-// applyClineHeaders sets the standard Cline headers.
+// effectiveExpiry returns the expiry timestamp from auth.Metadata or
+// the in-memory storage as a best-effort fallback. It tolerates the numeric
+// JSON types (int64/int/float64/json.Number/numeric string) a disk reload can
+// produce under both camelCase and snake_case keys.
+func effectiveExpiry(auth *cliproxyauth.Auth) int64 {
+	if auth == nil || auth.Metadata == nil {
+		return 0
+	}
+	if v := clineauth.MetadataExpiry(auth.Metadata); v > 0 {
+		return v
+	}
+	storage, ok := auth.Storage.(*clineauth.ClineTokenStorage)
+	if !ok || storage == nil {
+		return 0
+	}
+	return storage.ExpiresAt
+}
+
+func (e *ClineExecutor) authToken(auth *cliproxyauth.Auth) string {
+	if auth == nil || auth.Metadata == nil {
+		return ""
+	}
+	if token, ok := auth.Metadata["accessToken"].(string); ok && strings.TrimSpace(token) != "" {
+		return strings.TrimSpace(token)
+	}
+	if token, ok := auth.Metadata["access_token"].(string); ok && strings.TrimSpace(token) != "" {
+		return strings.TrimSpace(token)
+	}
+	if token, ok := auth.Metadata["token"].(string); ok && strings.TrimSpace(token) != "" {
+		return strings.TrimSpace(token)
+	}
+	return ""
+}
+
+func (e *ClineExecutor) refreshToken(auth *cliproxyauth.Auth) string {
+	if auth == nil || auth.Metadata == nil {
+		return ""
+	}
+	if token, ok := auth.Metadata["refreshToken"].(string); ok && strings.TrimSpace(token) != "" {
+		return strings.TrimSpace(token)
+	}
+	if token, ok := auth.Metadata["refresh_token"].(string); ok && strings.TrimSpace(token) != "" {
+		return strings.TrimSpace(token)
+	}
+	return ""
+}
+
+// seedClineExpiryMetadata seeds auth.Metadata["expiresAt"] from the
+// persisted token storage when it is not already present.
+func seedClineExpiryMetadata(auth *cliproxyauth.Auth) {
+	if auth == nil || auth.Metadata == nil {
+		return
+	}
+	if auth.Metadata["expiresAt"] != nil {
+		return
+	}
+	storage, ok := auth.Storage.(*clineauth.ClineTokenStorage)
+	if !ok || storage == nil || storage.ExpiresAt <= 0 {
+		return
+	}
+	auth.Metadata["expiresAt"] = storage.ExpiresAt
+}
+
+// applyClineHeaders sets the standard Cline headers aligned with the 9Router
+// `clineHeaders` hook. Both `X-CLIENT-TYPE` and `User-Agent` differentiate
+// 9Router from the upstream Cline desktop client so the API can distinguish
+// traffic sources.
 func applyClineHeaders(r *http.Request, token string, stream bool) {
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", clineTokenAuthValue(token))
+	r.Header.Set("Authorization", clineauth.GetBearerHeaderValue(token))
 	r.Header.Set("HTTP-Referer", "https://cline.bot")
 	r.Header.Set("X-Title", "Cline")
 	r.Header.Set("X-Task-ID", "")
-	r.Header.Set("X-CLIENT-TYPE", "cli")
+	r.Header.Set("X-CLIENT-TYPE", "9router")
 	r.Header.Set("X-CORE-VERSION", clineVersion)
 	r.Header.Set("X-IS-MULTIROOT", "false")
 	r.Header.Set("X-CLIENT-VERSION", clineVersion)
 	r.Header.Set("X-PLATFORM", runtime.GOOS)
 	r.Header.Set("X-PLATFORM-VERSION", runtime.Version())
-	r.Header.Set("User-Agent", "Cline/"+clineVersion)
+	r.Header.Set("User-Agent", "9Router/"+clineVersion)
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
 		r.Header.Set("Cache-Control", "no-cache")
@@ -539,10 +642,10 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		return nil
 	}
 
-	req.Header.Set("User-Agent", "Cline/"+clineVersion)
+	req.Header.Set("User-Agent", "9Router/"+clineVersion)
 	req.Header.Set("HTTP-Referer", "https://cline.bot")
 	req.Header.Set("X-Title", "Cline")
-	req.Header.Set("X-CLIENT-TYPE", "cli")
+	req.Header.Set("X-CLIENT-TYPE", "9router")
 	req.Header.Set("X-CORE-VERSION", clineVersion)
 	req.Header.Set("X-IS-MULTIROOT", "false")
 	req.Header.Set("X-CLIENT-VERSION", clineVersion)
@@ -580,11 +683,10 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		return nil
 	}
 
-	// Also try gjson parsing as fallback
+	// Also accept gjson parsing for OpenRouter-style top-level arrays.
 	if len(modelsResponse.Data) == 0 {
 		result := gjson.GetBytes(body, "data")
 		if !result.Exists() {
-			// Try root if data field is missing
 			result = gjson.ParseBytes(body)
 			if !result.IsArray() {
 				log.Debugf("cline: response body: %s", string(body))
@@ -592,7 +694,7 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 				return nil
 			}
 		}
-		result.ForEach(func(key, value gjson.Result) bool {
+		result.ForEach(func(_, value gjson.Result) bool {
 			id := value.Get("id").String()
 			if id == "" {
 				return true
@@ -626,16 +728,13 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		if m.ID == "" {
 			continue
 		}
-		if !clineIsFreeModel(m) {
-			continue
-		}
 		contextLen := m.ContextLen
 		if contextLen == 0 {
-			contextLen = 200000 // Default context length
+			contextLen = 200000
 		}
 		maxTokens := m.MaxTokens
 		if maxTokens == 0 {
-			maxTokens = 64000 // Default max tokens
+			maxTokens = 64000
 		}
 		displayName := m.Name
 		if displayName == "" {
@@ -656,6 +755,26 @@ func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		count++
 	}
 
-	log.Infof("cline: fetched %d free models from API", count)
+	log.Infof("cline: fetched %d models from API", count)
 	return dynamicModels
+}
+
+// WorkOSPrefix returns the prefix Cline expects on its access tokens.
+func WorkOSPrefix() string { return clineauth.WorkOSPrefix() }
+
+// GetBearerHeaderValue exposes the shared helper for testability.
+func GetBearerHeaderValue(token string) string { return clineauth.GetBearerHeaderValue(token) }
+
+// NormalizeAccessToken exposes token normalization for testability.
+func NormalizeAccessToken(token string) string { return clineauth.NormalizeAccessToken(token) }
+
+// clineClientVersion returns the version string used in `X-CLIENT-VERSION` and
+// `X-CORE-VERSION` headers. It mirrors 9Router's `APP_VERSION` by preferring
+// the `VERSION` env var, falling back to a conservative build-time default.
+func clineClientVersion() string {
+	v := strings.TrimSpace(os.Getenv("VERSION"))
+	if v == "" {
+		return "0.0.0"
+	}
+	return v
 }
