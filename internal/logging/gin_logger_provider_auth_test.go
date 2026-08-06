@@ -44,7 +44,7 @@ func TestGinLogrusLoggerIncludesProviderAuthLabelWithAlias(t *testing.T) {
 	engine.ServeHTTP(recorder, req)
 
 	logOutput := logBuffer.String()
-	want := "higher-coding → deepseek-ai/deepseek-v4-pro | codex:someone@example.com"
+	want := "deepseek-ai/deepseek-v4-pro (higher-coding) | codex:someone@example.com"
 	if !bytes.Contains([]byte(logOutput), []byte(want)) {
 		t.Fatalf("expected provider auth label with alias in log, got: %s", logOutput)
 	}

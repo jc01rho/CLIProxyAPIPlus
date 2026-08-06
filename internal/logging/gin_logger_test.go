@@ -269,8 +269,8 @@ func TestGinLogrusLoggerKeepsAliasArrowForActualAliasCall(t *testing.T) {
 	engine.ServeHTTP(recorder, req)
 
 	logOutput := logBuffer.String()
-	if !bytes.Contains([]byte(logOutput), []byte("higher-coding → mistral-medium-latest")) {
-		t.Fatalf("expected alias arrow for real alias call, got: %s", logOutput)
+	if !bytes.Contains([]byte(logOutput), []byte("mistral-medium-latest (higher-coding)")) {
+		t.Fatalf("expected actual model with requested alias in parentheses for real alias call, got: %s", logOutput)
 	}
 }
 
