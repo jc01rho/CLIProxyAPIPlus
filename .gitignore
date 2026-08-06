@@ -36,6 +36,9 @@ AGENTS.md
 CLAUDE.md
 GEMINI.md
 
+# Rust plugin build artifacts (examples/plugin/*/rust/target)
+examples/plugin/*/rust/target/
+
 # Tooling metadata
 .vscode/*
 .worktrees/
