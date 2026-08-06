@@ -388,6 +388,10 @@ type ClaudeModel struct {
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 
+	// IsCompat preserves thinking blocks with empty signatures for compatible upstreams.
+	// Default false keeps the normal signature validation behavior.
+	IsCompat bool `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+
 	// Thinking configures the thinking/reasoning capability for this model.
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
@@ -399,6 +403,7 @@ func (m ClaudeModel) GetAlias() string { return m.Alias }
 func (m ClaudeModel) GetDisplayName() string   { return m.DisplayName }
 func (m ClaudeModel) GetMaxContextLength() int { return m.MaxContextLength }
 func (m ClaudeModel) GetForceMapping() bool    { return m.ForceMapping }
+func (m ClaudeModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
@@ -473,7 +478,8 @@ type CodexModel struct {
 	// IsCompat converts Codex MultiAgentV2 agent_message items into portable
 	// Responses message/user input when codex.optimize-multi-agent-v2 is also true.
 	// Use this for third-party Responses-compatible endpoints that do not accept
-	// native agent_message items. Default false keeps agent_message unchanged.
+	// native agent_message items or empty-signature thinking blocks. Default false
+	// keeps the native behavior unchanged.
 	IsCompat bool `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
 
 	// Thinking configures the thinking/reasoning capability for this model.
@@ -558,6 +564,10 @@ type GeminiModel struct {
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 
+	// IsCompat preserves thinking blocks with empty signatures for compatible upstreams.
+	// Default false keeps the normal signature validation behavior.
+	IsCompat bool `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
+
 	// Thinking configures the thinking/reasoning capability for this model.
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
@@ -569,6 +579,7 @@ func (m GeminiModel) GetAlias() string { return m.Alias }
 func (m GeminiModel) GetDisplayName() string   { return m.DisplayName }
 func (m GeminiModel) GetMaxContextLength() int { return m.MaxContextLength }
 func (m GeminiModel) GetForceMapping() bool    { return m.ForceMapping }
+func (m GeminiModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m GeminiModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 

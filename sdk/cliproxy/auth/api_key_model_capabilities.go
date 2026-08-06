@@ -202,7 +202,11 @@ func compileConfiguredModelCapabilities[T interface {
 	GetThinking() *registry.ThinkingSupport
 }](out map[string][]apiKeyModelCapabilityRoute, models []T, modelType string) {
 	for i := range models {
-		addConfiguredModelCapability(out, models[i].GetName(), models[i].GetAlias(), modelType, models[i].GetThinking())
+		isCompat := false
+		if compatModel, okCompat := any(models[i]).(interface{ GetIsCompat() bool }); okCompat {
+			isCompat = compatModel.GetIsCompat()
+		}
+		addConfiguredModelCapability(out, models[i].GetName(), models[i].GetAlias(), modelType, models[i].GetThinking(), isCompat)
 	}
 }
 
@@ -212,11 +216,11 @@ func compileOpenAICompatibleModelCapabilities(out map[string][]apiKeyModelCapabi
 		if support == nil && !models[i].Image {
 			support = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
 		}
-		addConfiguredModelCapability(out, models[i].Name, models[i].Alias, "openai-compatibility", support)
+		addConfiguredModelCapability(out, models[i].Name, models[i].Alias, "openai-compatibility", support, false)
 	}
 }
 
-func addConfiguredModelCapability(out map[string][]apiKeyModelCapabilityRoute, name, alias, modelType string, support *registry.ThinkingSupport) {
+func addConfiguredModelCapability(out map[string][]apiKeyModelCapabilityRoute, name, alias, modelType string, support *registry.ThinkingSupport, isCompat bool) {
 	name = strings.TrimSpace(name)
 	alias = strings.TrimSpace(alias)
 	if name == "" {
@@ -229,6 +233,7 @@ func addConfiguredModelCapability(out map[string][]apiKeyModelCapabilityRoute, n
 		return
 	}
 	modelInfo := modelconfig.ResolveModelInfo(name, modelType, support)
+	modelInfo.IsCompat = isCompat
 	route := apiKeyModelCapabilityRoute{upstreamModel: name, modelInfo: modelInfo}
 	seenKeys := make(map[string]struct{})
 	for _, routeModel := range []string{alias, name} {

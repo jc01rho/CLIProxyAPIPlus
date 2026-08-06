@@ -36,6 +36,16 @@ var (
 //   - max_output_tokens -> max_tokens
 //   - stream passthrough via parameter
 func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false)
+}
+
+// ConvertOpenAIResponsesRequestToClaudeWithCompat preserves reasoning items
+// whose encrypted content is empty for configured compatibility endpoints.
+func ConvertOpenAIResponsesRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true)
+}
+
+func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool) []byte {
 	rawJSON := inputRawJSON
 
 	if account == "" {
@@ -380,7 +390,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				}
 
 			case "reasoning":
-				if thinkingPart := convertResponsesReasoningToClaudeThinking(item); len(thinkingPart) > 0 {
+				if thinkingPart := convertResponsesReasoningToClaudeThinking(item, preserveEmptyThinkingBlocks); len(thinkingPart) > 0 {
 					pendingReasoningParts = append(pendingReasoningParts, thinkingPart)
 				}
 
@@ -568,10 +578,13 @@ func responsesSystemUnsupportedBlock(part gjson.Result) []byte {
 // thought. Anthropic requires a signature on every thinking block and rejects an
 // absent or empty one, so an item whose encrypted_content is missing or belongs
 // to another provider is dropped rather than replayed as an unsigned block.
+// Compatibility mode explicitly keeps the original opaque value as the
+// signature for upstreams that use a provider-specific signature format.
 // Anthropic does not verify the text against the signature, which is what makes
 // the summarized text safe to restore alongside it.
-func convertResponsesReasoningToClaudeThinking(item gjson.Result) []byte {
+func convertResponsesReasoningToClaudeThinking(item gjson.Result, preserveEmptyThinkingBlocks ...bool) []byte {
 	encrypted := item.Get("encrypted_content").String()
+	preserveEmpty := len(preserveEmptyThinkingBlocks) > 0 && preserveEmptyThinkingBlocks[0]
 	if data, isRedacted := responsesRedactedThinkingData(encrypted); isRedacted {
 		if data == "" {
 			return nil
@@ -583,7 +596,10 @@ func convertResponsesReasoningToClaudeThinking(item gjson.Result) []byte {
 
 	signature, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderClaude, encrypted)
 	if !ok {
-		return nil
+		if !preserveEmpty {
+			return nil
+		}
+		signature = encrypted
 	}
 
 	thinkingText := responsesReasoningText(item)

@@ -46,6 +46,16 @@ var (
 // Returns:
 //   - []byte: The transformed request data in Claude Code API format
 func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertOpenAIRequestToClaude(modelName, inputRawJSON, stream, false)
+}
+
+// ConvertOpenAIRequestToClaudeWithCompat preserves assistant reasoning content
+// as an unsigned thinking block for configured compatibility endpoints.
+func ConvertOpenAIRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertOpenAIRequestToClaude(modelName, inputRawJSON, stream, true)
+}
+
+func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool) []byte {
 	rawJSON := inputRawJSON
 
 	if account == "" {
@@ -204,8 +214,15 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				}
 			case "user", "assistant":
 				contentBlocks := make([][]byte, 0, 4)
+				if preserveEmptyThinkingBlocks && role == "assistant" {
+					if reasoningContent := message.Get("reasoning_content"); reasoningContent.Type == gjson.String && strings.TrimSpace(reasoningContent.String()) != "" {
+						part := []byte(`{"type":"thinking","thinking":"","signature":""}`)
+						part, _ = sjson.SetBytes(part, "thinking", reasoningContent.String())
+						contentBlocks = append(contentBlocks, part)
+					}
+				}
 
-				// Handle content based on its type (string or array)
+				// Handle content based on its type
 				if contentResult.Exists() && contentResult.Type == gjson.String && contentResult.String() != "" {
 					part := []byte(`{"type":"text","text":""}`)
 					part, _ = sjson.SetBytes(part, "text", contentResult.String())
