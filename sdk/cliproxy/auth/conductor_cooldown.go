@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -12,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/requestmeta"
@@ -312,15 +315,15 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	}
 
 	state := ensureModelState(auth, model)
-	state.Unavailable = true
-	state.Status = StatusError
-	state.NextRetryAfter = record.NextRetryAfter
-	state.Quota = quota
-	state.UpdatedAt = updatedAt
-	if reason != "" {
-		state.StatusMessage = reason
-	}
-	state.LastError = cloneError(record.LastError)
+	mergeModelState(state, &ModelState{
+		Unavailable:    true,
+		Status:         StatusError,
+		StatusMessage:  reason,
+		NextRetryAfter: record.NextRetryAfter,
+		Quota:          quota,
+		LastError:      cloneError(record.LastError),
+		UpdatedAt:      updatedAt,
+	})
 	updateAggregatedAvailability(auth, now)
 	return true
 }
@@ -463,7 +466,7 @@ func modelsForRegisteredAuth(authID string) []string {
 		if supportedModel == nil || strings.TrimSpace(supportedModel.ID) == "" {
 			continue
 		}
-		models = append(models, supportedModel.ID)
+		models = append(models, canonicalModelKey(supportedModel.ID))
 	}
 	return models
 }
@@ -652,6 +655,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if result.AuthID == "" {
 		return
 	}
+	modelKey := canonicalModelKey(result.Model)
 
 	shouldResumeModel := false
 	shouldSuspendModel := false
@@ -681,8 +685,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 
 		if result.Success {
-			if result.Model != "" {
-				state := ensureModelState(auth, result.Model)
+			if modelKey != "" {
+				state := ensureModelState(auth, modelKey)
 				resetModelState(state, now)
 				updateAggregatedAvailability(auth, now)
 				if !hasModelError(auth, now) {
@@ -697,10 +701,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				clearAuthStateOnSuccess(auth, now)
 			}
 		} else {
-			if result.Model != "" {
-				if !isRequestScopedResultError(result.Error) {
+			if modelKey != "" {
+				if !shouldSkipCredentialCooldown(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)
-					state := ensureModelState(auth, result.Model)
+					state := ensureModelState(auth, modelKey)
 					state.Unavailable = true
 					state.Status = StatusError
 					state.UpdatedAt = now
@@ -846,16 +850,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 	}
 
-	if clearModelQuota && result.Model != "" {
-		registry.GetGlobalRegistry().ClearModelQuotaExceeded(result.AuthID, result.Model)
+	if clearModelQuota && modelKey != "" {
+		registry.GetGlobalRegistry().ClearModelQuotaExceeded(result.AuthID, modelKey)
 	}
-	if setModelQuota && result.Model != "" {
-		registry.GetGlobalRegistry().SetModelQuotaExceeded(result.AuthID, result.Model)
+	if setModelQuota && modelKey != "" {
+		registry.GetGlobalRegistry().SetModelQuotaExceeded(result.AuthID, modelKey)
 	}
 	if shouldResumeModel {
-		registry.GetGlobalRegistry().ResumeClientModel(result.AuthID, result.Model)
+		registry.GetGlobalRegistry().ResumeClientModel(result.AuthID, modelKey)
 	} else if shouldSuspendModel {
-		registry.GetGlobalRegistry().SuspendClientModel(result.AuthID, result.Model, suspendReason)
+		registry.GetGlobalRegistry().SuspendClientModel(result.AuthID, modelKey, suspendReason)
 	}
 
 	m.hook.OnResult(ctx, result)
@@ -990,9 +994,11 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 }
 
 func ensureModelState(auth *Auth, model string) *ModelState {
+	model = canonicalModelKey(model)
 	if auth == nil || model == "" {
 		return nil
 	}
+	normalizeModelStates(auth)
 	if auth.ModelStates == nil {
 		auth.ModelStates = make(map[string]*ModelState)
 	}
@@ -1002,6 +1008,91 @@ func ensureModelState(auth *Auth, model string) *ModelState {
 	state := &ModelState{Status: StatusActive}
 	auth.ModelStates[model] = state
 	return state
+}
+
+func normalizeModelStates(auth *Auth) bool {
+	if auth == nil || len(auth.ModelStates) == 0 {
+		return false
+	}
+	normalized := make(map[string]*ModelState, len(auth.ModelStates))
+	changed := false
+	for model, state := range auth.ModelStates {
+		modelKey := canonicalModelKey(model)
+		if modelKey == "" {
+			modelKey = strings.TrimSpace(model)
+		}
+		if modelKey != model {
+			changed = true
+		}
+		if existing, ok := normalized[modelKey]; ok {
+			normalized[modelKey] = mergeModelState(existing, state)
+			changed = true
+			continue
+		}
+		normalized[modelKey] = state
+	}
+	if changed {
+		auth.ModelStates = normalized
+	}
+	return changed
+}
+
+func mergeModelState(target, source *ModelState) *ModelState {
+	if target == nil {
+		return source
+	}
+	if source == nil {
+		return target
+	}
+
+	preferred := target
+	fallback := source
+	if source.UpdatedAt.After(target.UpdatedAt) {
+		preferred = source
+		fallback = target
+	}
+	merged := ModelState{
+		Status:         preferred.Status,
+		StatusMessage:  preferred.StatusMessage,
+		Unavailable:    target.Unavailable || source.Unavailable,
+		NextRetryAfter: target.NextRetryAfter,
+		LastError:      cloneError(preferred.LastError),
+		Quota: QuotaState{
+			Exceeded:      target.Quota.Exceeded || source.Quota.Exceeded,
+			Reason:        preferred.Quota.Reason,
+			NextRecoverAt: target.Quota.NextRecoverAt,
+			BackoffLevel:  target.Quota.BackoffLevel,
+		},
+		UpdatedAt: target.UpdatedAt,
+	}
+	if source.NextRetryAfter.After(merged.NextRetryAfter) {
+		merged.NextRetryAfter = source.NextRetryAfter
+	}
+	if source.Quota.NextRecoverAt.After(merged.Quota.NextRecoverAt) {
+		merged.Quota.NextRecoverAt = source.Quota.NextRecoverAt
+	}
+	if source.Quota.BackoffLevel > merged.Quota.BackoffLevel {
+		merged.Quota.BackoffLevel = source.Quota.BackoffLevel
+	}
+	if source.UpdatedAt.After(merged.UpdatedAt) {
+		merged.UpdatedAt = source.UpdatedAt
+	}
+	if merged.StatusMessage == "" {
+		merged.StatusMessage = fallback.StatusMessage
+	}
+	if merged.LastError == nil {
+		merged.LastError = cloneError(fallback.LastError)
+	}
+	if merged.Quota.Reason == "" {
+		merged.Quota.Reason = fallback.Quota.Reason
+	}
+	if target.Status == StatusDisabled || source.Status == StatusDisabled {
+		merged.Status = StatusDisabled
+	} else if merged.Unavailable || merged.Quota.Exceeded {
+		merged.Status = StatusError
+	}
+	*target = merged
+	return target
 }
 
 func resetModelState(state *ModelState, now time.Time) {
@@ -1204,10 +1295,87 @@ func resultErrorFromError(err error) *Error {
 	if resultErr.HTTPStatus == 0 {
 		resultErr.HTTPStatus = statusCodeFromError(err)
 	}
-	if isRequestScopedError(err) || isRequestInvalidError(err) {
+	switch {
+	case isRequestScopedError(err) || isRequestInvalidError(err):
+		// Prefer true request-scoped faults (including Claude OAuth cancellation)
+		// over the broader connection-lifecycle classification.
 		resultErr.Code = requestScopedErrorCode
+	case isConnectionLifecycleError(err):
+		// Preserve lifecycle classification for MarkResult without making the error
+		// request-scoped (which would also stop credential fallback).
+		if resultErr.Code == "" || resultErr.Code == connectionLifecycleErrorCode {
+			resultErr.Code = connectionLifecycleErrorCode
+		}
 	}
 	return resultErr
+}
+
+// shouldSkipCredentialCooldown reports failures that must not mark auth/model cooling.
+// Connection lifecycle is intentionally separate from request_scoped so transport
+// drops do not also stop credential rotation via isRequestInvalidError.
+func shouldSkipCredentialCooldown(err *Error) bool {
+	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err)
+}
+
+// isConnectionLifecycleError reports transport/session lifecycle failures that must
+// not cool credentials: client cancellation and WebSocket close/EOF disconnects.
+func isConnectionLifecycleError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Typed WebSocket close codes are an unambiguous connection lifecycle signal.
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) && closeErr != nil {
+		switch closeErr.Code {
+		case websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure:
+			return true
+		}
+	}
+	// Credential/auth/quota statuses must never be reclassified from response text.
+	if statusCodeFromError(err) != 0 {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	return isConnectionLifecycleMessage(err.Error())
+}
+
+func isConnectionLifecycleResultError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	if err.Code == connectionLifecycleErrorCode {
+		return true
+	}
+	// Message fallback only when no HTTP status is attached, so 401/429/5xx
+	// response bodies cannot suppress credential cooldown.
+	if statusCodeFromResult(err) != 0 {
+		return false
+	}
+	return isConnectionLifecycleMessage(err.Message)
+}
+
+func isConnectionLifecycleMessage(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return false
+	}
+	switch lower {
+	case "context canceled", "eof", "unexpected eof":
+		return true
+	}
+	// gorilla/websocket CloseError.Error() and common wrappers.
+	if strings.Contains(lower, "websocket: close 1000") ||
+		strings.Contains(lower, "websocket: close 1001") ||
+		strings.Contains(lower, "websocket: close 1006") {
+		return true
+	}
+	// Wrapped transport EOF phrasing (e.g. "read tcp ...: unexpected EOF").
+	if strings.Contains(lower, "unexpected eof") {
+		return true
+	}
+	return false
 }
 
 func isUnauthorizedError(err error) bool {
@@ -1468,13 +1636,7 @@ func nextCloudflareCooldown(backoffLevel int, disableCooling bool, now time.Time
 }
 
 func isRequestScopedNotFoundMessage(message string) bool {
-	if message == "" {
-		return false
-	}
-	lower := strings.ToLower(message)
-	return strings.Contains(lower, "item with id") &&
-		strings.Contains(lower, "not found") &&
-		strings.Contains(lower, "items are not persisted when `store` is set to false")
+	return clienterror.IsItemNotPersisted(message)
 }
 
 func isRequestScopedNotFoundResultError(err *Error) bool {
@@ -1686,7 +1848,10 @@ func isMissingModelPhrase(value string) bool {
 // item misses caused by `store=false`, and all 422 responses as request-shape
 // failures, where switching auths or pooled upstream models will not help.
 // Model-support errors are excluded so routing can fall through to another auth
-// or upstream. 400 errors are allowed to trigger fallback chains.
+// or upstream. 400 errors are allowed to trigger fallback chains (local fork).
+// For all other statuses it delegates to clienterror.IsRequestFault so upstream
+// fault-body classification (cyber_policy, context_length_exceeded, conflict,
+// message_too_big, ...) still stops rotation without penalizing the pool.
 func isRequestInvalidError(err error) bool {
 	if err == nil {
 		return false
@@ -1703,6 +1868,8 @@ func isRequestInvalidError(err error) bool {
 	if isModelSupportError(err) {
 		return false
 	}
+	// Local: 400 fall through to credential/model fallback chains (e0a8e394).
+	// 404/422/500-shape errors are still treated as request-scoped.
 	status := statusCodeFromError(err)
 	switch status {
 	case http.StatusBadRequest:
@@ -1711,12 +1878,8 @@ func isRequestInvalidError(err error) bool {
 		return isRequestScopedNotFoundMessage(err.Error())
 	case http.StatusUnprocessableEntity:
 		return true
-	case http.StatusInternalServerError:
-		msg := err.Error()
-		return strings.Contains(msg, "\"status\":\"UNKNOWN\"") ||
-			strings.Contains(msg, "\"status\": \"UNKNOWN\"")
 	default:
-		return false
+		return clienterror.IsRequestFault(status, err)
 	}
 }
 
@@ -1724,7 +1887,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	if auth == nil {
 		return
 	}
-	if isRequestScopedResultError(resultErr) {
+	if shouldSkipCredentialCooldown(resultErr) {
 		return
 	}
 	defer func() {

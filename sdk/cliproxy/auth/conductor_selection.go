@@ -344,6 +344,14 @@ func (m *Manager) SetRoundTripperProvider(p RoundTripperProvider) {
 }
 
 func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
+	return m.availableAuthsForRouteModelWithPriorityMode(auths, provider, routeModel, now, false)
+}
+
+func (m *Manager) availableAuthsForRouteModelAcrossPriorities(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
+	return m.availableAuthsForRouteModelWithPriorityMode(auths, provider, routeModel, now, true)
+}
+
+func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, provider, routeModel string, now time.Time, allPriorities bool) ([]*Auth, error) {
 	if len(auths) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
@@ -385,20 +393,32 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
 	}
 
-	bestPriority := 0
-	found := false
-	for priority := range availableByPriority {
-		if !found || priority > bestPriority {
-			bestPriority = priority
-			found = true
+	return availableAuthsFromPriorityBuckets(availableByPriority, allPriorities), nil
+}
+
+// availableAuthsForSelector reports the candidates handed to priority-scoped consumers such as
+// the plugin scheduler, plus the candidates handed to the configured selector. Both are equal
+// unless session affinity is active, in which case the selector additionally receives lower
+// priority tiers so an established binding can be validated instead of being preempted by a
+// recovered higher-priority credential.
+func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
+	if _, sessionAffinity := selector.(*SessionAffinitySelector); !sessionAffinity {
+		priorityAuths, err = m.availableAuthsForRouteModel(auths, provider, routeModel, now)
+		if err != nil {
+			return nil, nil, err
 		}
+		priorityAuths = cloneAuthSlice(priorityAuths)
+		return priorityAuths, priorityAuths, nil
 	}
 
-	available := availableByPriority[bestPriority]
-	if len(available) > 1 {
-		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
+	// One availability pass and one clone pass serve both lists: the highest priority tier is a
+	// subset of the across-priority candidates, so it is narrowed from the same cloned auths.
+	selectorAuths, err = m.availableAuthsForRouteModelAcrossPriorities(auths, provider, routeModel, now)
+	if err != nil {
+		return nil, nil, err
 	}
-	return available, nil
+	selectorAuths = cloneAuthSlice(selectorAuths)
+	return highestPriorityAuths(selectorAuths), selectorAuths, nil
 }
 
 func (m *Manager) shouldExcludeAntigravityNonPrimary(provider string, auth *Auth) bool {
@@ -1302,24 +1322,30 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	var available []*Auth
+	var selectorAuths []*Auth
 	var errAvailable error
 	if isWeightedRobin {
 		checkModel := modelKey
 		if checkModel == "" {
 			checkModel = model
 		}
+		// Local: weighted-robin distributes across ALL priority tiers, so it
+		// receives the full cross-priority candidate set (getAllAvailableAuths)
+		// plus a prefiltered opt flag so the selector trusts the list as-is.
 		available = getAllAvailableAuths(candidates, checkModel, time.Now())
 		if len(available) == 0 {
 			errAvailable = &Error{Code: "auth_unavailable", Message: "no auth available for weight-robin"}
 		}
+		selectorAuths = available
 	} else {
-		available, errAvailable = m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
+		// Upstream: availableAuthsForSelector returns priorityAuths (scheduler)
+		// and selectorAuths (session-affinity-aware across-priority set).
+		available, selectorAuths, errAvailable = m.availableAuthsForSelector(selector, candidates, provider, model, time.Now())
 	}
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		return nil, nil, errAvailable
 	}
-	available = cloneAuthSlice(available)
 	m.mu.RUnlock()
 	selectorOpts := opts
 	if isWeightedRobin {
@@ -1332,7 +1358,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	if !handled {
 		selectorCtx := withWeightedSelectorStateModel(ctx, selector, model)
-		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), selectorOpts, available)
+		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), selectorOpts, selectorAuths)
 		if errPick != nil {
 			return nil, nil, errPick
 		}
@@ -1654,6 +1680,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	var available []*Auth
+	var selectorAuths []*Auth
 	var errAvailable error
 	if weightedRobin {
 		checkModel := modelKey
@@ -1664,14 +1691,14 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if len(available) == 0 {
 			errAvailable = &Error{Code: "auth_unavailable", Message: "no auth available for weight-robin"}
 		}
+		selectorAuths = available
 	} else {
-		available, errAvailable = m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+		available, selectorAuths, errAvailable = m.availableAuthsForSelector(selector, candidates, "mixed", model, time.Now())
 	}
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		return nil, nil, "", errAvailable
 	}
-	available = cloneAuthSlice(available)
 	m.mu.RUnlock()
 	selectorOpts := opts
 	if weightedRobin {
@@ -1684,7 +1711,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	if !handled {
 		selectorCtx := withWeightedSelectorStateModel(ctx, selector, model)
-		selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), selectorOpts, available)
+		selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), selectorOpts, selectorAuths)
 		if errPick != nil {
 			return nil, nil, "", errPick
 		}

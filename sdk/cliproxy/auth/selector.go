@@ -403,6 +403,14 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 }
 
 func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
+	return getAvailableAuthsWithPriorityMode(auths, provider, model, now, false)
+}
+
+func getAvailableAuthsAcrossPriorities(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
+	return getAvailableAuthsWithPriorityMode(auths, provider, model, now, true)
+}
+
+func getAvailableAuthsWithPriorityMode(auths []*Auth, provider, model string, now time.Time, allPriorities bool) ([]*Auth, error) {
 	if len(auths) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
@@ -423,20 +431,73 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
 	}
 
+	return availableAuthsFromPriorityBuckets(availableByPriority, allPriorities), nil
+}
+
+// availableAuthsFromPriorityBuckets flattens availability buckets into a stable, ID-sorted slice.
+// When allPriorities is false only the highest available priority tier is returned.
+// When allPriorities is true every tier is merged, so the result carries no priority ordering:
+// use it for membership checks or feed it to highestPriorityAuths, never as a priority-ordered
+// selection order.
+func availableAuthsFromPriorityBuckets(availableByPriority map[int][]*Auth, allPriorities bool) []*Auth {
+	var candidates []*Auth
+	if allPriorities {
+		total := 0
+		for _, bucket := range availableByPriority {
+			total += len(bucket)
+		}
+		candidates = make([]*Auth, 0, total)
+		for _, bucket := range availableByPriority {
+			candidates = append(candidates, bucket...)
+		}
+	} else {
+		bestPriority := 0
+		found := false
+		for priority := range availableByPriority {
+			if !found || priority > bestPriority {
+				bestPriority = priority
+				found = true
+			}
+		}
+		bucket := availableByPriority[bestPriority]
+		candidates = make([]*Auth, 0, len(bucket))
+		candidates = append(candidates, bucket...)
+	}
+	if len(candidates) > 1 {
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
+	}
+	return candidates
+}
+
+// highestPriorityAuths narrows an availability slice to its highest priority tier while
+// preserving the input order. The input slice is returned unchanged when every candidate
+// already shares the highest priority, so the common single-tier case allocates nothing.
+func highestPriorityAuths(auths []*Auth) []*Auth {
+	if len(auths) <= 1 {
+		return auths
+	}
 	bestPriority := 0
-	found := false
-	for priority := range availableByPriority {
-		if !found || priority > bestPriority {
+	bestCount := 0
+	for _, auth := range auths {
+		priority := authPriority(auth)
+		switch {
+		case bestCount == 0 || priority > bestPriority:
 			bestPriority = priority
-			found = true
+			bestCount = 1
+		case priority == bestPriority:
+			bestCount++
 		}
 	}
-
-	available := availableByPriority[bestPriority]
-	if len(available) > 1 {
-		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
+	if bestCount == len(auths) {
+		return auths
 	}
-	return available, nil
+	highest := make([]*Auth, 0, bestCount)
+	for _, auth := range auths {
+		if authPriority(auth) == bestPriority {
+			highest = append(highest, auth)
+		}
+	}
+	return highest
 }
 
 func getPrefilteredAvailableAuths(auths []*Auth) ([]*Auth, error) {
@@ -1175,18 +1236,34 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	}
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
-			state, ok := auth.ModelStates[model]
-			if (!ok || state == nil) && model != "" {
-				baseModel := canonicalModelKey(model)
-				if baseModel != "" && baseModel != model {
-					state, ok = auth.ModelStates[baseModel]
+			modelKey := canonicalModelKey(model)
+			matched := false
+			blocked := false
+			blockedReason := blockReasonNone
+			nextRetry := time.Time{}
+			for stateModel, state := range auth.ModelStates {
+				if state == nil || canonicalModelKey(stateModel) != modelKey {
+					continue
 				}
-			}
-			if ok && state != nil {
+				matched = true
 				if state.Status == StatusDisabled {
 					return true, blockReasonDisabled, time.Time{}
 				}
-				return availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now)
+				stateBlocked, reason, next := availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now)
+				if !stateBlocked {
+					continue
+				}
+				if next.IsZero() {
+					return true, reason, time.Time{}
+				}
+				if !blocked || next.After(nextRetry) || (next.Equal(nextRetry) && reason == blockReasonCooldown) {
+					blocked = true
+					blockedReason = reason
+					nextRetry = next
+				}
+			}
+			if matched {
+				return blocked, blockedReason, nextRetry
 			}
 			// Auth-level availability can aggregate failures from other models.
 			return false, blockReasonNone, time.Time{}
@@ -1260,26 +1337,44 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 // Explicit Claude Code, Codex, OpenCode, pi, and request-body session signals
 // precede execution metadata, stable derived identity, and the legacy hash fallback.
 //
+// An established binding outranks credential priority: a bound credential that is still
+// available is reused even when a higher-priority credential recovers. Credential priority
+// applies to cold bindings, requests without a session, and genuine bound-credential
+// failover, so the fallback selector only ever receives the highest available priority tier.
+//
 // Note: The cache key includes provider, session ID, and model to handle cases where
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
 // that may be supported by different auth credentials, and to avoid cross-provider conflicts.
 func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	entry := selectorLogEntry(ctx)
 	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
-	if primaryID == "" {
-		entry.Debugf("session-affinity: no session ID extracted, falling back to default selector | provider=%s model=%s", provider, model)
-		return s.fallback.Pick(ctx, provider, model, opts, auths)
-	}
-
 	now := time.Now()
 	availabilityCandidates := auths
 	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
-	available, err := availableAuthsForSelector(availabilityCandidates, provider, model, opts, now)
+	// Local: prefilter-aware availability pass so the session-affinity wrapper can
+	// sit around the weighted-robin selector without re-filtering the prefiltered
+	// candidate set or losing priority semantics. The membership check must see
+	// every available auth across priority tiers (not just the highest tier) so a
+	// bound auth at any priority stays sticky while higher-priority auths recover.
+	var available []*Auth
+	var err error
+	if authCandidatesPrefiltered(opts) {
+		available, err = getPrefilteredAvailableAuths(availabilityCandidates)
+	} else {
+		available, err = getAvailableAuthsWithPriorityMode(availabilityCandidates, provider, model, now, true)
+	}
 	if err != nil {
 		return nil, err
 	}
+	// Upstream: no session ID to bind to, defer immediately to the fallback selector.
+	if primaryID == "" {
+		fallbackAuths := highestPriorityAuths(available)
+		entry.Debugf("session-affinity: no session ID extracted, falling back to default selector | provider=%s model=%s", provider, model)
+		return s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+	}
+	fallbackAuths := highestPriorityAuths(available)
 
 	cacheKey := provider + "::" + primaryID + "::" + model
 	fallbackKey := ""
@@ -1303,7 +1398,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			}
 		}
 		// Cached auth not available, reselect via fallback selector for even distribution
-		auth, err := s.fallback.Pick(ctx, provider, model, opts, auths)
+		auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
 		if err != nil {
 			return nil, err
 		}
@@ -1324,7 +1419,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		}
 	}
 
-	auth, err := s.fallback.Pick(ctx, provider, model, opts, auths)
+	auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
 	if err != nil {
 		return nil, err
 	}
