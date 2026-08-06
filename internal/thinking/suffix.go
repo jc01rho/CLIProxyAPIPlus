@@ -109,7 +109,8 @@ func ParseSpecialSuffix(rawSuffix string) (mode ThinkingMode, ok bool) {
 // ParseLevelSuffix attempts to parse a raw suffix as a discrete thinking level.
 //
 // This function parses the raw suffix content (from ParseSuffix.RawSuffix) as a level.
-// Only discrete effort levels are valid: minimal, low, medium, high, xhigh, max.
+// Discrete effort levels (minimal, low, medium, high, xhigh, max) and
+// OpenAI-compatible thinking type levels (enable, disable, adaptive) are valid.
 // Level matching is case-insensitive.
 //
 // Special values (none, auto) are NOT handled by this function; use ParseSpecialSuffix
@@ -119,6 +120,7 @@ func ParseSpecialSuffix(rawSuffix string) (mode ThinkingMode, ok bool) {
 //   - "high" -> level=LevelHigh, ok=true
 //   - "HIGH" -> level=LevelHigh, ok=true (case insensitive)
 //   - "medium" -> level=LevelMedium, ok=true
+//   - "adaptive" -> level=LevelAdaptive, ok=true
 //   - "none" -> level="", ok=false (special value, use ParseSpecialSuffix)
 //   - "auto" -> level="", ok=false (special value, use ParseSpecialSuffix)
 //   - "8192" -> level="", ok=false (numeric, use ParseNumericSuffix)
@@ -130,6 +132,12 @@ func ParseLevelSuffix(rawSuffix string) (level ThinkingLevel, ok bool) {
 
 	// Case-insensitive matching
 	switch strings.ToLower(rawSuffix) {
+	case "enable":
+		return LevelEnable, true
+	case "disable":
+		return LevelDisable, true
+	case "adaptive":
+		return LevelAdaptive, true
 	case "minimal":
 		return LevelMinimal, true
 	case "low":
