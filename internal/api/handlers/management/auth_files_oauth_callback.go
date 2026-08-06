@@ -16,6 +16,7 @@ import (
 const (
 	anthropicCallbackPort = 54545
 	codexCallbackPort     = 1455
+	clineCallbackPort     = 7829
 )
 
 type callbackForwarder struct {

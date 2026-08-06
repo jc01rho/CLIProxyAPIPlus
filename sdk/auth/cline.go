@@ -19,80 +19,40 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func extractFirstJSONObject(input []byte) []byte {
-	start := -1
-	depth := 0
-	inString := false
-	escapeNext := false
-
-	for i, b := range input {
-		if start == -1 {
-			if b == '{' {
-				start = i
-				depth = 1
-			}
-			continue
-		}
-
-		if inString {
-			if escapeNext {
-				escapeNext = false
-				continue
-			}
-			if b == '\\' {
-				escapeNext = true
-				continue
-			}
-			if b == '"' {
-				inString = false
-			}
-			continue
-		}
-
-		if b == '"' {
-			inString = true
-			continue
-		}
-
-		if b == '{' {
-			depth++
-			continue
-		}
-
-		if b == '}' {
-			depth--
-			if depth == 0 {
-				return input[start : i+1]
-			}
-		}
-	}
-
-	if start != -1 {
-		return input[start:]
-	}
-
-	return nil
-}
+// Metadata keys persisted into coreauth.Auth.Metadata for the Cline provider.
+const (
+	metadataClineEmail      = "email"
+	metadataClineExpiresAt  = "expiresAt"
+	metadataClineUserID     = "userId"
+	metadataClineWorkOSPref = "workos_prefixed"
+)
 
 const defaultClineCallbackPort = 1455
 
+// ClineAuthenticator implements the shared authenticator interface for Cline.
 type ClineAuthenticator struct {
 	CallbackPort int
 }
 
+// NewClineAuthenticator creates a Cline authenticator with the default local
+// callback port.
 func NewClineAuthenticator() *ClineAuthenticator {
 	return &ClineAuthenticator{CallbackPort: defaultClineCallbackPort}
 }
 
+// Provider returns the provider identifier.
 func (a *ClineAuthenticator) Provider() string {
 	return "cline"
 }
 
+// RefreshLead returns the refresh lead (5 minutes) used by the scheduler.
 func (a *ClineAuthenticator) RefreshLead() *time.Duration {
 	d := 5 * time.Minute
 	return &d
 }
 
+// Login walks the user through the Cline OAuth flow and returns a fully
+// populated coreauth.Auth ready to be persisted.
 func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("cliproxy auth: configuration is required")
@@ -151,80 +111,38 @@ func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		return nil, fmt.Errorf("cline authentication failed: state mismatch")
 	}
 
-	// Cline returns the token directly in the code parameter as base64-encoded JSON
-	// Try to parse it directly first, fall back to exchange if needed
-	var tokenResp *cline.TokenResponse
-	codeStr := result.Code
-
-	// Try multiple base64 decoding strategies
-	decodeStrategies := []func(string) ([]byte, error){
-		base64.URLEncoding.DecodeString,
-		base64.RawURLEncoding.DecodeString,
-		base64.StdEncoding.DecodeString,
-		base64.RawStdEncoding.DecodeString,
+	tokenResp, err := decodeClineCodeOrExchange(ctx, authSvc, result.Code, callbackURL)
+	if err != nil {
+		return nil, err
+	}
+	if tokenResp == nil || strings.TrimSpace(tokenResp.AccessToken) == "" {
+		return nil, fmt.Errorf("cline authentication failed: no access token in response")
 	}
 
-	for _, decode := range decodeStrategies {
-		if decoded, decodeErr := decode(codeStr); decodeErr == nil {
-			var directToken cline.TokenResponse
-			parseErr := json.Unmarshal(decoded, &directToken)
-			if parseErr != nil {
-				if jsonOnly := extractFirstJSONObject(decoded); len(jsonOnly) > 0 {
-					parseErr = json.Unmarshal(jsonOnly, &directToken)
-				}
-			}
-			if parseErr == nil && directToken.AccessToken != "" {
-				tokenResp = &directToken
-				break
-			}
-			log.Debugf("cline: base64 decode succeeded but JSON parse failed: %v", parseErr)
-		}
-	}
-
-	// Fall back to token exchange if direct parsing didn't work
-	if tokenResp == nil {
-		var err error
-		tokenResp, err = authSvc.ExchangeCode(ctx, result.Code, callbackURL)
-		if err != nil {
-			return nil, fmt.Errorf("cline token exchange failed: %w", err)
-		}
-	}
-
-	if tokenResp == nil {
-		return nil, fmt.Errorf("cline authentication failed: no token response")
-	}
-
-	email := strings.TrimSpace(tokenResp.Email)
+	email := strings.TrimSpace(tokenResp.UserEmail())
 	if email == "" {
 		return nil, fmt.Errorf("cline authentication failed: missing account email")
 	}
 
-	// Parse expiresAt from string to int64
-	var expiresAtInt int64
-	if tokenResp.ExpiresAt != "" {
-		if t, err := time.Parse(time.RFC3339Nano, tokenResp.ExpiresAt); err == nil {
-			expiresAtInt = t.Unix()
-		} else if t, err := time.Parse(time.RFC3339, tokenResp.ExpiresAt); err == nil {
-			expiresAtInt = t.Unix()
-		} else {
-			log.Debugf("cline: failed to parse expiresAt: %v", err)
-		}
-	}
+	expiresAtInt := cline.ParseExpiresAt(tokenResp.ExpiresAt)
+
+	// Strip the workos: prefix from the access token for storage; the
+	// Authorization header is rebuilt with the prefix by the executor.
+	storedAccess := strings.TrimPrefix(strings.TrimSpace(tokenResp.AccessToken), "workos:")
 
 	ts := &cline.ClineTokenStorage{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
+		AccessToken:  storedAccess,
+		RefreshToken: strings.TrimSpace(tokenResp.RefreshToken),
 		ExpiresAt:    expiresAtInt,
 		Email:        email,
 		Type:         "cline",
 	}
 
 	fileName := cline.CredentialFileName(email)
-	metadata := map[string]any{
-		"email":      email,
-		"fileName":   fileName,
-		"expires_at": expiresAtInt,
-	}
+	metadata := cline.SyncMetadata(ts, map[string]any{
+		metadataClineEmail:      email,
+		metadataClineWorkOSPref: true,
+	})
 
 	fmt.Printf("Cline authentication successful for %s\n", email)
 
@@ -235,6 +153,111 @@ func (a *ClineAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		Storage:  ts,
 		Metadata: metadata,
 	}, nil
+}
+
+// Refresh exchanges the refresh token on the storage and returns a new auth
+// record with updated tokens and expiry. The metadata on the supplied auth is
+// mutated in-place via cline.SyncMetadata so subsequent requests and reload
+// see the rotated values with both snake_case and camelCase keys populated.
+func (a *ClineAuthenticator) Refresh(ctx context.Context, cfg *config.Config, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	if auth == nil {
+		return nil, fmt.Errorf("cline refresh: auth is nil")
+	}
+	storage, ok := auth.Storage.(*cline.ClineTokenStorage)
+	if !ok || storage == nil {
+		return nil, fmt.Errorf("cline refresh: invalid token storage")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	authSvc := cline.NewClineAuth(cfg)
+	tokenResp, err := authSvc.RefreshToken(ctx, storage.RefreshToken)
+	if err != nil {
+		return nil, fmt.Errorf("cline refresh: %w", err)
+	}
+	if tokenResp == nil || strings.TrimSpace(tokenResp.AccessToken) == "" {
+		return nil, fmt.Errorf("cline refresh: empty access token in response")
+	}
+
+	newAccess := strings.TrimPrefix(strings.TrimSpace(tokenResp.AccessToken), "workos:")
+	storage.AccessToken = newAccess
+	if tokenResp.RefreshToken != "" {
+		storage.RefreshToken = strings.TrimSpace(tokenResp.RefreshToken)
+	}
+	expiresAt := cline.ParseExpiresAt(tokenResp.ExpiresAt)
+	if expiresAt > 0 {
+		storage.ExpiresAt = expiresAt
+	}
+	if email := strings.TrimSpace(tokenResp.UserEmail()); email != "" {
+		storage.Email = email
+	}
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	cline.SyncMetadata(storage, auth.Metadata)
+	auth.Metadata[metadataClineWorkOSPref] = true
+
+	return auth, nil
+}
+
+// decodeClineCodeOrExchange implements the 9Router contract: the Cline callback
+// delivers the token payload base64-encoded inside the `code` query parameter.
+// If the payload parses cleanly we use it; otherwise we fall back to a server
+// round-trip via /api/v1/auth/token.
+func decodeClineCodeOrExchange(ctx context.Context, authSvc *cline.ClineAuth, code, callbackURL string) (*cline.TokenResponse, error) {
+	if tokenResp, ok := decodeClineBase64Token(code); ok {
+		return tokenResp, nil
+	}
+	tokenResp, err := authSvc.ExchangeCode(ctx, code, callbackURL)
+	if err != nil {
+		return nil, fmt.Errorf("cline token exchange failed: %w", err)
+	}
+	return tokenResp, nil
+}
+
+// decodeClineBase64Token mirrors 9Router's `Buffer.from(base64)` parsing:
+// pad to a multiple of 4, decode (trying Std first, then URL), then
+// JSON-parse up to the final `}` to drop any trailing junk.
+func decodeClineBase64Token(code string) (*cline.TokenResponse, bool) {
+	trimmed := strings.TrimSpace(code)
+	if trimmed == "" {
+		return nil, false
+	}
+	padding := 4 - (len(trimmed) % 4)
+	if padding != 4 {
+		trimmed += strings.Repeat("=", padding)
+	}
+
+	decoders := []*base64.Encoding{base64.StdEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.RawURLEncoding}
+	var decoded []byte
+	var decodeErr error
+	for _, enc := range decoders {
+		if buf, err := enc.DecodeString(trimmed); err == nil {
+			decoded = buf
+			decodeErr = nil
+			break
+		} else {
+			decodeErr = err
+		}
+	}
+	if decodeErr != nil || len(decoded) == 0 {
+		return nil, false
+	}
+
+	lastBrace := strings.LastIndex(string(decoded), "}")
+	if lastBrace == -1 {
+		return nil, false
+	}
+	payload := string(decoded)[:lastBrace+1]
+	var tokenResp cline.TokenResponse
+	if err := json.Unmarshal([]byte(payload), &tokenResp); err != nil {
+		return nil, false
+	}
+	if strings.TrimSpace(tokenResp.AccessToken) == "" {
+		return nil, false
+	}
+	return &tokenResp, true
 }
 
 type clineOAuthResult struct {
