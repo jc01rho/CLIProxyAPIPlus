@@ -174,8 +174,7 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 	// Process messages and transform them to Claude Code format
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
 		systemBlocks := make([][]byte, 0)
-		messageBlocks := make([][]byte, 0)
-		previousRole := ""
+		messageAccumulator := common.NewClaudeMessageAccumulator(int(root.Get("messages.#").Int()))
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
 			contentResult := message.Get("content")
@@ -279,7 +278,7 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 				msg, _ = sjson.SetBytes(msg, "role", role)
 				msg, _ = sjson.SetRawBytes(msg, "content", common.JoinRawArray(contentBlocks))
 				msg = common.AttachMessageCacheControl(msg, message)
-				messageBlocks = append(messageBlocks, msg)
+				messageAccumulator.Append(msg)
 
 			case "tool":
 				// Handle tool result messages conversion
@@ -296,17 +295,12 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 					msg, _ = sjson.SetBytes(msg, "content.0.content", toolResultContent)
 				}
 				msg = common.AttachMessageCacheControl(msg, message)
-				if previousRole == "tool" && len(messageBlocks) > 0 {
-					toolResult := gjson.GetBytes(msg, "content.0")
-					lastIdx := len(messageBlocks) - 1
-					messageBlocks[lastIdx], _ = sjson.SetRawBytes(messageBlocks[lastIdx], "content.-1", []byte(toolResult.Raw))
-				} else {
-					messageBlocks = append(messageBlocks, msg)
-				}
+				messageAccumulator.Append(msg)
 			}
-			previousRole = role
 			return true
 		})
+
+		messageBlocks := messageAccumulator.Messages()
 
 		// Preserve a minimal conversational turn for system-only inputs.
 		// Claude payloads with top-level system instructions but no messages are risky for downstream validation.
