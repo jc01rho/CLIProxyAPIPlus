@@ -696,3 +696,46 @@ func Test_CommandCodeStream_rawRetention_stays_bounded_and_releases(t *testing.T
 		t.Fatalf("retained raw body regrew to %d bytes after release, want flat 0", got)
 	}
 }
+// --- Non-2xx HTTP status surfaces as a stream error chunk ---
+
+// commandCodeStreamTestContextStatus injects a RoundTripper that answers the
+// CommandCode generate request with the given HTTP status and body.
+func commandCodeStreamTestContextStatus(status int, body string) context.Context {
+	return context.WithValue(context.Background(), "cliproxy.roundtripper", commandCodeRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	}))
+}
+
+func Test_CommandCodeStream_ExecuteStream_non_2xx_emits_single_error_chunk(t *testing.T) {
+	// Given a non-2xx HTTP response (e.g. 429 with a quota body).
+	ctx := commandCodeStreamTestContextStatus(http.StatusTooManyRequests, `{"error":"quota exceeded"}`)
+	exec := NewCommandCodeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "user_test"}}
+	payload := []byte(`{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}`)
+	result, err := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "deepseek/deepseek-v4-pro",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAI,
+		OriginalRequest: payload,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range result.Chunks {
+		chunks = append(chunks, chunk)
+	}
+	errs := commandCodeErrChunks(chunks)
+	if len(errs) != 1 {
+		t.Fatalf("stream emitted %d error chunks, want exactly 1: %v", len(errs), errs)
+	}
+	requireCommandCodeStatusError(t, errs[0], http.StatusTooManyRequests)
+	if !strings.Contains(errs[0].Error(), "quota exceeded") {
+		t.Fatalf("stream error = %q, want the upstream body message", errs[0].Error())
+	}
+}

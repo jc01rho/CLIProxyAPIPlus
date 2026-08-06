@@ -1,12 +1,10 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -23,7 +21,7 @@ import (
 
 const (
 	commandCodeBaseURL = "https://api.commandcode.ai"
-	commandCodeVersion = "1.6.0"
+	commandCodeVersion = "1.12.0"
 	commandCodeProject = "cli-proxy"
 )
 
@@ -51,7 +49,7 @@ func (e *CommandCodeExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	}
 	httpReq := req.WithContext(ctx)
 	apiKey := commandCodeAPIKey(auth)
-	applyCommandCodeHeaders(httpReq, apiKey)
+	applyCommandCodeHeaders(httpReq, apiKey, newCommandCodeSessionID())
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -84,99 +82,17 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, fmt.Errorf("commandcode: build payload: %w", err)
 	}
 
-	url := commandCodeGenerateURL(auth)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	// Run the pause_turn continuation chain: the installed command-code@1.12.0
+	// client re-posts on a pause_turn finish reason up to a bounded number of
+	// times; the proxy mirrors that so long generations are not truncated.
+	// Request construction, header application, and request logging happen
+	// inside commandCodePauseChain/commandCodePostOne so every continuation
+	// attempt is captured with the same field shape.
+
+	acc, _, err := commandCodePauseChain(ctx, e.cfg, auth, e.Identifier(), payload, apiKey)
 	if err != nil {
 		return resp, err
 	}
-	applyCommandCodeHeaders(httpReq, apiKey)
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      payload,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		Model:     baseModel,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		recordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
-	}
-	defer func() {
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("commandcode executor: close response body error: %v", errClose)
-		}
-	}()
-
-	recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		appendAPIResponseChunk(ctx, e.cfg, b)
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
-		return resp, err
-	}
-
-	// Collect NDJSON events into the shared stream accumulator.
-	acc := newCommandCodeStreamAccumulator()
-	var rawLines [][]byte
-
-	scanner := bufio.NewScanner(httpResp.Body)
-	scanner.Buffer(nil, 52_428_800)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		appendAPIResponseChunk(ctx, e.cfg, line)
-		trimmed := bytes.TrimSpace(line)
-		if len(trimmed) == 0 {
-			continue
-		}
-		rawLines = append(rawLines, append([]byte(nil), trimmed...))
-		acc.feed(decodeCommandCodeStreamEvent(trimmed))
-		if acc.terminal != commandCodeTerminalNone {
-			break
-		}
-	}
-	if errScan := scanner.Err(); errScan != nil {
-		recordAPIResponseError(ctx, e.cfg, errScan)
-		return resp, errScan
-	}
-	if acc.err != nil {
-		recordAPIResponseError(ctx, e.cfg, acc.err)
-		err = acc.err
-		return resp, err
-	}
-
-	// Legacy fallback: a body without any recognized NDJSON event may be a
-	// single JSON envelope. Recover its text before declaring truncation.
-	if !acc.sawKnownEvent {
-		if fallbackText := commandCodeRecoverFromRawBody(rawLines); fallbackText != "" {
-			acc.adoptLegacyText(fallbackText)
-		}
-	}
-	if errEOF := acc.finishEOF(); errEOF != nil {
-		recordAPIResponseError(ctx, e.cfg, errEOF)
-		err = errEOF
-		return resp, err
-	}
-
 	// Build an OpenAI-shaped response to feed through the translator.
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	message := map[string]any{
@@ -210,7 +126,7 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, body, &param)
-	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+	resp = cliproxyexecutor.Response{Payload: out, Headers: nil}
 	return resp, nil
 }
 
@@ -236,177 +152,56 @@ func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	if err != nil {
 		return nil, fmt.Errorf("commandcode: build payload: %w", err)
 	}
-
-	url := commandCodeGenerateURL(auth)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	applyCommandCodeHeaders(httpReq, apiKey)
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      payload,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		Model:     baseModel,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		recordAPIResponseError(ctx, e.cfg, err)
-		return nil, err
-	}
-
-	recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		appendAPIResponseChunk(ctx, e.cfg, b)
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("commandcode executor: close response body error: %v", errClose)
-		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
-		return nil, err
-	}
-
-	out := make(chan cliproxyexecutor.StreamChunk)
+	// Streaming pause_turn continuation chain: the installed command-code@1.12.0
+	// client re-posts on a pause_turn finish reason. The goroutine below calls
+	// commandCodeStreamOneAttempt (which owns its own request lifecycle and
+	// logs) and loops while IsPauseTurn() is true.
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	out := make(chan cliproxyexecutor.StreamChunk)
+
+	attemptCtx := commandCodeAttemptContext{
+		ctx:        ctx,
+		cfg:        e.cfg,
+		auth:       auth,
+		provider:   e.Identifier(),
+		baseModel:  baseModel,
+		from:       from,
+		to:         to,
+		openAIInput: translated,
+		wirePayload: payload,
+		original:    req.Payload,
+		out:      out,
+		reporter: reporter,
+		chatID:   chatID,
+		sessionID: newCommandCodeSessionID(),
+	}
+
 	go func() {
 		defer close(out)
-		defer func() {
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("commandcode executor: close response body error: %v", errClose)
+		master := newCommandCodeStreamAccumulator()
+		toolCallOffset := 0
+		for attempt := 0; ; attempt++ {
+			attemptCtx.toolCallOffset = toolCallOffset
+			acc, attemptErr := commandCodeStreamOneAttempt(ctx, e.cfg, auth, e.Identifier(), baseModel, apiKey, attemptCtx)
+			if acc != nil {
+				toolCallOffset += len(acc.toolCalls)
+				master.merge(acc)
 			}
-		}()
-
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800)
-		var param any
-		toolCallIndex := 0
-		acc := newCommandCodeStreamAccumulator()
-
-		sendSSELine := func(sseLine []byte) {
-			appendAPIResponseChunk(ctx, e.cfg, sseLine)
-			if detail, ok := parseOpenAIStreamUsage(sseLine); ok {
-				reporter.publish(ctx, detail)
-			}
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(sseLine), &param)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-
-		emitChunk := func(payload map[string]any) {
-			b, errMarshal := json.Marshal(payload)
-			if errMarshal != nil {
+			if attemptErr != nil {
 				return
 			}
-			sendSSELine(append([]byte("data: "), b...))
-		}
-
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			trimmed := bytes.TrimSpace(line)
-			if len(trimmed) == 0 {
-				continue
+			if !acc.IsPauseTurn() || attempt >= commandCodeMaxContinuations {
+				reporter.ensurePublished(ctx)
+				return
 			}
-
-			event := decodeCommandCodeStreamEvent(trimmed)
-			acc.feed(event)
-			switch event.kind {
-			case commandCodeEventTextDelta, commandCodeEventToolResult:
-				if event.text != "" {
-					emitChunk(commandCodeStreamChunk(chatID, baseModel, map[string]any{
-						"role":    "assistant",
-						"content": event.text,
-					}, ""))
-				}
-
-			case commandCodeEventToolCall:
-				emitChunk(commandCodeStreamChunk(chatID, baseModel, map[string]any{
-					"tool_calls": []map[string]any{
-						{
-							"index": toolCallIndex,
-							"id":    event.toolCallID,
-							"type":  "function",
-							"function": map[string]any{
-								"name":      event.toolName,
-								"arguments": string(event.toolInput),
-							},
-						},
-					},
-				}, ""))
-				toolCallIndex++
-
-			case commandCodeEventFinish, commandCodeEventAbort:
-				emitChunk(map[string]any{
-					"id":      chatID,
-					"object":  "chat.completion.chunk",
-					"created": time.Now().Unix(),
-					"model":   baseModel,
-					"choices": []map[string]any{
-						{
-							"index":         0,
-							"delta":         map[string]any{},
-							"finish_reason": acc.stopReason,
-						},
-					},
-					"usage": commandCodeOpenAIUsage(acc.usage()),
-				})
-				sendSSELine([]byte("data: [DONE]"))
-			}
-			if acc.terminal != commandCodeTerminalNone {
-				break
+			if err := ctx.Err(); err != nil {
+				return
 			}
 		}
-		if errScan := scanner.Err(); errScan != nil {
-			recordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.publishFailure(ctx)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
-			}
-			return
-		}
-		streamErr := acc.err
-		if streamErr == nil {
-			streamErr = acc.finishEOF()
-		}
-		if streamErr != nil {
-			recordAPIResponseError(ctx, e.cfg, streamErr)
-			reporter.publishFailure(ctx)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-			case <-ctx.Done():
-			}
-			return
-		}
-		reporter.ensurePublished(ctx)
 	}()
 
 	return &cliproxyexecutor.StreamResult{
-		Headers: httpResp.Header.Clone(),
+		Headers: nil,
 		Chunks:  out,
 	}, nil
 }
@@ -447,11 +242,18 @@ func commandCodeGenerateURL(auth *cliproxyauth.Auth) string {
 	return strings.TrimRight(baseURL, "/") + "/alpha/generate"
 }
 
-// applyCommandCodeHeaders sets the required CommandCode request headers.
-func applyCommandCodeHeaders(req *http.Request, apiKey string) {
+// applyCommandCodeHeaders sets the required CommandCode request headers. The
+// sessionID parameter is forwarded into the x-session-id header (matches the
+// installed command-code@1.12.0 client format sess_<16hex>) so the upstream
+// API can associate pause_turn continuation posts with the originating
+// session. Pass an empty string to omit the header.
+func applyCommandCodeHeaders(req *http.Request, apiKey string, sessionID string) {
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	if sessionID != "" {
+		req.Header.Set("x-session-id", sessionID)
 	}
 	req.Header.Set("x-command-code-version", commandCodeVersion)
 	req.Header.Set("x-cli-environment", "production")
