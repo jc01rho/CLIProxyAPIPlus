@@ -1,16 +1,18 @@
 package executor
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
 )
 
-// commandCodeEventKind tags every NDJSON event the command-code@1.6.0
+// commandCodeEventKind tags every NDJSON event the installed command-code@1.12.0
 // consumeStream parser recognizes, plus unknown and malformed fallbacks.
 type commandCodeEventKind int
 
@@ -59,7 +61,7 @@ type commandCodeWireEvent struct {
 	SystemPromptTokens int64                 `json:"systemPromptTokens"`
 	Usage              *commandCodeWireUsage `json:"usage"`
 	TotalUsage         *commandCodeWireUsage `json:"totalUsage"`
-	// Error stays raw: npm 1.6.0 (readStreamErrorEvent) allows the payload
+	// Error stays raw: npm 1.12.0 (readStreamErrorEvent) allows the payload
 	// to be either a quoted string or an object; a typed field here would
 	// fail the whole-line unmarshal on the string form.
 	Error              json.RawMessage       `json:"error"`
@@ -77,6 +79,7 @@ type commandCodeWireUsage struct {
 type commandCodeWireError struct {
 	Message    string `json:"message"`
 	StatusCode int    `json:"statusCode"`
+	IsRetryable *bool `json:"isRetryable"`
 }
 
 // commandCodeStreamEvent is one strictly decoded, tagged NDJSON event.
@@ -87,6 +90,7 @@ type commandCodeStreamEvent struct {
 	usage                                    commandCodeUsage
 	errMessage                               string
 	errStatus                                int
+	errRetryable                             bool
 	hasUsage                                 bool
 }
 
@@ -138,11 +142,12 @@ func decodeCommandCodeStreamEvent(line []byte) commandCodeStreamEvent {
 		return commandCodeStreamEvent{kind: commandCodeEventFinish, finishReason: wire.FinishReason, usage: usage, hasUsage: has}
 	case "error":
 		event := commandCodeStreamEvent{kind: commandCodeEventError, errStatus: http.StatusInternalServerError}
-		message, statusCode := decodeCommandCodeWireError(wire.Error)
+		message, statusCode, retryable := decodeCommandCodeWireError(wire.Error)
 		event.errMessage = message
 		if statusCode > 0 {
 			event.errStatus = statusCode
 		}
+		event.errRetryable = commandCodeIsStreamErrorRetryable(retryable, event.errStatus, message)
 		return event
 	case "abort":
 		return commandCodeStreamEvent{kind: commandCodeEventAbort}
@@ -151,31 +156,88 @@ func decodeCommandCodeStreamEvent(line []byte) commandCodeStreamEvent {
 	}
 }
 
-// decodeCommandCodeWireError unwraps the wire error payload, mirroring npm
-// 1.6.0 readStreamErrorEvent: a non-empty quoted string payload becomes the
-// message with no explicit status; an object payload contributes message and
-// statusCode; anything missing or unusable falls back to the generic
-// "Stream error" message with no explicit status (the caller defaults the
-// status to 500, as npm does via `e.statusCode ?? 500`).
-func decodeCommandCodeWireError(raw json.RawMessage) (message string, statusCode int) {
+// decodeCommandCodeWireError unwraps the wire error payload, mirroring the
+// installed command-code@1.12.0 readStreamErrorEvent: a non-empty quoted
+// string payload becomes the message with no explicit status; an object
+// payload contributes message, statusCode, and isRetryable; anything missing
+// or unusable falls back to the generic "Stream error" message with no
+// explicit status (the caller defaults the status to 500, as npm does via
+// `e.statusCode ?? 500`).
+func decodeCommandCodeWireError(raw json.RawMessage) (message string, statusCode int, isRetryable *bool) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) > 0 && trimmed[0] == '"' {
 		var text string
 		if err := json.Unmarshal(trimmed, &text); err == nil && text != "" {
-			return text, 0
+			return text, 0, nil
 		}
-		return "Stream error", 0
+		return "Stream error", 0, nil
 	}
 	if len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
 		var obj commandCodeWireError
 		if err := json.Unmarshal(trimmed, &obj); err == nil {
 			if obj.Message != "" {
-				return obj.Message, obj.StatusCode
+				return obj.Message, obj.StatusCode, obj.IsRetryable
 			}
-			return "Stream error", obj.StatusCode
+			return "Stream error", obj.StatusCode, obj.IsRetryable
 		}
 	}
-	return "Stream error", 0
+	return "Stream error", 0, nil
+}
+
+// commandCodeTerminalMarkers mirrors npm 1.12.0 hasTerminalMarker: message
+// fragments that mean the stream cannot be retried (credits/plan exhausted).
+var commandCodeTerminalMarkers = []string{
+	"premium_credits_exhausted",
+	"model_not_in_plan",
+	"insufficient credits",
+}
+
+// commandCodeHasTerminalMarker reports whether msg contains a terminal marker
+// that makes a stream error non-retryable.
+func commandCodeHasTerminalMarker(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, marker := range commandCodeTerminalMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// commandCodeIsStreamErrorRetryable mirrors npm 1.12.0 isStreamErrorRetryable:
+//   - an explicit isRetryable:true is retryable;
+//   - otherwise an explicit reported status is retryable iff it is 429 or 5xx;
+//   - otherwise it is retryable unless isRetryable is explicitly false or the
+//     message carries a terminal marker.
+func commandCodeIsStreamErrorRetryable(isRetryable *bool, reportedStatus int, message string) bool {
+	if isRetryable != nil && *isRetryable {
+		return true
+	}
+	if reportedStatus != 0 {
+		return commandCodeIsRetryableStatus(reportedStatus)
+	}
+	if isRetryable != nil && !*isRetryable {
+		return false
+	}
+	return !commandCodeHasTerminalMarker(message)
+}
+
+// commandCodeIsRetryableStatus mirrors npm 1.12.0 isRetryableStatus.
+func commandCodeIsRetryableStatus(status int) bool {
+	return status == http.StatusTooManyRequests || (status >= 500 && status <= 599)
+}
+// commandCodeEffectiveErrorStatus returns the status code the proxy should
+// surface for a stream error. Non-retryable stream errors (credits/plan
+// exhausted) map to 402 so the conductor treats them as a terminal quota
+// condition rather than a retryable failover.
+func commandCodeEffectiveErrorStatus(reported int, retryable bool, message string) int {
+	if !retryable && reported == 0 {
+		return http.StatusPaymentRequired
+	}
+	if reported == 0 {
+		return http.StatusInternalServerError
+	}
+	return reported
 }
 
 // commandCodeToolResultText renders a provider-executed tool-result output as
@@ -208,8 +270,9 @@ type commandCodeStreamAccumulator struct {
 	toolCalls                              []commandCodeToolCall
 	incremental, final                     commandCodeUsage
 	rawFinishReason, stopReason            string
-	err                                    error
-	terminal                               commandCodeTerminalKind
+	err                       error
+	errRetryable                          bool
+	terminal                  commandCodeTerminalKind
 	reasoningOpen, sawKnownEvent, hasFinal bool
 	// rawRetained holds a bounded prefix of the raw NDJSON body, kept only
 	// while no known event has been seen, so a legacy single-envelope JSON
@@ -271,13 +334,14 @@ func (a *commandCodeStreamAccumulator) feed(event commandCodeStreamEvent) {
 	case commandCodeEventError:
 		a.sawKnownEvent = true
 		a.terminal = commandCodeTerminalError
-		a.err = statusErr{code: event.errStatus, msg: fmt.Sprintf("commandcode: upstream stream error: %s", event.errMessage)}
+		a.err = statusErr{code: commandCodeEffectiveErrorStatus(event.errStatus, event.errRetryable, event.errMessage), msg: fmt.Sprintf("commandcode: upstream stream error: %s", event.errMessage)}
+		a.errRetryable = event.errRetryable
 	case commandCodeEventAbort:
 		a.sawKnownEvent = true
 		a.terminal = commandCodeTerminalAbort
 		a.stopReason = "stop"
 	case commandCodeEventMalformed:
-		// npm 1.6.0 consumeStream skips lines whose JSON.parse fails
+		// npm 1.12.0 consumeStream skips lines whose JSON.parse fails
 		// (try/catch -> continue) instead of aborting the stream. The line is
 		// already logged at debug level by decodeCommandCodeStreamEvent; a
 		// body with no recognized events at all still falls back to legacy
@@ -341,6 +405,57 @@ func (a *commandCodeStreamAccumulator) adoptLegacyText(text string) {
 	a.text.WriteString(text)
 	a.terminal = commandCodeTerminalFinish
 	a.stopReason = "stop"
+}
+// IsPauseTurn reports whether the accumulator terminated on an upstream
+// pause_turn finish reason, which the installed command-code@1.12.0 client
+// answers with a bounded continuation request instead of a final stop.
+func (a *commandCodeStreamAccumulator) IsPauseTurn() bool {
+	return a.terminal == commandCodeTerminalFinish && a.rawFinishReason == "pause_turn"
+}
+
+// commandCodeMaxContinuations mirrors the npm 1.12.0 pause_turn continuation
+// bound: the client re-posts up to this many additional times (6 total
+// completion sessions) before giving up on a long turn.
+const commandCodeMaxContinuations = 5
+
+// commandCodePauseFinishReason is the raw finish reason the wire sends to ask
+// the client to continue a long generation.
+const commandCodePauseFinishReason = "pause_turn"
+
+// newCommandCodeBodyScanner returns a scanner with a 50 MiB buffer,
+// matching the existing executor body scanning capacity.
+func newCommandCodeBodyScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(nil, 52_428_800)
+	return s
+}
+
+// merge folds a later completion session's accumulator into the master
+// accumulator used across the pause_turn continuation chain. Content, tool
+// calls, and usage are appended; the master terminal/stop/usage state is
+// replaced with the latest session's final state once the chain terminates.
+func (a *commandCodeStreamAccumulator) merge(other *commandCodeStreamAccumulator) {
+	if other == nil {
+		return
+	}
+	if other.text.Len() > 0 {
+		a.text.WriteString(other.text.String())
+	}
+	a.toolCalls = append(a.toolCalls, other.toolCalls...)
+	a.sawKnownEvent = a.sawKnownEvent || other.sawKnownEvent
+	a.incremental.inputTokens += other.incremental.inputTokens
+	a.incremental.outputTokens += other.incremental.outputTokens
+	a.incremental.cacheReadTokens += other.incremental.cacheReadTokens
+	a.incremental.cacheWriteTokens += other.incremental.cacheWriteTokens
+	a.terminal = other.terminal
+	a.rawFinishReason = other.rawFinishReason
+	a.stopReason = other.stopReason
+	a.err = other.err
+	a.errRetryable = other.errRetryable
+	if other.hasFinal {
+		a.final = other.final
+		a.hasFinal = true
+	}
 }
 
 // openAIToolCalls renders accumulated tool calls in OpenAI message shape.

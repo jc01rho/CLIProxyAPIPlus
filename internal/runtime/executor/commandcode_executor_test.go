@@ -102,8 +102,8 @@ func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T
 	if got := req.Header.Get("Authorization"); got != "Bearer user_test" {
 		t.Fatalf("Authorization = %q, want %q", got, "Bearer user_test")
 	}
-	if got := req.Header.Get("x-command-code-version"); got != "1.6.0" {
-		t.Fatalf("x-command-code-version = %q, want %q", got, "1.6.0")
+	if got := req.Header.Get("x-command-code-version"); got != "1.12.0" {
+		t.Fatalf("x-command-code-version = %q, want %q", got, "1.12.0")
 	}
 	if got := req.Header.Get("x-cli-environment"); got != "production" {
 		t.Fatalf("x-cli-environment = %q, want %q", got, "production")
@@ -119,6 +119,18 @@ func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T
 	}
 	if got := req.Header.Get("x-session-id"); got != "" {
 		t.Fatalf("x-session-id = %q, want empty header", got)
+	}
+	if got := req.Header.Get("x-oauth-token"); got != "" {
+		t.Fatalf("x-oauth-token = %q, want empty header", got)
+	}
+	if got := req.Header.Get("x-oauth-provider"); got != "" {
+		t.Fatalf("x-oauth-provider = %q, want empty header", got)
+	}
+	if got := req.Header.Get("x-oss-primary-provider"); got != "" {
+		t.Fatalf("x-oss-primary-provider = %q, want empty header", got)
+	}
+	if got := req.Header.Get("x-cmd-zdr"); got != "" {
+		t.Fatalf("x-cmd-zdr = %q, want empty header", got)
 	}
 }
 
