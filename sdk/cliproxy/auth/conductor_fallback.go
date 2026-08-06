@@ -252,6 +252,38 @@ func inferProvidersForUnregisteredOAuthAlias(modelName string) []string {
 	return util.GetProviderName(modelName)
 }
 
+type resolvedModelInfo struct {
+	actual  string
+	isAlias bool
+}
+
+// resolveActualModelName reports whether the supplied model name is an alias
+// registered through the global model registry, and if so returns the upstream
+// model that the alias resolves to. The (actual, isAlias=false) result means
+// the supplied name is a real upstream model rather than an alias, while the
+// empty (actual, isAlias=false) result means the model is unknown.
+func resolveActualModelName(modelName string) resolvedModelInfo {
+	trimmed := strings.TrimSpace(modelName)
+	if trimmed == "" {
+		return resolvedModelInfo{}
+	}
+	info := registry.LookupModelInfo(trimmed)
+	if info == nil {
+		return resolvedModelInfo{}
+	}
+	if alias := strings.TrimSpace(info.Alias); alias != "" && !strings.EqualFold(alias, trimmed) {
+		target := strings.TrimSpace(info.ExecutionTarget)
+		if target == "" {
+			target = strings.TrimSpace(info.ID)
+		}
+		if target == "" {
+			target = alias
+		}
+		return resolvedModelInfo{actual: target, isAlias: true}
+	}
+	return resolvedModelInfo{actual: trimmed, isAlias: false}
+}
+
 func logRouteModelFallbackResult(ctx context.Context, originalModel, fallbackModel, source string, triggerErr, resultErr error, startedAt time.Time) {
 	fields := log.Fields{
 		"requested_model":         strings.TrimSpace(originalModel),
@@ -314,6 +346,14 @@ func (m *Manager) executeWithRouteFallback(
 		}
 		attempted[fallbackModel] = struct{}{}
 		source := m.fallbackSourceForModel(originalModel, fallbackModel)
+		resolvedActual := resolveActualModelName(fallbackModel)
+		logEntryWithRequestID(ctx).WithFields(log.Fields{
+			"requested_model":         strings.TrimSpace(originalModel),
+			"fallback_model":          strings.TrimSpace(fallbackModel),
+			"fallback_actual_model":   resolvedActual.actual,
+			"fallback_model_is_alias": resolvedActual.isAlias,
+			"fallback_source":         strings.TrimSpace(source),
+		}).Infof("fallback chain activated: %s -> %s via %s", originalModel, fallbackModel, source)
 		startedAt := time.Now()
 		fallbackReq := req
 		fallbackReq.Model = fallbackModel
