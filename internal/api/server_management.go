@@ -203,6 +203,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/antigravity-auth-url", s.mgmt.RequestAntigravityToken)
 		mgmt.GET("/kimi-auth-url", s.mgmt.RequestKimiToken)
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
+		mgmt.GET("/cline-auth-url", s.mgmt.RequestClineToken)
 		mgmt.POST("/gitlab-pat", s.mgmt.RequestGitLabPATToken)
 		mgmt.GET("/copilot-quota", s.mgmt.GetCopilotQuota)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
