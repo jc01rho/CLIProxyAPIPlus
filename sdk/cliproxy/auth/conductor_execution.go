@@ -284,7 +284,7 @@ func logProviderFallbackRetry(ctx context.Context, provider, model string, err e
 	}
 	entry := logEntryWithRequestID(ctx)
 	provider = strings.TrimPrefix(provider, "openai-compatible-")
-	entry.Warnf("provider %s failed with upstream status %d for model %s; retrying with another untried provider", provider, statusCode, strings.TrimSpace(model))
+	entry.Infof("provider %s failed with upstream status %d for model %s; retrying with another untried provider", provider, statusCode, strings.TrimSpace(model))
 }
 
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (cliproxyexecutor.Response, error) {
@@ -409,6 +409,16 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			m.rememberSessionModelAffinityForKeys(affinityKeys, upstreamModel, pooled)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
+			if routeModel != upstreamModel {
+				resolvedActual := resolveActualModelName(routeModel)
+				logEntryWithRequestID(execCtx).WithFields(log.Fields{
+					"requested_model":         strings.TrimSpace(routeModel),
+					"selected_actual_model":   strings.TrimSpace(upstreamModel),
+					"selected_model_is_alias": resolvedActual.isAlias,
+					"resolved_alias_target":   resolvedActual.actual,
+					"selected_provider":       strings.TrimPrefix(strings.TrimSpace(provider), "openai-compatible-"),
+				}).Infof("provider-level fallback selected alias-resolved model: %s -> %s", routeModel, upstreamModel)
+			}
 			return resp, nil
 		}
 		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
@@ -561,6 +571,16 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			m.rememberSessionModelAffinityForKeys(affinityKeys, upstreamModel, pooled)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
+			if routeModel != upstreamModel {
+				resolvedActual := resolveActualModelName(routeModel)
+				logEntryWithRequestID(execCtx).WithFields(log.Fields{
+					"requested_model":         strings.TrimSpace(routeModel),
+					"selected_actual_model":   strings.TrimSpace(upstreamModel),
+					"selected_model_is_alias": resolvedActual.isAlias,
+					"resolved_alias_target":   resolvedActual.actual,
+					"selected_provider":       strings.TrimPrefix(strings.TrimSpace(provider), "openai-compatible-"),
+				}).Infof("provider-level fallback selected alias-resolved model: %s -> %s", routeModel, upstreamModel)
+			}
 			return resp, nil
 		}
 		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
