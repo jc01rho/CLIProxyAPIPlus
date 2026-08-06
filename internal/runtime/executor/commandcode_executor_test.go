@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"strings"
@@ -96,7 +97,7 @@ func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T
 	}
 
 	// When
-	applyCommandCodeHeaders(req, "user_test")
+	applyCommandCodeHeaders(req, "user_test", "sess_0123456789abcdef")
 
 	// Then
 	if got := req.Header.Get("Authorization"); got != "Bearer user_test" {
@@ -117,8 +118,8 @@ func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T
 	if got := req.Header.Get("x-co-flag"); got != "false" {
 		t.Fatalf("x-co-flag = %q, want %q", got, "false")
 	}
-	if got := req.Header.Get("x-session-id"); got != "" {
-		t.Fatalf("x-session-id = %q, want empty header", got)
+	if got := req.Header.Get("x-session-id"); got != "sess_0123456789abcdef" {
+		t.Fatalf("x-session-id = %q, want %q", got, "sess_0123456789abcdef")
 	}
 	if got := req.Header.Get("x-oauth-token"); got != "" {
 		t.Fatalf("x-oauth-token = %q, want empty header", got)
@@ -131,6 +132,52 @@ func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T
 	}
 	if got := req.Header.Get("x-cmd-zdr"); got != "" {
 		t.Fatalf("x-cmd-zdr = %q, want empty header", got)
+	}
+}
+
+func Test_ApplyCommandCodeHeaders_omits_session_id_when_empty(t *testing.T) {
+	// Given
+	req, err := http.NewRequest(http.MethodPost, "https://api.commandcode.ai/alpha/generate", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+
+	// When
+	applyCommandCodeHeaders(req, "user_test", "")
+
+	// Then
+	if got := req.Header.Get("x-session-id"); got != "" {
+		t.Fatalf("x-session-id = %q, want empty header when sessionID is empty", got)
+	}
+}
+
+func Test_NewCommandCodeSessionID_matches_sess_hex16_format(t *testing.T) {
+	// Given / When
+	got := newCommandCodeSessionID()
+
+	// Then
+	if len(got) != len("sess_0123456789abcdef") {
+		t.Fatalf("session ID length = %d, want %d (got %q)", len(got), len("sess_0123456789abcdef"), got)
+	}
+	if !strings.HasPrefix(got, "sess_") {
+		t.Fatalf("session ID %q missing sess_ prefix", got)
+	}
+	if _, err := hex.DecodeString(got[len("sess_"):]); err != nil {
+		t.Fatalf("session ID %q suffix is not valid hex: %v", got, err)
+	}
+}
+
+func Test_NewCommandCodeSessionID_returns_unique_values(t *testing.T) {
+	// Given / When
+	seen := make(map[string]struct{})
+	for i := 0; i < 64; i++ {
+		seen[newCommandCodeSessionID()] = struct{}{}
+	}
+
+	// Then: 64 random IDs should be unique (collision probability is
+	// negligible for 8-byte random IDs).
+	if len(seen) != 64 {
+		t.Fatalf("unique session IDs = %d, want 64", len(seen))
 	}
 }
 

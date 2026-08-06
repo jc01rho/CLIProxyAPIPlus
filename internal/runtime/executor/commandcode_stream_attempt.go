@@ -41,6 +41,7 @@ type commandCodeAttemptContext struct {
 	reporter       *usageReporter
 	chatID         string
 	toolCallOffset int
+	sessionID      string
 }
 
 // commandCodeStreamOneAttempt posts one /alpha/generate request and scans its
@@ -60,7 +61,7 @@ func commandCodeStreamOneAttempt(
 	if err != nil {
 		return nil, err
 	}
-	applyCommandCodeHeaders(httpReq, apiKey)
+	applyCommandCodeHeaders(httpReq, apiKey, attemptCtx.sessionID)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
