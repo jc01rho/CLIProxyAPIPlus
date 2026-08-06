@@ -49,7 +49,7 @@ func (e *CommandCodeExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	}
 	httpReq := req.WithContext(ctx)
 	apiKey := commandCodeAPIKey(auth)
-	applyCommandCodeHeaders(httpReq, apiKey)
+	applyCommandCodeHeaders(httpReq, apiKey, newCommandCodeSessionID())
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -173,6 +173,7 @@ func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		out:      out,
 		reporter: reporter,
 		chatID:   chatID,
+		sessionID: newCommandCodeSessionID(),
 	}
 
 	go func() {
@@ -241,11 +242,18 @@ func commandCodeGenerateURL(auth *cliproxyauth.Auth) string {
 	return strings.TrimRight(baseURL, "/") + "/alpha/generate"
 }
 
-// applyCommandCodeHeaders sets the required CommandCode request headers.
-func applyCommandCodeHeaders(req *http.Request, apiKey string) {
+// applyCommandCodeHeaders sets the required CommandCode request headers. The
+// sessionID parameter is forwarded into the x-session-id header (matches the
+// installed command-code@1.12.0 client format sess_<16hex>) so the upstream
+// API can associate pause_turn continuation posts with the originating
+// session. Pass an empty string to omit the header.
+func applyCommandCodeHeaders(req *http.Request, apiKey string, sessionID string) {
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	if sessionID != "" {
+		req.Header.Set("x-session-id", sessionID)
 	}
 	req.Header.Set("x-command-code-version", commandCodeVersion)
 	req.Header.Set("x-cli-environment", "production")
