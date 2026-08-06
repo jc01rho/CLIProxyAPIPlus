@@ -356,15 +356,15 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	}
 
 	state := ensureModelState(auth, model)
-	state.Unavailable = true
-	state.Status = StatusError
-	state.NextRetryAfter = record.NextRetryAfter
-	state.Quota = quota
-	state.UpdatedAt = updatedAt
-	if reason != "" {
-		state.StatusMessage = reason
-	}
-	state.LastError = cloneError(record.LastError)
+	mergeModelState(state, &ModelState{
+		Unavailable:    true,
+		Status:         StatusError,
+		StatusMessage:  reason,
+		NextRetryAfter: record.NextRetryAfter,
+		Quota:          quota,
+		LastError:      cloneError(record.LastError),
+		UpdatedAt:      updatedAt,
+	})
 	updateAggregatedAvailability(auth, now)
 	return true
 }
@@ -507,7 +507,7 @@ func modelsForRegisteredAuth(authID string) []string {
 		if supportedModel == nil || strings.TrimSpace(supportedModel.ID) == "" {
 			continue
 		}
-		models = append(models, supportedModel.ID)
+		models = append(models, canonicalModelKey(supportedModel.ID))
 	}
 	return models
 }
@@ -696,6 +696,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if result.AuthID == "" {
 		return
 	}
+	modelKey := canonicalModelKey(result.Model)
 
 	shouldResumeModel := false
 	shouldSuspendModel := false
@@ -721,8 +722,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 
 		if result.Success {
-			if result.Model != "" {
-				state := ensureModelState(auth, result.Model)
+			if modelKey != "" {
+				state := ensureModelState(auth, modelKey)
 				resetModelState(state, now)
 				updateAggregatedAvailability(auth, now)
 				if !hasModelError(auth, now) {
@@ -737,10 +738,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				clearAuthStateOnSuccess(auth, now)
 			}
 		} else {
-			if result.Model != "" {
+			if modelKey != "" {
 				if !isRequestScopedResultError(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)
-					state := ensureModelState(auth, result.Model)
+					state := ensureModelState(auth, modelKey)
 					state.Unavailable = true
 					state.Status = StatusError
 					state.UpdatedAt = now
@@ -867,16 +868,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		m.persistCooldownStates(context.Background())
 	}
 
-	if clearModelQuota && result.Model != "" {
-		registry.GetGlobalRegistry().ClearModelQuotaExceeded(result.AuthID, result.Model)
+	if clearModelQuota && modelKey != "" {
+		registry.GetGlobalRegistry().ClearModelQuotaExceeded(result.AuthID, modelKey)
 	}
-	if setModelQuota && result.Model != "" {
-		registry.GetGlobalRegistry().SetModelQuotaExceeded(result.AuthID, result.Model)
+	if setModelQuota && modelKey != "" {
+		registry.GetGlobalRegistry().SetModelQuotaExceeded(result.AuthID, modelKey)
 	}
 	if shouldResumeModel {
-		registry.GetGlobalRegistry().ResumeClientModel(result.AuthID, result.Model)
+		registry.GetGlobalRegistry().ResumeClientModel(result.AuthID, modelKey)
 	} else if shouldSuspendModel {
-		registry.GetGlobalRegistry().SuspendClientModel(result.AuthID, result.Model, suspendReason)
+		registry.GetGlobalRegistry().SuspendClientModel(result.AuthID, modelKey, suspendReason)
 	}
 
 	m.hook.OnResult(ctx, result)
@@ -929,9 +930,11 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 }
 
 func ensureModelState(auth *Auth, model string) *ModelState {
+	model = canonicalModelKey(model)
 	if auth == nil || model == "" {
 		return nil
 	}
+	normalizeModelStates(auth)
 	if auth.ModelStates == nil {
 		auth.ModelStates = make(map[string]*ModelState)
 	}
@@ -941,6 +944,91 @@ func ensureModelState(auth *Auth, model string) *ModelState {
 	state := &ModelState{Status: StatusActive}
 	auth.ModelStates[model] = state
 	return state
+}
+
+func normalizeModelStates(auth *Auth) bool {
+	if auth == nil || len(auth.ModelStates) == 0 {
+		return false
+	}
+	normalized := make(map[string]*ModelState, len(auth.ModelStates))
+	changed := false
+	for model, state := range auth.ModelStates {
+		modelKey := canonicalModelKey(model)
+		if modelKey == "" {
+			modelKey = strings.TrimSpace(model)
+		}
+		if modelKey != model {
+			changed = true
+		}
+		if existing, ok := normalized[modelKey]; ok {
+			normalized[modelKey] = mergeModelState(existing, state)
+			changed = true
+			continue
+		}
+		normalized[modelKey] = state
+	}
+	if changed {
+		auth.ModelStates = normalized
+	}
+	return changed
+}
+
+func mergeModelState(target, source *ModelState) *ModelState {
+	if target == nil {
+		return source
+	}
+	if source == nil {
+		return target
+	}
+
+	preferred := target
+	fallback := source
+	if source.UpdatedAt.After(target.UpdatedAt) {
+		preferred = source
+		fallback = target
+	}
+	merged := ModelState{
+		Status:         preferred.Status,
+		StatusMessage:  preferred.StatusMessage,
+		Unavailable:    target.Unavailable || source.Unavailable,
+		NextRetryAfter: target.NextRetryAfter,
+		LastError:      cloneError(preferred.LastError),
+		Quota: QuotaState{
+			Exceeded:      target.Quota.Exceeded || source.Quota.Exceeded,
+			Reason:        preferred.Quota.Reason,
+			NextRecoverAt: target.Quota.NextRecoverAt,
+			BackoffLevel:  target.Quota.BackoffLevel,
+		},
+		UpdatedAt: target.UpdatedAt,
+	}
+	if source.NextRetryAfter.After(merged.NextRetryAfter) {
+		merged.NextRetryAfter = source.NextRetryAfter
+	}
+	if source.Quota.NextRecoverAt.After(merged.Quota.NextRecoverAt) {
+		merged.Quota.NextRecoverAt = source.Quota.NextRecoverAt
+	}
+	if source.Quota.BackoffLevel > merged.Quota.BackoffLevel {
+		merged.Quota.BackoffLevel = source.Quota.BackoffLevel
+	}
+	if source.UpdatedAt.After(merged.UpdatedAt) {
+		merged.UpdatedAt = source.UpdatedAt
+	}
+	if merged.StatusMessage == "" {
+		merged.StatusMessage = fallback.StatusMessage
+	}
+	if merged.LastError == nil {
+		merged.LastError = cloneError(fallback.LastError)
+	}
+	if merged.Quota.Reason == "" {
+		merged.Quota.Reason = fallback.Quota.Reason
+	}
+	if target.Status == StatusDisabled || source.Status == StatusDisabled {
+		merged.Status = StatusDisabled
+	} else if merged.Unavailable || merged.Quota.Exceeded {
+		merged.Status = StatusError
+	}
+	*target = merged
+	return target
 }
 
 func resetModelState(state *ModelState, now time.Time) {
