@@ -1,5 +1,5 @@
 // commandcode_request.go converts a normalized OpenAI chat-completions payload
-// into the CommandCode /alpha/generate wire envelope of command-code@1.6.0.
+// into the CommandCode /alpha/generate wire envelope of command-code@1.12.0.
 // The payload is parsed once into typed values at this boundary; conversion
 // never passes map[string]any across it, and unsupported shapes fail instead
 // of being silently flattened.
