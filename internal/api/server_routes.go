@@ -252,6 +252,38 @@ func sanitizeCodexAlphaSearchBody(body []byte) []byte {
 	return sanitizedBody
 }
 
+// rewriteCodexAlphaSearchModel replaces the top-level model field with the
+// credential-resolved upstream model before the request is forwarded.
+func rewriteCodexAlphaSearchModel(body []byte, upstreamModel string) []byte {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel == "" {
+		return body
+	}
+
+	var payload map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(body, &payload); errUnmarshal != nil || payload == nil {
+		return body
+	}
+	if _, exists := payload["model"]; !exists {
+		return body
+	}
+
+	modelJSON, errMarshalModel := json.Marshal(upstreamModel)
+	if errMarshalModel != nil {
+		return body
+	}
+	if string(payload["model"]) == string(modelJSON) {
+		return body
+	}
+
+	payload["model"] = modelJSON
+	rewrittenBody, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		return body
+	}
+	return rewrittenBody
+}
+
 func homeSelectionAttemptContext(ctx context.Context, selection *auth.HomeDispatchSelection) (context.Context, func(), error) {
 	if selection == nil {
 		return nil, func() {}, errors.New("Home dispatch selection is nil")
@@ -343,12 +375,19 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	}
 
 	errMissingBaseURL := errors.New("Codex Alpha Search API key base URL unavailable")
+	routeModel := strings.TrimSpace(selectionModel)
+	if routeModel == "" {
+		routeModel = strings.TrimSpace(routing.Model)
+	}
 	performRequest := func(current *auth.Auth) (*http.Response, error) {
 		headers := baseHeaders.Clone()
 		if accountID, ok := current.Metadata["account_id"].(string); ok && strings.TrimSpace(accountID) != "" {
 			headers.Set("Chatgpt-Account-Id", accountID)
 		}
 		upstreamURL := "https://chatgpt.com/backend-api/codex/alpha/search"
+		requestBody := upstreamRequestBody
+		// API-key Alpha Search reuses normal credential-aware model resolution so
+		// CPA routing prefixes and model aliases are not forwarded upstream.
 		if current.AuthKind() == auth.AuthKindAPIKey {
 			baseURL := ""
 			if current.Attributes != nil {
@@ -358,8 +397,11 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 				return nil, errMissingBaseURL
 			}
 			upstreamURL = strings.TrimRight(baseURL, "/") + "/alpha/search"
+			if upstreamModel := s.handlers.AuthManager.ResolveExecutionModel(current, routeModel); upstreamModel != "" {
+				requestBody = rewriteCodexAlphaSearchModel(upstreamRequestBody, upstreamModel)
+			}
 		}
-		req, errRequest := s.handlers.AuthManager.NewHttpRequest(ctx, current, http.MethodPost, upstreamURL, upstreamRequestBody, headers)
+		req, errRequest := s.handlers.AuthManager.NewHttpRequest(ctx, current, http.MethodPost, upstreamURL, requestBody, headers)
 		if errRequest != nil {
 			return nil, errRequest
 		}
@@ -368,7 +410,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 			URL:       upstreamURL,
 			Method:    http.MethodPost,
 			Headers:   req.Header.Clone(),
-			Body:      upstreamRequestBody,
+			Body:      requestBody,
 			Provider:  "codex",
 			AuthID:    current.ID,
 			AuthLabel: current.Label,
