@@ -18,6 +18,7 @@ import (
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/client/grokbuild"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -269,7 +270,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 16<<20))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read search request"})
+		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest), gin.H{"error": "Failed to read search request"})
 		return
 	}
 
@@ -288,7 +289,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	selectionModel, errRoute := s.codexAlphaSearchSelectionModel(ctx, c, body, strings.TrimSpace(routing.Model))
 	if errRoute != nil {
 		log.WithError(errRoute).Warn("codex alpha search: model router returned an unsupported target")
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": errRoute.Error()})
+		c.JSON(clienterror.HTTPStatusFromErrorOr(errRoute, http.StatusServiceUnavailable), gin.H{"error": errRoute.Error()})
 		return
 	}
 	selectionOpts := coreexecutor.Options{Headers: selectionHeaders, OriginalRequest: body}
@@ -303,10 +304,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		selected, err = s.handlers.AuthManager.SelectAuthWithCredentialPolicy(ctx, "codex", selectionModel, auth.CredentialPolicyCodexAlphaSearchV1, selectionOpts)
 	}
 	if err != nil {
-		status := http.StatusServiceUnavailable
-		if statusError, ok := err.(interface{ StatusCode() int }); ok && statusError.StatusCode() > 0 {
-			status = statusError.StatusCode()
-		}
+		status := clienterror.HTTPStatusFromErrorOr(err, http.StatusServiceUnavailable)
 		for _, value := range auth.SafeResponseHeaders(err).Values("Retry-After") {
 			c.Writer.Header().Add("Retry-After", value)
 		}
@@ -384,7 +382,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		if selection != nil {
 			selection.End("attempt_canceled")
 		}
-		c.JSON(http.StatusRequestTimeout, gin.H{"error": errCtx.Error()})
+		c.JSON(clienterror.HTTPStatusFromErrorOr(errCtx, http.StatusRequestTimeout), gin.H{"error": errCtx.Error()})
 		return
 	}
 	resp, err := performRequest(selected)
@@ -400,7 +398,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 			selection.End("request_failed")
 		}
 		helps.RecordAPIResponseError(ctx, s.cfg, err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": err.Error()})
 		return
 	}
 	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
@@ -413,11 +411,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		refreshed, didRefresh, errRefresh := s.handlers.AuthManager.RefreshHomeSelectionAfterUnauthorized(ctx, selection, selected)
 		if errRefresh != nil {
 			selection.End("refresh_failed")
-			status := http.StatusServiceUnavailable
-			if statusError, ok := errRefresh.(interface{ StatusCode() int }); ok && statusError.StatusCode() > 0 {
-				status = statusError.StatusCode()
-			}
-			c.JSON(status, gin.H{"error": errRefresh.Error()})
+			c.JSON(clienterror.HTTPStatusFromErrorOr(errRefresh, http.StatusServiceUnavailable), gin.H{"error": errRefresh.Error()})
 			return
 		}
 		if !didRefresh || refreshed == nil {
@@ -436,7 +430,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 			}
 			selection.End("retry_failed")
 			helps.RecordAPIResponseError(ctx, s.cfg, err)
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": err.Error()})
 			return
 		}
 		if resp.StatusCode == http.StatusUnauthorized {
@@ -464,7 +458,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	upstreamBody, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, s.cfg, err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read Codex search response"})
+		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": "Failed to read Codex search response"})
 		return
 	}
 	helps.AppendAPIResponseChunk(ctx, s.cfg, upstreamBody)
