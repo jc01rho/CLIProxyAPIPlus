@@ -163,6 +163,85 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ResponseCompleted
 	}
 }
 
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_FinalizesOpenMessageAtStreamEnd(t *testing.T) {
+	t.Parallel()
+
+	request := []byte(`{"model":"gpt-5.4"}`)
+	tests := []struct {
+		name  string
+		chunk string
+	}{
+		{
+			name:  "missing finish reason",
+			chunk: `data: {"id":"resp_missing_finish_reason","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}`,
+		},
+		{
+			name:  "null finish reason",
+			chunk: `data: {"id":"resp_null_finish_reason","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var param any
+			var events []string
+			var textDone gjson.Result
+			var partDone gjson.Result
+			var itemDone gjson.Result
+			var completed gjson.Result
+
+			for _, line := range []string{tt.chunk, `data: [DONE]`} {
+				for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "model", request, request, []byte(line), &param) {
+					event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+					events = append(events, event)
+					switch event {
+					case "response.output_text.done":
+						textDone = data
+					case "response.content_part.done":
+						partDone = data
+					case "response.output_item.done":
+						itemDone = data
+					case "response.completed":
+						completed = data
+					}
+				}
+			}
+
+			wantEvents := []string{
+				"response.created",
+				"response.in_progress",
+				"response.output_item.added",
+				"response.content_part.added",
+				"response.output_text.delta",
+				"response.output_text.done",
+				"response.content_part.done",
+				"response.output_item.done",
+				"response.completed",
+			}
+			if len(events) != len(wantEvents) {
+				t.Fatalf("events = %v, want %v", events, wantEvents)
+			}
+			for i := range wantEvents {
+				if events[i] != wantEvents[i] {
+					t.Fatalf("event %d = %q, want %q; events = %v", i, events[i], wantEvents[i], events)
+				}
+			}
+			if got := textDone.Get("text").String(); got != "hello" {
+				t.Fatalf("output_text.done text = %q, want hello", got)
+			}
+			if got := partDone.Get("part.text").String(); got != "hello" {
+				t.Fatalf("content_part.done text = %q, want hello", got)
+			}
+			if got := itemDone.Get("item.content.0.text").String(); got != "hello" {
+				t.Fatalf("output_item.done text = %q, want hello", got)
+			}
+			if got := completed.Get("response.status").String(); got != "completed" {
+				t.Fatalf("response.completed status = %q, want completed", got)
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_MultipleToolCallsRemainSeparate(t *testing.T) {
 	in := []string{
 		`data: {"id":"resp_test","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}`,
