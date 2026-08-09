@@ -268,6 +268,9 @@ func TestGetRequestDetails_NoFallbackConfigReturnsError(t *testing.T) {
 	providers, model, errMsg := handler.getRequestDetails("gpt-5.5")
 	if errMsg == nil {
 		t.Fatalf("expected error for unknown model with no fallback, got providers=%v model=%q", providers, model)
+	}
+}
+
 // TestGetRequestDetails_UnknownModelErrorResistsJSONInjection pins the unroutable
 // model error body against client-controlled model names. The name is echoed into
 // the body, so formatting it into a JSON literal would let a caller corrupt the

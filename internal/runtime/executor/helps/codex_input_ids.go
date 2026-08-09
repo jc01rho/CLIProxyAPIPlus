@@ -6,22 +6,24 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 const (
-	codexInputItemIDLimit         = 64
-	codexMessageItemIDPrefix      = "msg"
-	codexReasoningItemIDPrefix    = "rs"
-	codexFunctionCallItemIDPrefix = "fc"
+	codexInputItemIDLimit           = 64
+	codexMessageItemIDPrefix        = "msg"
+	codexReasoningItemIDPrefix      = "rs"
+	codexFunctionCallItemIDPrefix   = "fc"
+	codexCustomToolCallItemIDPrefix = "ctc"
 )
 
 // SanitizeCodexInputItemIDs normalizes supported input item IDs for Codex, removes encrypted
 // reasoning items whose IDs exceed the Codex limit, and deterministically shortens
 // other overlong input item IDs.
 func SanitizeCodexInputItemIDs(body []byte) []byte {
-	input := gjson.GetBytes(body, "input")
+	input := util.GetGJSONBytesNoCopy(body, "input")
 	if !input.IsArray() {
 		return body
 	}
@@ -102,6 +104,8 @@ func normalizeCodexInputItemID(item gjson.Result, id string) string {
 		prefix = codexReasoningItemIDPrefix
 	case "function_call":
 		prefix = codexFunctionCallItemIDPrefix
+	case "custom_tool_call":
+		prefix = codexCustomToolCallItemIDPrefix
 	default:
 		return id
 	}

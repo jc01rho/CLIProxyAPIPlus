@@ -24,7 +24,7 @@ import (
 func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte {
 	rawJSON := inputRawJSON
 	// Fast path: if no contents field, only attach safety settings
-	contents := gjson.GetBytes(rawJSON, "contents")
+	contents := util.GetGJSONBytesNoCopy(rawJSON, "contents")
 	if !contents.Exists() {
 		return common.AttachDefaultSafetySettings(rawJSON, "safetySettings")
 	}
