@@ -8,6 +8,8 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+var benchmarkSanitizeCodexInputItemIDsOutput []byte
+
 func TestSanitizeCodexInputItemIDsBoundaries(t *testing.T) {
 	id64 := strings.Repeat("a", 64)
 	id65 := strings.Repeat("b", 65)
@@ -89,6 +91,16 @@ func TestSanitizeCodexInputItemIDsNormalizesResponseItemIDs(t *testing.T) {
 
 	if second := SanitizeCodexInputItemIDs(body); string(second) != string(got) {
 		t.Fatalf("normalization is not deterministic: first=%s second=%s", got, second)
+	}
+}
+
+func TestSanitizeCodexInputItemIDsNormalizesCustomToolCallIDs(t *testing.T) {
+	const invalidID = "item_44e13caebc1ddf25f1337cbe"
+	body := []byte(`{"input":[{"type":"custom_tool_call","id":"` + invalidID + `","call_id":"call-1","name":"lookup","input":"{}"}]}`)
+
+	got := SanitizeCodexInputItemIDs(body)
+	if actual := gjson.GetBytes(got, "input.0.id").String(); actual != "ctc_"+invalidID {
+		t.Fatalf("custom_tool_call ID = %q, want ctc-prefixed ID", actual)
 	}
 }
 
@@ -178,5 +190,15 @@ func TestSanitizeCodexInputItemIDsLeavesUnsupportedPayloadsUnchanged(t *testing.
 		if got := string(SanitizeCodexInputItemIDs(body)); got != string(body) {
 			t.Fatalf("payload changed: got=%q want=%q", got, body)
 		}
+	}
+}
+
+func BenchmarkSanitizeCodexInputItemIDsLargeNoopPayload(b *testing.B) {
+	body := []byte(`{"input":[{"type":"message","id":"msg_1","role":"user","content":"` + strings.Repeat("x", 8<<20) + `"}]}`)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for b.Loop() {
+		benchmarkSanitizeCodexInputItemIDsOutput = SanitizeCodexInputItemIDs(body)
 	}
 }
