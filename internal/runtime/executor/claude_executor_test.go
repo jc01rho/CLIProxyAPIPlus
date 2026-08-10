@@ -4541,7 +4541,10 @@ func TestRemapOAuthToolNames_AllClientNamesUseMCPAliases(t *testing.T) {
 				t.Fatalf("reverseMap = %v, want %q -> %q", reverseMap, alias, original)
 			}
 			resp := []byte(`{"content":[{"type":"tool_use","id":"toolu_01","name":` + fmt.Sprintf("%q", alias) + `,"input":{}}]}`)
-			reversed := reverseRemapOAuthToolNames(resp, reverseMap)
+			reversed, errReverse := reverseRemapOAuthToolNames(resp, reverseMap)
+			if errReverse != nil {
+				t.Fatalf("reverseRemapOAuthToolNames() error = %v", errReverse)
+			}
 			if got := gjson.GetBytes(reversed, "content.0.name").String(); got != original {
 				t.Fatalf("content.0.name = %q, want %q", got, original)
 			}
@@ -4640,7 +4643,10 @@ func TestRemapOAuthToolNames_AllClientToolsAsMCP(t *testing.T) {
 		{"type":"tool_reference","tool_name":%q},
 		{"type":"tool_result","tool_use_id":"toolu_unknown","content":[{"type":"tool_reference","tool_name":%q}]}
 	]}`, searchAlias, caseAlias, searchAlias))
-	restored := reverseRemapOAuthToolNames(response, reverseMap)
+	restored, errReverse := reverseRemapOAuthToolNames(response, reverseMap)
+	if errReverse != nil {
+		t.Fatalf("reverseRemapOAuthToolNames() error = %v", errReverse)
+	}
 	if got := gjson.GetBytes(restored, "content.0.name").String(); got != "search_web" {
 		t.Fatalf("restored tool_use.name = %q, want search_web", got)
 	}
@@ -4652,7 +4658,10 @@ func TestRemapOAuthToolNames_AllClientToolsAsMCP(t *testing.T) {
 	}
 
 	streamLine := []byte(fmt.Sprintf(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_unknown","name":%q,"input":{}}}`, searchAlias))
-	restoredLine := reverseRemapOAuthToolNamesFromStreamLine(streamLine, reverseMap)
+	restoredLine, errReverse := reverseRemapOAuthToolNamesFromStreamLine(streamLine, reverseMap)
+	if errReverse != nil {
+		t.Fatalf("reverseRemapOAuthToolNamesFromStreamLine() error = %v", errReverse)
+	}
 	if got := gjson.GetBytes(helps.JSONPayload(restoredLine), "content_block.name").String(); got != "search_web" {
 		t.Fatalf("restored stream name = %q, want search_web: %s", got, restoredLine)
 	}
@@ -4753,7 +4762,10 @@ func TestRemapOAuthToolNames_SemanticAliasRestoresLongOriginal(t *testing.T) {
 		t.Fatalf("semantic alias is not stable across requests: %q != %q", got, alias)
 	}
 	response := []byte(`{"content":[{"type":"tool_use","id":"toolu_1","name":` + fmt.Sprintf("%q", alias) + `,"input":{}}]}`)
-	restored := reverseRemapOAuthToolNames(response, reverseMap)
+	restored, errReverse := reverseRemapOAuthToolNames(response, reverseMap)
+	if errReverse != nil {
+		t.Fatalf("reverseRemapOAuthToolNames() error = %v", errReverse)
+	}
 	if got := gjson.GetBytes(restored, "content.0.name").String(); got != original {
 		t.Fatalf("restored tool name = %q, want exact original %q", got, original)
 	}
@@ -4831,7 +4843,10 @@ func TestReverseRemapOAuthToolNamesFromStreamLine_HonorsPerRequestMap(t *testing
 
 	// Bash block was never renamed, must pass through as-is.
 	bashLine := []byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"Bash","input":{}}}`)
-	out := reverseRemapOAuthToolNamesFromStreamLine(bashLine, reverseMap)
+	out, errReverse := reverseRemapOAuthToolNamesFromStreamLine(bashLine, reverseMap)
+	if errReverse != nil {
+		t.Fatalf("reverseRemapOAuthToolNamesFromStreamLine() error = %v", errReverse)
+	}
 	if !bytes.Contains(out, []byte(`"name":"Bash"`)) {
 		t.Fatalf("Bash should be preserved, got: %s", string(out))
 	}
@@ -4841,7 +4856,10 @@ func TestReverseRemapOAuthToolNamesFromStreamLine_HonorsPerRequestMap(t *testing
 
 	// Glob block IS in the reverseMap, must be restored to `glob`.
 	globLine := []byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_02","name":"Glob","input":{}}}`)
-	out = reverseRemapOAuthToolNamesFromStreamLine(globLine, reverseMap)
+	out, errReverse = reverseRemapOAuthToolNamesFromStreamLine(globLine, reverseMap)
+	if errReverse != nil {
+		t.Fatalf("reverseRemapOAuthToolNamesFromStreamLine() error = %v", errReverse)
+	}
 	if !bytes.Contains(out, []byte(`"name":"glob"`)) {
 		t.Fatalf("Glob should be restored to glob, got: %s", string(out))
 	}
@@ -4889,7 +4907,10 @@ func TestRestoreClaudeOAuthToolNamesFromResponse_MixedCaseWithPrefix(t *testing.
 		`{"type":"tool_use","id":"toolu_02","name":"proxy_Glob","input":{}}` +
 		`]}`)
 
-	out := restoreClaudeOAuthToolNamesFromResponse(resp, "proxy_", false, reverseMap)
+	out, err := restoreClaudeOAuthToolNamesFromResponse(resp, "proxy_", false, reverseMap)
+	if err != nil {
+		t.Fatalf("restoreClaudeOAuthToolNamesFromResponse returned error: %v", err)
+	}
 
 	if got := gjson.GetBytes(out, "content.0.name").String(); got != "Bash" {
 		t.Fatalf("content.0.name = %q, want %q", got, "Bash")
@@ -4906,7 +4927,10 @@ func TestRestoreClaudeOAuthToolNamesFromStreamLine_MixedCaseWithPrefix(t *testin
 	reverseMap := map[string]string{"proxy_Glob": "glob"}
 
 	bashLine := []byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"proxy_Bash","input":{}}}`)
-	out := restoreClaudeOAuthToolNamesFromStreamLine(bashLine, "proxy_", false, reverseMap)
+	out, err := restoreClaudeOAuthToolNamesFromStreamLine(bashLine, "proxy_", false, reverseMap)
+	if err != nil {
+		t.Fatalf("restoreClaudeOAuthToolNamesFromStreamLine returned error: %v", err)
+	}
 	if !bytes.Contains(out, []byte(`"name":"bash"`)) {
 		t.Fatalf("Bash should be lowercased to bash, got: %s", string(out))
 	}
@@ -4915,7 +4939,10 @@ func TestRestoreClaudeOAuthToolNamesFromStreamLine_MixedCaseWithPrefix(t *testin
 	}
 
 	globLine := []byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_02","name":"proxy_Glob","input":{}}}`)
-	out = restoreClaudeOAuthToolNamesFromStreamLine(globLine, "proxy_", false, reverseMap)
+	out, err = restoreClaudeOAuthToolNamesFromStreamLine(globLine, "proxy_", false, reverseMap)
+	if err != nil {
+		t.Fatalf("restoreClaudeOAuthToolNamesFromStreamLine returned error: %v", err)
+	}
 	if !bytes.Contains(out, []byte(`"name":"glob"`)) {
 		t.Fatalf("Glob should be restored to glob, got: %s", string(out))
 	}
