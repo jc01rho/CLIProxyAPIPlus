@@ -113,9 +113,43 @@ func normalizeCodexInputItemID(item gjson.Result, id string) string {
 		return id
 	}
 	if id == "" || strings.HasPrefix(id, prefix) {
+		return normalizeCodexInputItemIDCharacters(id)
+	}
+	return normalizeCodexInputItemIDCharacters(prefix + "_" + id)
+}
+
+func normalizeCodexInputItemIDCharacters(id string) string {
+	if id == "" {
 		return id
 	}
-	return prefix + "_" + id
+
+	var normalized strings.Builder
+	normalized.Grow(len(id))
+	hasInvalidCharacter := false
+	for _, char := range id {
+		if isCodexInputItemIDCharacter(char) {
+			normalized.WriteRune(char)
+			continue
+		}
+		normalized.WriteByte('_')
+		hasInvalidCharacter = true
+	}
+	if !hasInvalidCharacter {
+		return id
+	}
+
+	sum := sha256.Sum256([]byte(id))
+	normalized.WriteByte('_')
+	normalized.WriteString(hex.EncodeToString(sum[:8]))
+	return normalized.String()
+}
+
+func isCodexInputItemIDCharacter(char rune) bool {
+	return (char >= 'a' && char <= 'z') ||
+		(char >= 'A' && char <= 'Z') ||
+		(char >= '0' && char <= '9') ||
+		char == '_' ||
+		char == '-'
 }
 
 func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {

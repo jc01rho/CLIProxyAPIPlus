@@ -54,6 +54,41 @@ func TestSanitizeCodexInputItemIDsNormalizesMessageIDs(t *testing.T) {
 	}
 }
 
+func TestSanitizeCodexInputItemIDsNormalizesInvalidFunctionCallIDs(t *testing.T) {
+	rawIDs := []string{
+		"fc_functions.read:60",
+		"fc_functions/read:60",
+	}
+	body := []byte(`{"input":[` +
+		`{"type":"function_call","id":"` + rawIDs[0] + `","call_id":"call-read-60"},` +
+		`{"type":"function_call","id":"` + rawIDs[1] + `","call_id":"call-read-61"}` +
+		`]}`)
+
+	got := SanitizeCodexInputItemIDs(body)
+	seen := make(map[string]struct{}, len(rawIDs))
+	for index, rawID := range rawIDs {
+		id := gjson.GetBytes(got, fmt.Sprintf("input.%d.id", index)).String()
+		if id == rawID {
+			t.Fatalf("function call ID %q was not normalized", rawID)
+		}
+		if !strings.HasPrefix(id, "fc_") {
+			t.Errorf("function call ID %q does not retain fc_ prefix", id)
+		}
+		if len([]rune(id)) > codexInputItemIDLimit {
+			t.Errorf("function call ID %q exceeds %d characters", id, codexInputItemIDLimit)
+		}
+		for _, char := range id {
+			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-') {
+				t.Errorf("function call ID %q contains invalid character %q", id, char)
+			}
+		}
+		if _, exists := seen[id]; exists {
+			t.Errorf("distinct function call IDs normalized to duplicate %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+}
+
 func TestSanitizeCodexInputItemIDsNormalizesResponseItemIDs(t *testing.T) {
 	const (
 		messageID            = "item_message"
