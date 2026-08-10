@@ -540,6 +540,11 @@ type CommandCodeKey struct {
 	Headers        map[string]string  `yaml:"headers,omitempty" json:"headers,omitempty"`
 	ExcludedModels []string           `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 	DisableCooling bool               `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// APIKeyEntries allows registering multiple API keys under a single CommandCode
+	// provider entry. When non-empty each entry synthesizes its own Auth so that
+	// weighted selection and per-key proxy routing apply uniformly.
+	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
 }
 
 func (k CommandCodeKey) GetAPIKey() string   { return k.APIKey }
