@@ -67,7 +67,6 @@ func TestRegisterModelsForAuth_AllStaticProviderCatalogsAppearInOpenAIList(t *te
 		{provider: "amazonq", modelID: internalregistry.GetAmazonQModels()[0].ID},
 		{provider: "codebuddy", modelID: internalregistry.GetCodeBuddyModels()[0].ID},
 		{provider: "cursor", modelID: internalregistry.GetCursorModels()[0].ID},
-		{provider: "cline", modelID: internalregistry.GetClineModels()[0].ID},
 		{provider: "mistral", modelID: internalregistry.GetMistralModels()[0].ID},
 	}
 

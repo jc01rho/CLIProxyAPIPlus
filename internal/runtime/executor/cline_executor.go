@@ -31,9 +31,10 @@ import (
 )
 
 const (
-	clineBaseURL        = "https://api.cline.bot/api/v1"
-	clineModelsEndpoint = "/ai/cline/models"
-	clineChatEndpoint   = "/chat/completions"
+	clineBaseURL            = "https://api.cline.bot/api/v1"
+	clineModelsEndpoint     = "/ai/cline/models"
+	clineChatEndpoint       = "/chat/completions"
+	clineModelsFetchTimeout = 5 * time.Second
 )
 
 // clineVersion is resolved at runtime to mirror 9Router's APP_VERSION. It
@@ -633,10 +634,20 @@ func clineIsFreeModel(m ClineModel) bool {
 // FetchClineModels fetches models from Cline API.
 // The model list endpoint does not require authentication.
 func FetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+	return fetchClineModels(ctx, auth, cfg, clineBaseURL+clineModelsEndpoint)
+}
+
+func fetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, modelsURL string) []*registry.ModelInfo {
 	log.Debugf("cline: fetching dynamic models from API")
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, clineModelsFetchTimeout)
+	defer cancel()
+
 	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clineBaseURL+clineModelsEndpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
 		log.Warnf("cline: failed to create model fetch request: %v", err)
 		return nil
