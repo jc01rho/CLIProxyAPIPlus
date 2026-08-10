@@ -80,10 +80,10 @@ func IsRequestFault(status int, err error) bool {
 			status = statusErr.StatusCode()
 		}
 	}
-	// HTTP 402 is a credential payment or balance failure. Some upstreams,
-	// including DeepSeek, label it with the generic invalid_request_error code.
-	// The status is authoritative so the credential can cool down and rotate.
-	if status == http.StatusPaymentRequired {
+	// Payment and rate-limit statuses are authoritative even when an upstream
+	// pairs them with a generic invalid_request_error body. The credential must
+	// remain eligible for cooldown and rotation.
+	if status == http.StatusPaymentRequired || status == http.StatusTooManyRequests {
 		return false
 	}
 	// DeepSeek reports an invalid API key as 401 with the authentication_error

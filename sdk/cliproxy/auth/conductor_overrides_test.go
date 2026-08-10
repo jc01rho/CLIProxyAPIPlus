@@ -1447,67 +1447,90 @@ func TestManager_DeepSeekInsufficientBalanceRotatesCredentialAndRebindsSession(t
 	}
 }
 
-func TestManager_DeepSeekAuthenticationFailureRotatesCredential(t *testing.T) {
-	m := NewManager(nil, nil, nil)
-	m.SetRetryConfig(2, 30*time.Second, 0)
-
-	const provider = "openai-compatibility"
-	const model = "deepseek-v4-pro"
-
-	executor := &authFallbackExecutor{
-		id: provider,
-		executeErrors: map[string]error{
-			"aa-invalid-key": &Error{
-				HTTPStatus: http.StatusUnauthorized,
-				Message:    `{"error":{"code":"invalid_request_error","message":"Authentication Fails, Your api key: ****heck is invalid","param":null,"type":"authentication_error"}}`,
-			},
+func TestManager_DeepSeekCredentialFailuresRotateCredential(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		message   string
+		wantQuota bool
+	}{
+		{
+			name:    "authentication failure",
+			status:  http.StatusUnauthorized,
+			message: `{"error":{"code":"invalid_request_error","message":"Authentication Fails, Your api key: ****heck is invalid","param":null,"type":"authentication_error"}}`,
+		},
+		{
+			name:      "rate limit with generic request error code",
+			status:    http.StatusTooManyRequests,
+			message:   `{"error":{"code":"invalid_request_error","message":"Rate Limit Reached","param":null,"type":"unknown_error"}}`,
+			wantQuota: true,
 		},
 	}
-	m.RegisterExecutor(executor)
 
-	invalidAuth := &Auth{ID: "aa-invalid-key", Provider: provider}
-	availableAuth := &Auth{ID: "bb-valid-key", Provider: provider}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			m.SetRetryConfig(2, 30*time.Second, 0)
 
-	reg := registry.GetGlobalRegistry()
-	models := []*registry.ModelInfo{{ID: model}}
-	reg.RegisterClient(invalidAuth.ID, provider, models)
-	reg.RegisterClient(availableAuth.ID, provider, models)
-	t.Cleanup(func() {
-		reg.UnregisterClient(invalidAuth.ID)
-		reg.UnregisterClient(availableAuth.ID)
-	})
+			const provider = "openai-compatibility"
+			const model = "deepseek-v4-pro"
 
-	if _, errRegister := m.Register(context.Background(), invalidAuth); errRegister != nil {
-		t.Fatalf("register invalid auth: %v", errRegister)
-	}
-	if _, errRegister := m.Register(context.Background(), availableAuth); errRegister != nil {
-		t.Fatalf("register available auth: %v", errRegister)
-	}
+			executor := &authFallbackExecutor{
+				id: provider,
+				executeErrors: map[string]error{
+					"aa-failed-key": &Error{HTTPStatus: tc.status, Message: tc.message},
+				},
+			}
+			m.RegisterExecutor(executor)
 
-	resp, errExecute := m.Execute(
-		context.Background(),
-		[]string{provider},
-		cliproxyexecutor.Request{Model: model},
-		cliproxyexecutor.Options{},
-	)
-	if errExecute != nil {
-		t.Fatalf("expected fallback to the next credential, got error: %v", errExecute)
-	}
-	if got := string(resp.Payload); got != availableAuth.ID {
-		t.Fatalf("served by %q, want %q", got, availableAuth.ID)
-	}
-	wantCalls := []string{invalidAuth.ID, availableAuth.ID}
-	if calls := executor.ExecuteCalls(); !slices.Equal(calls, wantCalls) {
-		t.Fatalf("credential calls = %v, want %v", calls, wantCalls)
-	}
+			failedAuth := &Auth{ID: "aa-failed-key", Provider: provider}
+			availableAuth := &Auth{ID: "bb-valid-key", Provider: provider}
 
-	updatedInvalid, ok := m.GetByID(invalidAuth.ID)
-	if !ok || updatedInvalid == nil {
-		t.Fatal("expected invalid auth to remain registered")
-	}
-	state := updatedInvalid.ModelStates[model]
-	if state == nil || !state.Unavailable || state.NextRetryAfter.IsZero() {
-		t.Fatalf("invalid auth model state = %#v, want active cooldown", state)
+			reg := registry.GetGlobalRegistry()
+			models := []*registry.ModelInfo{{ID: model}}
+			reg.RegisterClient(failedAuth.ID, provider, models)
+			reg.RegisterClient(availableAuth.ID, provider, models)
+			t.Cleanup(func() {
+				reg.UnregisterClient(failedAuth.ID)
+				reg.UnregisterClient(availableAuth.ID)
+			})
+
+			if _, errRegister := m.Register(context.Background(), failedAuth); errRegister != nil {
+				t.Fatalf("register failed auth: %v", errRegister)
+			}
+			if _, errRegister := m.Register(context.Background(), availableAuth); errRegister != nil {
+				t.Fatalf("register available auth: %v", errRegister)
+			}
+
+			resp, errExecute := m.Execute(
+				context.Background(),
+				[]string{provider},
+				cliproxyexecutor.Request{Model: model},
+				cliproxyexecutor.Options{},
+			)
+			if errExecute != nil {
+				t.Fatalf("expected fallback to the next credential, got error: %v", errExecute)
+			}
+			if got := string(resp.Payload); got != availableAuth.ID {
+				t.Fatalf("served by %q, want %q", got, availableAuth.ID)
+			}
+			wantCalls := []string{failedAuth.ID, availableAuth.ID}
+			if calls := executor.ExecuteCalls(); !slices.Equal(calls, wantCalls) {
+				t.Fatalf("credential calls = %v, want %v", calls, wantCalls)
+			}
+
+			updatedFailed, ok := m.GetByID(failedAuth.ID)
+			if !ok || updatedFailed == nil {
+				t.Fatal("expected failed auth to remain registered")
+			}
+			state := updatedFailed.ModelStates[model]
+			if state == nil || !state.Unavailable || state.NextRetryAfter.IsZero() {
+				t.Fatalf("failed auth model state = %#v, want active cooldown", state)
+			}
+			if tc.wantQuota && (!state.Quota.Exceeded || state.Quota.Reason != "quota") {
+				t.Fatalf("failed auth quota state = %#v, want exceeded quota", state.Quota)
+			}
+		})
 	}
 }
 
