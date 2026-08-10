@@ -1042,6 +1042,7 @@ func lowerFirstToolName(name string) string {
 	runes := []rune(name)
 	runes[0] = unicode.ToLower(runes[0])
 	return string(runes)
+
 }
 
 // remapOAuthToolNames represents every declared third-party client tool as a
