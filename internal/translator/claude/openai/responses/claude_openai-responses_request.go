@@ -1093,7 +1093,7 @@ func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, quali
 	if !ok {
 		return qualifiedName, ""
 	}
-	if descriptor.toolType == "function" && !descriptor.direct {
+	if !descriptor.direct {
 		return descriptor.childName, descriptor.namespace
 	}
 	return qualifiedName, ""
