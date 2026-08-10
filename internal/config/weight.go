@@ -149,5 +149,13 @@ func (cfg *Config) ValidateCredentialWeights() error {
 			}
 		}
 	}
+	for providerIndex := range cfg.CommandCodeKey {
+		for keyIndex := range cfg.CommandCodeKey[providerIndex].APIKeyEntries {
+			weight := cfg.CommandCodeKey[providerIndex].APIKeyEntries[keyIndex].Weight
+			if errValidate := ValidateCredentialWeight(weight); errValidate != nil {
+				return fmt.Errorf("commandcode-api-key[%d].api-key-entries[%d].weight: %w", providerIndex, keyIndex, errValidate)
+			}
+		}
+	}
 	return nil
 }
