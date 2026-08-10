@@ -45,13 +45,16 @@ var (
 )
 
 type liveSession struct {
-	callID        string
-	authID        string
-	model         string
-	homeSelection *auth.HomeDispatchSelection
-	media         mediaRelaySession
-	resources     *liveSessionResources
-	token         uint64
+	callID                string
+	authID                string
+	model                 string
+	ownerPrincipal        string
+	ownerProvider         string
+	clientSecretPrincipal string
+	homeSelection         *auth.HomeDispatchSelection
+	media                 mediaRelaySession
+	resources             *liveSessionResources
+	token                 uint64
 }
 
 type liveSessionResources struct {
@@ -306,28 +309,41 @@ const (
 // HandleSideband relays live session sideband WebSocket frames bidirectionally.
 func (h *Handler) HandleSideband(c *gin.Context) {
 	if h == nil || h.authManager == nil || h.sessions == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Codex live sideband unavailable"})
+		writeLiveError(c, http.StatusServiceUnavailable, "Codex live sideband unavailable")
 		return
 	}
 	runtimeConfig := h.currentConfig()
 	if !websocket.IsWebSocketUpgrade(c.Request) {
-		c.JSON(http.StatusUpgradeRequired, gin.H{"error": "WebSocket upgrade required"})
+		c.Header("Upgrade", "websocket")
+		writeLiveError(c, http.StatusUpgradeRequired, "WebSocket upgrade required")
 		return
 	}
 
 	style, callID, ok := sidebandTarget(c)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Codex live call ID"})
+		writeLiveError(c, http.StatusBadRequest, "Invalid Codex live call ID")
 		return
 	}
 	session, claim := h.sessions.claim(callID)
 	switch claim {
 	case sessionClaimBusy:
-		c.JSON(http.StatusConflict, gin.H{"error": "Codex live session already joining"})
+		writeLiveError(c, http.StatusConflict, "Codex live session already joining")
 		return
 	case sessionClaimAcquired:
 	default:
-		c.JSON(http.StatusNotFound, gin.H{"error": "Codex live session not found"})
+		writeLiveError(c, http.StatusNotFound, "Codex live session not found")
+		return
+	}
+	if principal, hasClientSecret := c.Get(ClientSecretPrincipalContextKey); hasClientSecret {
+		principalValue, _ := principal.(string)
+		if session.clientSecretPrincipal == "" || principalValue != session.clientSecretPrincipal {
+			h.sessions.release(session)
+			writeRealtimeError(c, http.StatusForbidden, "Realtime client secret is not valid for this call", "invalid_request_error", "realtime_client_secret_scope_mismatch")
+			return
+		}
+	} else if ownerPrincipal, ownerProvider := requestOwner(c); session.ownerPrincipal != "" && (ownerPrincipal != session.ownerPrincipal || ownerProvider != session.ownerProvider) {
+		h.sessions.release(session)
+		writeRealtimeError(c, http.StatusForbidden, "Realtime call belongs to another API principal", "invalid_request_error", "realtime_call_scope_mismatch")
 		return
 	}
 	consumeSession := false
@@ -340,20 +356,21 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 	}()
 
 	ctx := context.WithValue(c.Request.Context(), "gin", c)
+	ctx = coreexecutor.WithDownstreamWebsocket(ctx)
 	var selection *auth.HomeDispatchSelection
 	var selected *auth.Auth
 	var errSelect error
 	if session.homeSelection != nil {
 		if !session.homeSelection.Active() {
 			consumeSession = true
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Codex live Home selection unavailable"})
+			writeLiveError(c, http.StatusServiceUnavailable, "Codex live Home selection unavailable")
 			return
 		}
 		selection = session.homeSelection
 		selected = selection.CloneAuth()
 	} else {
 		selectionOpts := coreexecutor.Options{
-			Headers: c.Request.Header.Clone(),
+			Headers: liveSelectionHeaders(c),
 			Metadata: map[string]any{
 				coreexecutor.PinnedAuthMetadataKey:       session.authID,
 				coreexecutor.ExecutionSessionMetadataKey: callID,
@@ -366,7 +383,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		return
 	}
 	if selected == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Codex auth unavailable"})
+		writeLiveError(c, http.StatusServiceUnavailable, "Codex auth unavailable")
 		return
 	}
 
@@ -374,7 +391,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		attemptCtx, releaseAttempt, errAttempt := selection.AttemptContext(ctx)
 		if errAttempt != nil {
 			consumeSession = true
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": errAttempt.Error()})
+			writeLiveError(c, http.StatusServiceUnavailable, errAttempt.Error())
 			return
 		}
 		ctx = attemptCtx
@@ -425,7 +442,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 			return
 		}
 		if !didRefresh || refreshed == nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Codex credential unauthorized"})
+			writeLiveError(c, http.StatusUnauthorized, "Codex credential unauthorized")
 			return
 		}
 		selected = refreshed
@@ -452,7 +469,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 	if selection != nil {
 		if errBind := selection.Bind(closeUpstream); errBind != nil {
 			consumeSession = true
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": errBind.Error()})
+			writeLiveError(c, http.StatusServiceUnavailable, errBind.Error())
 			return
 		}
 	} else {
@@ -559,6 +576,7 @@ func handleSidebandDialError(c *gin.Context, ctx context.Context, cfg *config.Co
 		if response.StatusCode > 0 {
 			status = response.StatusCode
 		}
+		copyRealtimeHandshakeHeaders(c.Writer.Header(), response.Header)
 		helps.RecordAPIWebsocketHandshake(ctx, cfg, response.StatusCode, callResponseHeaders(response.Header))
 		if response.Body != nil {
 			if errClose := response.Body.Close(); errClose != nil {
@@ -567,7 +585,7 @@ func handleSidebandDialError(c *gin.Context, ctx context.Context, cfg *config.Co
 		}
 	}
 	helps.RecordAPIWebsocketError(ctx, cfg, "dial", errDial)
-	c.JSON(status, gin.H{"error": "Codex live sideband upstream unavailable"})
+	writeLiveError(c, status, "Codex live sideband upstream unavailable")
 }
 
 func websocketCloseFunc(name string, conn *websocket.Conn) func() error {
