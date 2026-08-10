@@ -191,6 +191,12 @@ func TestIsRequestFault(t *testing.T) {
 		},
 		{name: "plain not found", status: http.StatusNotFound, err: errors.New("model not found")},
 		{name: "unauthorized", status: http.StatusUnauthorized, err: errors.New("invalid token")},
+		{
+			name:   "deepseek insufficient balance is payment failure",
+			status: http.StatusPaymentRequired,
+			err:    errors.New(`{"error":{"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}}`),
+			want:   false,
+		},
 		{name: "quota", status: http.StatusTooManyRequests, err: errors.New("quota")},
 		{name: "transport", status: http.StatusBadGateway, err: errors.New("unexpected EOF")},
 		{name: "invalid JSON body", status: http.StatusBadGateway, err: errors.New(`{"error":`)},
