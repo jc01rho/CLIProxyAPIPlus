@@ -145,6 +145,12 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	case "kimi":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
+	case "cline":
+		models = executor.FetchClineModels(ctx, a, s.cfg)
+		if len(models) == 0 {
+			models = registry.GetClineModels()
+		}
+		models = applyExcludedModels(models, excluded)
 	case "xai":
 		models = registry.GetXAIModels()
 		if entry := s.resolveConfigXAIKey(a); entry != nil {
