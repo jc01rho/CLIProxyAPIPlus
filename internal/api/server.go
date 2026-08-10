@@ -55,6 +55,8 @@ type Server struct {
 
 	// cfg holds the current server configuration.
 	cfg *config.Config
+	// modelAccessConfig publishes API-key model policies to request middleware across reloads.
+	modelAccessConfig atomic.Pointer[config.Config]
 
 	// oldConfigYaml stores a YAML snapshot of the previous configuration for change detection.
 	// This prevents issues when the config object is modified in place by Management API.
@@ -183,6 +185,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
+	s.modelAccessConfig.Store(cfg)
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
 	s.handlers.SetPluginHost(optionState.pluginHost)

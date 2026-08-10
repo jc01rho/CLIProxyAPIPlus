@@ -28,7 +28,7 @@ func TestCodexClientModelsResponseMultiAgentV2FollowsConfig(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			base.Cfg.CodexOptimizeMultiAgentV2 = tt.enabled
-			response := handler.codexClientModelsResponse()
+			response := handler.codexClientModelsResponse(handler.Models())
 			models, ok := response["models"].([]map[string]any)
 			if !ok {
 				t.Fatalf("models type = %T, want []map[string]any", response["models"])

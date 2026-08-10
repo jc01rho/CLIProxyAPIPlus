@@ -132,17 +132,91 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+func (h *Handler) GetAPIKeys(c *gin.Context) {
+	c.JSON(200, gin.H{
+		"api-keys":         h.cfg.APIKeys,
+		"model-whitelists": h.cfg.APIKeyModelWhitelists,
+	})
+}
 func (h *Handler) PutAPIKeys(c *gin.Context) {
-	h.putStringList(c, func(v []string) {
-		h.cfg.APIKeys = append([]string(nil), v...)
-	}, nil)
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var keys []string
+	var payload struct {
+		APIKeys         []string             `json:"api-keys"`
+		ModelWhitelists *map[string][]string `json:"model-whitelists"`
+	}
+	if err = json.Unmarshal(data, &keys); err != nil {
+		if err = json.Unmarshal(data, &payload); err != nil {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		keys = payload.APIKeys
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.APIKeys = normalizeStringList(keys)
+	if payload.ModelWhitelists != nil {
+		h.cfg.APIKeyModelWhitelists = normalizeAPIKeyModelWhitelists(h.cfg.APIKeys, *payload.ModelWhitelists)
+	} else {
+		h.cfg.APIKeyModelWhitelists = normalizeAPIKeyModelWhitelists(h.cfg.APIKeys, h.cfg.APIKeyModelWhitelists)
+	}
+	h.persistLocked(c)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
-	h.patchStringList(c, &h.cfg.APIKeys, func() {})
+	h.patchStringList(c, &h.cfg.APIKeys, func() {
+		h.cfg.APIKeyModelWhitelists = normalizeAPIKeyModelWhitelists(h.cfg.APIKeys, h.cfg.APIKeyModelWhitelists)
+	})
 }
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
-	h.deleteFromStringList(c, &h.cfg.APIKeys, func() {})
+	h.deleteFromStringList(c, &h.cfg.APIKeys, func() {
+		h.cfg.APIKeyModelWhitelists = normalizeAPIKeyModelWhitelists(h.cfg.APIKeys, h.cfg.APIKeyModelWhitelists)
+	})
+}
+
+func normalizeStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeAPIKeyModelWhitelists(keys []string, whitelists map[string][]string) map[string][]string {
+	if len(whitelists) == 0 {
+		return nil
+	}
+	keySet := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		keySet[key] = struct{}{}
+	}
+	out := make(map[string][]string, len(whitelists))
+	for key, patterns := range whitelists {
+		if _, exists := keySet[key]; !exists {
+			continue
+		}
+		normalized := normalizeStringList(patterns)
+		if len(normalized) > 0 {
+			out[key] = normalized
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // gemini-api-key: []GeminiKey
