@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -677,6 +678,15 @@ func (h *Handler) RequestClineToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
 			return
 		}
+		// 9Router/WorkOS does not echo the state parameter back in the callback
+		// redirect, so embed it in the forwarder target. The generic
+		// /v0/management/oauth-callback handler requires state to correlate the
+		// session. The forwarder appends the raw query (code=...) with "&".
+		separator := "?"
+		if strings.Contains(targetURL, "?") {
+			separator = "&"
+		}
+		targetURL = targetURL + separator + "state=" + url.QueryEscape(state)
 		var errStart error
 		if forwarder, errStart = startCallbackForwarder(clineCallbackPort, "cline", targetURL); errStart != nil {
 			log.WithError(errStart).Error("failed to start cline callback forwarder")
