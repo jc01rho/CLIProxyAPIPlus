@@ -3,6 +3,7 @@ package management
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
@@ -95,6 +97,164 @@ func TestPutCommandCodeKeys_PreservesEmptyBaseURLForDefaultEndpoint(t *testing.T
 	}
 	if got := entry.Models[0].Alias; got != "alias-model" {
 		t.Fatalf("Models[0].Alias = %q, want %q", got, "alias-model")
+	}
+}
+
+func TestPutCommandCodeKeysPreservesNestedOnlyProvider(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg:            &config.Config{},
+		configFilePath: writeTestConfigFile(t),
+	}
+	body := []byte(`[{
+		"base-url": " https://commandcode.example/v1 ",
+		"api-key-entries": [
+			{
+				"api-key": " key-a ",
+				"proxy-url": " socks5://proxy-a.example:1080 ",
+				"weight": 3,
+				"comment": " primary "
+			},
+			{"api-key": " key-b ", "weight": 1},
+			{"api-key": " "}
+		]
+	}]`)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPut,
+		"/v0/management/commandcode-api-key",
+		bytes.NewReader(body),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PutCommandCodeKeys(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := len(h.cfg.CommandCodeKey); got != 1 {
+		t.Fatalf("commandcode keys len = %d, want 1", got)
+	}
+	entry := h.cfg.CommandCodeKey[0]
+	if entry.APIKey != "" {
+		t.Fatalf("legacy APIKey = %q, want empty", entry.APIKey)
+	}
+	if got := len(entry.APIKeyEntries); got != 2 {
+		t.Fatalf("nested API keys len = %d, want 2", got)
+	}
+	if got := entry.APIKeyEntries[0].APIKey; got != "key-a" {
+		t.Fatalf("nested API key = %q, want key-a", got)
+	}
+	if got := entry.APIKeyEntries[0].ProxyURL; got != "socks5://proxy-a.example:1080" {
+		t.Fatalf("nested proxy URL = %q", got)
+	}
+	if got := entry.APIKeyEntries[0].Comment; got != "primary" {
+		t.Fatalf("nested comment = %q, want primary", got)
+	}
+
+	persisted, err := os.ReadFile(h.configFilePath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	persistedText := string(persisted)
+	if !strings.Contains(persistedText, "api-key-entries:") ||
+		!strings.Contains(persistedText, "api-key: key-a") ||
+		!strings.Contains(persistedText, "api-key: key-b") {
+		t.Fatalf("persisted config missing nested entries:\n%s", persistedText)
+	}
+}
+
+func TestCommandCodeKeysWithAuthIndexIncludesNestedEntries(t *testing.T) {
+	t.Parallel()
+
+	idGen := synthesizer.NewStableIDGenerator()
+	firstID, _ := idGen.Next(
+		"commandcode:apikey",
+		"key-a",
+		"https://commandcode.example/v1",
+		"socks5://proxy-a.example:1080",
+	)
+	secondID, _ := idGen.Next(
+		"commandcode:apikey",
+		"key-b",
+		"https://commandcode.example/v1",
+		"",
+	)
+	manager := coreauth.NewManager(nil, nil, nil)
+	firstAuth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       firstID,
+		Provider: "commandcode",
+		Status:   coreauth.StatusActive,
+		ProxyURL: "socks5://proxy-a.example:1080",
+		Attributes: map[string]string{
+			coreauth.AttributeAPIKey: "key-a",
+			"base_url":               "https://commandcode.example/v1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register first auth: %v", err)
+	}
+	secondAuth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       secondID,
+		Provider: "commandcode",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			coreauth.AttributeAPIKey: "key-b",
+			"base_url":               "https://commandcode.example/v1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register second auth: %v", err)
+	}
+	firstIndex := firstAuth.EnsureIndex()
+	secondIndex := secondAuth.EnsureIndex()
+
+	h := &Handler{
+		cfg: &config.Config{
+			CommandCodeKey: []config.CommandCodeKey{
+				{
+					BaseURL: "https://commandcode.example/v1",
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{
+							APIKey:   "key-a",
+							ProxyURL: "socks5://proxy-a.example:1080",
+						},
+						{APIKey: "key-b"},
+					},
+				},
+			},
+		},
+		authManager: manager,
+	}
+
+	got := h.commandCodeKeysWithAuthIndex()
+	if len(got) != 1 || len(got[0].APIKeyEntries) != 2 {
+		t.Fatalf("nested response = %#v", got)
+	}
+	if got[0].APIKeyEntries[0].AuthIndex != firstIndex {
+		t.Fatalf(
+			"first auth index = %q, want %q",
+			got[0].APIKeyEntries[0].AuthIndex,
+			firstIndex,
+		)
+	}
+	if got[0].APIKeyEntries[1].AuthIndex != secondIndex {
+		t.Fatalf(
+			"second auth index = %q, want %q",
+			got[0].APIKeyEntries[1].AuthIndex,
+			secondIndex,
+		)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if !strings.Contains(string(encoded), firstIndex) ||
+		!strings.Contains(string(encoded), secondIndex) {
+		t.Fatalf("encoded response missing nested auth indexes: %s", encoded)
 	}
 }
 

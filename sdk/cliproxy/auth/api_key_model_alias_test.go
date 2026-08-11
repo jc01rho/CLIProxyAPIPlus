@@ -126,12 +126,27 @@ func TestAPIKeyModelAlias_ConfigHotReload(t *testing.T) {
 
 func TestAPIKeyModelAlias_MultipleProviders(t *testing.T) {
 	cfg := &internalconfig.Config{
-		GeminiKey:      []internalconfig.GeminiKey{{APIKey: "gemini-key", Models: []internalconfig.GeminiModel{{Name: "gemini-2.5-pro", Alias: "gp"}}}},
-		ClaudeKey:      []internalconfig.ClaudeKey{{APIKey: "claude-key", Models: []internalconfig.ClaudeModel{{Name: "claude-sonnet-4", Alias: "cs4"}}}},
-		CodexKey:       []internalconfig.CodexKey{{APIKey: "codex-key", Models: []internalconfig.CodexModel{{Name: "o3", Alias: "o"}}}},
-		XAIKey:         []internalconfig.XAIKey{{APIKey: "xai-key", Models: []internalconfig.XAIModel{{Name: "grok-4.5", Alias: "grok-latest"}}}},
-		CommandCodeKey: []internalconfig.CommandCodeKey{{APIKey: "commandcode-key", Models: []internalconfig.CommandCodeModel{{Name: "qwen3-coder", Alias: "commandcode-latest"}}}},
-		MistralKey:     []internalconfig.MistralKey{{APIKey: "mistral-key", Models: []internalconfig.MistralModel{{Name: "mistral-medium-latest", Alias: "mistral-medium"}}}},
+		GeminiKey: []internalconfig.GeminiKey{{APIKey: "gemini-key", Models: []internalconfig.GeminiModel{{Name: "gemini-2.5-pro", Alias: "gp"}}}},
+		ClaudeKey: []internalconfig.ClaudeKey{{APIKey: "claude-key", Models: []internalconfig.ClaudeModel{{Name: "claude-sonnet-4", Alias: "cs4"}}}},
+		CodexKey:  []internalconfig.CodexKey{{APIKey: "codex-key", Models: []internalconfig.CodexModel{{Name: "o3", Alias: "o"}}}},
+		XAIKey:    []internalconfig.XAIKey{{APIKey: "xai-key", Models: []internalconfig.XAIModel{{Name: "grok-4.5", Alias: "grok-latest"}}}},
+		CommandCodeKey: []internalconfig.CommandCodeKey{
+			{
+				APIKey: "commandcode-key",
+				Models: []internalconfig.CommandCodeModel{
+					{Name: "qwen3-coder", Alias: "commandcode-latest"},
+				},
+			},
+			{
+				APIKeyEntries: []internalconfig.OpenAICompatibilityAPIKey{
+					{APIKey: "commandcode-nested-key"},
+				},
+				Models: []internalconfig.CommandCodeModel{
+					{Name: "nested-upstream", Alias: "commandcode-nested"},
+				},
+			},
+		},
+		MistralKey: []internalconfig.MistralKey{{APIKey: "mistral-key", Models: []internalconfig.MistralModel{{Name: "mistral-medium-latest", Alias: "mistral-medium"}}}},
 	}
 
 	mgr := NewManager(nil, nil, nil)
@@ -143,6 +158,7 @@ func TestAPIKeyModelAlias_MultipleProviders(t *testing.T) {
 	_, _ = mgr.Register(ctx, &Auth{ID: "codex-auth", Provider: "codex", Attributes: map[string]string{"api_key": "codex-key"}})
 	_, _ = mgr.Register(ctx, &Auth{ID: "xai-auth", Provider: "xai", Attributes: map[string]string{"api_key": "xai-key"}})
 	_, _ = mgr.Register(ctx, &Auth{ID: "commandcode-auth", Provider: "commandcode", Attributes: map[string]string{"api_key": "commandcode-key"}})
+	_, _ = mgr.Register(ctx, &Auth{ID: "commandcode-nested-auth", Provider: "commandcode", Attributes: map[string]string{"api_key": "commandcode-nested-key"}})
 	_, _ = mgr.Register(ctx, &Auth{ID: "mistral-auth", Provider: "mistral", Attributes: map[string]string{"api_key": "mistral-key"}})
 
 	tests := []struct {
@@ -153,6 +169,7 @@ func TestAPIKeyModelAlias_MultipleProviders(t *testing.T) {
 		{"codex-auth", "o", "o3"},
 		{"xai-auth", "grok-latest", "grok-4.5"},
 		{"commandcode-auth", "commandcode-latest", "qwen3-coder"},
+		{"commandcode-nested-auth", "commandcode-nested", "nested-upstream"},
 		{"mistral-auth", "mistral-medium", "mistral-medium-latest"},
 	}
 

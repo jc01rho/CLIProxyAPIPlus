@@ -127,6 +127,17 @@ func (cfg *Config) SanitizeCommandCodeKeys() {
 	for _, entry := range cfg.CommandCodeKey {
 		entry.APIKey = strings.TrimSpace(entry.APIKey)
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		nested := make([]OpenAICompatibilityAPIKey, 0, len(entry.APIKeyEntries))
+		for _, apiKeyEntry := range entry.APIKeyEntries {
+			apiKeyEntry.APIKey = strings.TrimSpace(apiKeyEntry.APIKey)
+			apiKeyEntry.ProxyURL = strings.TrimSpace(apiKeyEntry.ProxyURL)
+			apiKeyEntry.Comment = strings.TrimSpace(apiKeyEntry.Comment)
+			if apiKeyEntry.APIKey != "" {
+				nested = append(nested, apiKeyEntry)
+			}
+		}
+		entry.APIKeyEntries = nested
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.BillingClass = normalizeBillingClass(entry.BillingClass)
 		entry.Headers = NormalizeHeaders(entry.Headers)
@@ -135,7 +146,7 @@ func (cfg *Config) SanitizeCommandCodeKeys() {
 			entry.Models[i].Name = strings.TrimSpace(entry.Models[i].Name)
 			entry.Models[i].Alias = strings.TrimSpace(entry.Models[i].Alias)
 		}
-		if entry.APIKey != "" {
+		if entry.APIKey != "" || len(entry.APIKeyEntries) > 0 {
 			out = append(out, entry)
 		}
 	}

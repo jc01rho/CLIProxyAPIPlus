@@ -996,10 +996,24 @@ func resolveVertexAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internal
 }
 
 func resolveCommandCodeAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.CommandCodeKey {
-	if cfg == nil {
+	if cfg == nil || auth == nil {
 		return nil
 	}
-	return resolveAPIKeyConfig(cfg.CommandCodeKey, auth)
+	attrKey, attrBase := "", ""
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes[AttributeAPIKey])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	for i := range cfg.CommandCodeKey {
+		entry := &cfg.CommandCodeKey[i]
+		if !entry.MatchesCredential(attrKey, auth.ProxyURL) {
+			continue
+		}
+		if attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase) {
+			return entry
+		}
+	}
+	return nil
 }
 
 func resolveMistralAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.MistralKey {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
@@ -551,6 +552,26 @@ func (k CommandCodeKey) GetAPIKey() string   { return k.APIKey }
 func (k CommandCodeKey) GetBaseURL() string  { return k.BaseURL }
 func (k CommandCodeKey) GetPrefix() string   { return k.Prefix }
 func (k CommandCodeKey) GetProxyURL() string { return k.ProxyURL }
+
+// MatchesCredential reports whether an auth credential belongs to this provider
+// entry, including credentials declared in APIKeyEntries.
+func (k CommandCodeKey) MatchesCredential(apiKey, proxyURL string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	proxyURL = strings.TrimSpace(proxyURL)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return strings.TrimSpace(k.ProxyURL) == proxyURL
+	}
+	for i := range k.APIKeyEntries {
+		entry := k.APIKeyEntries[i]
+		if strings.TrimSpace(entry.APIKey) == apiKey {
+			return strings.TrimSpace(entry.ProxyURL) == proxyURL
+		}
+	}
+	return false
+}
 
 // CommandCodeModel maps a client alias to an upstream model name.
 type CommandCodeModel struct {
