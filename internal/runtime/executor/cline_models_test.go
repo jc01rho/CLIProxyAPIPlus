@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
 
 func TestFetchClineModelsUsesLiveCatalog(t *testing.T) {
@@ -50,5 +52,48 @@ func TestFetchClineModelsUsesLiveCatalog(t *testing.T) {
 	}
 	if model.OwnedBy != "cline" || model.Type != "cline" {
 		t.Errorf("model ownership = %q/%q, want cline/cline", model.OwnedBy, model.Type)
+	}
+}
+
+func TestFetchClineModelsFiltersFreeSuffixWhenConfigured(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": [
+				{"id":"openrouter/paid-model","name":"Paid model"},
+				{"id":"openrouter/free-model:free","name":"Free model"},
+				{"id":"openrouter/another:free-preview","name":"Free preview"}
+			]
+		}`))
+	}))
+	t.Cleanup(server.Close)
+
+	allModels := fetchClineModels(context.Background(), nil, &config.Config{}, server.URL)
+	if len(allModels) != 3 {
+		t.Fatalf("unfiltered models = %d, want 3", len(allModels))
+	}
+
+	freeModels := fetchClineModels(context.Background(), nil, &config.Config{
+		ClineFreeModelsOnly: true,
+	}, server.URL)
+	if len(freeModels) != 2 {
+		t.Fatalf("free-only models = %d, want 2", len(freeModels))
+	}
+	for _, model := range freeModels {
+		if !strings.Contains(model.ID, ":free") {
+			t.Fatalf("free-only result contains %q without :free", model.ID)
+		}
+	}
+}
+
+func TestFilterClineModelsAppliesToFallbackCatalog(t *testing.T) {
+	models := []*registry.ModelInfo{
+		{ID: "provider/paid"},
+		{ID: "provider/free:free"},
+	}
+
+	filtered := FilterClineModels(models, true)
+	if len(filtered) != 1 || filtered[0].ID != "provider/free:free" {
+		t.Fatalf("filtered fallback models = %#v", filtered)
 	}
 }

@@ -733,7 +733,6 @@ func fetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 
 	now := time.Now().Unix()
 	var dynamicModels []*registry.ModelInfo
-	count := 0
 
 	for _, m := range modelsResponse.Data {
 		if m.ID == "" {
@@ -763,11 +762,26 @@ func fetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 			Object:              "model",
 			Created:             now,
 		})
-		count++
 	}
 
-	log.Infof("cline: fetched %d models from API", count)
+	freeOnly := cfg != nil && cfg.ClineFreeModelsOnly
+	dynamicModels = FilterClineModels(dynamicModels, freeOnly)
+	log.Infof("cline: fetched %d models from API", len(dynamicModels))
 	return dynamicModels
+}
+
+// FilterClineModels limits a Cline catalog to IDs containing ":free" when enabled.
+func FilterClineModels(models []*registry.ModelInfo, freeOnly bool) []*registry.ModelInfo {
+	if !freeOnly {
+		return models
+	}
+	filtered := make([]*registry.ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model != nil && strings.Contains(model.ID, ":free") {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
 }
 
 // WorkOSPrefix returns the prefix Cline expects on its access tokens.
