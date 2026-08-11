@@ -151,6 +151,10 @@ type Config struct {
 	// the auth/OAuth token file). Default false preserves the per-client "auto" behavior.
 	DisableClaudeCloakMode bool `yaml:"disable-claude-cloak-mode" json:"disable-claude-cloak-mode"`
 
+	// ClineFreeModelsOnly limits the dynamically fetched Cline catalog to model
+	// identifiers containing ":free". The default false preserves the complete catalog.
+	ClineFreeModelsOnly bool `yaml:"cline-free-models-only" json:"cline-free-models-only"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 

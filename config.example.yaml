@@ -41,6 +41,10 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
+# Limit the dynamically fetched Cline model catalog to IDs containing ":free".
+# Default false keeps the complete Cline catalog.
+cline-free-models-only: false
+
 # Enable debug logging
 debug: false
 
