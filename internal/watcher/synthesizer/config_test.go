@@ -348,6 +348,64 @@ func TestConfigSynthesizer_CodexKeys(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizerCommandCodeAPIKeyEntries(t *testing.T) {
+	primaryWeight := 3
+	secondaryWeight := 1
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			CommandCodeKey: []config.CommandCodeKey{
+				{
+					BaseURL:  "https://commandcode.example/v1",
+					Prefix:   "team",
+					Priority: 7,
+					Headers:  map[string]string{"X-CommandCode": "enabled"},
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{
+							APIKey:   "key-a",
+							ProxyURL: "socks5://proxy-a.example:1080",
+							Weight:   &primaryWeight,
+						},
+						{APIKey: "key-b", Weight: &secondaryWeight},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := len(auths); got != 2 {
+		t.Fatalf("auth count = %d, want 2", got)
+	}
+
+	if got := auths[0].Attributes[coreauth.AttributeAPIKey]; got != "key-a" {
+		t.Fatalf("first API key = %q, want key-a", got)
+	}
+	if got := auths[0].Attributes["weight"]; got != "3" {
+		t.Fatalf("first weight = %q, want 3", got)
+	}
+	if got := auths[0].ProxyURL; got != "socks5://proxy-a.example:1080" {
+		t.Fatalf("first proxy = %q", got)
+	}
+	if got := auths[0].Attributes["base_url"]; got != "https://commandcode.example/v1" {
+		t.Fatalf("first base URL = %q", got)
+	}
+	if got := auths[0].Attributes["header:X-CommandCode"]; got != "enabled" {
+		t.Fatalf("first custom header = %q", got)
+	}
+	if got := auths[1].Attributes[coreauth.AttributeAPIKey]; got != "key-b" {
+		t.Fatalf("second API key = %q, want key-b", got)
+	}
+	if got := auths[1].Attributes["weight"]; got != "1" {
+		t.Fatalf("second weight = %q, want 1", got)
+	}
+}
+
 func TestConfigSynthesizer_XAIKeys(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{

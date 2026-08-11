@@ -14,6 +14,14 @@ func TestRegisterModelsForAuth_ConfiguredNativeProviderModelsAppearInOpenAIList(
 		CommandCodeKey: []config.CommandCodeKey{{
 			APIKey: "commandcode-key",
 			Models: []config.CommandCodeModel{{Name: "qwen3-coder", Alias: "commandcode-visible"}},
+		}, {
+			BaseURL: "https://commandcode.example/v1",
+			APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+				{APIKey: "commandcode-nested-key"},
+			},
+			Models: []config.CommandCodeModel{
+				{Name: "nested-upstream", Alias: "commandcode-nested-visible"},
+			},
 		}},
 		MistralKey: []config.MistralKey{{
 			APIKey: "mistral-key",
@@ -27,6 +35,11 @@ func TestRegisterModelsForAuth_ConfiguredNativeProviderModelsAppearInOpenAIList(
 		modelID  string
 	}{
 		{provider: "commandcode", apiKey: "commandcode-key", modelID: "commandcode-visible"},
+		{
+			provider: "commandcode",
+			apiKey:   "commandcode-nested-key",
+			modelID:  "commandcode-nested-visible",
+		},
 		{provider: "mistral", apiKey: "mistral-key", modelID: "mistral-visible"},
 	}
 

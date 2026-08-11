@@ -89,6 +89,33 @@ func Test_BuildCommandCodePayload_serializes_typed_message_content_blocks(t *tes
 	}
 }
 
+func TestResolveCommandCodeModelNameForNestedAPIKey(t *testing.T) {
+	cfg := &config.Config{
+		CommandCodeKey: []config.CommandCodeKey{
+			{
+				BaseURL: "https://commandcode.example/v1",
+				APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+					{APIKey: "key-a"},
+					{APIKey: "key-b", ProxyURL: "socks5://proxy-b.example:1080"},
+				},
+				Models: []config.CommandCodeModel{
+					{Name: "upstream-model", Alias: "commandcode-visible"},
+				},
+			},
+		},
+	}
+	auth := &cliproxyauth.Auth{
+		ProxyURL: "socks5://proxy-b.example:1080",
+		Attributes: map[string]string{
+			cliproxyauth.AttributeAPIKey: "key-b",
+		},
+	}
+
+	if got := resolveCommandCodeModelName(cfg, auth, "commandcode-visible"); got != "upstream-model" {
+		t.Fatalf("resolved model = %q, want upstream-model", got)
+	}
+}
+
 func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T) {
 	// Given
 	req, err := http.NewRequest(http.MethodPost, "https://api.commandcode.ai/alpha/generate", nil)

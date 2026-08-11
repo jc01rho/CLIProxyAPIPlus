@@ -25,7 +25,8 @@ type codexKeyWithAuthIndex struct {
 
 type commandCodeKeyWithAuthIndex struct {
 	config.CommandCodeKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	APIKeyEntries []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
+	AuthIndex     string                                   `json:"auth-index,omitempty"`
 }
 
 type mistralKeyWithAuthIndex struct {
@@ -226,15 +227,32 @@ func (h *Handler) commandCodeKeysWithAuthIndex() []commandCodeKeyWithAuthIndex {
 	out := make([]commandCodeKeyWithAuthIndex, len(h.cfg.CommandCodeKey))
 	for i := range h.cfg.CommandCodeKey {
 		entry := h.cfg.CommandCodeKey[i]
-		authIndex := ""
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("commandcode:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
+		response := commandCodeKeyWithAuthIndex{CommandCodeKey: entry}
+		if len(entry.APIKeyEntries) == 0 {
+			if key := strings.TrimSpace(entry.APIKey); key != "" {
+				id, _ := idGen.Next("commandcode:apikey", key, entry.BaseURL)
+				response.AuthIndex = liveIndexByID[id]
+			}
+		} else {
+			response.APIKeyEntries = make(
+				[]openAICompatibilityAPIKeyWithAuthIndex,
+				len(entry.APIKeyEntries),
+			)
+			for j := range entry.APIKeyEntries {
+				apiKeyEntry := entry.APIKeyEntries[j]
+				id, _ := idGen.Next(
+					"commandcode:apikey",
+					apiKeyEntry.APIKey,
+					entry.BaseURL,
+					apiKeyEntry.ProxyURL,
+				)
+				response.APIKeyEntries[j] = openAICompatibilityAPIKeyWithAuthIndex{
+					OpenAICompatibilityAPIKey: apiKeyEntry,
+					AuthIndex:                 liveIndexByID[id],
+				}
+			}
 		}
-		out[i] = commandCodeKeyWithAuthIndex{
-			CommandCodeKey: entry,
-			AuthIndex:      authIndex,
-		}
+		out[i] = response
 	}
 	return out
 }

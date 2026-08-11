@@ -271,7 +271,7 @@ func resolveCommandCodeModelName(cfg *config.Config, auth *cliproxyauth.Auth, mo
 	}
 	apiKey := commandCodeAPIKey(auth)
 	for _, key := range cfg.CommandCodeKey {
-		if key.APIKey != apiKey {
+		if !key.MatchesCredential(apiKey, auth.ProxyURL) {
 			continue
 		}
 		for _, m := range key.Models {

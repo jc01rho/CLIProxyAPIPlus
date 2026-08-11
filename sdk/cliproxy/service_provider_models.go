@@ -78,10 +78,24 @@ func resolveNativeAPIKeyConfig[T nativeAPIKeyConfig](entries []T, auth *coreauth
 }
 
 func (s *Service) resolveConfigCommandCodeKey(auth *coreauth.Auth) *config.CommandCodeKey {
-	if s == nil || s.cfg == nil {
+	if s == nil || s.cfg == nil || auth == nil {
 		return nil
 	}
-	return resolveNativeAPIKeyConfig(s.cfg.CommandCodeKey, auth)
+	attrKey, attrBase := "", ""
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes[coreauth.AttributeAPIKey])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	for i := range s.cfg.CommandCodeKey {
+		entry := &s.cfg.CommandCodeKey[i]
+		if !entry.MatchesCredential(attrKey, auth.ProxyURL) {
+			continue
+		}
+		if attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase) {
+			return entry
+		}
+	}
+	return nil
 }
 
 func (s *Service) resolveConfigMistralKey(auth *coreauth.Auth) *config.MistralKey {

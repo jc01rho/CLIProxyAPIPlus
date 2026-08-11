@@ -1498,7 +1498,7 @@ func (h *Handler) PutCommandCodeKeys(c *gin.Context) {
 	for i := range arr {
 		entry := arr[i]
 		normalizeCommandCodeKey(&entry)
-		if entry.APIKey == "" {
+		if entry.APIKey == "" && len(entry.APIKeyEntries) == 0 {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -1512,15 +1512,16 @@ func (h *Handler) PutCommandCodeKeys(c *gin.Context) {
 
 func (h *Handler) PatchCommandCodeKey(c *gin.Context) {
 	type commandCodeKeyPatch struct {
-		APIKey         *string                    `json:"api-key"`
-		Priority       *int                       `json:"priority"`
-		Prefix         *string                    `json:"prefix"`
-		BaseURL        *string                    `json:"base-url"`
-		ProxyURL       *string                    `json:"proxy-url"`
-		Models         *[]config.CommandCodeModel `json:"models"`
-		Headers        *map[string]string         `json:"headers"`
-		ExcludedModels *[]string                  `json:"excluded-models"`
-		DisableCooling *bool                      `json:"disable-cooling"`
+		APIKey         *string                             `json:"api-key"`
+		Priority       *int                                `json:"priority"`
+		Prefix         *string                             `json:"prefix"`
+		BaseURL        *string                             `json:"base-url"`
+		ProxyURL       *string                             `json:"proxy-url"`
+		Models         *[]config.CommandCodeModel          `json:"models"`
+		Headers        *map[string]string                  `json:"headers"`
+		ExcludedModels *[]string                           `json:"excluded-models"`
+		DisableCooling *bool                               `json:"disable-cooling"`
+		APIKeyEntries  *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
 	}
 	var body struct {
 		Index *int                 `json:"index"`
@@ -1586,6 +1587,12 @@ func (h *Handler) PatchCommandCodeKey(c *gin.Context) {
 	}
 	if body.Value.DisableCooling != nil {
 		entry.DisableCooling = *body.Value.DisableCooling
+	}
+	if body.Value.APIKeyEntries != nil {
+		entry.APIKeyEntries = append(
+			[]config.OpenAICompatibilityAPIKey(nil),
+			(*body.Value.APIKeyEntries)...,
+		)
 	}
 	normalizeCommandCodeKey(&entry)
 	h.cfg.CommandCodeKey[targetIndex] = entry
@@ -2107,6 +2114,16 @@ func normalizeCommandCodeKey(entry *config.CommandCodeKey) {
 	entry.Prefix = strings.TrimSpace(entry.Prefix)
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+	nested := make([]config.OpenAICompatibilityAPIKey, 0, len(entry.APIKeyEntries))
+	for _, apiKeyEntry := range entry.APIKeyEntries {
+		apiKeyEntry.APIKey = strings.TrimSpace(apiKeyEntry.APIKey)
+		apiKeyEntry.ProxyURL = strings.TrimSpace(apiKeyEntry.ProxyURL)
+		apiKeyEntry.Comment = strings.TrimSpace(apiKeyEntry.Comment)
+		if apiKeyEntry.APIKey != "" {
+			nested = append(nested, apiKeyEntry)
+		}
+	}
+	entry.APIKeyEntries = nested
 	entry.BillingClass = config.BillingClass(normalizeBillingClassValue(string(entry.BillingClass)))
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
