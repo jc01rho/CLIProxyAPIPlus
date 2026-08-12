@@ -67,8 +67,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		auth = updatedAuth
 		reporter.UpdateAccessTokenFingerprint(auth)
 	}
-	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, false)
-	translated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false)
+	originalTranslated, translated := helps.TranslateRequestPairWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, req.Payload, false)
 
 	translated, err = helps.ApplyThinkingWithSourcePayload(translated, req.Payload, originalPayloadSource, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -301,8 +300,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		auth = updatedAuth
 		reporter.UpdateAccessTokenFingerprint(auth)
 	}
-	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true)
-	translated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true)
+	originalTranslated, translated := helps.TranslateRequestPairWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, req.Payload, true)
 
 	translated, err = helps.ApplyThinkingWithSourcePayload(translated, req.Payload, originalPayloadSource, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
