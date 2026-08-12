@@ -240,6 +240,11 @@ func applyThinking(ctx context.Context, body, sourceBody []byte, model string, f
 	modelInfo := resolvedModelInfo
 	if !modelInfoResolved {
 		modelInfo = registry.LookupModelInfo(baseModel, providerKey)
+		// Fallback to cross-channel static lookup for capability detection when
+		// provider-scoped lookup fails (e.g. a Kimi model routed via Claude).
+		if modelInfo == nil {
+			modelInfo = registry.LookupStaticModelInfo(baseModel)
+		}
 	}
 
 	// 3. Model capability check
