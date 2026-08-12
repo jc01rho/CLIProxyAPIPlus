@@ -547,11 +547,9 @@ func creditsUsed(c *gin.Context) bool {
 	return ok && flag
 }
 
-// extractDownstreamAPIKey returns a redacted description of the downstream
-// client's API key so operators can correlate 4xx/5xx responses with the
-// credential the caller presented. We never log the raw secret; we surface
-// the scheme (Bearer / X-Api-Key / Cookie) plus the first 4 chars and total
-// length so misconfigured credentials are still diagnosable without leaking.
+// extractDownstreamAPIKey returns the original downstream client's API key so
+// operators can identify the exact configured credential that triggered a
+// WARN/ERROR access log.
 func extractDownstreamAPIKey(h http.Header) string {
 	if len(h) == 0 {
 		return ""
@@ -588,11 +586,7 @@ func extractDownstreamAPIKey(h http.Header) string {
 		if secret == "" {
 			return ""
 		}
-		preview := secret
-		if len(preview) > 4 {
-			preview = preview[:4]
-		}
-		return fmt.Sprintf("%s(%s...%dchars)", candidate.scheme, preview, len(secret))
+		return fmt.Sprintf("%s(%s)", candidate.scheme, secret)
 	}
 	return ""
 }

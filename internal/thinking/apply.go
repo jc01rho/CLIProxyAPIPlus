@@ -2,6 +2,7 @@
 package thinking
 
 import (
+	"context"
 	"strings"
 	"sync"
 
@@ -164,7 +165,7 @@ func IsUserDefinedModel(modelInfo *registry.ModelInfo) bool {
 //	result, err := thinking.ApplyThinking(body, "gemini-2.5-pro", "gemini", "gemini", "gemini")
 func ApplyThinking(body []byte, model string, fromFormat string, toFormat string, providerKey string) ([]byte, error) {
 	summaryConfig := ExtractSummaryConfig(body, toFormat)
-	return applyThinking(body, nil, model, fromFormat, toFormat, providerKey, nil, false, summaryConfig)
+	return applyThinking(context.Background(), body, nil, model, fromFormat, toFormat, providerKey, nil, false, summaryConfig)
 }
 
 // ApplyThinkingWithSummary applies canonical thinking effort while preserving
@@ -173,7 +174,13 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 // a target Claude body can temporarily lack display while disabled thinking is
 // being rewritten by a model suffix.
 func ApplyThinkingWithSummary(body []byte, model string, fromFormat string, toFormat string, providerKey string, summaryConfig SummaryConfig) ([]byte, error) {
-	return applyThinking(body, nil, model, fromFormat, toFormat, providerKey, nil, false, summaryConfig)
+	return ApplyThinkingWithSummaryContext(context.Background(), body, model, fromFormat, toFormat, providerKey, summaryConfig)
+}
+
+// ApplyThinkingWithSummaryContext applies thinking while preserving request
+// context for validation warnings.
+func ApplyThinkingWithSummaryContext(ctx context.Context, body []byte, model string, fromFormat string, toFormat string, providerKey string, summaryConfig SummaryConfig) ([]byte, error) {
+	return applyThinking(ctx, body, nil, model, fromFormat, toFormat, providerKey, nil, false, summaryConfig)
 }
 
 // ApplyThinkingWithModelInfo applies thinking with the exact configured model
@@ -191,10 +198,16 @@ func ApplyThinkingWithModelInfo(body, sourceBody []byte, model string, fromForma
 // definition with a summary intent already resolved across source translation
 // and plugin normalization.
 func ApplyThinkingWithModelInfoAndSummary(body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, modelInfo *registry.ModelInfo, summaryConfig SummaryConfig) ([]byte, error) {
-	return applyThinking(body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, true, summaryConfig)
+	return ApplyThinkingWithModelInfoAndSummaryContext(context.Background(), body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, summaryConfig)
 }
 
-func applyThinking(body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, resolvedModelInfo *registry.ModelInfo, modelInfoResolved bool, summaryConfig SummaryConfig) ([]byte, error) {
+// ApplyThinkingWithModelInfoAndSummaryContext applies configured model thinking
+// while preserving request context for validation warnings.
+func ApplyThinkingWithModelInfoAndSummaryContext(ctx context.Context, body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, modelInfo *registry.ModelInfo, summaryConfig SummaryConfig) ([]byte, error) {
+	return applyThinking(ctx, body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, true, summaryConfig)
+}
+
+func applyThinking(ctx context.Context, body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, resolvedModelInfo *registry.ModelInfo, modelInfoResolved bool, summaryConfig SummaryConfig) ([]byte, error) {
 	providerFormat := strings.ToLower(strings.TrimSpace(toFormat))
 	if modelInfoResolved && providerFormat == "openai-response" {
 		providerFormat = "codex"
@@ -303,7 +316,7 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 	}
 
 	// 5. Validate and normalize configuration
-	validated, err := ValidateConfig(config, modelInfo, fromFormat, providerFormat, suffixResult.HasSuffix)
+	validated, err := ValidateConfigWithContext(ctx, config, modelInfo, fromFormat, providerFormat, suffixResult.HasSuffix)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"provider": providerFormat,

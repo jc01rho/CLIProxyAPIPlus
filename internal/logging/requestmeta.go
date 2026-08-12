@@ -17,6 +17,7 @@ type ClientRequestMetadata struct {
 	ClientIP      string
 	XForwardedFor string
 	UserAgent     string
+	APIKey        string
 }
 
 type responseStatusHolder struct {

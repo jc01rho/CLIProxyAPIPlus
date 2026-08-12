@@ -22,6 +22,7 @@ func TestGetContextWithCancelCapturesClientRequestMetadata(t *testing.T) {
 	ginCtx.Request.Header.Add("X-Forwarded-For", "203.0.113.5")
 	ginCtx.Request.Header.Add("X-Forwarded-For", "198.51.100.8")
 	ginCtx.Request.Header.Set("User-Agent", "test-client/1.0")
+	ginCtx.Set("userApiKey", "sk-raw-configured-key")
 
 	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
 	ctx, cancel := handler.GetContextWithCancel(nil, ginCtx, context.Background())
@@ -36,6 +37,9 @@ func TestGetContextWithCancelCapturesClientRequestMetadata(t *testing.T) {
 	}
 	if metadata.UserAgent != "test-client/1.0" {
 		t.Fatalf("UserAgent = %q", metadata.UserAgent)
+	}
+	if metadata.APIKey != "sk-raw-configured-key" {
+		t.Fatalf("APIKey = %q", metadata.APIKey)
 	}
 }
 
