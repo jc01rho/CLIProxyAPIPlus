@@ -435,14 +435,15 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 			}
 		}
 
-		// Downstream API key surface: on 4xx/5xx for AI API paths the routing
-		// layer may never have resolved to a provider, so the apiKey context
-		// value can be empty. Always read the Authorization / X-Api-Key
-		// headers from the live request so we can trace which downstream
-		// credential triggered the failure (e.g., "unknown provider for model
-		// glm-5" 502s where glm-5 isn't registered as any provider on the
-		// server, but the client believes it should be).
-		if isAIAPIPath(path) && statusCode >= http.StatusBadRequest && c.Request != nil {
+		// Downstream API key surface: on 4xx/5xx the routing layer may never
+		// have resolved to a provider, so the apiKey context value can be
+		// empty. This applies to AI API paths (e.g. "unknown provider for
+		// model glm-5" 502s) AND to non-AI 4xx such as 404 HEAD probes on
+		// arbitrary paths (e.g. "/api/hello") where the caller still
+		// presents a credential. Always read the Authorization / X-Api-Key
+		// headers from the live request so operators can trace which
+		// downstream credential triggered the failure regardless of path.
+		if statusCode >= http.StatusBadRequest && c.Request != nil {
 			if apiKeyValue := extractDownstreamAPIKey(c.Request.Header); apiKeyValue != "" {
 				logLine = logLine + " | downstream_api_key=" + apiKeyValue
 			}

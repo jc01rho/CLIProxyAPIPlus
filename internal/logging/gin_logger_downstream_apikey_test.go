@@ -50,6 +50,33 @@ func TestExtractDownstreamAPIKey_EmptyOrMalformed(t *testing.T) {
 	}
 }
 
+func TestGinLogrusLoggerIncludesRawDownstreamAPIKeyOnNonAIAPIPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const fullSecret = "sk-nonAiPathSecret-9f8a7c6b5d4e3f2a1b0c"
+	var logBuffer bytes.Buffer
+	log.SetOutput(&logBuffer)
+	log.SetLevel(log.WarnLevel)
+
+	engine := gin.New()
+	engine.Use(GinLogrusLogger(&config.Config{}))
+	// gin has no route for "/api/hello", so it responds 404 — exactly the
+	// probe pattern in the access log the operator asked to trace.
+	engine.HEAD("/api/hello", func(c *gin.Context) { c.Status(http.StatusNotFound) })
+
+	req := httptest.NewRequest(http.MethodHead, "/api/hello", nil)
+	req.Header.Set("Authorization", "Bearer "+fullSecret)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	logOutput := logBuffer.String()
+	t.Logf("404 non-AI log output: %s", logOutput)
+	if !strings.Contains(logOutput, "downstream_api_key=Bearer("+fullSecret+")") {
+		t.Fatalf("expected downstream API key in 404 non-AI log, got: %s", logOutput)
+	}
+}
+
 // End-to-end: a 502 + AI API path request must surface the downstream API
 // key, so operators can correlate "unknown provider for model glm-5"
 // errors with the credential the caller presented.
