@@ -107,6 +107,12 @@ attemptLoop:
 					return nil, err
 				}
 			}
+			if errTokens := antigravityEnsureRequestTokens(auth, requestPayload); errTokens != nil {
+				err = errTokens
+				antigravityRecordRequestOutcome(auth, http.StatusTooManyRequests, nil, errTokens)
+				return nil, err
+			}
+
 			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 			if errReq != nil {
 				err = errReq
@@ -121,6 +127,7 @@ attemptLoop:
 				lastStatus = 0
 				lastBody = nil
 				lastErr = errDo
+				antigravityRecordRequestOutcome(auth, 0, nil, errDo)
 				if idx+1 < len(baseURLs) {
 					log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 					continue
@@ -229,15 +236,18 @@ attemptLoop:
 					// Report the upstream failure rather than the cleanup failure.
 					logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 				}
-				err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
+				antigravityRecordRequestOutcome(auth, httpResp.StatusCode, bodyBytes, nil)
+			err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
 				return nil, err
 			}
 
-			// Stream success
-			if useCredits {
-				clearAntigravityCreditsFailureState(auth)
-			}
-			replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
+		// Stream success
+		antigravityRecordRequestOutcome(auth, httpResp.StatusCode, nil, nil)
+		antigravityConsumeRequestTokens(auth, requestPayload)
+		if useCredits {
+			clearAntigravityCreditsFailureState(auth)
+		}
+		replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
 			out := make(chan cliproxyexecutor.StreamChunk)
 			go func(resp *http.Response) {
 				defer close(out)
