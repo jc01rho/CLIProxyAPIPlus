@@ -161,14 +161,15 @@ func (m *Manager) RefreshSchedulerAll() {
 // ReconcileRegistryModelStates aligns per-model runtime state with the current
 // registry snapshot for one auth.
 //
-// Supported models are reset to a clean state because re-registration already
-// cleared the registry-side cooldown/suspension snapshot. ModelStates for
-// models that are no longer present in the registry are pruned entirely so
-// renamed/removed models cannot keep auth-level status stale. When the stored
-// auth has no ModelStates at all, seed entries are inserted for every model
-// the registry currently advertises (both canonical ID and alias) so
-// downstream consumers (e.g. weight-robin QueueState) can group by
-// alias/model from the first request instead of falling back to provider.
+// Registry re-registration clears registry-owned suppression state, but active
+// runtime cooldowns remain authoritative and must survive catalog refreshes and
+// auth-file watcher updates. ModelStates for models that are no longer present
+// in the registry are pruned entirely so renamed/removed models cannot keep
+// auth-level status stale. When the stored auth has no ModelStates at all, seed
+// entries are inserted for every model the registry currently advertises (both
+// canonical ID and alias) so downstream consumers (e.g. weight-robin
+// QueueState) can group by alias/model from the first request instead of
+// falling back to provider.
 func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID string) {
 	if m == nil || authID == "" {
 		return
@@ -195,7 +196,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 	if ok && auth != nil {
 		changed := false
 		if len(auth.ModelStates) > 0 {
-			for modelKey, state := range auth.ModelStates {
+			for modelKey := range auth.ModelStates {
 				baseModel := canonicalModelKey(modelKey)
 				if baseModel == "" {
 					baseModel = strings.TrimSpace(modelKey)
@@ -208,14 +209,6 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 					changed = true
 					continue
 				}
-				if state == nil {
-					continue
-				}
-				if modelStateIsClean(state) {
-					continue
-				}
-				resetModelState(state, now)
-				changed = true
 			}
 			if len(auth.ModelStates) == 0 {
 				auth.ModelStates = nil
