@@ -5157,6 +5157,31 @@ func TestStripTrailingClaudeAssistantMessages_NoTrailingAssistant(t *testing.T) 
 	}
 }
 
+func TestStripLatestClaudeAssistantToolUseTrailingWhitespace(t *testing.T) {
+	in := []byte(`{"messages":[` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"mcp_Read","input":{}},{"type":"text","text":" \n\t"}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"done"}]}` +
+		`]}`)
+
+	out := stripLatestClaudeAssistantToolUseTrailingWhitespace(in)
+	content := gjson.GetBytes(out, "messages.0.content").Array()
+	if len(content) != 1 || content[0].Get("type").String() != "tool_use" {
+		t.Fatalf("whitespace after latest assistant tool_use must be removed: %s", string(out))
+	}
+}
+
+func TestStripLatestClaudeAssistantToolUseTrailingWhitespace_PreservesMeaningfulText(t *testing.T) {
+	in := []byte(`{"messages":[` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"mcp_Read","input":{}},{"type":"text","text":"kept"}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"done"}]}` +
+		`]}`)
+
+	out := stripLatestClaudeAssistantToolUseTrailingWhitespace(in)
+	if !bytes.Equal(out, in) {
+		t.Fatalf("meaningful assistant text must be preserved: %s", string(out))
+	}
+}
+
 func TestSanitizeClaudeSystemText_RemovesOpenCodeBranding(t *testing.T) {
 	in := "You are OpenCode, a coding agent.\n\nKeep responses concise.\n\nSee opencode.ai/docs for more."
 	out := sanitizeClaudeSystemText(in)
@@ -5231,6 +5256,7 @@ func TestClaudeOAuthGoldenParity_Cortexkit(t *testing.T) {
 	const version = "2.1.177"
 	runPipeline := func(body []byte) []byte {
 		body = stripTrailingClaudeAssistantMessages(body)
+		body = stripLatestClaudeAssistantToolUseTrailingWhitespace(body)
 		body = checkSystemInstructionsWithSigningMode(body, false, true, version, "cli", "")
 		body = stripClaudeFastSpeed(body)
 		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, claudeToolPrefix, false)

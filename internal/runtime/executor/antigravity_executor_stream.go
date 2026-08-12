@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -16,6 +17,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -238,17 +240,17 @@ attemptLoop:
 					logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 				}
 				antigravityRecordRequestOutcome(auth, httpResp.StatusCode, bodyBytes, nil)
-			err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
+				err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
 				return nil, err
 			}
 
-		// Stream success
-		antigravityRecordRequestOutcome(auth, httpResp.StatusCode, nil, nil)
-		antigravityConsumeRequestTokens(auth, requestPayload)
-		if useCredits {
-			clearAntigravityCreditsFailureState(auth)
-		}
-		replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
+			// Stream success
+			antigravityRecordRequestOutcome(auth, httpResp.StatusCode, nil, nil)
+			antigravityConsumeRequestTokens(auth, requestPayload)
+			if useCredits {
+				clearAntigravityCreditsFailureState(auth)
+			}
+			replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
 			out := make(chan cliproxyexecutor.StreamChunk)
 			go func(resp *http.Response) {
 				defer close(out)
@@ -261,6 +263,9 @@ attemptLoop:
 				scanner.Buffer(nil, streamScannerBuffer)
 				claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 				var param any
+				terminalSeen := false
+				contentSeen := false
+				terminalFinishReason := ""
 				for scanner.Scan() {
 					line := scanner.Bytes()
 					helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -276,6 +281,24 @@ attemptLoop:
 					if payload == nil {
 						continue
 					}
+					if streamErr := antigravityEmbeddedStreamError(payload); streamErr != nil {
+						helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+						reporter.PublishFailure(ctx, streamErr)
+						select {
+						case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+						case <-ctx.Done():
+						}
+						return
+					}
+					if candidate := gjson.GetBytes(payload, "response.candidates.0"); candidate.Exists() {
+						if finishReason := strings.TrimSpace(candidate.Get("finishReason").String()); finishReason != "" {
+							terminalSeen = true
+							terminalFinishReason = finishReason
+						}
+						if antigravityCandidateHasContent(candidate) {
+							contentSeen = true
+						}
+					}
 
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
 						reporter.Publish(ctx, detail)
@@ -290,6 +313,26 @@ attemptLoop:
 							return
 						}
 					}
+				}
+				if !terminalSeen {
+					streamErr := fmt.Errorf("antigravity stream ended without a terminal candidate response")
+					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+					reporter.PublishFailure(ctx, streamErr)
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+					case <-ctx.Done():
+					}
+					return
+				}
+				if !contentSeen {
+					streamErr := fmt.Errorf("antigravity returned an empty response (%s)", terminalFinishReason)
+					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+					reporter.PublishFailure(ctx, streamErr)
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+					case <-ctx.Done():
+					}
+					return
 				}
 				tail := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("[DONE]"), &param, claudeInputTokens)
 				for i := range tail {
@@ -328,4 +371,62 @@ attemptLoop:
 	}
 
 	return nil, err
+}
+
+func antigravityEmbeddedStreamError(payload []byte) error {
+	root := gjson.ParseBytes(payload)
+	if errNode := root.Get("error"); errNode.Exists() {
+		status := strings.TrimSpace(errNode.Get("status").String())
+		message := strings.TrimSpace(errNode.Get("message").String())
+		code := strings.TrimSpace(errNode.Get("code").String())
+		labels := make([]string, 0, 2)
+		if status != "" {
+			labels = append(labels, status)
+		}
+		if code != "" {
+			labels = append(labels, "code "+code)
+		}
+		label := ""
+		if len(labels) > 0 {
+			label = " (" + strings.Join(labels, ", ") + ")"
+		}
+		if message != "" {
+			message = ": " + message
+		}
+		return fmt.Errorf("antigravity stream error%s%s", label, message)
+	}
+
+	feedback := root.Get("response.promptFeedback")
+	if !feedback.Exists() {
+		feedback = root.Get("promptFeedback")
+	}
+	reason := strings.TrimSpace(feedback.Get("blockReason").String())
+	message := strings.TrimSpace(feedback.Get("blockReasonMessage").String())
+	if reason == "" && message == "" {
+		return nil
+	}
+	label := ""
+	if reason != "" {
+		label = " (" + reason + ")"
+	}
+	if message != "" {
+		message = ": " + message
+	}
+	return fmt.Errorf("antigravity prompt blocked%s%s", label, message)
+}
+
+func antigravityCandidateHasContent(candidate gjson.Result) bool {
+	parts := candidate.Get("content.parts")
+	if !parts.IsArray() {
+		return false
+	}
+	hasContent := false
+	parts.ForEach(func(_, part gjson.Result) bool {
+		if strings.TrimSpace(part.Get("text").String()) != "" || part.Get("functionCall").Exists() || part.Get("inlineData").Exists() {
+			hasContent = true
+			return false
+		}
+		return true
+	})
+	return hasContent
 }

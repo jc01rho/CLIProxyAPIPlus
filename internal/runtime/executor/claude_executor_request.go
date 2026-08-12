@@ -1040,6 +1040,61 @@ func stripTrailingClaudeAssistantMessages(body []byte) []byte {
 	return out
 }
 
+// stripLatestClaudeAssistantToolUseTrailingWhitespace removes whitespace-only
+// text blocks after the newest assistant tool_use. Anthropic can treat those
+// blocks as assistant prefill on a later tool continuation even when the
+// request ends with a user tool_result.
+func stripLatestClaudeAssistantToolUseTrailingWhitespace(body []byte) []byte {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+	arr := messages.Array()
+	for messageIndex := len(arr) - 1; messageIndex >= 0; messageIndex-- {
+		message := arr[messageIndex]
+		if message.Get("role").String() != "assistant" {
+			continue
+		}
+		content := message.Get("content")
+		if !content.IsArray() {
+			return body
+		}
+		blocks := content.Array()
+		hasToolUse := false
+		for _, block := range blocks {
+			if block.Get("type").String() == "tool_use" {
+				hasToolUse = true
+				break
+			}
+		}
+		if !hasToolUse {
+			return body
+		}
+		kept := len(blocks)
+		for kept > 0 {
+			block := blocks[kept-1]
+			if block.Get("type").String() != "text" || strings.TrimSpace(block.Get("text").String()) != "" {
+				break
+			}
+			kept--
+		}
+		if kept == len(blocks) {
+			return body
+		}
+		contentPath := fmt.Sprintf("messages.%d.content", messageIndex)
+		updatedContent := "[]"
+		for i := 0; i < kept; i++ {
+			updatedContent, _ = sjson.SetRaw(updatedContent, "-1", blocks[i].Raw)
+		}
+		out, err := sjson.SetRawBytes(body, contentPath, []byte(updatedContent))
+		if err != nil {
+			return body
+		}
+		return out
+	}
+	return body
+}
+
 // claudeMessagesHaveUserRole reports whether the request body has at least one
 // message with role "user", mirroring cortexkit's billing-header guard in
 // rewriteRequestBody (only inject billing when a user message exists).
