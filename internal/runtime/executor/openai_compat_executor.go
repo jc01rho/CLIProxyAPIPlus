@@ -654,93 +654,156 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		var param any
 		var streamUsage helps.StreamUsageBuffer
 		var seenDone bool
+		var streamFailed bool
+		var streamAborted bool
+		var upstreamEvent string
+		var frameData [][]byte
 		defer streamUsage.Publish(ctx, reporter)
-		validStreamData := false
-		terminalCompletion := false
-		emitError := func(streamErr error) {
-			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-			reporter.PublishFailure(ctx, streamErr)
+
+		publishStreamError := func(streamErr statusErr, containsPayload bool) {
+			loggedErr := streamErr
+			if containsPayload {
+				loggedErr = statusErr{code: streamErr.code, msg: "upstream stream returned an error payload"}
+			}
+			helps.RecordAPIResponseError(ctx, e.cfg, loggedErr)
+			reporter.PublishFailure(ctx, loggedErr)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 			case <-ctx.Done():
 			}
+			streamFailed = true
 		}
 		if bootstrapErr != nil {
-			emitError(bootstrapErr)
+			if se, ok := bootstrapErr.(statusErr); ok {
+				publishStreamError(se, true)
+			} else {
+				publishStreamError(statusErr{code: http.StatusBadGateway, msg: bootstrapErr.Error()}, false)
+			}
 			return
 		}
-		processLine := func(line []byte) bool {
-			trimmedLine := bytes.TrimSpace(line)
-			streamUsage.ObserveOpenAIStream(line)
-			if len(trimmedLine) == 0 {
-				return true
+		// Transfer the first bootstrapped data frame into the SSE frame buffer so
+		// processFrame handles it before subsequent scanLoop iterations.
+		for _, line := range bootstrapLines {
+			trimmed := bytes.TrimSpace(line)
+			if bytes.HasPrefix(trimmed, []byte("data:")) {
+				frameData = append(frameData, bytes.Clone(bytes.TrimSpace(trimmed[len("data:"):])))
 			}
-			if bytes.HasPrefix(trimmedLine, []byte("data:")) {
-				data := bytes.TrimSpace(trimmedLine[len("data:"):])
-				if openAICompatHasStructuredError(data) {
-					emitError(statusErr{code: http.StatusBadGateway, msg: string(data)})
-					return false
-				}
-				if bytes.Equal(data, []byte("[DONE]")) {
-					terminalCompletion = true
-				} else if openAICompatUsableStreamData(data) {
-					validStreamData = true
-				}
-			}
-			if !bytes.HasPrefix(trimmedLine, []byte("data:")) {
-				if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
-					bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
+		}
+		processFrame := func() bool {
+			eventName := upstreamEvent
+			upstreamEvent = ""
+			dataLines := frameData
+			frameData = nil
+			if len(dataLines) == 0 {
+				if openAICompatErrorEvent(eventName) {
+					publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream error event ended without data"}, false)
 					return true
 				}
-				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
-					emitError(statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)})
-					return false
+				return false
+			}
+
+			if len(dataLines) > 1 {
+				for _, dataLine := range dataLines {
+					if bytes.Equal(bytes.TrimSpace(dataLine), []byte("[DONE]")) {
+						publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream stream ended with incomplete data before [DONE]"}, false)
+						return true
+					}
 				}
+			}
+			dataPayload := bytes.TrimSpace(bytes.Join(dataLines, []byte("\n")))
+			isDone := bytes.Equal(dataPayload, []byte("[DONE]"))
+			if isDone && openAICompatErrorEvent(eventName) {
+				publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream error event ended before [DONE]"}, false)
 				return true
 			}
-			// OpenAI SSE treats data: [DONE] as the terminal event. Process it
-			// once, then stop so trailing non-spec chunks (e.g. cost metadata
-			// after DONE) are not reordered ahead of the handler-emitted
-			// terminal marker.
-			dataPayload := bytes.TrimSpace(trimmedLine[len("data:"):])
-			isDone := bytes.Equal(dataPayload, []byte("[DONE]"))
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param, claudeInputTokens)
+			if !isDone && !json.Valid(dataPayload) {
+				publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream stream ended with incomplete SSE data frame"}, false)
+				return true
+			}
+			if !isDone {
+				if streamErr, isError := openAICompatStreamDataError(dataPayload, eventName); isError {
+					publishStreamError(streamErr, true)
+					return true
+				}
+			}
+
+			streamLine := append([]byte("data: "), dataPayload...)
+			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, streamLine, &param, claudeInputTokens)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 				case <-ctx.Done():
-					return false
+					streamAborted = true
+					return true
 				}
 			}
 			if isDone {
 				seenDone = true
-				return false
+				return true
 			}
-			return true
+			return false
 		}
-		for _, line := range bootstrapLines {
-			if !processLine(line) {
-				return
-			}
-		}
+
+	scanLoop:
 		for scanner.Scan() {
-			line := bytes.Clone(scanner.Bytes())
+			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if !processLine(line) {
-				return
+			streamUsage.ObserveOpenAIStream(line)
+			trimmedLine := bytes.TrimSpace(line)
+			if len(trimmedLine) == 0 {
+				if processFrame() {
+					break scanLoop
+				}
+				continue
+			}
+			if bytes.HasPrefix(trimmedLine, []byte("data:")) {
+				frameData = append(frameData, bytes.Clone(bytes.TrimSpace(trimmedLine[len("data:"):])))
+				continue
+			}
+			if bytes.HasPrefix(trimmedLine, []byte("event:")) {
+				upstreamEvent = strings.TrimSpace(string(trimmedLine[len("event:"):]))
+				continue
+			}
+			if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
+				continue
+			}
+			if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
+				publishStreamError(statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}, true)
+				break scanLoop
 			}
 		}
-		if errScan := scanner.Err(); errScan != nil {
-			emitError(errScan)
-			return
+		errScan := scanner.Err()
+		if errScan == nil && !seenDone && !streamFailed && !streamAborted && len(frameData) > 0 {
+			_ = processFrame()
 		}
-		if retriedDeveloperRole && validStreamData && terminalCompletion {
+		if retriedDeveloperRole && seenDone && !streamFailed && !streamAborted {
 			e.rememberDeveloperRoleFallback(developerRoleKey)
 		}
-		if !seenDone {
-			// Upstream closed without a terminal [DONE] marker. Feed a synthetic
-			// done marker through the translator so pending response.completed
-			// events are still emitted exactly once.
+		if streamFailed || streamAborted {
+			return
+		}
+		if errScan != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+			reporter.PublishFailure(ctx, errScan)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
+		} else if !seenDone {
+			// Responses clients require an explicit terminal event. Treat a clean
+			// upstream EOF without [DONE] as a failed stream instead of completing it.
+			if responseFormat == sdktranslator.FormatOpenAIResponse {
+				streamErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before [DONE]"}
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+				case <-ctx.Done():
+				}
+				return
+			}
+
+			// Other protocols retain compatibility with providers that omit [DONE].
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param, claudeInputTokens)
 			for i := range chunks {
 				select {
@@ -1183,7 +1246,6 @@ func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byt
 	return helps.SetStringIfDifferent(payload, "model", model)
 }
 
-// isMiMoModel reports whether the model name (after alias resolution) refers to a
 // Xiaomi MiMo-V series model that requires reasoning_content preservation in
 // multi-turn tool-call conversations.
 // Matching pattern: model name contains "mimo-v" (case-insensitive).
@@ -1496,6 +1558,43 @@ func normalizeToolResultIDsToString(body []byte) []byte {
 	}
 
 	return out
+}
+
+func openAICompatErrorEvent(eventName string) bool {
+
+	return strings.EqualFold(eventName, "error") || strings.EqualFold(eventName, "response.error") || strings.EqualFold(eventName, "response.failed")
+}
+
+func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, bool) {
+	if len(payload) == 0 || !json.Valid(payload) {
+		return statusErr{}, false
+	}
+	payloadType := gjson.GetBytes(payload, "type").String()
+	hasError := false
+	for _, path := range []string{"error", "response.error"} {
+		errorNode := gjson.GetBytes(payload, path)
+		if errorNode.Exists() && errorNode.Raw != "null" {
+			hasError = true
+			break
+		}
+	}
+	hasTopLevelErrorFields := gjson.GetBytes(payload, "code").Exists() && gjson.GetBytes(payload, "message").Exists()
+	if !hasError && !strings.EqualFold(payloadType, "error") && !strings.EqualFold(payloadType, "response.error") && !strings.EqualFold(payloadType, "response.failed") &&
+		!openAICompatErrorEvent(eventName) && !hasTopLevelErrorFields {
+		return statusErr{}, false
+	}
+
+	status := 0
+	for _, path := range []string{"status", "status_code", "error.status", "error.status_code", "response.error.status", "response.error.status_code"} {
+		status = int(gjson.GetBytes(payload, path).Int())
+		if status >= http.StatusBadRequest && status <= 599 {
+			break
+		}
+	}
+	if status < http.StatusBadRequest || status > 599 {
+		status = http.StatusBadGateway
+	}
+	return statusErr{code: status, msg: string(payload)}, true
 }
 
 type statusErr struct {
