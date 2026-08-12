@@ -2,12 +2,32 @@
 package thinking
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	log "github.com/sirupsen/logrus"
 )
+
+type requestLogMetadataKey struct{}
+
+type requestLogMetadata struct {
+	requestID string
+	apiKey    string
+}
+
+// WithRequestLogMetadata associates downstream request identity with thinking
+// validation warnings without coupling thinking to the HTTP logging package.
+func WithRequestLogMetadata(ctx context.Context, requestID, apiKey string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, requestLogMetadataKey{}, requestLogMetadata{
+		requestID: strings.TrimSpace(requestID),
+		apiKey:    strings.TrimSpace(apiKey),
+	})
+}
 
 // ValidateConfig validates a thinking configuration against model capabilities.
 //
@@ -36,6 +56,12 @@ import (
 //   - Level-only model + Budget config → Budget converted to Level
 //   - Hybrid model → preserve original format
 func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFormat, toFormat string, fromSuffix bool) (*ThinkingConfig, error) {
+	return ValidateConfigWithContext(context.Background(), config, modelInfo, fromFormat, toFormat, fromSuffix)
+}
+
+// ValidateConfigWithContext validates thinking configuration and associates
+// validation warnings with the downstream request that triggered them.
+func ValidateConfigWithContext(ctx context.Context, config ThinkingConfig, modelInfo *registry.ModelInfo, fromFormat, toFormat string, fromSuffix bool) (*ThinkingConfig, error) {
 	fromFormat, toFormat = strings.ToLower(strings.TrimSpace(fromFormat)), strings.ToLower(strings.TrimSpace(toFormat))
 	model := "unknown"
 	support := (*registry.ThinkingSupport)(nil)
@@ -177,7 +203,7 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	} else {
 		switch config.Mode {
 		case ModeBudget, ModeAuto, ModeNone:
-			config.Budget = clampBudget(config.Budget, modelInfo, toFormat)
+			config.Budget = clampBudget(ctx, config.Budget, modelInfo, toFormat)
 		}
 
 		// ModeNone for a model that cannot be disabled falls back to the lowest
@@ -314,7 +340,7 @@ func fallbackOpenAIThinkingTypeLevel(level ThinkingLevel, provider string, suppo
 }
 
 // clampBudget clamps a budget value to the model's supported range.
-func clampBudget(value int, modelInfo *registry.ModelInfo, provider string) int {
+func clampBudget(ctx context.Context, value int, modelInfo *registry.ModelInfo, provider string) int {
 	model := "unknown"
 	support := (*registry.ThinkingSupport)(nil)
 	if modelInfo != nil {
@@ -334,14 +360,23 @@ func clampBudget(value int, modelInfo *registry.ModelInfo, provider string) int 
 
 	min, max := support.Min, support.Max
 	if value == 0 && !support.ZeroAllowed {
-		log.WithFields(log.Fields{
+		fields := log.Fields{
 			"provider":       provider,
 			"model":          model,
 			"original_value": value,
 			"clamped_to":     min,
 			"min":            min,
 			"max":            max,
-		}).Warn("thinking: budget zero not allowed |")
+		}
+		if metadata, ok := ctx.Value(requestLogMetadataKey{}).(requestLogMetadata); ok {
+			if metadata.requestID != "" {
+				fields["request_id"] = metadata.requestID
+			}
+			if metadata.apiKey != "" {
+				fields["api_key"] = metadata.apiKey
+			}
+		}
+		log.WithFields(fields).Warn("thinking: budget zero not allowed |")
 		return min
 	}
 

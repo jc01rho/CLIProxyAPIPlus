@@ -445,6 +445,7 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			ClientIP:      requestClientIP(c.Request),
 			XForwardedFor: strings.TrimSpace(strings.Join(c.Request.Header.Values("X-Forwarded-For"), ", ")),
 			UserAgent:     strings.TrimSpace(c.Request.UserAgent()),
+			APIKey:        requestRawAPIKey(c),
 		})
 	}
 	newCtx = logging.WithResponseStatusHolder(newCtx)
@@ -510,6 +511,17 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 
 		cancel()
 	}
+}
+
+func requestRawAPIKey(ginCtx *gin.Context) string {
+	if ginCtx == nil {
+		return ""
+	}
+	value, exists := ginCtx.Get("userApiKey")
+	if !exists || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 // StartNonStreamingKeepAlive emits blank lines every 5 seconds while waiting for a non-streaming response.
