@@ -152,6 +152,7 @@ attemptLoop:
 				return resp, err
 			}
 			helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+			antigravityAttemptSessionRecovery(ctx, auth, bodyBytes)
 
 			if httpResp.StatusCode == http.StatusTooManyRequests {
 				decision := decideAntigravity429(bodyBytes)
@@ -396,10 +397,11 @@ attemptLoop:
 						log.Debugf("antigravity executor: read error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 						continue
 					}
-					err = errRead
-					return resp, err
-				}
+				err = errRead
+				return resp, err
+			}
 				helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+				antigravityAttemptSessionRecovery(ctx, auth, bodyBytes)
 				if httpResp.StatusCode == http.StatusTooManyRequests {
 					decision := decideAntigravity429(bodyBytes)
 

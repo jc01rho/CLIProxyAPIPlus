@@ -162,6 +162,7 @@ attemptLoop:
 					return nil, err
 				}
 				helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+				antigravityAttemptSessionRecovery(ctx, auth, bodyBytes)
 				if httpResp.StatusCode == http.StatusTooManyRequests {
 					decision := decideAntigravity429(bodyBytes)
 

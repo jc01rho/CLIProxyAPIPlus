@@ -144,6 +144,25 @@ func withStreamingIdleTimeout(rt http.RoundTripper) http.RoundTripper {
 	return idleTimeoutRoundTripper{next: rt, idleTimeout: defaultStreamingIdleTimeout}
 }
 
+// UnwrapStreamingIdleTimeout strips the streaming-idle-timeout wrapper that
+// NewProxyAwareHTTPClient layers on top of every transport. Callers that need
+// to inspect the underlying *http.Transport (e.g. antigravity's HTTP/1.1
+// fingerprint enforcement) must go through this helper instead of a raw type
+// assertion, otherwise the wrapper hides the concrete type.
+func UnwrapStreamingIdleTimeout(rt http.RoundTripper) http.RoundTripper {
+	for {
+		if u, ok := rt.(interface{ Unwrap() http.RoundTripper }); ok {
+			inner := u.Unwrap()
+			if inner == nil {
+				return rt
+			}
+			rt = inner
+			continue
+		}
+		return rt
+	}
+}
+
 type idleTimeoutRoundTripper struct {
 	next        http.RoundTripper
 	idleTimeout time.Duration

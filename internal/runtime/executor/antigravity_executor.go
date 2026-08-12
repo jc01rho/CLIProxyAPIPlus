@@ -311,27 +311,48 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
 	}
 
 	client := helps.NewProxyAwareHTTPClient(ctx, cfg, auth, timeout)
-	// Direct requests share an HTTP/1.1 pool only within the selected credential.
-	if client.Transport == nil {
+
+	// Strip the streaming-idle-timeout wrapper so we can inspect the concrete
+	// transport. NewProxyAwareHTTPClient layers this wrapper on every transport
+	// (default, proxy, or context-provided), which hides the underlying type from
+	// a raw *http.Transport assertion.
+	rt := helps.UnwrapStreamingIdleTimeout(client.Transport)
+
+	// A typed-nil *http.Transport (whether from context or from the helper's own
+	// default) still satisfies the interface nil check. Leaving it in place would
+	// make http.Client fall back to http.DefaultTransport, which advertises h2
+	// over ALPN and breaks the Antigravity fingerprint, so substitute the process
+	// base transport immediately.
+	if t, ok := rt.(*http.Transport); ok && t == nil {
+		client.Transport = antigravityHTTP11Transport(auth, antigravityBaseTransport)
+		return client
+	}
+
+	// Detect whether NewProxyAwareHTTPClient used a context-provided transport.
+	ctxHasTransport := false
+	if ctx != nil {
+		if crt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && crt != nil {
+			ctxHasTransport = true
+		}
+	}
+
+	// Direct requests (no proxy, no context roundtripper) share an HTTP/1.1 pool
+	// scoped to the selected credential. Replace the helper's default bounded
+	// transport with the credential-scoped base so repeated calls reuse the same
+	// TLS connection pool.
+	if !ctxHasTransport {
 		client.Transport = antigravityHTTP11Transport(auth, antigravityBaseTransport)
 		return client
 	}
 
 	// Preserve a context-provided transport while forcing HTTP/1.1. The cache key
 	// includes credential identity, so sharing the base does not share TLS pools.
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		// A RoundTripper that is not an *http.Transport owns its own protocol behavior.
+	if t, ok := rt.(*http.Transport); ok {
+		client.Transport = antigravityHTTP11Transport(auth, t)
 		return client
 	}
-	if transport == nil {
-		// A typed-nil *http.Transport still satisfies the interface nil check in
-		// NewProxyAwareHTTPClient. Leaving it in place would make http.Client fall back
-		// to http.DefaultTransport, which advertises h2 over ALPN and breaks the
-		// Antigravity fingerprint, so substitute the process base transport.
-		transport = antigravityBaseTransport
-	}
-	client.Transport = antigravityHTTP11Transport(auth, transport)
+
+	// A RoundTripper that is not an *http.Transport owns its own protocol behavior.
 	return client
 }
 

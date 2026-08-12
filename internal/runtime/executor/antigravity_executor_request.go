@@ -3,17 +3,12 @@ package executor
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
-	"time"
 
-	"github.com/google/uuid"
 	antigravity "github.com/router-for-me/CLIProxyAPI/v7/internal/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -501,63 +496,56 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 
 	if isImageModel {
 		template, _ = sjson.SetBytes(template, "requestId", generateImageGenRequestID())
-	} else if reqType != "web_search" {
-		template, _ = sjson.SetBytes(template, "requestId", generateRequestID())
-		sessionID := strings.TrimSpace(gjson.GetBytes(template, "request.sessionId").String())
-		if sessionID == "" && len(derivedSessionIDs) > 0 {
-			sessionID = strings.TrimSpace(derivedSessionIDs[0])
+	} else if reqType == "agent" {
+		// agy CLI 1.1.5/1.1.6 agent wire: requestId/sessionId/labels + field order.
+		// Conversation identity is keyed by the first user message (stable across
+		// turns) so conversationId/trajectoryId are reused, used_* accumulate, and
+		// the request timestamp stays monotonic — matching the reference session store.
+		// sessionId uses projectID as the stable workspace identity.
+		convKey := generateStableSessionID(template)
+		// Local fork extension: a caller-derived session id (e.g. from upstream
+		// request metadata) overrides the stable hash when present. This keeps the
+		// forked behavior compatible with the conductor's per-request id threading
+		// without disturbing the agy CLI wire format.
+		if len(derivedSessionIDs) > 0 && strings.TrimSpace(derivedSessionIDs[0]) != "" {
+			convKey = strings.TrimSpace(derivedSessionIDs[0])
 		}
-		if sessionID == "" {
-			sessionID = generateStableSessionID(payload)
-		}
-		template, _ = sjson.SetBytes(template, "request.sessionId", sessionID)
+		session, ts := antigravity.BeginAgyRequest(convKey, antigravity.Fnv1a64Signed(projectID), antigravityNowMs(), antigravityNewUUID)
+		template = antigravity.ApplyAgyAgentWireMetadata(template, session, modelName, ts)
 	}
+	// web_search: leave requestId/sessionId untouched (existing behavior).
 
 	template, _ = sjson.DeleteBytes(template, "request.safetySettings")
 	if toolConfig := gjson.GetBytes(template, "toolConfig"); toolConfig.Exists() && !gjson.GetBytes(template, "request.toolConfig").Exists() {
 		template, _ = sjson.SetRawBytes(template, "request.toolConfig", []byte(toolConfig.Raw))
 		template, _ = sjson.DeleteBytes(template, "toolConfig")
 	}
+
+	// Re-order after sjson mutations so field order matches agy CLI 1.1.6.
+	if reqType == "agent" && !isImageModel {
+		if req := gjson.GetBytes(template, "request"); req.Exists() {
+			template, _ = sjson.SetRawBytes(template, "request", antigravity.OrderAgyRequestPayload([]byte(req.Raw)))
+		}
+		template = antigravity.OrderAgyEnvelope(template)
+	}
 	return template
 }
 
-func generateRequestID() string {
-	return "agent-" + uuid.NewString()
-}
-
 func generateImageGenRequestID() string {
-	return fmt.Sprintf("image_gen/%d/%s/12", time.Now().UnixMilli(), uuid.NewString())
-}
-
-func generateSessionID() string {
-	randSourceMutex.Lock()
-	n := randSource.Int63n(9_000_000_000_000_000_000)
-	randSourceMutex.Unlock()
-	return "-" + strconv.FormatInt(n, 10)
+	return fmt.Sprintf("image_gen/%d/%s/12", antigravityNowMs(), antigravityNewUUID())
 }
 
 func generateStableSessionID(payload []byte) string {
-	contents := util.GetGJSONBytesNoCopy(payload, "request.contents")
-	if !contents.IsArray() {
-		return generateSessionID()
-	}
-
-	stableID := ""
-	contents.ForEach(func(_, content gjson.Result) bool {
-		if content.Get("role").String() != "user" {
-			return true
+	contents := gjson.GetBytes(payload, "request.contents")
+	if contents.IsArray() {
+		for _, content := range contents.Array() {
+			if content.Get("role").String() == "user" {
+				text := content.Get("parts.0.text").String()
+				if text != "" {
+					return antigravity.Fnv1a64Signed(text)
+				}
+			}
 		}
-		text := content.Get("parts.0.text").String()
-		if text == "" {
-			return true
-		}
-		hash := sha256.Sum256([]byte(text))
-		value := int64(binary.BigEndian.Uint64(hash[:8])) & 0x7FFFFFFFFFFFFFFF
-		stableID = "-" + strconv.FormatInt(value, 10)
-		return false
-	})
-	if stableID != "" {
-		return stableID
 	}
-	return generateSessionID()
+	return antigravity.Fnv1a64Signed("")
 }
