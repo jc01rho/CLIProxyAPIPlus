@@ -158,7 +158,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	bodyForUpstream := body
 	var oauthToolNamesReverseMap map[string]string
 	if oauthToken && cloaked {
-		bodyForUpstream = stripClaudeFastSpeed(bodyForUpstream)
 		mcpAliases := resolveClaudeMCPAliasOptions(ctx)
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 		_ = mcpAliases
