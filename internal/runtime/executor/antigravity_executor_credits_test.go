@@ -21,18 +21,16 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
+// resetAntigravityCreditsRetryState clears the package-level credits state
+// between tests. It empties each map in place instead of assigning a fresh
+// sync.Map, because credits hint refreshes run on background goroutines that
+// may still be writing these maps when a test's cleanup runs. Replacing the
+// variable is an unsynchronized write and races with them; Clear is not.
 func resetAntigravityCreditsRetryState() {
-	clearSyncMap(&antigravityCreditsFailureByAuth)
-	clearSyncMap(&antigravityShortCooldownByAuth)
-	clearSyncMap(&antigravityCreditsBalanceByAuth)
-	clearSyncMap(&antigravityCreditsHintRefreshByID)
-}
-
-func clearSyncMap(values *sync.Map) {
-	values.Range(func(key, _ any) bool {
-		values.Delete(key)
-		return true
-	})
+	antigravityCreditsFailureByAuth.Clear()
+	antigravityShortCooldownByAuth.Clear()
+	antigravityCreditsBalanceByAuth.Clear()
+	antigravityCreditsHintRefreshByID.Clear()
 }
 
 type closeSignalReadCloser struct {
@@ -514,7 +512,7 @@ func TestAntigravityAuthHasCredits(t *testing.T) {
 func TestAntigravityAuthHasCreditsRequiredHomeBalanceUsesKV(t *testing.T) {
 	resetAntigravityCreditsRetryState()
 	t.Cleanup(resetAntigravityCreditsRetryState)
-	authID := fmt.Sprintf("home-balance-auth-%d", time.Now().UnixNano())
+	const authID = "home-balance-auth"
 	client := newFakeAntigravityKVClient()
 	client.values[antigravityCreditsBalanceKey(authID)] = mustAntigravityJSON(t, antigravityCreditsBalance{
 		CreditAmount:    10,
@@ -661,8 +659,7 @@ func TestEnsureAccessToken_WarmTokenLoadsCreditsHint(t *testing.T) {
 	}
 	refreshDone := make(chan struct{})
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		// ensureAccessToken may use prod URL or daily URL depending on auth config
-		if !strings.Contains(req.URL.String(), "cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") {
+		if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
 			t.Fatalf("unexpected request url %s", req.URL.String())
 		}
 		return &http.Response{
@@ -722,6 +719,9 @@ func TestUpdateAntigravityCreditsBalance_LoadCodeAssistUserAgent(t *testing.T) {
 		}
 		if got := req.Header.Get("User-Agent"); got != loadCodeAssistUserAgent {
 			t.Fatalf("User-Agent = %q, want %q", got, loadCodeAssistUserAgent)
+		}
+		if got := req.Header.Get("X-Goog-Api-Client"); got != "" {
+			t.Fatalf("X-Goog-Api-Client = %q, want empty", got)
 		}
 		body, _ := io.ReadAll(req.Body)
 		_ = req.Body.Close()

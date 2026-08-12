@@ -16,7 +16,6 @@ import (
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -27,6 +26,8 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+const kimiReasoningUnavailable = "[reasoning unavailable]"
 
 // KimiExecutor is a stateless executor for Kimi API using OpenAI-compatible chat completions.
 type KimiExecutor struct {
@@ -86,11 +87,6 @@ func (e *KimiExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
-		if auth != nil && auth.ID == "" {
-			clientID := "kimi-executor-" + auth.EnsureIndex()
-			registry.GetGlobalRegistry().RegisterClient(clientID, "kimi", registry.GetKimiModels())
-			defer registry.GetGlobalRegistry().UnregisterClient(clientID)
-		}
 		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
 		preparedReq, replayScope := prepareKimiThinkingReplayRequest(ctx, req, opts)
 		claudeResp, errExecute := e.ClaudeExecutor.Execute(ctx, auth, preparedReq, opts)
@@ -132,8 +128,6 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	if err != nil {
 		return resp, err
 	}
-
-	body = stripKimiUnsupportedFields(body)
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
@@ -212,11 +206,6 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
-		if auth != nil && auth.ID == "" {
-			clientID := "kimi-executor-" + auth.EnsureIndex()
-			registry.GetGlobalRegistry().RegisterClient(clientID, "kimi", registry.GetKimiModels())
-			defer registry.GetGlobalRegistry().UnregisterClient(clientID)
-		}
 		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
 		preparedReq, replayScope := prepareKimiThinkingReplayRequest(ctx, req, opts)
 		claudeResult, errExecute := e.ClaudeExecutor.ExecuteStream(ctx, auth, preparedReq, opts)
@@ -256,8 +245,6 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	if err != nil {
 		return nil, err
 	}
-
-	body = stripKimiUnsupportedFields(body)
 
 	body, err = sjson.SetBytes(body, "stream_options.include_usage", true)
 	if err != nil {
@@ -423,7 +410,7 @@ func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {
 			reasoning := msg.Get("reasoning_content")
 			if reasoning.Exists() {
 				reasoningText := reasoning.String()
-				if strings.TrimSpace(reasoningText) != "" {
+				if isUsableKimiReasoning(reasoningText) {
 					latestReasoning = reasoningText
 					hasLatestReasoning = true
 				}
@@ -433,7 +420,7 @@ func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {
 			if toolCalls.Exists() && toolCalls.IsArray() {
 				toolCallItems := toolCalls.Array()
 				if len(toolCallItems) > 0 {
-					if !reasoning.Exists() || strings.TrimSpace(reasoning.String()) == "" {
+					if !reasoning.Exists() || !isUsableKimiReasoning(reasoning.String()) {
 						patches = append(patches, messagePatch{
 							index:        msgIndex,
 							path:         "reasoning_content",
@@ -550,34 +537,6 @@ func shouldDropKimiAssistantMessage(msg gjson.Result) bool {
 	return isKimiAssistantContentEmpty(msg.Get("content"))
 }
 
-func fallbackAssistantReasoning(msg gjson.Result, hasLatest bool, latest string) string {
-	if hasLatest && strings.TrimSpace(latest) != "" {
-		return latest
-	}
-
-	content := msg.Get("content")
-	if content.Type == gjson.String {
-		if text := strings.TrimSpace(content.String()); text != "" {
-			return text
-		}
-	}
-	if content.IsArray() {
-		parts := make([]string, 0, len(content.Array()))
-		for _, item := range content.Array() {
-			text := strings.TrimSpace(item.Get("text").String())
-			if text == "" {
-				continue
-			}
-			parts = append(parts, text)
-		}
-		if len(parts) > 0 {
-			return strings.Join(parts, "\n")
-		}
-	}
-
-	return "[reasoning unavailable]"
-}
-
 func hasKimiToolCalls(msg gjson.Result) bool {
 	toolCalls := msg.Get("tool_calls")
 	return toolCalls.Exists() && toolCalls.IsArray() && len(toolCalls.Array()) > 0
@@ -634,6 +593,39 @@ func isKimiAssistantContentPartEmpty(part gjson.Result) bool {
 		return true
 	}
 	return strings.TrimSpace(part.Raw) == "{}"
+}
+
+func isUsableKimiReasoning(reasoning string) bool {
+	trimmed := strings.TrimSpace(reasoning)
+	return trimmed != "" && trimmed != kimiReasoningUnavailable
+}
+
+func fallbackAssistantReasoning(msg gjson.Result, hasLatest bool, latest string) string {
+	if hasLatest && isUsableKimiReasoning(latest) {
+		return latest
+	}
+
+	content := msg.Get("content")
+	if content.Type == gjson.String {
+		if text := strings.TrimSpace(content.String()); text != "" {
+			return text
+		}
+	}
+	if content.IsArray() {
+		parts := make([]string, 0, len(content.Array()))
+		for _, item := range content.Array() {
+			text := strings.TrimSpace(item.Get("text").String())
+			if text == "" {
+				continue
+			}
+			parts = append(parts, text)
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+
+	return kimiReasoningUnavailable
 }
 
 // Refresh refreshes the Kimi token using the refresh token.
@@ -807,26 +799,6 @@ func kimiCreds(a *cliproxyauth.Auth) (token string) {
 		}
 	}
 	return ""
-}
-
-// stripKimiUnsupportedFields removes fields that Kimi API does not support.
-func stripKimiUnsupportedFields(payload []byte) []byte {
-	// Kimi API does not support these OpenAI-compatible fields
-	paths := []string{
-		"interleaved",
-		"reasoning",
-		"reasoningSummary",
-		"reasoning_effort",
-		"include",
-		"verbosity",
-	}
-	for _, path := range paths {
-		updated, err := sjson.DeleteBytes(payload, path)
-		if err == nil {
-			payload = updated
-		}
-	}
-	return payload
 }
 
 // stripKimiPrefix removes the "kimi-" prefix from model names for the upstream API.
