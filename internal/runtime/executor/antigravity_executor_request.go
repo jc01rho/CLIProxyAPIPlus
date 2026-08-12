@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	antigravity "github.com/router-for-me/CLIProxyAPI/v7/internal/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -58,6 +59,16 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID, derivedSessionIDs...)
 
+	// Local-only Antigravity execution-time payload hardening: cross-model sanitizer +
+	// Claude/Gemini transforms + function declaration normalization. These run BEFORE
+	// schema sanitization in 4ccff390; restored after the upstream executor split.
+	var errTransform error
+	payload, errTransform = antigravityApplyPackagePayloadTransforms(modelName, payload)
+	if errTransform != nil {
+		return nil, errTransform
+	}
+	payload = antigravityNormalizeFunctionDeclarationsForExecutor(payload)
+
 	// Cap maxOutputTokens to model's max_completion_tokens from registry
 	if maxOut := gjson.GetBytes(payload, "request.generationConfig.maxOutputTokens"); maxOut.Exists() && maxOut.Type == gjson.Number {
 		if modelInfo := registry.LookupModelInfo(modelName, "antigravity"); modelInfo != nil && modelInfo.MaxCompletionTokens > 0 {
@@ -83,10 +94,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		}
 
 		payloadStrBytes := applyAntigravityNativeSignatureReplayIfNeeded(modelName, []byte(payloadStr))
-		bodyReader = bytes.NewReader(payloadStrBytes)
-		if e.cfg != nil && e.cfg.RequestLog {
-			payloadLog = append([]byte(nil), payloadStrBytes...)
-		}
+		payload = payloadStrBytes
 	} else {
 		if strings.Contains(modelName, "claude") {
 			payload, _ = sjson.SetBytes(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
@@ -95,10 +103,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		}
 
 		payload = applyAntigravityNativeSignatureReplayIfNeeded(modelName, payload)
-		bodyReader = bytes.NewReader(payload)
-		if e.cfg != nil && e.cfg.RequestLog {
-			payloadLog = append([]byte(nil), payload...)
-		}
 	}
 
 	// if useAntigravitySchema {
@@ -113,6 +117,14 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	// 		}
 	// 	}
 	// }
+
+	// CCH billing signing runs AFTER schema sanitization on the final payload,
+	// matching 4ccff390's SignRequestBody(requestBody) placement.
+	payload = []byte(antigravity.SignRequestBody(string(payload)))
+	bodyReader = bytes.NewReader(payload)
+	if e.cfg != nil && e.cfg.RequestLog {
+		payloadLog = append([]byte(nil), payload...)
+	}
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bodyReader)
 	if errReq != nil {

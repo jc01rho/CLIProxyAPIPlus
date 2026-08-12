@@ -8,14 +8,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	antigravity "github.com/router-for-me/CLIProxyAPI/v7/internal/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -743,4 +746,136 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)
+}
+
+
+// ===== Local-only Antigravity execution helpers (restored from 4ccff390) =====
+// These orchestration helpers were dropped during the upstream executor split
+// (monolithic executor → request/execute/stream separation). They wire the
+// cross-model sanitizer, Claude/Gemini transforms, function declaration
+// normalization, CCH billing signing, local token bucket, and health tracker
+// into the new split execution paths.
+func antigravityTrackerAccountIndex(auth *cliproxyauth.Auth) int {
+	if auth == nil {
+		return 0
+	}
+	seed := auth.EnsureIndex()
+	if seed == "" {
+		seed = strings.TrimSpace(auth.ID)
+	}
+	if seed == "" {
+		return 0
+	}
+	if len(seed) >= 8 {
+		if parsed, err := strconv.ParseUint(seed[:8], 16, 32); err == nil {
+			return int(parsed % 100000)
+		}
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return int(binary.BigEndian.Uint32(sum[:4]) % 100000)
+}
+func antigravityEstimateRequestTokenCost(_ []byte) float64 {
+	// Reference (cortexkit/antigravity-auth) always uses cost=1 per request.
+	// chars/4 was incorrect: long conversations (100K+ chars) produced cost=25K+,
+	// exceeding the MaxTokens=50 bucket and causing permanent exhaustion.
+	return 1
+}
+func antigravityEnsureRequestTokens(auth *cliproxyauth.Auth, payload []byte) error {
+	tracker := antigravity.GetTokenTracker()
+	cost := antigravityEstimateRequestTokenCost(payload)
+	if !tracker.HasTokens(antigravityTrackerAccountIndex(auth), cost) {
+		return statusErr{code: http.StatusTooManyRequests, msg: "antigravity local token bucket exhausted"}
+	}
+	return nil
+}
+func antigravityConsumeRequestTokens(auth *cliproxyauth.Auth, payload []byte) {
+	antigravity.GetTokenTracker().Consume(antigravityTrackerAccountIndex(auth), antigravityEstimateRequestTokenCost(payload))
+}
+func antigravityRecordRequestOutcome(auth *cliproxyauth.Auth, statusCode int, body []byte, err error) {
+	tracker := antigravity.GetHealthTracker()
+	accountIndex := antigravityTrackerAccountIndex(auth)
+	if err == nil && statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+		tracker.RecordSuccess(accountIndex)
+		return
+	}
+	if statusCode == http.StatusTooManyRequests {
+		tracker.RecordRateLimit(accountIndex)
+		return
+	}
+	if err != nil || statusCode != 0 {
+		tracker.RecordFailure(accountIndex)
+	}
+}
+func antigravityNormalizeFunctionDeclarationsForExecutor(payload []byte) []byte {
+	if !gjson.GetBytes(payload, "request.tools").Exists() {
+		return payload
+	}
+	tools := gjson.GetBytes(payload, "request.tools").Array()
+	if len(tools) == 0 {
+		return payload
+	}
+	normalized := make([]any, 0, len(tools))
+	for _, tool := range tools {
+		var toolMap map[string]any
+		if err := json.Unmarshal([]byte(tool.Raw), &toolMap); err != nil {
+			continue
+		}
+		if decls, ok := toolMap["functionDeclarations"].([]any); ok && len(decls) > 0 {
+			normalized = append(normalized, map[string]any{"function_declarations": decls})
+			continue
+		}
+		if decls, ok := toolMap["function_declarations"].([]any); ok && len(decls) > 0 {
+			normalized = append(normalized, map[string]any{"function_declarations": decls})
+			continue
+		}
+		normalized = append(normalized, toolMap)
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return payload
+	}
+	updated, err := sjson.SetRawBytes(payload, "request.tools", encoded)
+	if err != nil {
+		return payload
+	}
+	return updated
+}
+func antigravityApplyPackagePayloadTransforms(modelName string, payload []byte) ([]byte, error) {
+	if len(payload) == 0 {
+		return payload, nil
+	}
+	if result, err := antigravity.SanitizeCrossModelPayload(payload, antigravity.SanitizerOptions{TargetModel: modelName}); err != nil {
+		return payload, err
+	} else if result.Modified {
+		payload = result.Payload
+	}
+
+	request := gjson.GetBytes(payload, "request")
+	if !request.IsObject() {
+		return payload, nil
+	}
+
+	requestPayload := []byte(request.Raw)
+	if result, err := antigravity.SanitizeCrossModelPayload(requestPayload, antigravity.SanitizerOptions{TargetModel: modelName}); err != nil {
+		return payload, err
+	} else if result.Modified {
+		requestPayload = result.Payload
+	}
+	switch antigravity.GetTransformModelFamily(modelName) {
+	case antigravity.ModelFamilyClaude:
+		result, err := antigravity.ApplyClaudeTransforms(requestPayload, antigravity.ClaudeTransformOptions{Model: modelName})
+		if err != nil {
+			return payload, err
+		}
+		requestPayload = result.Payload
+	case antigravity.ModelFamilyGeminiPro, antigravity.ModelFamilyGeminiFlash:
+		if !strings.Contains(request.Raw, "parametersJsonSchema") {
+			result, err := antigravity.ApplyGeminiTransforms(requestPayload, antigravity.GeminiTransformOptions{Model: modelName})
+			if err != nil {
+				return payload, err
+			}
+			requestPayload = result.Payload
+		}
+	}
+	return sjson.SetRawBytes(payload, "request", requestPayload)
 }
