@@ -1,6 +1,9 @@
 package helps
 
 import (
+	"context"
+
+	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -16,13 +19,24 @@ func APIKeyModelIsCompat(req cliproxyexecutor.Request) bool {
 // ApplyRequestThinking preserves the registry lookup path unless the auth
 // manager bound an exact configured API-key model definition to this attempt.
 func ApplyRequestThinking(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, fromFormat, toFormat, provider string) ([]byte, error) {
+	return ApplyRequestThinkingWithContext(context.Background(), body, req, opts, fromFormat, toFormat, provider)
+}
+
+// ApplyRequestThinkingWithContext preserves request metadata for thinking
+// validation warnings emitted during provider execution.
+func ApplyRequestThinkingWithContext(ctx context.Context, body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, fromFormat, toFormat, provider string) ([]byte, error) {
+	ctx = thinking.WithRequestLogMetadata(
+		ctx,
+		internallogging.GetRequestID(ctx),
+		internallogging.GetClientRequestMetadata(ctx).APIKey,
+	)
 	originalSource := opts.OriginalRequest
 	if len(originalSource) == 0 {
 		originalSource = req.Payload
 	}
 	summaryConfig := translatedRequestSummaryConfig(body, req.Payload, originalSource, req.Model, fromFormat, toFormat)
 	if modelInfo, ok := cliproxyauth.ResolvedAPIKeyModelInfo(req); ok {
-		return thinking.ApplyThinkingWithModelInfoAndSummary(body, originalSource, req.Model, fromFormat, toFormat, provider, modelInfo, summaryConfig)
+		return thinking.ApplyThinkingWithModelInfoAndSummaryContext(ctx, body, originalSource, req.Model, fromFormat, toFormat, provider, modelInfo, summaryConfig)
 	}
-	return thinking.ApplyThinkingWithSummary(body, req.Model, fromFormat, toFormat, provider, summaryConfig)
+	return thinking.ApplyThinkingWithSummaryContext(ctx, body, req.Model, fromFormat, toFormat, provider, summaryConfig)
 }
