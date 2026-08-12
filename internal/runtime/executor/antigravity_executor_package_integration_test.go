@@ -234,6 +234,100 @@ func TestAntigravityExecute_RecoverableErrorInvalidatesProjectContext(t *testing
 	}
 }
 
+func TestAntigravityExecuteStream_SurfacesEmbeddedSSEError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"error\":{\"code\":429,\"message\":\"Gemini quota exhausted\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n")
+	}))
+	defer server.Close()
+
+	auth := &cliproxyauth.Auth{
+		ID:         "embedded-stream-error-auth",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"project_id":   "project-1",
+			"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	exec := NewAntigravityExecutor(&config.Config{})
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gemini-2.5-pro",
+		Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	chunk := <-result.Chunks
+	if chunk.Err == nil {
+		t.Fatalf("stream chunk error = nil, want embedded upstream error")
+	}
+	if !strings.Contains(chunk.Err.Error(), "RESOURCE_EXHAUSTED") || !strings.Contains(chunk.Err.Error(), "Gemini quota exhausted") {
+		t.Fatalf("stream chunk error = %q, want upstream status and message", chunk.Err)
+	}
+}
+
+func TestAntigravityExecuteStream_SurfacesPromptFeedback(t *testing.T) {
+	assertAntigravityStreamChunkError(t,
+		`data: {"response":{"promptFeedback":{"blockReason":"SAFETY","blockReasonMessage":"Blocked prompt"}}}`+"\n\n",
+		"SAFETY", "Blocked prompt",
+	)
+}
+
+func TestAntigravityExecuteStream_RejectsMissingTerminalCandidate(t *testing.T) {
+	assertAntigravityStreamChunkError(t, "", "without a terminal candidate")
+}
+
+func TestAntigravityExecuteStream_RejectsEmptyTerminalCandidate(t *testing.T) {
+	assertAntigravityStreamChunkError(t,
+		`data: {"response":{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":0}}}`+"\n\n",
+		"empty response", "STOP",
+	)
+}
+
+func assertAntigravityStreamChunkError(t *testing.T, responseBody string, wantParts ...string) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, responseBody)
+	}))
+	defer server.Close()
+
+	auth := &cliproxyauth.Auth{
+		ID:         "stream-error-auth",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"project_id":   "project-1",
+			"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	result, err := NewAntigravityExecutor(&config.Config{}).ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gemini-2.5-pro",
+		Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			break
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("stream chunk error = nil, want upstream stream failure")
+	}
+	for _, want := range wantParts {
+		if !strings.Contains(streamErr.Error(), want) {
+			t.Fatalf("stream chunk error = %q, want substring %q", streamErr, want)
+		}
+	}
+}
+
 func requestRawBody(t *testing.T, req *http.Request) string {
 	t.Helper()
 	raw, err := io.ReadAll(req.Body)

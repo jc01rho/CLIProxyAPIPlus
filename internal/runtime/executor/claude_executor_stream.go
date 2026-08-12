@@ -76,6 +76,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	if isClaudeOAuthToken(apiKey) {
 		body = stripTrailingClaudeAssistantMessages(body)
+		body = stripLatestClaudeAssistantToolUseTrailingWhitespace(body)
 	}
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
