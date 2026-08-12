@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"time"
 
-	internalantigravity "github.com/router-for-me/CLIProxyAPI/v7/internal/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -80,6 +79,9 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
 
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
+	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient = reporter.TrackHTTPClient(httpClient)
+
 	attempts := antigravityRetryAttempts(auth, e.cfg)
 
 attemptLoop:
@@ -96,10 +98,6 @@ attemptLoop:
 					helps.MarkCreditsUsed(ctx)
 				}
 			}
-			if errTokens := antigravityEnsureRequestTokens(auth, requestPayload); errTokens != nil {
-				antigravityRecordRequestOutcome(auth, http.StatusTooManyRequests, errTokens)
-				return nil, errTokens
-			}
 			replayScope := antigravityReasoningReplayScope{}
 			if antigravityUsesReasoningReplayCache(baseModel) {
 				var errReplay error
@@ -114,7 +112,7 @@ attemptLoop:
 				err = errReq
 				return nil, err
 			}
-			httpResp, errDo := e.doRequest(ctx, auth, httpReq)
+			httpResp, errDo := httpClient.Do(httpReq)
 			if errDo != nil {
 				helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 				if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -127,7 +125,6 @@ attemptLoop:
 					log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 					continue
 				}
-				antigravityRecordRequestOutcome(auth, 0, errDo)
 				err = errDo
 				return nil, err
 			}
@@ -158,8 +155,6 @@ attemptLoop:
 					return nil, err
 				}
 				helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
-				antigravityRecordRequestOutcome(auth, httpResp.StatusCode, nil)
-				antigravityAttemptSessionRecovery(auth, bodyBytes)
 				if httpResp.StatusCode == http.StatusTooManyRequests {
 					decision := decideAntigravity429(bodyBytes)
 
@@ -239,8 +234,6 @@ attemptLoop:
 			}
 
 			// Stream success
-			antigravityRecordRequestOutcome(auth, httpResp.StatusCode, nil)
-			antigravityConsumeRequestTokens(auth, requestPayload)
 			if useCredits {
 				clearAntigravityCreditsFailureState(auth)
 			}
@@ -305,9 +298,6 @@ attemptLoop:
 				} else {
 					if replayAccumulator != nil {
 						replayAccumulator.Commit(ctx)
-					}
-					if antigravityConversationKey(httpReq) != "" {
-						internalantigravity.CompleteAgyExecution(antigravityConversationKey(httpReq), antigravityNewUUID)
 					}
 					reporter.EnsurePublished(ctx)
 				}

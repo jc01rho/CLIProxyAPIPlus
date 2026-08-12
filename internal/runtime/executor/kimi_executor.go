@@ -801,6 +801,26 @@ func kimiCreds(a *cliproxyauth.Auth) (token string) {
 	return ""
 }
 
+// stripKimiUnsupportedFields removes fields that Kimi API does not support.
+func stripKimiUnsupportedFields(payload []byte) []byte {
+	// Kimi API does not support these OpenAI-compatible fields
+	paths := []string{
+		"interleaved",
+		"reasoning",
+		"reasoningSummary",
+		"reasoning_effort",
+		"include",
+		"verbosity",
+	}
+	for _, path := range paths {
+		updated, err := sjson.DeleteBytes(payload, path)
+		if err == nil {
+			payload = updated
+		}
+	}
+	return payload
+}
+
 // stripKimiPrefix removes the "kimi-" prefix from model names for the upstream API.
 func stripKimiPrefix(model string) string {
 	model = strings.TrimSpace(model)
