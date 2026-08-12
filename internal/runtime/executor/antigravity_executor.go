@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -78,6 +79,12 @@ func (e *AntigravityExecutor) obfuscateSensitiveWords(payload []byte) []byte {
 var (
 	antigravityBaseTransport = defaultAntigravityBaseTransport()
 	antigravityTransports    = helps.NewTransportCache[antigravityTransportKey](antigravityTransportCacheCapacity)
+)
+
+// Test hooks for deterministic agy wire golden tests.
+var (
+	antigravityNowMs   = func() int64 { return time.Now().UnixMilli() }
+	antigravityNewUUID = uuid.NewString
 )
 
 const (
