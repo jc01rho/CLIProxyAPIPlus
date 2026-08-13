@@ -201,6 +201,12 @@ func (k *KiroAuth) GetUsageLimits(ctx context.Context, tokenData *KiroTokenData)
 // ListAvailableModels retrieves available models from the CodeWhisperer API.
 // This method fetches the list of AI models available for the authenticated user.
 //
+// OmniRoute-aligned behavior:
+//   - origin=AI_EDITOR is sent first (universal call for Builder ID and IdC).
+//   - profileArn is added only on retry for desktop-style accounts that have one.
+//     Sending profileArn for Builder ID can yield 403.
+//   - The response body may use either "models" or "availableModels"; both are accepted.
+//
 // Parameters:
 //   - ctx: The context for the request
 //   - tokenData: The token data containing access token and profile ARN
@@ -209,40 +215,72 @@ func (k *KiroAuth) GetUsageLimits(ctx context.Context, tokenData *KiroTokenData)
 //   - []*KiroModel: The list of available models
 //   - error: An error if the request fails
 func (k *KiroAuth) ListAvailableModels(ctx context.Context, tokenData *KiroTokenData) ([]*KiroModel, error) {
-	queryParams := map[string]string{
-		"origin":     "AI_EDITOR",
-		"profileArn": tokenData.ProfileArn,
+	baseParams := map[string]string{
+		"origin": "AI_EDITOR",
 	}
 
-	body, err := k.makeRequest(ctx, pathListAvailableModels, tokenData, queryParams)
+	body, err := k.makeRequest(ctx, pathListAvailableModels, tokenData, baseParams)
+	if err != nil && tokenData != nil && tokenData.ProfileArn != "" {
+		retryParams := map[string]string{
+			"origin":     "AI_EDITOR",
+			"profileArn": tokenData.ProfileArn,
+		}
+		body, err = k.makeRequest(ctx, pathListAvailableModels, tokenData, retryParams)
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	var result struct {
-		Models []struct {
-			ModelID        string  `json:"modelId"`
-			ModelName      string  `json:"modelName"`
-			Description    string  `json:"description"`
-			RateMultiplier float64 `json:"rateMultiplier"`
-			RateUnit       string  `json:"rateUnit"`
-			TokenLimits    *struct {
-				MaxInputTokens int `json:"maxInputTokens"`
-			} `json:"tokenLimits"`
-		} `json:"models"`
+	models := parseKiroAvailableModels(body)
+	if len(models) == 0 {
+		return nil, fmt.Errorf("kiro: ListAvailableModels returned no models")
+	}
+	return models, nil
+}
+
+type kiroAvailableModelRaw struct {
+	ModelID        string  `json:"modelId"`
+	ModelName      string  `json:"modelName"`
+	Description    string  `json:"description"`
+	RateMultiplier float64 `json:"rateMultiplier"`
+	RateUnit       string  `json:"rateUnit"`
+	TokenLimits    *struct {
+		MaxInputTokens int `json:"maxInputTokens"`
+	} `json:"tokenLimits"`
+}
+
+// parseKiroAvailableModels parses the CodeWhisperer ListAvailableModels response.
+// Both "models" and "availableModels" payload keys are accepted; the first
+// non-empty wins. Duplicate IDs are dropped.
+func parseKiroAvailableModels(body []byte) []*KiroModel {
+	var raw struct {
+		Models          []kiroAvailableModelRaw `json:"models"`
+		AvailableModels []kiroAvailableModelRaw `json:"availableModels"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
 	}
 
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse models response: %w", err)
+	items := raw.Models
+	if len(items) == 0 {
+		items = raw.AvailableModels
 	}
 
-	models := make([]*KiroModel, 0, len(result.Models))
-	for _, m := range result.Models {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]*KiroModel, 0, len(items))
+	for _, m := range items {
+		if m.ModelID == "" {
+			continue
+		}
+		if _, dup := seen[m.ModelID]; dup {
+			continue
+		}
+		seen[m.ModelID] = struct{}{}
 		maxInputTokens := 0
 		if m.TokenLimits != nil {
 			maxInputTokens = m.TokenLimits.MaxInputTokens
 		}
-		models = append(models, &KiroModel{
+		out = append(out, &KiroModel{
 			ModelID:        m.ModelID,
 			ModelName:      m.ModelName,
 			Description:    m.Description,
@@ -251,8 +289,7 @@ func (k *KiroAuth) ListAvailableModels(ctx context.Context, tokenData *KiroToken
 			MaxInputTokens: maxInputTokens,
 		})
 	}
-
-	return models, nil
+	return out
 }
 
 // CreateTokenStorage creates a new KiroTokenStorage from token data.
