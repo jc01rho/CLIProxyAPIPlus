@@ -200,6 +200,7 @@ func openAICompatRejectsDeveloperRole(statusCode int, responseBody []byte) bool 
 		strings.Contains(combined, "invalid role") ||
 		strings.Contains(combined, "not one of") ||
 		strings.Contains(combined, "role must be one of") ||
+		strings.Contains(combined, "is not allowed") ||
 		strings.Contains(combined, "role is not supported")
 }
 
