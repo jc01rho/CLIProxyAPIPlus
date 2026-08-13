@@ -30,10 +30,14 @@ import (
 )
 
 const (
-	cursorAPIURL            = "https://api2.cursor.sh"
+	// Auth (poll/refresh) stays on api2.cursor.sh. AgentService Run / GetUsableModels
+	// moved to the regional agent host; posting Agent RPCs to api2 now returns
+	// Connect unauthenticated even with a valid session token.
+	cursorAgentURL          = "https://agentn.us.api5.cursor.sh"
+	cursorAgentHost         = "agentn.us.api5.cursor.sh"
 	cursorRunPath           = "/agent.v1.AgentService/Run"
 	cursorModelsPath        = "/agent.v1.AgentService/GetUsableModels"
-	cursorClientVersion     = "cli-2026.02.13-41ac335"
+	cursorClientVersion     = "cli-2026.05.01-eea359f"
 	cursorAuthType          = "cursor"
 	cursorHeartbeatInterval = 5 * time.Second
 	cursorSessionTTL        = 5 * time.Minute
@@ -185,6 +189,8 @@ func classifyCursorError(err error) error {
 	// Layer 2: fuzzy match for H2 errors and unstructured messages
 	msg := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(msg, "unauthenticated") || strings.Contains(msg, "unauthorized"):
+		return cursorStatusErr{code: 401, msg: err.Error()}
 	case strings.Contains(msg, "rate limit") || strings.Contains(msg, "quota") ||
 		strings.Contains(msg, "too many"):
 		return cursorStatusErr{code: 429, msg: err.Error()}
@@ -795,7 +801,7 @@ func openCursorH2Stream(accessToken string) (*cursorproto.H2Stream, error) {
 		"x-cursor-client-type":     "cli",
 		"x-request-id":             uuid.New().String(),
 	}
-	return cursorproto.DialH2Stream("api2.cursor.sh", headers)
+	return cursorproto.DialH2Stream(cursorAgentHost, headers)
 }
 
 func cursorH2Heartbeat(ctx context.Context, stream *cursorproto.H2Stream) {
@@ -1494,7 +1500,7 @@ func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	emptyReq := make([]byte, 0)
 
 	h2Req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		cursorAPIURL+cursorModelsPath, bytes.NewReader(emptyReq))
+		cursorAgentURL+cursorModelsPath, bytes.NewReader(emptyReq))
 	if err != nil {
 		log.Debugf("cursor: failed to create models request: %v", err)
 		return GetCursorFallbackModels()
@@ -1658,6 +1664,7 @@ func parseModelEntry(data []byte) *registry.ModelInfo {
 // GetCursorFallbackModels returns hardcoded fallback models.
 func GetCursorFallbackModels() []*registry.ModelInfo {
 	return []*registry.ModelInfo{
+		{ID: "composer-2.5", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Composer 2.5", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 		{ID: "composer-2", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Composer 2", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 		{ID: "claude-4-sonnet", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Claude 4 Sonnet", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 		{ID: "claude-3.5-sonnet", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Claude 3.5 Sonnet", ContextLength: 200000, MaxCompletionTokens: 8192},
