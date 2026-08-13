@@ -33,6 +33,8 @@ const (
 
 	// Cline represents the Cline AI provider identifier.
 	Cline = "cline"
+	// Cursor represents the Cursor AI provider identifier.
+	Cursor = "cursor"
 
 	// CommandCode represents the Command Code provider identifier.
 	CommandCode = "commandcode"

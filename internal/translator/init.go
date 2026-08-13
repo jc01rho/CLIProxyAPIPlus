@@ -32,6 +32,7 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/interactions"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/openai/chat-completions"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/openai/responses"
+	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/cursor/openai"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/claude"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/openai"
 )
