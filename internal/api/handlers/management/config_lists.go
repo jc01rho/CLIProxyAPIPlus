@@ -1632,7 +1632,7 @@ func (h *Handler) DeleteCommandCodeKey(c *gin.Context) {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.CommandCodeKey, 0, len(h.cfg.CommandCodeKey))
 			for _, v := range h.cfg.CommandCodeKey {
-				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+				if v.ContainsAPIKey(val) && strings.TrimSpace(v.BaseURL) == base {
 					continue
 				}
 				out = append(out, v)
@@ -1646,13 +1646,13 @@ func (h *Handler) DeleteCommandCodeKey(c *gin.Context) {
 		matchIndex := -1
 		matchCount := 0
 		for i := range h.cfg.CommandCodeKey {
-			if strings.TrimSpace(h.cfg.CommandCodeKey[i].APIKey) == val {
+			if h.cfg.CommandCodeKey[i].ContainsAPIKey(val) {
 				matchCount++
 			}
 		}
 		if matchCount == 1 {
 			for i := range h.cfg.CommandCodeKey {
-				if strings.TrimSpace(h.cfg.CommandCodeKey[i].APIKey) == val {
+				if h.cfg.CommandCodeKey[i].ContainsAPIKey(val) {
 					matchIndex = i
 					break
 				}
@@ -2152,6 +2152,7 @@ func normalizeCommandCodeKey(entry *config.CommandCodeKey) {
 		}
 	}
 	entry.APIKeyEntries = nested
+	config.FoldCommandCodeLegacyAPIKey(entry)
 	entry.BillingClass = config.BillingClass(normalizeBillingClassValue(string(entry.BillingClass)))
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)

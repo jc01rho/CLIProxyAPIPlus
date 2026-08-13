@@ -119,6 +119,32 @@ func (cfg *Config) GetOAuthEndpointOverride(provider string) OAuthEndpointConfig
 	return cfg.OAuthEndpointOverrides[strings.ToLower(strings.TrimSpace(provider))]
 }
 
+// FoldCommandCodeLegacyAPIKey makes api-key-entries the single source of truth
+// when any nested keys are present. A duplicated top-level api-key is dropped;
+// a unique top-level api-key is prepended as an entry so synthesizer does not
+// silently ignore it.
+func FoldCommandCodeLegacyAPIKey(entry *CommandCodeKey) {
+	if entry == nil {
+		return
+	}
+	legacy := strings.TrimSpace(entry.APIKey)
+	if legacy == "" || len(entry.APIKeyEntries) == 0 {
+		return
+	}
+	for i := range entry.APIKeyEntries {
+		if strings.TrimSpace(entry.APIKeyEntries[i].APIKey) == legacy {
+			entry.APIKey = ""
+			return
+		}
+	}
+	folded := OpenAICompatibilityAPIKey{
+		APIKey:   legacy,
+		ProxyURL: strings.TrimSpace(entry.ProxyURL),
+	}
+	entry.APIKeyEntries = append([]OpenAICompatibilityAPIKey{folded}, entry.APIKeyEntries...)
+	entry.APIKey = ""
+}
+
 func (cfg *Config) SanitizeCommandCodeKeys() {
 	if cfg == nil {
 		return
@@ -138,6 +164,7 @@ func (cfg *Config) SanitizeCommandCodeKeys() {
 			}
 		}
 		entry.APIKeyEntries = nested
+		FoldCommandCodeLegacyAPIKey(&entry)
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.BillingClass = normalizeBillingClass(entry.BillingClass)
 		entry.Headers = NormalizeHeaders(entry.Headers)

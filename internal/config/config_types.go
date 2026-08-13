@@ -538,12 +538,12 @@ func (m CodexModel) GetThinking() *registry.ThinkingSupport { return m.Thinking 
 
 // CommandCodeKey represents a CommandCode API credential.
 type CommandCodeKey struct {
-	APIKey         string             `yaml:"api-key" json:"api-key"`
+	APIKey         string             `yaml:"api-key,omitempty" json:"api-key,omitempty"`
 	Comment        string             `yaml:"comment,omitempty" json:"comment,omitempty"`
 	Priority       int                `yaml:"priority,omitempty" json:"priority,omitempty"`
 	Prefix         string             `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 	BaseURL        string             `yaml:"base-url" json:"base-url"`
-	ProxyURL       string             `yaml:"proxy-url" json:"proxy-url"`
+	ProxyURL       string             `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
 	BillingClass   BillingClass       `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
 	Models         []CommandCodeModel `yaml:"models" json:"models"`
 	Headers        map[string]string  `yaml:"headers,omitempty" json:"headers,omitempty"`
@@ -561,8 +561,24 @@ func (k CommandCodeKey) GetBaseURL() string  { return k.BaseURL }
 func (k CommandCodeKey) GetPrefix() string   { return k.Prefix }
 func (k CommandCodeKey) GetProxyURL() string { return k.ProxyURL }
 
-// MatchesCredential reports whether an auth credential belongs to this provider
-// entry, including credentials declared in APIKeyEntries.
+// ContainsAPIKey reports whether apiKey is the legacy top-level key or any
+// nested api-key-entries credential.
+func (k CommandCodeKey) ContainsAPIKey(apiKey string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return true
+	}
+	for i := range k.APIKeyEntries {
+		if strings.TrimSpace(k.APIKeyEntries[i].APIKey) == apiKey {
+			return true
+		}
+	}
+	return false
+}
+
 func (k CommandCodeKey) MatchesCredential(apiKey, proxyURL string) bool {
 	apiKey = strings.TrimSpace(apiKey)
 	proxyURL = strings.TrimSpace(proxyURL)
