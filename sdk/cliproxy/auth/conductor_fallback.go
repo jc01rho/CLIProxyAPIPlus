@@ -8,9 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
@@ -97,21 +100,62 @@ func (m *Manager) getFallbackMaxDepth() int {
 	return int(depth)
 }
 
-func (m *Manager) resolveFallbackModels(originalModel string) []string {
+// modelAccessPatternsFromContext recovers the authenticated API key's model
+// whitelist from the request-scoped gin context. Route fallback runs deep inside
+// the auth manager, long after the HTTP middleware that enforced the whitelist on
+// the originally requested model, so the policy has to be re-read here.
+func modelAccessPatternsFromContext(ctx context.Context) []string {
+	if ctx == nil {
+		return nil
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return nil
+	}
+	return sdkaccess.ModelAccessPatterns(ginCtx)
+}
+
+// fallbackModelAllowed reports whether a fallback target may be served to the
+// caller. A downstream API key restricted to a set of models must not reach an
+// unlisted model just because the requested one failed.
+func fallbackModelAllowed(patterns []string, fallbackModel string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	if sdkaccess.ModelAllowed(fallbackModel, patterns) {
+		return true
+	}
+	// Fallback entries may be registry aliases while the whitelist names the
+	// upstream model (or the reverse), so both identities are checked.
+	if resolved := resolveActualModelName(fallbackModel); resolved.isAlias && resolved.actual != "" {
+		return sdkaccess.ModelAllowed(resolved.actual, patterns)
+	}
+	return false
+}
+
+func (m *Manager) resolveFallbackModels(ctx context.Context, originalModel string) []string {
 	candidates := make([]string, 0)
 	seen := map[string]struct{}{originalModel: {}}
-	if fallback, ok := m.getFallbackModel(originalModel); ok {
-		if _, duplicate := seen[fallback]; !duplicate {
-			candidates = append(candidates, fallback)
-			seen[fallback] = struct{}{}
+	patterns := modelAccessPatternsFromContext(ctx)
+	appendCandidate := func(model string) {
+		if _, duplicate := seen[model]; duplicate {
+			return
 		}
+		seen[model] = struct{}{}
+		if !fallbackModelAllowed(patterns, model) {
+			logEntryWithRequestID(ctx).WithFields(log.Fields{
+				"requested_model": strings.TrimSpace(originalModel),
+				"fallback_model":  strings.TrimSpace(model),
+			}).Debug("fallback candidate skipped: model not allowed for this API key")
+			return
+		}
+		candidates = append(candidates, model)
+	}
+	if fallback, ok := m.getFallbackModel(originalModel); ok {
+		appendCandidate(fallback)
 	}
 	for _, chainModel := range m.getFallbackChain() {
-		if _, duplicate := seen[chainModel]; duplicate {
-			continue
-		}
-		candidates = append(candidates, chainModel)
-		seen[chainModel] = struct{}{}
+		appendCandidate(chainModel)
 	}
 	if maxDepth := m.getFallbackMaxDepth(); len(candidates) > maxDepth {
 		candidates = candidates[:maxDepth]
@@ -120,11 +164,11 @@ func (m *Manager) resolveFallbackModels(originalModel string) []string {
 }
 
 // ResolveProvidersForFallback returns the first fallback model with an available provider.
-func (m *Manager) ResolveProvidersForFallback(originalModel string) ([]string, string) {
+func (m *Manager) ResolveProvidersForFallback(ctx context.Context, originalModel string) ([]string, string) {
 	if m == nil {
 		return nil, ""
 	}
-	for _, fallbackModel := range m.resolveFallbackModels(originalModel) {
+	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel) {
 		providers := m.ProvidersForRouteModel(fallbackModel)
 		if len(providers) > 0 {
 			return providers, fallbackModel
@@ -340,7 +384,7 @@ func (m *Manager) executeWithRouteFallback(
 	if !m.shouldAllowRouteModelFallback(lastErr) {
 		return cliproxyexecutor.Response{}, lastErr
 	}
-	for _, fallbackModel := range m.resolveFallbackModels(originalModel) {
+	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel) {
 		if _, duplicate := attempted[fallbackModel]; duplicate {
 			continue
 		}
@@ -396,7 +440,7 @@ func (m *Manager) executeStreamWithRouteFallback(
 	if !m.shouldAllowRouteModelFallback(lastErr) {
 		return nil, lastErr
 	}
-	for _, fallbackModel := range m.resolveFallbackModels(originalModel) {
+	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel) {
 		if _, duplicate := attempted[fallbackModel]; duplicate {
 			continue
 		}

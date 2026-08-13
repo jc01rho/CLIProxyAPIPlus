@@ -213,7 +213,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(ctx context.Context, model
 		}
 	}
 	if len(providers) == 0 && h != nil && h.AuthManager != nil {
-		if fallbackProviders, fallbackModel := h.AuthManager.ResolveProvidersForFallback(baseModel); len(fallbackProviders) > 0 {
+		if fallbackProviders, fallbackModel := h.AuthManager.ResolveProvidersForFallback(ctx, baseModel); len(fallbackProviders) > 0 {
 			log.WithFields(log.Fields{
 				"requested_model":         modelName,
 				"base_model":              baseModel,
