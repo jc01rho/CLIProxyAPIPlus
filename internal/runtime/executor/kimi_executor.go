@@ -140,6 +140,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = normalizeKimiMessageRoles(body)
 	body, err = normalizeKimiToolMessageLinks(body)
 	if err != nil {
 		return resp, err
@@ -261,6 +262,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = normalizeKimiMessageRoles(body)
 	body, err = normalizeKimiToolMessageLinks(body)
 	if err != nil {
 		return nil, err
@@ -825,6 +827,31 @@ func stripKimiUnsupportedFields(payload []byte) []byte {
 		if err == nil {
 			payload = updated
 		}
+	}
+	return payload
+}
+
+// normalizeKimiMessageRoles rewrites messages[].role == "developer" to "system".
+// The Kimi API rejects the OpenAI "developer" role with
+// "Invalid request: role 'developer' is not allowed", so operator instructions
+// must be downgraded to the system role instead of being forwarded verbatim.
+func normalizeKimiMessageRoles(payload []byte) []byte {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return payload
+	}
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return payload
+	}
+	for index, msg := range messages.Array() {
+		if !strings.EqualFold(strings.TrimSpace(msg.Get("role").String()), "developer") {
+			continue
+		}
+		updated, err := sjson.SetBytes(payload, fmt.Sprintf("messages.%d.role", index), "system")
+		if err != nil {
+			return payload
+		}
+		payload = updated
 	}
 	return payload
 }

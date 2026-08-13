@@ -1218,7 +1218,7 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 
 func stripOpenAICompatProviderUnsupportedFields(provider string, compat *config.OpenAICompatibility, payload []byte) []byte {
 	if isKimiOpenAICompatProvider(provider, compat) {
-		return stripKimiUnsupportedFields(payload)
+		return normalizeKimiMessageRoles(stripKimiUnsupportedFields(payload))
 	}
 	return payload
 }
