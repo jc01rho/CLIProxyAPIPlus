@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 type openAICompatibilityRegistrationCache struct {
@@ -211,6 +212,8 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"kimi",
 		"xai",
 		"cline",
+		"kilo",
+		"kilo-gateway",
 		"openai-compatibility",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
@@ -238,6 +241,34 @@ func (s *Service) registerExecutorsForAuths(auths []*coreauth.Auth, forceReplace
 		}
 		s.registerExecutorForAuth(auth, forceReplace)
 	}
+}
+
+// ensureAnonymousAuths registers no-credential synthesized auths (kilo, kilo-gateway)
+// so the free-tier catalogs are visible even when no OAuth credential has been
+// connected. WithSkipPersist ensures they never write back to disk.
+func (s *Service) ensureAnonymousAuths(ctx context.Context) []*coreauth.Auth {
+	if s == nil || s.coreManager == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	anonymous := []*coreauth.Auth{
+		executor.NewKiloAnonymousAuth(),
+		executor.NewKiloGatewayAnonymousAuth(),
+	}
+	for _, auth := range anonymous {
+		if auth == nil || auth.ID == "" {
+			continue
+		}
+		if _, exists := s.coreManager.GetByID(auth.ID); exists {
+			continue
+		}
+		if _, errRegister := s.coreManager.Register(coreauth.WithSkipPersist(ctx), auth); errRegister != nil {
+			log.Warnf("failed to register anonymous auth %s: %v", auth.ID, errRegister)
+		}
+	}
+	return anonymous
 }
 
 func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
@@ -309,6 +340,10 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewXAIAutoExecutor(cfg))
 	case "cline":
 		s.coreManager.RegisterExecutor(executor.NewClineExecutor(cfg))
+	case "kilo", "kilocode":
+		s.coreManager.RegisterExecutor(executor.NewKiloExecutor(cfg))
+	case "kilo-gateway":
+		s.coreManager.RegisterExecutor(executor.NewKiloExecutorForProvider(cfg, "kilo-gateway"))
 	case "cursor":
 		s.coreManager.RegisterExecutor(executor.NewCursorExecutor(cfg))
 	default:

@@ -92,6 +92,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	if !homeEnabled {
+		s.ensureAnonymousAuths(coreauth.WithSkipPersist(ctx))
 		tokenResult, err := s.tokenProvider.Load(ctx, s.cfg)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return err

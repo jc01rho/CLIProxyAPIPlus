@@ -25,32 +25,115 @@ import (
 const (
 	kiloVersion      = "3.26.0"
 	kiloTesterHeader = "X-Kilocode-Tester"
+	kiloEditorHeader = "X-KiloCode-EditorName"
+
+	// KiloAnonymousAPIKey is the literal bearer sent when no real credential is
+	// available. Probed live: https://api.kilo.ai/api/openrouter/chat/completions
+	// accepts `Authorization: Bearer anonymous` for the free tier without signup.
+	KiloAnonymousAPIKey = "anonymous"
+
+	// KiloAnonymousAuthID identifies the synthesized no-credential auth used when
+	// callers route through the Kilo free tier without an OAuth credential.
+	KiloAnonymousAuthID = "kilo-anonymous"
+
+	// KiloGatewayAnonymousAuthID identifies the synthesized optional-auth entry
+	// for kilo-gateway's free catalog.
+	KiloGatewayAnonymousAuthID = "kilo-gateway-anonymous"
 )
 
 // KiloExecutor handles requests to Kilo API.
 type KiloExecutor struct {
-	cfg *config.Config
+	cfg        *config.Config
+	identifier string
 }
 
 // NewKiloExecutor creates a new Kilo executor instance.
 func NewKiloExecutor(cfg *config.Config) *KiloExecutor {
-	return &KiloExecutor{cfg: cfg}
+	return NewKiloExecutorForProvider(cfg, "kilo")
 }
 
-// Identifier returns the unique identifier for this executor.
-func (e *KiloExecutor) Identifier() string { return "kilo" }
+// NewKiloExecutorForProvider creates a Kilo executor bound to a specific
+// provider identifier. kilo-gateway shares the same request shape but uses a
+// different chat-completions path and optional auth.
+func NewKiloExecutorForProvider(cfg *config.Config, identifier string) *KiloExecutor {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		identifier = "kilo"
+	}
+	return &KiloExecutor{cfg: cfg, identifier: identifier}
+}
+
+// NewKiloAnonymousAuth returns a synthesized no-credential auth used to call
+// Kilo's free tier without a connected account. The auth is never persisted.
+func NewKiloAnonymousAuth() *cliproxyauth.Auth {
+	return newKiloAnonymousAuth("kilo", KiloAnonymousAuthID, KiloAnonymousAPIKey)
+}
+
+// NewKiloGatewayAnonymousAuth returns a synthesized optional-auth entry for the
+// kilo-gateway free catalog. The gateway answers without Authorization.
+func NewKiloGatewayAnonymousAuth() *cliproxyauth.Auth {
+	return newKiloAnonymousAuth("kilo-gateway", KiloGatewayAnonymousAuthID, "")
+}
+
+func newKiloAnonymousAuth(provider, id, token string) *cliproxyauth.Auth {
+	metadata := map[string]any{"type": provider}
+	if token != "" {
+		metadata["kilocodeToken"] = token
+	}
+	return &cliproxyauth.Auth{
+		ID:       id,
+		Provider: provider,
+		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth,
+			"kilo_anonymous":               "true",
+		},
+		Metadata: metadata,
+	}
+}
+
+func (e *KiloExecutor) kiloResolveAccessToken(auth *cliproxyauth.Auth) string {
+	token, _ := kiloCredentials(auth)
+	if token != "" && token != KiloAnonymousAPIKey {
+		return token
+	}
+	if e != nil && e.identifier == "kilo-gateway" {
+		return token
+	}
+	if token == "" {
+		return KiloAnonymousAPIKey
+	}
+	return token
+}
+func (e *KiloExecutor) Identifier() string {
+	if e == nil || e.identifier == "" {
+		return "kilo"
+	}
+	return e.identifier
+}
+
+func (e *KiloExecutor) chatCompletionsPath() string {
+	if e != nil && e.identifier == "kilo-gateway" {
+		return "/api/gateway/chat/completions"
+	}
+	return "/api/openrouter/chat/completions"
+}
 
 // PrepareRequest prepares the HTTP request before execution.
 func (e *KiloExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
 	if req == nil {
 		return nil
 	}
-	accessToken, _ := kiloCredentials(auth)
-	if strings.TrimSpace(accessToken) == "" {
-		return fmt.Errorf("kilo: missing access token")
-	}
+	accessToken := e.kiloResolveAccessToken(auth)
 
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	} else {
+		req.Header.Del("Authorization")
+	}
+	if req.Header.Get(kiloEditorHeader) == "" {
+		req.Header.Set(kiloEditorHeader, "CLIProxyAPIPlus")
+	}
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -84,12 +167,12 @@ func (e *KiloExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 
 	accessToken, orgID := kiloCredentials(auth)
 	if accessToken == "" {
-		return resp, fmt.Errorf("kilo: missing access token")
+		accessToken = e.kiloResolveAccessToken(auth)
 	}
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
-	endpoint := "/api/openrouter/chat/completions"
+	endpoint := e.chatCompletionsPath()
 
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -176,12 +259,12 @@ func (e *KiloExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 	accessToken, orgID := kiloCredentials(auth)
 	if accessToken == "" {
-		return nil, fmt.Errorf("kilo: missing access token")
+		accessToken = e.kiloResolveAccessToken(auth)
 	}
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
-	endpoint := "/api/openrouter/chat/completions"
+	endpoint := e.chatCompletionsPath()
 
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -346,123 +429,129 @@ func kiloCredentials(auth *cliproxyauth.Auth) (accessToken, orgID string) {
 	return accessToken, orgID
 }
 
-// FetchKiloModels fetches models from Kilo API.
+// FetchKiloModels fetches the live Kilo OpenRouter catalog. When no credential
+// is present the request still goes out with `Bearer anonymous` so the free
+// tier remains visible. Failures fall back to the static catalog.
 func FetchKiloModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
-	accessToken, orgID := kiloCredentials(auth)
-	if accessToken == "" {
-		log.Infof("kilo: no access token found, skipping dynamic model fetch (using static kilo/auto)")
-		return registry.GetKiloModels()
-	}
+	return fetchKiloModels(ctx, auth, cfg, "https://api.kilo.ai/api/openrouter/models", "kilo", registry.GetKiloModels())
+}
 
-	log.Debugf("kilo: fetching dynamic models (orgID: %s)", orgID)
+// FetchKiloGatewayModels fetches the live kilo-gateway catalog. Auth is
+// optional: the gateway answers without an Authorization header.
+func FetchKiloGatewayModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+	return fetchKiloModels(ctx, auth, cfg, "https://api.kilo.ai/api/gateway/models", "kilo-gateway", registry.GetKiloGatewayModels())
+}
+
+func fetchKiloModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, modelsURL, ownedBy string, fallback []*registry.ModelInfo) []*registry.ModelInfo {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	accessToken, orgID := kiloCredentials(auth)
+	if accessToken == "" && ownedBy == "kilo" {
+		accessToken = KiloAnonymousAPIKey
+	}
 
 	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.kilo.ai/api/openrouter/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
-		log.Warnf("kilo: failed to create model fetch request: %v", err)
-		return registry.GetKiloModels()
+		log.Warnf("%s: failed to create model fetch request: %v", ownedBy, err)
+		return fallback
 	}
 
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
 	if orgID != "" {
 		req.Header.Set("X-Kilocode-OrganizationID", orgID)
 	}
+	req.Header.Set(kiloEditorHeader, "CLIProxyAPIPlus")
 	req.Header.Set("User-Agent", "cli-proxy-kilo")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			log.Warnf("kilo: fetch models canceled: %v", err)
+			log.Warnf("%s: fetch models canceled: %v", ownedBy, err)
 		} else {
-			log.Warnf("kilo: using static models (API fetch failed: %v)", err)
+			log.Warnf("%s: using static models (API fetch failed: %v)", ownedBy, err)
 		}
-		return registry.GetKiloModels()
+		return fallback
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Warnf("kilo: failed to read models response: %v", err)
-		return registry.GetKiloModels()
+		log.Warnf("%s: failed to read models response: %v", ownedBy, err)
+		return fallback
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		log.Warnf("kilo: fetch models failed: status %d, body: %s", resp.StatusCode, string(body))
-		return registry.GetKiloModels()
+		log.Warnf("%s: fetch models failed: status %d, body: %s", ownedBy, resp.StatusCode, string(body))
+		return fallback
 	}
 
 	result := gjson.GetBytes(body, "data")
 	if !result.Exists() {
-		// Try root if data field is missing
 		result = gjson.ParseBytes(body)
 		if !result.IsArray() {
-			log.Debugf("kilo: response body: %s", string(body))
-			log.Warn("kilo: invalid API response format (expected array or data field with array)")
-			return registry.GetKiloModels()
+			log.Warnf("%s: invalid API response format (expected array or data field with array)", ownedBy)
+			return fallback
 		}
 	}
 
-	var dynamicModels []*registry.ModelInfo
 	now := time.Now().Unix()
-	count := 0
-	totalCount := 0
+	seen := make(map[string]struct{})
+	merged := make([]*registry.ModelInfo, 0, len(fallback)+8)
+	for _, model := range fallback {
+		if model == nil || model.ID == "" {
+			continue
+		}
+		if _, exists := seen[model.ID]; exists {
+			continue
+		}
+		seen[model.ID] = struct{}{}
+		merged = append(merged, model)
+	}
 
-	result.ForEach(func(key, value gjson.Result) bool {
-		totalCount++
-		id := value.Get("id").String()
-		pIdxResult := value.Get("preferredIndex")
-		preferredIndex := pIdxResult.Int()
-
-		// Filter models where preferredIndex > 0 (Kilo-curated models)
-		if preferredIndex <= 0 {
+	result.ForEach(func(_, value gjson.Result) bool {
+		id := strings.TrimSpace(value.Get("id").String())
+		if id == "" {
 			return true
 		}
-
-		// Check if it's free. We look for :free suffix, is_free flag, or zero pricing.
-		isFree := strings.HasSuffix(id, ":free") || id == "giga-potato" || value.Get("is_free").Bool()
-		if !isFree {
-			// Check pricing as fallback
-			promptPricing := value.Get("pricing.prompt").String()
-			if promptPricing == "0" || promptPricing == "0.0" {
-				isFree = true
-			}
-		}
-
-		if !isFree {
-			log.Debugf("kilo: skipping curated paid model: %s", id)
+		if _, exists := seen[id]; exists {
 			return true
 		}
-
-		log.Debugf("kilo: found curated model: %s (preferredIndex: %d)", id, preferredIndex)
-
-		dynamicModels = append(dynamicModels, &registry.ModelInfo{
-			ID:            id,
-			DisplayName:   value.Get("name").String(),
-			ContextLength: int(value.Get("context_length").Int()),
-			OwnedBy:       "kilo",
-			Type:          "kilo",
-			Object:        "model",
-			Created:       now,
+		seen[id] = struct{}{}
+		displayName := strings.TrimSpace(value.Get("name").String())
+		if displayName == "" {
+			displayName = id
+		}
+		merged = append(merged, &registry.ModelInfo{
+			ID:                  id,
+			DisplayName:         displayName,
+			ContextLength:       int(value.Get("context_length").Int()),
+			MaxCompletionTokens: int(value.Get("max_tokens").Int()),
+			OwnedBy:             ownedBy,
+			Type:                ownedBy,
+			Object:              "model",
+			Created:             now,
 		})
-		count++
 		return true
 	})
 
-	log.Debugf("kilo: fetched %d models from API, %d curated free (preferredIndex > 0)", totalCount, count)
-	if count == 0 && totalCount > 0 {
-		log.Warn("kilo: no curated free models found (check API response fields)")
+	if len(merged) == 0 {
+		return fallback
 	}
-
-	staticModels := registry.GetKiloModels()
-	// Always include kilo/auto (first static model)
-	allModels := append(staticModels[:1], dynamicModels...)
-
-	return allModels
+	return merged
 }
 
 func applyKiloHeaders(r *http.Request, token, orgID string, stream bool) {
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
 	if orgID != "" {
 		r.Header.Set("X-Kilocode-OrganizationID", orgID)
 	}
@@ -471,7 +560,7 @@ func applyKiloHeaders(r *http.Request, token, orgID string, stream bool) {
 	r.Header.Set("X-KiloCode-Version", kiloVersion)
 	r.Header.Set("User-Agent", "Kilo-Code/"+kiloVersion)
 	r.Header.Set(kiloTesterHeader, "SUPPRESS")
-	r.Header.Set("X-KiloCode-EditorName", "Visual Studio Code 1.96.0")
+	r.Header.Set(kiloEditorHeader, "CLIProxyAPIPlus")
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
 		r.Header.Set("Cache-Control", "no-cache")

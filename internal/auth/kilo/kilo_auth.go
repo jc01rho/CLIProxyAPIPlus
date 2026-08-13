@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-const (
-	// BaseURL is the base URL for the Kilo AI API.
+var (
+	// BaseURL is the base URL for the Kilo AI API. Tests may override it.
 	BaseURL = "https://api.kilo.ai/api"
 )
 
@@ -78,37 +78,73 @@ func (k *KiloAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceAuthResponse,
 }
 
 // PollForToken polls for the device flow completion.
+// HTTP semantics match OmniRoute #4019:
+//   202 pending, 403 denied, 410 expired, 200 {status:"approved", token, userEmail}.
 func (k *KiloAuth) PollForToken(ctx context.Context, code string) (*DeviceStatusResponse, error) {
-	ticker := time.NewTicker(5 * time.Second)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+
+	// Probe immediately so a just-approved code does not wait a full interval.
+	if status, done, err := k.pollOnce(ctx, code); done || err != nil {
+		return status, err
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-ticker.C:
-			resp, err := k.client.Get(BaseURL + "/device-auth/codes/" + code)
+			status, done, err := k.pollOnce(ctx, code)
 			if err != nil {
 				return nil, err
 			}
-			defer resp.Body.Close()
-
-			var data DeviceStatusResponse
-			if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-				return nil, err
-			}
-
-			switch data.Status {
-			case "approved":
-				return &data, nil
-			case "denied", "expired":
-				return nil, fmt.Errorf("device flow %s", data.Status)
-			case "pending":
-				continue
-			default:
-				return nil, fmt.Errorf("unknown status: %s", data.Status)
+			if done {
+				return status, nil
 			}
 		}
+	}
+}
+
+func (k *KiloAuth) pollOnce(ctx context.Context, code string) (*DeviceStatusResponse, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, BaseURL+"/device-auth/codes/"+code, nil)
+	if err != nil {
+		return nil, true, err
+	}
+	resp, err := k.client.Do(req)
+	if err != nil {
+		return nil, true, err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusAccepted: // 202
+		return nil, false, nil
+	case http.StatusForbidden: // 403
+		return nil, true, fmt.Errorf("device flow denied")
+	case http.StatusGone: // 410
+		return nil, true, fmt.Errorf("device flow expired")
+	case http.StatusOK:
+		var data DeviceStatusResponse
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			return nil, true, err
+		}
+		switch data.Status {
+		case "approved":
+			return &data, true, nil
+		case "denied":
+			return nil, true, fmt.Errorf("device flow denied")
+		case "expired":
+			return nil, true, fmt.Errorf("device flow expired")
+		case "pending", "":
+			return nil, false, nil
+		default:
+			return nil, true, fmt.Errorf("unknown status: %s", data.Status)
+		}
+	default:
+		return nil, true, fmt.Errorf("device flow poll failed: status %d", resp.StatusCode)
 	}
 }
 

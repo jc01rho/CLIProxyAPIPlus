@@ -23,6 +23,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
+	kiloauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kilo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -1029,6 +1030,137 @@ func (h *Handler) RequestCursorToken(c *gin.Context) {
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authParams.LoginURL, "state": state, "flow": "device"})
+}
+
+// RequestKiloToken implements GET /v0/management/kilo-auth-url.
+// Kilo uses a device-code flow (no local callback): POST /api/device-auth/codes
+// then poll GET /api/device-auth/codes/{code} until approved.
+func (h *Handler) RequestKiloToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	fmt.Println("Initializing Kilo authentication...")
+
+	state := fmt.Sprintf("kilo-%d", time.Now().UnixNano())
+	authSvc := kiloauth.NewKiloAuth()
+
+	deviceFlow, errStart := authSvc.InitiateDeviceFlow(ctx)
+	if errStart != nil {
+		log.Errorf("Failed to start Kilo device flow: %v", errStart)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start device authorization flow"})
+		return
+	}
+	authURL := strings.TrimSpace(deviceFlow.VerificationURL)
+	if authURL == "" {
+		log.Error("Kilo device flow returned empty verification URL")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start device authorization flow"})
+		return
+	}
+
+	RegisterOAuthSession(state, "kilo")
+
+	go func() {
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		defer cancelPoll()
+		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "kilo")
+
+		fmt.Println("Waiting for Kilo authentication...")
+		status, errWait := authSvc.PollForToken(pollCtx, deviceFlow.Code)
+		if errWait != nil {
+			if !IsOAuthSessionPending(state, "kilo") {
+				return
+			}
+			log.Errorf("Kilo authentication failed: %v", errWait)
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Authentication failed", errWait))
+			return
+		}
+		if !IsOAuthSessionPending(state, "kilo") {
+			return
+		}
+		if status == nil || strings.TrimSpace(status.Token) == "" {
+			log.Error("Kilo token poll returned empty access token")
+			SetOAuthSessionError(state, "Failed to exchange token")
+			return
+		}
+
+		email := strings.TrimSpace(status.UserEmail)
+		orgID := ""
+		model := ""
+		profile, errProfile := authSvc.GetProfile(pollCtx, status.Token)
+		if errProfile != nil {
+			log.Warnf("Kilo profile fetch failed: %v", errProfile)
+		} else if profile != nil {
+			if email == "" {
+				email = strings.TrimSpace(profile.Email)
+			}
+			if len(profile.Orgs) > 0 {
+				orgID = strings.TrimSpace(profile.Orgs[0].ID)
+			}
+		}
+		if defaults, errDefaults := authSvc.GetDefaults(pollCtx, status.Token, orgID); errDefaults != nil {
+			log.Warnf("Kilo defaults fetch failed: %v", errDefaults)
+		} else if defaults != nil {
+			model = strings.TrimSpace(defaults.Model)
+		}
+		if email == "" {
+			email = "kilo"
+		}
+
+		ts := &kiloauth.KiloTokenStorage{
+			Token:          status.Token,
+			OrganizationID: orgID,
+			Model:          model,
+			Email:          email,
+			Type:           "kilo",
+		}
+		fileName := kiloauth.CredentialFileName(email)
+		label := email
+
+		metadata := map[string]any{
+			"type":                   "kilo",
+			"kilocodeToken":          ts.Token,
+			"kilocodeOrganizationId": ts.OrganizationID,
+			"kilocodeModel":          ts.Model,
+			"email":                  email,
+			"auth_kind":              "oauth",
+		}
+
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "kilo",
+			FileName: fileName,
+			Label:    label,
+			Storage:  ts,
+			Metadata: metadata,
+			Attributes: map[string]string{
+				"auth_kind": "oauth",
+			},
+		}
+		if errGuard := guardOAuthSessionPendingForSave(state, "kilo"); errGuard != nil {
+			return
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save Kilo token to file: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save token to file")
+			return
+		}
+
+		CompleteOAuthSession(state)
+		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+		fmt.Println("You can now use Kilo services through this CLI")
+	}()
+
+	response := gin.H{"status": "ok", "url": authURL, "state": state, "flow": "device"}
+	if userCode := strings.TrimSpace(deviceFlow.Code); userCode != "" {
+		response["user_code"] = userCode
+	}
+	if deviceFlow.ExpiresIn > 0 {
+		response["expires_in"] = deviceFlow.ExpiresIn
+	} else {
+		response["expires_in"] = 300
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // watchOAuthSessionCancel cancels pollCtx once the OAuth session is no longer pending.
