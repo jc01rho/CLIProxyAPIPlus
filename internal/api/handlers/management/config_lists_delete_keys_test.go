@@ -167,6 +167,43 @@ func TestPutCommandCodeKeysPreservesNestedOnlyProvider(t *testing.T) {
 	}
 }
 
+func TestPutCommandCodeKeysFoldsDuplicateLegacyKeyWhenEntriesPresent(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg:            &config.Config{},
+		configFilePath: writeTestConfigFile(t),
+	}
+	body := []byte(`[{"api-key":"user_A","comment":"rkjnice@gmail.com,github","priority":4,"base-url":"https://api.commandcode.ai","api-key-entries":[{"api-key":"user_A"},{"api-key":"user_B","comment":"a6420@yonsei"}]}]`)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPut, "/v0/management/commandcode-api-key", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PutCommandCodeKeys(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	entry := h.cfg.CommandCodeKey[0]
+	if entry.APIKey != "" {
+		t.Fatalf("legacy APIKey = %q, want empty after fold", entry.APIKey)
+	}
+	if entry.Comment != "rkjnice@gmail.com,github" {
+		t.Fatalf("provider Comment = %q, want preserved", entry.Comment)
+	}
+	if got := len(entry.APIKeyEntries); got != 2 {
+		t.Fatalf("nested API keys len = %d, want 2", got)
+	}
+	if got := entry.APIKeyEntries[0].APIKey; got != "user_A" {
+		t.Fatalf("nested[0] API key = %q, want user_A", got)
+	}
+	if got := entry.APIKeyEntries[1].APIKey; got != "user_B" {
+		t.Fatalf("nested[1] API key = %q, want user_B", got)
+	}
+}
+
 func TestCommandCodeKeysWithAuthIndexIncludesNestedEntries(t *testing.T) {
 	t.Parallel()
 
