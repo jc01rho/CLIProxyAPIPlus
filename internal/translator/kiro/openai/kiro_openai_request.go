@@ -22,9 +22,10 @@ import (
 
 // KiroPayload is the top-level request structure for Kiro API
 type KiroPayload struct {
-	ConversationState KiroConversationState `json:"conversationState"`
-	ProfileArn        string                `json:"profileArn,omitempty"`
-	InferenceConfig   *KiroInferenceConfig  `json:"inferenceConfig,omitempty"`
+	ConversationState            KiroConversationState `json:"conversationState"`
+	ProfileArn                   string                `json:"profileArn,omitempty"`
+	InferenceConfig              *KiroInferenceConfig  `json:"inferenceConfig,omitempty"`
+	AdditionalModelRequestFields map[string]any        `json:"additionalModelRequestFields,omitempty"`
 }
 
 // KiroInferenceConfig contains inference parameters for the Kiro API.
@@ -232,14 +233,30 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 	// Convert OpenAI tools to Kiro format
 	kiroTools := convertOpenAIToolsToKiro(tools)
 
-	// Thinking mode implementation:
-	// Kiro API supports official thinking/reasoning mode via <thinking_mode> tag.
-	// When set to "enabled", Kiro returns reasoning content as official reasoningContentEvent
-	// rather than inline <thinking> tags in assistantResponseEvent.
-	// Use a conservative thinking budget to reduce latency/cost spikes in long sessions.
-	if thinkingEnabled {
-		thinkingHint := `<thinking_mode>enabled</thinking_mode>
-<max_thinking_length>16000</max_thinking_length>`
+	// Thinking mode: prompt tags stay available for existing models; the
+	// additionalModelRequestFields envelope is gated to OmniRoute's
+	// adaptive/native allowlists (claude-sonnet-5 / gpt-5.6-*).
+	effort := ""
+	if reasoning := gjson.GetBytes(openaiBody, "reasoning_effort"); reasoning.Exists() {
+		effort = reasoning.String()
+	}
+	if effort == "" {
+		if oc := gjson.GetBytes(openaiBody, "output_config.effort"); oc.Exists() {
+			effort = oc.String()
+		}
+	}
+	if effort == "" {
+		thinkingType := gjson.GetBytes(openaiBody, "thinking.type").String()
+		switch thinkingType {
+		case "adaptive":
+			effort = "high"
+		case "enabled":
+			effort = kirocommon.EffortFromThinkingBudget(gjson.GetBytes(openaiBody, "thinking.budget_tokens").Int())
+		}
+	}
+	thinkingPlan := kirocommon.PlanKiroThinking(modelID, thinkingEnabled, effort, maxTokens)
+	if thinkingPlan.InjectPrompt {
+		thinkingHint := kirocommon.ThinkingDirective(thinkingPlan.ThinkingLength)
 		if systemPrompt != "" {
 			systemPrompt = thinkingHint + "\n\n" + systemPrompt
 		} else {
@@ -314,8 +331,16 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 			CurrentMessage:  currentMessage,
 			History:         history,
 		},
-		ProfileArn:      profileArn,
-		InferenceConfig: inferenceConfig,
+		ProfileArn:                   profileArn,
+		InferenceConfig:              inferenceConfig,
+		AdditionalModelRequestFields: thinkingPlan.Fields,
+	}
+	if thinkingPlan.AdaptiveThinking && payload.InferenceConfig != nil {
+		payload.InferenceConfig.Temperature = 0
+		payload.InferenceConfig.TopP = 0
+		if payload.InferenceConfig.MaxTokens == 0 {
+			payload.InferenceConfig = nil
+		}
 	}
 
 	// Only set AgentContinuationID if client provided

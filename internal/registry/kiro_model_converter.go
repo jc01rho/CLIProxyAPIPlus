@@ -59,35 +59,33 @@ func ConvertKiroAPIModels(kiroModels []*KiroAPIModel) []*ModelInfo {
 
 	now := time.Now().Unix()
 	result := make([]*ModelInfo, 0, len(kiroModels))
+	seen := make(map[string]struct{}, len(kiroModels))
 
 	for _, km := range kiroModels {
-		// Skip nil models
-		if km == nil {
+		if km == nil || km.ModelID == "" {
 			continue
 		}
 
-		// Skip models without valid ID
-		if km.ModelID == "" {
-			continue
-		}
-
-		// Normalize the model ID to kiro-* format
 		normalizedID := normalizeKiroModelID(km.ModelID)
+		if normalizedID == "" {
+			continue
+		}
+		if _, ok := seen[normalizedID]; ok {
+			continue
+		}
+		seen[normalizedID] = struct{}{}
 
-		// Create ModelInfo with converted data
 		info := &ModelInfo{
-			ID:          normalizedID,
-			Object:      "model",
-			Created:     now,
-			OwnedBy:     "aws",
-			Type:        "kiro",
-			DisplayName: generateKiroDisplayName(km.ModelName, normalizedID),
-			Description: km.Description,
-			// Use MaxInputTokens from API if available, otherwise use default
+			ID:                  normalizedID,
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         generateKiroDisplayName(km.ModelName, normalizedID, km.RateMultiplier),
+			Description:         km.Description,
 			ContextLength:       getContextLength(km.MaxInputTokens),
 			MaxCompletionTokens: DefaultKiroMaxCompletionTokens,
-			// All Kiro models support thinking
-			Thinking: cloneThinkingSupport(DefaultKiroThinkingSupport),
+			Thinking:            cloneThinkingSupport(DefaultKiroThinkingSupport),
 		}
 
 		result = append(result, info)
@@ -214,6 +212,51 @@ func MergeWithStaticMetadata(dynamicModels, staticModels []*ModelInfo) []*ModelI
 	return result
 }
 
+// OverlayStaticMetadata applies static metadata onto live-discovered models
+// without appending static-only IDs. Live success therefore reflects the
+// per-account entitlement and does not reintroduce fabricated catalog entries.
+func OverlayStaticMetadata(dynamicModels, staticModels []*ModelInfo) []*ModelInfo {
+	if len(dynamicModels) == 0 {
+		return nil
+	}
+
+	staticMap := make(map[string]*ModelInfo, len(staticModels))
+	for _, sm := range staticModels {
+		if sm != nil && sm.ID != "" {
+			staticMap[sm.ID] = sm
+		}
+	}
+
+	seenIDs := make(map[string]struct{})
+	result := make([]*ModelInfo, 0, len(dynamicModels))
+	for _, dm := range dynamicModels {
+		if dm == nil || dm.ID == "" {
+			continue
+		}
+		if _, seen := seenIDs[dm.ID]; seen {
+			continue
+		}
+		seenIDs[dm.ID] = struct{}{}
+		if sm, exists := staticMap[dm.ID]; exists {
+			overlaid := cloneModelInfo(sm)
+			if overlaid == nil {
+				result = append(result, dm)
+				continue
+			}
+			if dm.ContextLength > 0 && (overlaid.ContextLength == 0 || dm.ContextLength > overlaid.ContextLength) {
+				overlaid.ContextLength = dm.ContextLength
+			}
+			if dm.DisplayName != "" {
+				overlaid.DisplayName = dm.DisplayName
+			}
+			result = append(result, overlaid)
+			continue
+		}
+		result = append(result, dm)
+	}
+	return result
+}
+
 // normalizeKiroModelID converts Kiro API model IDs to internal format.
 // Transformation rules:
 //   - Adds "kiro-" prefix if not present
@@ -246,21 +289,67 @@ func normalizeKiroModelID(modelID string) string {
 
 // generateKiroDisplayName creates a human-readable display name.
 // Uses the API-provided model name if available, otherwise generates from ID.
-func generateKiroDisplayName(modelName, normalizedID string) string {
+// Non-1.0 credit multipliers are appended as "(Nx credit)".
+func generateKiroDisplayName(modelName, normalizedID string, rateMultiplier float64) string {
+	base := ""
 	if modelName != "" {
-		return "Kiro " + modelName
-	}
-
-	// Generate from normalized ID by removing kiro- prefix and formatting
-	displayID := strings.TrimPrefix(normalizedID, "kiro-")
-	// Capitalize first letter of each word
-	words := strings.Split(displayID, "-")
-	for i, word := range words {
-		if len(word) > 0 {
-			words[i] = strings.ToUpper(word[:1]) + word[1:]
+		base = "Kiro " + modelName
+	} else {
+		displayID := strings.TrimPrefix(normalizedID, "kiro-")
+		words := strings.Split(displayID, "-")
+		for i, word := range words {
+			if len(word) > 0 {
+				words[i] = strings.ToUpper(word[:1]) + word[1:]
+			}
 		}
+		base = "Kiro " + strings.Join(words, " ")
 	}
-	return "Kiro " + strings.Join(words, " ")
+	if rateMultiplier > 0 && (rateMultiplier < 0.999 || rateMultiplier > 1.001) {
+		return base + " (" + formatKiroRate(rateMultiplier) + "x credit)"
+	}
+	return base
+}
+
+func formatKiroRate(rate float64) string {
+	s := trimFloat(rate)
+	s = strings.TrimRight(strings.TrimRight(s, "0"), ".")
+	if s == "" {
+		return "1"
+	}
+	return s
+}
+
+func trimFloat(rate float64) string {
+	// 1 decimal is enough for credit multipliers (0.4, 1.3, 2.2).
+	n := int(rate*10 + 0.5)
+	whole := n / 10
+	frac := n % 10
+	if frac == 0 {
+		return itoa(whole)
+	}
+	return itoa(whole) + "." + itoa(frac)
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 // generateAgenticDescription creates description for agentic variants.

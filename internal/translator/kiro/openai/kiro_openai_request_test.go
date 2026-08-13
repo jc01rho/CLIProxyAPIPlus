@@ -438,3 +438,58 @@ func TestFilterOrphanedToolResults_RemovesHistoryAndCurrentOrphans(t *testing.T)
 		t.Fatalf("expected current tool results to keep only keep-1, got: %+v", filteredCurrent)
 	}
 }
+func TestBuildKiroPayloadFromOpenAIAdaptiveAndNativeFields(t *testing.T) {
+	body := []byte(`{
+		"model": "claude-sonnet-5",
+		"reasoning_effort": "high",
+		"messages": [{"role":"user","content":"hi"}]
+	}`)
+	result, thinking := BuildKiroPayloadFromOpenAI(body, "claude-sonnet-5", "", "AI_EDITOR", false, false, nil, nil)
+	if !thinking {
+		t.Fatal("expected thinking enabled")
+	}
+	var payload KiroPayload
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.AdditionalModelRequestFields == nil {
+		t.Fatal("sonnet-5 missing additionalModelRequestFields")
+	}
+	if _, ok := payload.AdditionalModelRequestFields["output_config"]; !ok {
+		t.Fatalf("sonnet-5 fields = %#v", payload.AdditionalModelRequestFields)
+	}
+
+	gptBody := []byte(`{
+		"model": "gpt-5.6-sol",
+		"reasoning_effort": "max",
+		"messages": [{"role":"user","content":"hi"}]
+	}`)
+	gptResult, _ := BuildKiroPayloadFromOpenAI(gptBody, "gpt-5.6-sol", "", "AI_EDITOR", false, false, nil, nil)
+	var gptPayload KiroPayload
+	if err := json.Unmarshal(gptResult, &gptPayload); err != nil {
+		t.Fatalf("unmarshal gpt: %v", err)
+	}
+	if gptPayload.AdditionalModelRequestFields == nil {
+		t.Fatal("gpt-5.6 missing additionalModelRequestFields")
+	}
+	if _, ok := gptPayload.AdditionalModelRequestFields["reasoning"]; !ok {
+		t.Fatalf("gpt fields = %#v", gptPayload.AdditionalModelRequestFields)
+	}
+	if _, ok := gptPayload.AdditionalModelRequestFields["output_config"]; ok {
+		t.Fatal("gpt-5.6 must not receive Claude adaptive envelope")
+	}
+
+	legacy := []byte(`{
+		"model": "claude-sonnet-4.5",
+		"reasoning_effort": "high",
+		"messages": [{"role":"user","content":"hi"}]
+	}`)
+	legacyResult, _ := BuildKiroPayloadFromOpenAI(legacy, "claude-sonnet-4.5", "", "AI_EDITOR", false, false, nil, nil)
+	var legacyPayload KiroPayload
+	if err := json.Unmarshal(legacyResult, &legacyPayload); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if legacyPayload.AdditionalModelRequestFields != nil {
+		t.Fatalf("sonnet-4.5 must not attach envelope: %#v", legacyPayload.AdditionalModelRequestFields)
+	}
+}

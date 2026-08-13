@@ -164,6 +164,15 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = registry.GetKiloGatewayModels()
 		}
 		models = applyExcludedModels(models, excluded)
+	case "kiro":
+		models = executor.FetchKiroModels(ctx, a, s.cfg)
+		if len(models) == 0 {
+			models = registry.GetKiroModels()
+		}
+		models = applyExcludedModels(models, excluded)
+	case "amazonq":
+		models = registry.GetAmazonQModels()
+		models = applyExcludedModels(models, excluded)
 	case "cursor":
 		models = executor.FetchCursorModels(ctx, a, s.cfg)
 		if len(models) == 0 {
