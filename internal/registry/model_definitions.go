@@ -502,6 +502,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetKiroModels()
 	case "kilo", "kilocode":
 		return GetKiloModels()
+	case "kilo-gateway":
+		return GetKiloGatewayModels()
 	case "amazonq":
 		return GetAmazonQModels()
 	case "antigravity":

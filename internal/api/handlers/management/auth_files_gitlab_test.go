@@ -170,3 +170,22 @@ func TestNormalizeOAuthProvider_Cursor(t *testing.T) {
 		t.Fatalf("provider = %q, want cursor", provider)
 	}
 }
+func TestNormalizeOAuthProvider_Kilo(t *testing.T) {
+	provider, err := NormalizeOAuthProvider("kilo")
+	if err != nil {
+		t.Fatalf("NormalizeOAuthProvider returned error: %v", err)
+	}
+	if provider != "kilo" {
+		t.Fatalf("provider = %q, want kilo", provider)
+	}
+}
+
+func TestNormalizeOAuthProvider_KilocodeAlias(t *testing.T) {
+	provider, err := NormalizeOAuthProvider("kilocode")
+	if err != nil {
+		t.Fatalf("NormalizeOAuthProvider returned error: %v", err)
+	}
+	if provider != "kilo" {
+		t.Fatalf("provider = %q, want kilo", provider)
+	}
+}
