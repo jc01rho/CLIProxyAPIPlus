@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cline"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -952,6 +953,82 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		response["expires_in"] = deviceFlow.ExpiresIn
 	}
 	c.JSON(200, response)
+}
+
+// RequestCursorToken starts Cursor PKCE login and polls until the user authorizes.
+func (h *Handler) RequestCursorToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	fmt.Println("Initializing Cursor authentication...")
+
+	authParams, err := cursor.GenerateAuthParams()
+	if err != nil {
+		log.Errorf("Failed to generate Cursor authorization URL: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		return
+	}
+
+	state := fmt.Sprintf("csr-%d", time.Now().UnixNano())
+	RegisterOAuthSession(state, "cursor")
+
+	go func() {
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		defer cancelPoll()
+		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "cursor")
+
+		fmt.Println("Waiting for authentication...")
+		tokens, errWait := cursor.PollForAuth(pollCtx, authParams.UUID, authParams.Verifier)
+		if errWait != nil {
+			if !IsOAuthSessionPending(state, "cursor") {
+				return
+			}
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Authentication failed", errWait))
+			fmt.Printf("Authentication failed: %v\n", errWait)
+			return
+		}
+		if !IsOAuthSessionPending(state, "cursor") {
+			return
+		}
+
+		expiresAt := cursor.GetTokenExpiry(tokens.AccessToken)
+		sub := cursor.ParseJWTSub(tokens.AccessToken)
+		subHash := cursor.SubToShortHash(sub)
+		fileName := cursor.CredentialFileName("", subHash)
+
+		metadata := map[string]any{
+			"type":          "cursor",
+			"access_token":  tokens.AccessToken,
+			"refresh_token": tokens.RefreshToken,
+			"expires_at":    expiresAt.Format(time.RFC3339),
+			"timestamp":     time.Now().UnixMilli(),
+		}
+		if sub != "" {
+			metadata["sub"] = sub
+		}
+
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "cursor",
+			FileName: fileName,
+			Label:    cursor.DisplayLabel("", subHash),
+			Metadata: metadata,
+		}
+		if errGuard := guardOAuthSessionPendingForSave(state, "cursor"); errGuard != nil {
+			return
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save authentication tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+		fmt.Println("You can now use Cursor services through this CLI")
+		CompleteOAuthSession(state)
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authParams.LoginURL, "state": state, "flow": "device"})
 }
 
 // watchOAuthSessionCancel cancels pollCtx once the OAuth session is no longer pending.

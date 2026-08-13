@@ -160,3 +160,13 @@ func TestNormalizeOAuthProvider_GitLab(t *testing.T) {
 		t.Fatalf("provider = %q, want gitlab", provider)
 	}
 }
+
+func TestNormalizeOAuthProvider_Cursor(t *testing.T) {
+	provider, err := NormalizeOAuthProvider("cursor")
+	if err != nil {
+		t.Fatalf("NormalizeOAuthProvider returned error: %v", err)
+	}
+	if provider != "cursor" {
+		t.Fatalf("provider = %q, want cursor", provider)
+	}
+}
