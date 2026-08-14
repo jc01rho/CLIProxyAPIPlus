@@ -371,6 +371,77 @@ func TestUsageExportConnectionTestSuccessFailureAndNoMutation(t *testing.T) {
 	}
 }
 
+func TestUsageExportConnectionTestReusesSavedDirectTokenForUnchangedDraft(t *testing.T) {
+	var requests int
+	keeper := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("Authorization") != "Bearer saved-direct-token" {
+			http.Error(w, "unexpected authorization", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		fmt.Fprintf(w, `{"protocolVersion":"keeper-export/v1","instance":{"instanceId":"%s","displayName":"test instance"},"credential":{"credentialId":"0198aa10-4d88-7a20-8f4e-8c8de4a9cb12","scopes":["identity:test"]},"serverTime":"2026-08-03T12:35:00.000Z"}`, managementTestInstanceID)
+	}))
+	defer keeper.Close()
+
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	cert := keeper.Certificate()
+	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := validUsageExportTestBody(keeper.URL, "", filepath.Join(dir, "never-open.db"), &caPath)
+	settings, current, perr := keeperexport.DecodeConnectionTestRequest(body)
+	if perr != nil || current || settings == nil {
+		t.Fatalf("decode draft: settings=%v current=%v error=%v", settings, current, perr)
+	}
+	cfg := &config.Config{
+		UsageStatisticsEnabled: true,
+		UsageExport:            configFromSettings(*settings, "saved-direct-token"),
+	}
+	h := NewHandler(cfg, filepath.Join(dir, "config.yaml"), nil)
+	r := setupTestRouter(h)
+	r.POST("/test", h.TestUsageExportConnection)
+
+	req := httptest.NewRequest(http.MethodPost, "/test", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), managementTestInstanceID) {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if requests != 1 {
+		t.Fatalf("identity requests=%d", requests)
+	}
+
+	privacyChangedBody := bytes.Replace(body, []byte(`"includeClientIp":false`), []byte(`"includeClientIp":true`), 1)
+	req = httptest.NewRequest(http.MethodPost, "/test", bytes.NewReader(privacyChangedBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), managementTestInstanceID) {
+		t.Fatalf("privacy-changed draft status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if requests != 2 {
+		t.Fatalf("privacy-changed identity requests=%d", requests)
+	}
+
+	changedBody := validUsageExportTestBody(keeper.URL+"/changed", "", filepath.Join(dir, "never-open.db"), &caPath)
+	req = httptest.NewRequest(http.MethodPost, "/test", bytes.NewReader(changedBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnprocessableEntity || !strings.Contains(rr.Body.String(), `"code":"invalid_settings"`) {
+		t.Fatalf("changed draft status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if requests != 2 {
+		t.Fatalf("saved token was sent for a changed draft; identity requests=%d", requests)
+	}
+}
+
 type fakeUsageExportRuntime struct{ response keeperexport.StatusResponse }
 
 func (f *fakeUsageExportRuntime) ManagementStatus(context.Context) (keeperexport.StatusResponse, error) {

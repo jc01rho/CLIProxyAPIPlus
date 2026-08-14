@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -111,7 +112,13 @@ func (h *Handler) TestUsageExportConnection(c *gin.Context) {
 		cfg = h.cfg.UsageExport
 		h.mu.Unlock()
 	} else {
-		cfg = configFromSettings(*settings, "")
+		var directToken string
+		h.mu.Lock()
+		if h.cfg != nil && reflect.DeepEqual(settingsFromConfig(h.cfg.UsageExport).Keeper, settings.Keeper) {
+			directToken = h.cfg.UsageExport.Keeper.Token
+		}
+		h.mu.Unlock()
+		cfg = configFromSettings(*settings, directToken)
 	}
 	validation := &config.Config{UsageStatisticsEnabled: true, UsageExport: cfg}
 	if err := validation.ValidateUsageExport(h.configFilePath); err != nil {
