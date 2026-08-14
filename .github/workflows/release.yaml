@@ -40,6 +40,11 @@ jobs:
           - `CLIProxyAPI_<version>_linux_<arch>.tar.gz` is the default Linux build. It supports dynamic library plugins and is built against a GLIBC 2.17 baseline.
           - `CLIProxyAPI_<version>_linux_<arch>_no-plugin.tar.gz` is the portable Linux build for musl-based or older systems such as OpenWrt. It does not support dynamic library plugins.
 
+          ## macOS release assets
+
+          - `CLIProxyAPI_<version>_darwin_amd64.tar.gz` is the Intel (x86_64) macOS build. It is built natively on `macos-15-intel` with CGO and supports dynamic library plugins.
+          - `CLIProxyAPI_<version>_darwin_aarch64.tar.gz` is the Apple Silicon (arm64) macOS build. It is built natively on `macos-15` with CGO and supports dynamic library plugins.
+
           ## FreeBSD release assets
 
           - `CLIProxyAPI_<version>_freebsd_aarch64_no-plugin.tar.gz` is the FreeBSD arm64 build. It is built without CGO and does not support dynamic library plugins.
@@ -99,6 +104,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - target: darwin-amd64
+            runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            asset_arch: amd64
+            archive_format: tar.gz
+          - target: darwin-arm64
+            runner: macos-15
+            goos: darwin
+            goarch: arm64
+            asset_arch: aarch64
+            archive_format: tar.gz
           - target: windows-amd64
             runner: windows-latest
             goos: windows
