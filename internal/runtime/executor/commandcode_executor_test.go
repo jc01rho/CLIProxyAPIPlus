@@ -215,12 +215,19 @@ func Test_CommandCodeGenerateURL_uses_default_and_configured_base_url(t *testing
 		"api_key":  "user_custom",
 		"base_url": "https://mock.commandcode.test/",
 	}}
+	catalogAuth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "user_catalog",
+		"base_url": "https://mock.commandcode.test/provider/v1/models",
+	}}
 
 	if got := commandCodeGenerateURL(defaultAuth); got != "https://api.commandcode.ai/alpha/generate" {
 		t.Fatalf("default generate URL = %q", got)
 	}
 	if got := commandCodeGenerateURL(customAuth); got != "https://mock.commandcode.test/alpha/generate" {
 		t.Fatalf("custom generate URL = %q", got)
+	}
+	if got := commandCodeGenerateURL(catalogAuth); got != "https://mock.commandcode.test/alpha/generate" {
+		t.Fatalf("catalog-path generate URL = %q", got)
 	}
 }
 

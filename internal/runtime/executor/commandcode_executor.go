@@ -160,20 +160,20 @@ func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	out := make(chan cliproxyexecutor.StreamChunk)
 
 	attemptCtx := commandCodeAttemptContext{
-		ctx:        ctx,
-		cfg:        e.cfg,
-		auth:       auth,
-		provider:   e.Identifier(),
-		baseModel:  baseModel,
-		from:       from,
-		to:         to,
+		ctx:         ctx,
+		cfg:         e.cfg,
+		auth:        auth,
+		provider:    e.Identifier(),
+		baseModel:   baseModel,
+		from:        from,
+		to:          to,
 		openAIInput: translated,
 		wirePayload: payload,
 		original:    req.Payload,
-		out:      out,
-		reporter: reporter,
-		chatID:   chatID,
-		sessionID: newCommandCodeSessionID(),
+		out:         out,
+		reporter:    reporter,
+		chatID:      chatID,
+		sessionID:   newCommandCodeSessionID(),
 	}
 
 	go func() {
@@ -233,13 +233,7 @@ func commandCodeAPIKey(auth *cliproxyauth.Auth) string {
 }
 
 func commandCodeGenerateURL(auth *cliproxyauth.Auth) string {
-	baseURL := commandCodeBaseURL
-	if auth != nil && auth.Attributes != nil {
-		if configured := strings.TrimSpace(auth.Attributes["base_url"]); configured != "" {
-			baseURL = configured
-		}
-	}
-	return strings.TrimRight(baseURL, "/") + "/alpha/generate"
+	return commandCodeBaseURLForAuth(auth) + "/alpha/generate"
 }
 
 // applyCommandCodeHeaders sets the required CommandCode request headers. The

@@ -518,6 +518,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetXAIModels()
 	case "mistral":
 		return GetMistralModels()
+	case "commandcode", "command-code":
+		return GetCommandCodeModels()
 	default:
 		return nil
 	}

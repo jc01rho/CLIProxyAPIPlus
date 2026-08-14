@@ -194,9 +194,21 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = executor.GitLabModelsFromAuth(a)
 		models = applyExcludedModels(models, excluded)
 	case constant.CommandCode:
-		if entry := s.resolveConfigCommandCodeKey(a); entry != nil {
+		entry := s.resolveConfigCommandCodeKey(a)
+		switch {
+		case entry != nil && len(entry.Models) > 0:
 			models = buildCommandCodeConfigModels(entry)
 			excluded = entry.ExcludedModels
+		default:
+			// No explicit config models (or no matching credential entry) —
+			// fetch the live /provider/v1/models catalog so a configured
+			// CommandCode provider still surfaces its models through
+			// /v1/models. The fetch itself falls back to the static catalog
+			// when the network request fails.
+			models = executor.FetchCommandCodeModels(ctx, a, s.cfg)
+			if entry != nil {
+				excluded = entry.ExcludedModels
+			}
 		}
 		models = applyExcludedModels(models, excluded)
 	case constant.Mistral:
