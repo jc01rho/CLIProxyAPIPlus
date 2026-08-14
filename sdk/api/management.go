@@ -24,6 +24,7 @@ type ManagementTokenRequester interface {
 	RequestKimiToken(*gin.Context)
 	RequestClineToken(*gin.Context)
 	RequestKiloToken(*gin.Context)
+	RequestKiroToken(*gin.Context)
 	GetAuthStatus(c *gin.Context)
 	PostOAuthCallback(c *gin.Context)
 }
@@ -70,6 +71,9 @@ func (m *managementTokenRequester) RequestClineToken(c *gin.Context) {
 }
 func (m *managementTokenRequester) RequestKiloToken(c *gin.Context) {
 	m.handler.RequestKiloToken(c)
+}
+func (m *managementTokenRequester) RequestKiroToken(c *gin.Context) {
+	m.handler.RequestKiroToken(c)
 }
 
 func (m *managementTokenRequester) GetAuthStatus(c *gin.Context) {

@@ -189,3 +189,13 @@ func TestNormalizeOAuthProvider_KilocodeAlias(t *testing.T) {
 		t.Fatalf("provider = %q, want kilo", provider)
 	}
 }
+
+func TestNormalizeOAuthProvider_Kiro(t *testing.T) {
+	provider, err := NormalizeOAuthProvider("kiro")
+	if err != nil {
+		t.Fatalf("NormalizeOAuthProvider returned error: %v", err)
+	}
+	if provider != "kiro" {
+		t.Fatalf("provider = %q, want kiro", provider)
+	}
+}

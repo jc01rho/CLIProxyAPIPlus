@@ -14,7 +14,7 @@ kiro/
 ├── aws.go / aws_auth.go / sso_oidc.go
 ├── token.go / token_repository.go / refresh_manager.go
 ├── background_refresh.go / jitter.go
-├── cooldown.go / social_auth.go / fingerprint.go
+├── cooldown.go / social_auth.go / fingerprint.go / device_login.go
 ├── rate_limiter.go / usage_checker.go / metrics.go
 └── *_test.go
 ```
@@ -25,6 +25,7 @@ kiro/
 |------|----------|-------|
 | Browser OAuth | `oauth.go`, `oauth_web.go` | Callback/state validation. |
 | AWS device flow | `aws.go`, `sso_oidc.go` | Builder ID / SSO OIDC specifics. |
+| Device login (kiro-lb) | `device_login.go` | Google / GitHub / Builder ID, no local callback. |
 | Token persistence | `token_repository.go`, `token.go` | No plaintext leakage. |
 | Refresh/cooldown | `refresh_manager.go`, `background_refresh.go`, `jitter.go`, `cooldown.go` | Avoid refresh storms. |
 | Rate/usage protection | `rate_limiter.go`, `usage_checker.go` | Provider safety controls. |
