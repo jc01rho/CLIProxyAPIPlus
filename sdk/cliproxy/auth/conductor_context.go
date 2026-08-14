@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 )
 
 const providerAuthContextKey = "cliproxy.provider_auth"
@@ -89,4 +90,27 @@ func GetBillingDecisionFromContext(ctx context.Context) (billingClass, reason st
 		return value["billing_class"], value["reason"]
 	}
 	return "", ""
+}
+
+func downstreamAPIKeyFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return ""
+	}
+	if ginCtx.Request != nil {
+		if key := util.ExtractDownstreamAPIKey(ginCtx.Request.Header); key != "" {
+			return key
+		}
+	}
+	if raw, exists := ginCtx.Get("userApiKey"); exists {
+		if key, isString := raw.(string); isString {
+			if trimmed := strings.TrimSpace(key); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }
