@@ -75,8 +75,8 @@ func TestRegisterModelsForAuth_AllStaticProviderCatalogsAppearInOpenAIList(t *te
 	}{
 		{provider: "gemini-cli", modelID: internalregistry.GetGeminiCLIModels()[0].ID},
 		{provider: "github-copilot", modelID: internalregistry.GetGitHubCopilotModels()[0].ID},
-		{provider: "kiro", modelID: internalregistry.GetKiroModels()[0].ID},
-		{provider: "kilo", modelID: internalregistry.GetKiloModels()[0].ID},
+		{provider: "kiro", modelID: "kiro-claude-opus-4-6"},
+		{provider: "kilo", modelID: "openrouter/free"},
 		{provider: "amazonq", modelID: internalregistry.GetAmazonQModels()[0].ID},
 		{provider: "codebuddy", modelID: internalregistry.GetCodeBuddyModels()[0].ID},
 		{provider: "cursor", modelID: internalregistry.GetCursorModels()[0].ID},

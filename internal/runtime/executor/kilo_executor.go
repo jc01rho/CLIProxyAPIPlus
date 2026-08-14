@@ -433,7 +433,7 @@ func kiloCredentials(auth *cliproxyauth.Auth) (accessToken, orgID string) {
 // is present the request still goes out with `Bearer anonymous` so the free
 // tier remains visible. Failures fall back to the static catalog.
 func FetchKiloModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
-	return fetchKiloModels(ctx, auth, cfg, "https://api.kilo.ai/api/openrouter/models", "kilo", registry.GetKiloModels())
+	return FilterKiloModels(fetchKiloModels(ctx, auth, cfg, "https://api.kilo.ai/api/openrouter/models", "kilo", registry.GetKiloModels()))
 }
 
 // FetchKiloGatewayModels fetches the live kilo-gateway catalog. Auth is

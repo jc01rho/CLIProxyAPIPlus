@@ -1489,7 +1489,7 @@ func decodeMcpArgsToJSON(args map[string][]byte) string {
 func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
 	accessToken := cursorAccessToken(auth)
 	if accessToken == "" {
-		return GetCursorFallbackModels()
+		return FilterCursorModels(GetCursorFallbackModels())
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -1503,7 +1503,7 @@ func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 		cursorAgentURL+cursorModelsPath, bytes.NewReader(emptyReq))
 	if err != nil {
 		log.Debugf("cursor: failed to create models request: %v", err)
-		return GetCursorFallbackModels()
+		return FilterCursorModels(GetCursorFallbackModels())
 	}
 
 	h2Req.Header.Set("Content-Type", "application/proto")
@@ -1517,25 +1517,25 @@ func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	resp, err := client.Do(h2Req)
 	if err != nil {
 		log.Debugf("cursor: models request failed: %v", err)
-		return GetCursorFallbackModels()
+		return FilterCursorModels(GetCursorFallbackModels())
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Debugf("cursor: models request returned status %d", resp.StatusCode)
-		return GetCursorFallbackModels()
+		return FilterCursorModels(GetCursorFallbackModels())
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return GetCursorFallbackModels()
+		return FilterCursorModels(GetCursorFallbackModels())
 	}
 
 	models := parseModelsResponse(body)
 	if len(models) == 0 {
-		return GetCursorFallbackModels()
+		return FilterCursorModels(GetCursorFallbackModels())
 	}
-	return models
+	return FilterCursorModels(models)
 }
 
 func parseModelsResponse(data []byte) []*registry.ModelInfo {

@@ -80,7 +80,7 @@ func FetchKiroModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 
 	dynamicModels := registry.ConvertKiroAPIModels(apiModels)
 	dynamicModels = registry.GenerateAgenticVariants(dynamicModels)
-	return registry.OverlayStaticMetadata(dynamicModels, registry.GetKiroModels())
+	return FilterKiroModels(registry.OverlayStaticMetadata(dynamicModels, registry.GetKiroModels()))
 }
 
 // isKiroRuntimeEndpoint reports desktop/runtime hosts that do not expose

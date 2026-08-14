@@ -155,7 +155,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	case "kilo", "kilocode":
 		models = executor.FetchKiloModels(ctx, a, s.cfg)
 		if len(models) == 0 {
-			models = registry.GetKiloModels()
+			models = executor.FilterKiloModels(registry.GetKiloModels())
 		}
 		models = applyExcludedModels(models, excluded)
 	case "kilo-gateway":
@@ -167,7 +167,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	case "kiro":
 		models = executor.FetchKiroModels(ctx, a, s.cfg)
 		if len(models) == 0 {
-			models = registry.GetKiroModels()
+			models = executor.FilterKiroModels(registry.GetKiroModels())
 		}
 		models = applyExcludedModels(models, excluded)
 	case "amazonq":
@@ -176,7 +176,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	case "cursor":
 		models = executor.FetchCursorModels(ctx, a, s.cfg)
 		if len(models) == 0 {
-			models = registry.GetCursorModels()
+			models = executor.FilterCursorModels(registry.GetCursorModels())
 		}
 		models = applyExcludedModels(models, excluded)
 	case "xai":
