@@ -876,6 +876,9 @@ func resultFailureLogFields(ctx context.Context, result Result, auth *Auth) log.
 		"status":         result.Error.HTTPStatus,
 	}
 	addAuthCredentialLogFields(fields, auth)
+	if downstreamKey := downstreamAPIKeyFromContext(ctx); downstreamKey != "" {
+		fields["downstream_api_key"] = downstreamKey
+	}
 	if requestedModel := coreusage.RequestedModelAliasFromContext(ctx); requestedModel != "" {
 		fields["requested_model"] = requestedModel
 	}

@@ -183,3 +183,90 @@ func TestManagerMarkResultLogsFailedCredentialIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestManagerMarkResultLogsDownstreamAPIKeyFromAuthorizationHeader(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-codex",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email": "TE_tg_sp_devcenter@sparrow.im",
+		},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("Authorization", "Bearer sk-downstream-who-requested")
+	ginCtx.Request = req
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+
+	logBuf, restoreLogger := captureStandardLogger(t)
+	defer restoreLogger()
+
+	mgr.MarkResult(ctx, Result{
+		AuthID:   auth.ID,
+		Provider: "codex",
+		Model:    "gpt-5.6-sol",
+		Success:  false,
+		Error: &Error{
+			Code:       "unknown_parameter",
+			Message:    "Unknown parameter: 'input[359].status'.",
+			HTTPStatus: http.StatusBadRequest,
+		},
+	})
+
+	got := logBuf.String()
+	for _, want := range []string{
+		"request failed",
+		"provider=codex",
+		"model=gpt-5.6-sol",
+		"credential=TE_tg_sp_devcenter@sparrow.im",
+		`downstream_api_key="Bearer(sk-downstream-who-requested)"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected log to contain %q, got: %s", want, got)
+		}
+	}
+}
+
+func TestManagerMarkResultLogsDownstreamAPIKeyFromUserAPIKey(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-codex",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email": "TE_tg_sp_devcenter@sparrow.im",
+		},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ginCtx.Set("userApiKey", "sk-query-key-home-user")
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+
+	logBuf, restoreLogger := captureStandardLogger(t)
+	defer restoreLogger()
+
+	mgr.MarkResult(ctx, Result{
+		AuthID:   auth.ID,
+		Provider: "codex",
+		Model:    "gpt-5.6-sol",
+		Success:  false,
+		Error: &Error{
+			Code:       "unknown_parameter",
+			Message:    "Unknown parameter: 'input[359].status'.",
+			HTTPStatus: http.StatusBadRequest,
+		},
+	})
+
+	got := logBuf.String()
+	if !strings.Contains(got, "downstream_api_key=sk-query-key-home-user") {
+		t.Fatalf("expected userApiKey fallback in request failed log, got: %s", got)
+	}
+}

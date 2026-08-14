@@ -329,12 +329,12 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 
 		if isAIAPIPath(path) && (modelName != "" || providerInfo != "" || authKeyName != "") {
 			displayModelName := modelName
-		if requestedModel != "" && actualModel != "" && requestedModel != actualModel && modelName != actualModel {
-			displayModelName = fmt.Sprintf("%s (%s)", actualModel, requestedModel)
-			if upstreamModel != "" && actualModel != upstreamModel && modelName != upstreamModel {
-			displayModelName = fmt.Sprintf("%s → %s", displayModelName, upstreamModel)
-			}
-		} else if displayModelName != "" && upstreamModel != "" && displayModelName != upstreamModel {
+			if requestedModel != "" && actualModel != "" && requestedModel != actualModel && modelName != actualModel {
+				displayModelName = fmt.Sprintf("%s (%s)", actualModel, requestedModel)
+				if upstreamModel != "" && actualModel != upstreamModel && modelName != upstreamModel {
+					displayModelName = fmt.Sprintf("%s → %s", displayModelName, upstreamModel)
+				}
+			} else if displayModelName != "" && upstreamModel != "" && displayModelName != upstreamModel {
 				displayModelName = fmt.Sprintf("%s → %s", displayModelName, upstreamModel)
 			} else if displayModelName == "" && upstreamModel != "" {
 				displayModelName = upstreamModel
@@ -551,45 +551,8 @@ func creditsUsed(c *gin.Context) bool {
 // extractDownstreamAPIKey returns the original downstream client's API key so
 // operators can identify the exact configured credential that triggered a
 // WARN/ERROR access log.
-func extractDownstreamAPIKey(h http.Header) string {
-	if len(h) == 0 {
-		return ""
-	}
-	candidates := []struct {
-		header string
-		scheme string
-	}{
-		{"Authorization", "Bearer"},
-		{"X-Api-Key", "X-Api-Key"},
-		{"Api-Key", "X-Api-Key"},
-	}
-	for _, candidate := range candidates {
-		raw := strings.TrimSpace(h.Get(candidate.header))
-		if raw == "" {
-			continue
-		}
-		secret := raw
-		if candidate.scheme == "Bearer" {
-			idx := strings.Index(raw, " ")
-			if idx > 0 {
-				scheme := strings.ToLower(strings.TrimSpace(raw[:idx]))
-				if scheme != "bearer" {
-					return ""
-				}
-				secret = strings.TrimSpace(raw[idx+1:])
-			} else {
-				// "Bearer" without a following space-separated token means the
-				// caller sent a malformed header (e.g., "Bearer " or "Bearer").
-				// Treat as no token to avoid emitting a misleading preview.
-				continue
-			}
-		}
-		if secret == "" {
-			return ""
-		}
-		return fmt.Sprintf("%s(%s)", candidate.scheme, secret)
-	}
-	return ""
+func extractDownstreamAPIKey(header http.Header) string {
+	return util.ExtractDownstreamAPIKey(header)
 }
 
 // extractUsageFromAPIResponse parses usage information from the API_RESPONSE body
