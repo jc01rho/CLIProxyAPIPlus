@@ -105,6 +105,13 @@ func normalizeCodexWebsocketParallelToolCalls(body []byte, headers http.Header) 
 	return body
 }
 
+func prepareCodexWebsocketRequestBody(body []byte) ([]byte, error) {
+	if err := rejectInvalidCodexRequestFormat(body); err != nil {
+		return nil, err
+	}
+	return buildCodexWebsocketRequestBody(body), nil
+}
+
 func buildCodexWebsocketRequestBody(body []byte) []byte {
 	if len(body) == 0 {
 		return nil

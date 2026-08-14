@@ -193,6 +193,9 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", cache.ID)
 	}
 	rawJSON = helps.SanitizeCodexInputItemIDs(rawJSON)
+	if errFormat := rejectInvalidCodexRequestFormat(rawJSON); errFormat != nil {
+		return nil, nil, codexIdentityConfuseState{}, errFormat
+	}
 	var identityState codexIdentityConfuseState
 	rawJSON, identityState = applyCodexIdentityConfuseBody(e.cfg, auth, userPayload, rawJSON)
 	if identityState.promptCacheKey != "" {

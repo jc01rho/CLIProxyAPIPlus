@@ -345,6 +345,20 @@ func TestCodexReasoningReplayCacheScopesByModelAndSession(t *testing.T) {
 	}
 }
 
+func TestNormalizeCodexReasoningReplayCustomToolCallItemOmitsStatus(t *testing.T) {
+	item := []byte(`{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"lookup","input":"{}","status":"completed"}`)
+	got, ok := normalizeCodexReasoningReplayCustomToolCallItem(gjson.ParseBytes(item))
+	if !ok {
+		t.Fatal("expected custom_tool_call item to normalize")
+	}
+	if gjson.GetBytes(got, "status").Exists() {
+		t.Fatalf("status should be omitted from replay input: %s", got)
+	}
+	if got := gjson.GetBytes(got, "call_id").String(); got != "call_1" {
+		t.Fatalf("call_id = %q, want call_1", got)
+	}
+}
+
 func TestCodexReasoningReplayCacheBatchEvictsWhenFull(t *testing.T) {
 	ClearCodexReasoningReplayCache()
 	t.Cleanup(ClearCodexReasoningReplayCache)

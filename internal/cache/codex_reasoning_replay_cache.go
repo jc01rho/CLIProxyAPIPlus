@@ -437,10 +437,7 @@ func normalizeCodexReasoningReplayCustomToolCallItem(itemResult gjson.Result) ([
 		return nil, false
 	}
 
-	normalized := []byte(`{"type":"custom_tool_call","status":"completed"}`)
-	if status := strings.TrimSpace(itemResult.Get("status").String()); status != "" {
-		normalized, _ = sjson.SetBytes(normalized, "status", status)
-	}
+	normalized := []byte(`{"type":"custom_tool_call"}`)
 	normalized, _ = sjson.SetBytes(normalized, "call_id", callID)
 	normalized, _ = sjson.SetBytes(normalized, "name", name)
 	if input.Type == gjson.String {
