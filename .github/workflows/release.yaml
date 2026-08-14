@@ -170,17 +170,18 @@ jobs:
           archive_dir="dist/${TARGET}/archive"
           archive_name="CLIProxyAPI_${RELEASE_VERSION}_${GOOS}_${ASSET_ARCH}.${ARCHIVE_FORMAT}"
           rm -rf "dist/${TARGET}"
-          mkdir -p "$archive_dir"
+          mkdir -p "$archive_dir/static"
 
           CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build \
             -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
             -o "$archive_dir/$binary_name" ./cmd/server/
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
+          cp management.html "$archive_dir/static/management.html"
           if [[ "$ARCHIVE_FORMAT" == "zip" ]]; then
             powershell -NoProfile -Command "Compress-Archive -Path '${archive_dir}/*' -DestinationPath 'dist/${archive_name}' -Force"
           else
-            tar -C "$archive_dir" -czf "dist/$archive_name" "$binary_name" LICENSE README.md README_CN.md config.example.yaml
+            tar -C "$archive_dir" -czf "dist/$archive_name" "$binary_name" LICENSE README.md README_CN.md config.example.yaml static/management.html
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -311,8 +312,10 @@ jobs:
               fi
             '
 
+          mkdir -p "$archive_dir/static"
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          cp management.html "$archive_dir/static/management.html"
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml static/management.html
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -427,8 +430,10 @@ jobs:
             exit 1
           fi
 
+          mkdir -p "$archive_dir/static"
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          cp management.html "$archive_dir/static/management.html"
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml static/management.html
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -577,12 +582,13 @@ jobs:
 
           archive_dir="dist/${TARGET}/archive"
           archive_name="CLIProxyAPI_${RELEASE_VERSION}_freebsd_${ASSET_ARCH}${ASSET_SUFFIX}.tar.gz"
-          mkdir -p "$archive_dir"
+          mkdir -p "$archive_dir/static"
 
           echo "Packaging ${archive_name}"
           cp "dist/${TARGET}/bin/cli-proxy-api" "$archive_dir/cli-proxy-api"
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          cp management.html "$archive_dir/static/management.html"
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml static/management.html
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
