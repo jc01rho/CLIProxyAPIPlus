@@ -309,6 +309,43 @@ func TestSanitizeCodexInputItemIDsAvoidsExistingIDCollision(t *testing.T) {
 	}
 }
 
+func TestSanitizeCodexInputItemIDsRemovesOutputOnlyFields(t *testing.T) {
+	body := []byte(`{"input":[` +
+		`{"type":"message","id":"msg_1","role":"developer","content":"sys"},` +
+		`{"type":"message","id":"msg_2","role":"user","content":"hi"},` +
+		`{"type":"message","id":"msg_3","role":"assistant","content":[{"type":"output_text","text":"ok"}],"status":"completed","phase":"final","namespace":"chat"},` +
+		`{"type":"function_call","id":"fc_1","call_id":"call-1","name":"lookup","status":"in_progress","phase":"commentary"},` +
+		`{"type":"function_call_output","call_id":"call-1","output":"{}","status":"completed"}` +
+		`]}`)
+
+	got := SanitizeCodexInputItemIDs(body)
+
+	for _, path := range []string{
+		"input.2.status",
+		"input.2.phase",
+		"input.2.namespace",
+		"input.3.status",
+		"input.3.phase",
+		"input.4.status",
+	} {
+		if gjson.GetBytes(got, path).Exists() {
+			t.Fatalf("%s should be stripped: %s", path, got)
+		}
+	}
+	if gotID := gjson.GetBytes(got, "input.2.id").String(); gotID != "msg_3" {
+		t.Fatalf("input.2.id = %q, want msg_3", gotID)
+	}
+	if gotRole := gjson.GetBytes(got, "input.2.role").String(); gotRole != "assistant" {
+		t.Fatalf("input.2.role = %q, want assistant", gotRole)
+	}
+	if gotID := gjson.GetBytes(got, "input.3.id").String(); gotID != "fc_1" {
+		t.Fatalf("input.3.id = %q, want fc_1", gotID)
+	}
+	if gotCallID := gjson.GetBytes(got, "input.4.call_id").String(); gotCallID != "call-1" {
+		t.Fatalf("input.4.call_id = %q, want call-1", gotCallID)
+	}
+}
+
 func TestSanitizeCodexInputItemIDsLeavesUnsupportedPayloadsUnchanged(t *testing.T) {
 	for _, body := range [][]byte{
 		[]byte(`not-json`),

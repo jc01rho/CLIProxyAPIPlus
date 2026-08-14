@@ -23,9 +23,13 @@ const (
 	codexInputItemIDPreserved uint8 = 1 << 1
 )
 
+// ChatGPT Codex backend rejects these public Responses item fields as unknown_parameter.
+var codexRejectedInputItemFields = []string{"status", "phase", "namespace"}
+
 // SanitizeCodexInputItemIDs normalizes supported input item IDs for Codex, removes encrypted
-// reasoning items whose IDs exceed the Codex limit, and deterministically shortens
-// other overlong input item IDs.
+// reasoning items whose IDs exceed the Codex limit, strips item fields the ChatGPT Codex
+// backend rejects (status, phase, namespace), and deterministically shortens other overlong
+// input item IDs.
 func SanitizeCodexInputItemIDs(body []byte) []byte {
 	input := util.GetGJSONBytesNoCopy(body, "input")
 	if !input.IsArray() {
@@ -67,6 +71,11 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 		}
 
 		raw := item.Raw
+		stripped, strippedOK := stripCodexRejectedInputItemFields(raw, item)
+		if strippedOK {
+			raw = stripped
+			changed = true
+		}
 		itemID := item.Get("id")
 		if itemID.Type == gjson.String {
 			originalID := itemID.String()
@@ -127,6 +136,22 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 		return body
 	}
 	return updated
+}
+
+func stripCodexRejectedInputItemFields(raw string, item gjson.Result) (string, bool) {
+	changed := false
+	for _, field := range codexRejectedInputItemFields {
+		if !item.Get(field).Exists() {
+			continue
+		}
+		next, errDel := sjson.DeleteBytes([]byte(raw), field)
+		if errDel != nil {
+			continue
+		}
+		raw = string(next)
+		changed = true
+	}
+	return raw, changed
 }
 
 func normalizeCodexInputItemID(item gjson.Result, id string) string {
