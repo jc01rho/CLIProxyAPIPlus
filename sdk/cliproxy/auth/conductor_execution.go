@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
@@ -269,24 +270,80 @@ func shouldPreserveAttemptBudgetForStatus(statusCode int) bool {
 	}
 }
 
-func (m *Manager) shouldCountAttemptBudget(err error, currentProvider string, providers []string, tried map[string]struct{}) bool {
+func (m *Manager) shouldCountAttemptBudget(err error, currentProvider string, providers []string, tried map[string]struct{}, routeModel string) (countBudget bool, sameProviderRetry bool) {
 	if err == nil || !shouldPreserveAttemptBudgetForStatus(statusCodeFromError(err)) {
-		return true
+		return true, false
 	}
 	m.mu.RLock()
 	remainingProviders := countRemainingProviderOptions(currentProvider, providers, tried, m.auths)
 	m.mu.RUnlock()
-	return remainingProviders == 0
+	if remainingProviders > 0 {
+		return false, false
+	}
+	if m.countRemainingRouteAuthOptions(providers, tried, routeModel) > 0 {
+		return false, true
+	}
+	return true, false
 }
 
-func logProviderFallbackRetry(ctx context.Context, provider, model string, err error) {
+func (m *Manager) countRemainingRouteAuthOptions(providers []string, tried map[string]struct{}, routeModel string) int {
+	routeModel = strings.TrimSpace(routeModel)
+	if routeModel == "" || len(providers) == 0 {
+		return 0
+	}
+	providerSet := make(map[string]struct{}, len(providers)*2)
+	for _, provider := range providers {
+		providerKey := strings.TrimSpace(strings.ToLower(provider))
+		if providerKey == "" {
+			continue
+		}
+		providerSet[providerKey] = struct{}{}
+		compatProvider := util.OpenAICompatibleProviderKey(providerKey)
+		if compatProvider != providerKey {
+			providerSet[compatProvider] = struct{}{}
+		}
+	}
+	if len(providerSet) == 0 {
+		return 0
+	}
+	m.mu.RLock()
+	auths := make([]*Auth, 0, len(m.auths))
+	for _, auth := range m.auths {
+		auths = append(auths, auth)
+	}
+	m.mu.RUnlock()
+	registryRef := registry.GetGlobalRegistry()
+	count := 0
+	for _, auth := range auths {
+		if auth == nil || auth.Disabled {
+			continue
+		}
+		if _, used := tried[auth.ID]; used {
+			continue
+		}
+		if _, ok := providerSet[effectiveProviderKey(auth)]; !ok {
+			continue
+		}
+		if !m.authSupportsRouteModel(registryRef, auth, routeModel) {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func logProviderFallbackRetry(ctx context.Context, provider, model string, err error, sameProviderRetry bool) {
 	statusCode := statusCodeFromError(err)
 	if !shouldPreserveAttemptBudgetForStatus(statusCode) {
 		return
 	}
 	entry := logEntryWithRequestID(ctx)
 	provider = strings.TrimPrefix(provider, "openai-compatible-")
-	entry.Infof("provider %s failed with upstream status %d for model %s; retrying with another untried provider", provider, statusCode, strings.TrimSpace(model))
+	target := "provider"
+	if sameProviderRetry {
+		target = "credential"
+	}
+	entry.Infof("provider %s failed with upstream status %d for model %s; retrying with another untried %s", provider, statusCode, strings.TrimSpace(model), target)
 }
 
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (cliproxyexecutor.Response, error) {
@@ -423,7 +480,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			return resp, nil
 		}
-		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
+		countBudget, sameProviderRetry := m.shouldCountAttemptBudget(authErr, provider, providers, tried, routeModel)
 		if countBudget {
 			attempted[auth.ID] = struct{}{}
 		}
@@ -432,7 +489,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				return cliproxyexecutor.Response{}, authErr
 			}
 			if !countBudget {
-				logProviderFallbackRetry(execCtx, provider, routeModel, authErr)
+				logProviderFallbackRetry(execCtx, provider, routeModel, authErr, sameProviderRetry)
 			}
 			lastErr = authErr
 			if homeMode {
@@ -585,7 +642,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			return resp, nil
 		}
-		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
+		countBudget, sameProviderRetry := m.shouldCountAttemptBudget(authErr, provider, providers, tried, routeModel)
 		if countBudget {
 			attempted[auth.ID] = struct{}{}
 		}
@@ -594,7 +651,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				return cliproxyexecutor.Response{}, authErr
 			}
 			if !countBudget {
-				logProviderFallbackRetry(execCtx, provider, routeModel, authErr)
+				logProviderFallbackRetry(execCtx, provider, routeModel, authErr, sameProviderRetry)
 			}
 			lastErr = authErr
 			if homeMode {
@@ -765,11 +822,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
 			}
-			countBudget := m.shouldCountAttemptBudget(errStream, provider, providers, tried)
+			countBudget, sameProviderRetry := m.shouldCountAttemptBudget(errStream, provider, providers, tried, routeModel)
 			if countBudget {
 				attempted[auth.ID] = struct{}{}
 			} else {
-				logProviderFallbackRetry(execCtx, provider, routeModel, errStream)
+				logProviderFallbackRetry(execCtx, provider, routeModel, errStream, sameProviderRetry)
 			}
 			lastErr = errStream
 			if homeMode {
