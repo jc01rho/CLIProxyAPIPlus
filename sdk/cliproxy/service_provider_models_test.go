@@ -81,6 +81,7 @@ func TestRegisterModelsForAuth_AllStaticProviderCatalogsAppearInOpenAIList(t *te
 		{provider: "codebuddy", modelID: internalregistry.GetCodeBuddyModels()[0].ID},
 		{provider: "cursor", modelID: internalregistry.GetCursorModels()[0].ID},
 		{provider: "mistral", modelID: internalregistry.GetMistralModels()[0].ID},
+		{provider: "commandcode", modelID: internalregistry.GetCommandCodeModels()[0].ID},
 	}
 
 	service := &Service{cfg: &config.Config{}}
@@ -140,6 +141,47 @@ func TestRegisterModelsForAuth_MistralProviderWithoutExplicitModelsFallsBackToSt
 		assertRegisteredModel(t, registered, expected.ID)
 		assertOpenAIModel(t, modelRegistry.GetAvailableModels("openai"), expected.ID)
 	}
+}
+
+// TestRegisterModelsForAuth_CommandCodeProviderWithoutExplicitModelsFallsBackToCatalog
+// asserts that a configured CommandCode credential without an explicit `models`
+// field still surfaces the catalog (live /provider/v1/models overlay, or the
+// static snapshot on fetch failure) through /v1/models. Before the fix,
+// registerModelsForAuth dropped the client registration whenever
+// buildCommandCodeConfigModels returned nil.
+func TestRegisterModelsForAuth_CommandCodeProviderWithoutExplicitModelsFallsBackToCatalog(t *testing.T) {
+	static := internalregistry.GetCommandCodeModels()
+	if len(static) == 0 {
+		t.Fatalf("expected static CommandCode catalog to be non-empty")
+	}
+
+	service := &Service{cfg: &config.Config{
+		CommandCodeKey: []config.CommandCodeKey{{APIKey: "commandcode-key"}},
+	}}
+
+	modelRegistry := internalregistry.GetGlobalRegistry()
+	authID := "static-commandcode-fallback"
+	modelRegistry.UnregisterClient(authID)
+	t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
+
+	auth := &coreauth.Auth{
+		ID:       authID,
+		Provider: "commandcode",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			coreauth.AttributeAPIKey: "commandcode-key",
+			coreauth.AttributeSource: "config:commandcode:test",
+		},
+	}
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	registered := modelRegistry.GetModelsForClient(authID)
+	if len(registered) == 0 {
+		t.Fatalf("expected CommandCode auth to register fallback models, got none")
+	}
+	assertRegisteredModel(t, registered, static[0].ID)
+	assertOpenAIModel(t, modelRegistry.GetAvailableModels("openai"), static[0].ID)
 }
 
 // TestRegisterModelsForAuth_MistralProviderWithExplicitModelsUsesConfigAndIgnoresStaticFallback
