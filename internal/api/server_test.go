@@ -1375,6 +1375,7 @@ func TestCursorAuthURLRouteRequiresManagementKey(t *testing.T) {
 		t.Fatalf("status = %d, want %d (management key required) body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
 	}
 }
+
 // TestKiloAuthURLRouteRequiresManagementKey verifies the kilo-auth-url
 // management route is registered and gated behind the management key.
 func TestKiloAuthURLRouteRequiresManagementKey(t *testing.T) {
@@ -1390,6 +1391,20 @@ func TestKiloAuthURLRouteRequiresManagementKey(t *testing.T) {
 	}
 }
 
+// TestKiroAuthURLRouteRequiresManagementKey verifies the kiro-auth-url
+// management route is registered and gated behind the management key.
+func TestKiroAuthURLRouteRequiresManagementKey(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/kiro-auth-url", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (management key required) body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	}
+}
 
 // TestClineCallbackViaGenericOAuthCallback verifies the Cline browser
 // redirect flows through the single generic /v0/management/oauth-callback

@@ -206,6 +206,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/cline-auth-url", s.mgmt.RequestClineToken)
 		mgmt.GET("/cursor-auth-url", s.mgmt.RequestCursorToken)
 		mgmt.GET("/kilo-auth-url", s.mgmt.RequestKiloToken)
+		mgmt.GET("/kiro-auth-url", s.mgmt.RequestKiroToken)
 		mgmt.POST("/gitlab-pat", s.mgmt.RequestGitLabPATToken)
 		mgmt.GET("/copilot-quota", s.mgmt.GetCopilotQuota)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
