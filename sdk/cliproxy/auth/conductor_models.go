@@ -179,6 +179,37 @@ func resolveOpenAICompatUpstreamModelPool(cfg *internalconfig.Config, auth *Auth
 	return resolveModelAliasPoolFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
 }
 
+func configuredModelPoolKey(auth *Auth, requestedModel string) string {
+	base := strings.TrimSpace(requestedModel)
+	authID := ""
+	provider := ""
+	if auth != nil {
+		authID = strings.ToLower(strings.TrimSpace(auth.ID))
+		provider = strings.ToLower(strings.TrimSpace(effectiveProviderKey(auth)))
+	}
+	return "cfg|" + authID + "|" + provider + "|" + strings.ToLower(base)
+}
+
+func resolveConfiguredUpstreamModelPool(cfg *internalconfig.Config, auth *Auth, requestedModel string) []string {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		return nil
+	}
+	return resolveModelAliasPoolFromConfigModels(requestedModel, configuredModelAliasEntries(cfg, auth))
+}
+
+func (m *Manager) configuredExecutionModelPool(auth *Auth, requestedModel string) []string {
+	if m == nil {
+		return nil
+	}
+	pool := resolveConfiguredUpstreamModelPool(m.loadAPIKeyModelRouting().config, auth, requestedModel)
+	if len(pool) <= 1 {
+		return pool
+	}
+	offset := m.nextModelPoolOffset(configuredModelPoolKey(auth, requestedModel), len(pool))
+	return rotateStrings(pool, offset)
+}
+
 func preserveRequestedModelSuffix(requestedModel, resolved string) string {
 	return preserveResolvedModelSuffix(resolved, thinking.ParseSuffix(requestedModel))
 }
@@ -197,6 +228,9 @@ func (m *Manager) executionModelCandidates(auth *Auth, routeModel string) []stri
 		}
 		offset := m.nextModelPoolOffset(openAICompatModelPoolKey(auth, requestedModel), len(pool))
 		return rotateStrings(pool, offset)
+	}
+	if pool := m.configuredExecutionModelPool(auth, requestedModel); len(pool) > 0 {
+		return pool
 	}
 	resolved := m.applyAPIKeyModelAlias(auth, requestedModel)
 	if strings.TrimSpace(resolved) == "" {
@@ -469,6 +503,13 @@ func (m *Manager) executionModelCandidatesWithAlias(auth *Auth, routeModel strin
 				candidates = pool
 			} else {
 				offset := m.nextModelPoolOffset(openAICompatModelPoolKey(auth, upstreamModel), len(pool))
+				candidates = rotateStrings(pool, offset)
+			}
+		} else if pool := resolveConfiguredUpstreamModelPool(routing.config, auth, upstreamModel); len(pool) > 0 {
+			if len(pool) == 1 {
+				candidates = pool
+			} else {
+				offset := m.nextModelPoolOffset(configuredModelPoolKey(auth, upstreamModel), len(pool))
 				candidates = rotateStrings(pool, offset)
 			}
 		} else {
