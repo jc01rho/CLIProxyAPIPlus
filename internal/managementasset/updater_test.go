@@ -60,3 +60,17 @@ func TestAutoUpdateSkipReason(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultManagementSourcesUseForkRelease(t *testing.T) {
+	const (
+		wantReleaseURL  = "https://api.github.com/repos/jc01rho/Cli-Proxy-API-Management-Center/releases/latest"
+		wantFallbackURL = "https://github.com/jc01rho/Cli-Proxy-API-Management-Center/releases/latest/download/management.html"
+	)
+
+	if got := resolveReleaseURL(""); got != wantReleaseURL {
+		t.Fatalf("resolveReleaseURL(\"\") = %q, want %q", got, wantReleaseURL)
+	}
+	if defaultManagementFallbackURL != wantFallbackURL {
+		t.Fatalf("defaultManagementFallbackURL = %q, want %q", defaultManagementFallbackURL, wantFallbackURL)
+	}
+}
