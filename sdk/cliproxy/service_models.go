@@ -211,6 +211,18 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case constant.Freebuff:
+		entry := s.resolveConfigFreebuffKey(a)
+		if entry != nil && len(entry.Models) > 0 {
+			models = buildFreebuffConfigModels(entry)
+			excluded = entry.ExcludedModels
+		} else {
+			models = registry.GetFreebuffModels()
+			if entry != nil {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
 	case constant.Mistral:
 		entry := s.resolveConfigMistralKey(a)
 		switch {

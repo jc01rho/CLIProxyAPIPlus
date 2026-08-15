@@ -163,6 +163,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/commandcode-api-key", s.mgmt.PatchCommandCodeKey)
 		mgmt.DELETE("/commandcode-api-key", s.mgmt.DeleteCommandCodeKey)
 
+		mgmt.GET("/freebuff-api-key", s.mgmt.GetFreebuffKeys)
+		mgmt.PUT("/freebuff-api-key", s.mgmt.PutFreebuffKeys)
+		mgmt.PATCH("/freebuff-api-key", s.mgmt.PatchFreebuffKey)
+		mgmt.DELETE("/freebuff-api-key", s.mgmt.DeleteFreebuffKey)
+
 		mgmt.GET("/mistral-api-key", s.mgmt.GetMistralKeys)
 		mgmt.PUT("/mistral-api-key", s.mgmt.PutMistralKeys)
 		mgmt.PATCH("/mistral-api-key", s.mgmt.PatchMistralKey)

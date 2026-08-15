@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -47,6 +48,29 @@ func ComputeMistralModelsHash(models []config.MistralModel) string {
 				continue
 			}
 			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
+}
+
+func ComputeFreebuffModelsHash(models []config.FreebuffModel) string {
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			agentID := strings.TrimSpace(model.AgentID)
+			displayName := strings.TrimSpace(model.DisplayName)
+			if name == "" && alias == "" && agentID == "" && displayName == "" {
+				continue
+			}
+			out(strings.Join([]string{
+				strings.ToLower(name),
+				strings.ToLower(alias),
+				strings.ToLower(agentID),
+				strings.ToLower(displayName),
+				strconv.Itoa(model.MaxContextLength),
+				strconv.FormatBool(model.ForceMapping),
+			}, "|"))
 		}
 	})
 	return hashJoined(keys)

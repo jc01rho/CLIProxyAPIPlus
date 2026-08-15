@@ -39,6 +39,9 @@ const (
 	// CommandCode represents the Command Code provider identifier.
 	CommandCode = "commandcode"
 
+	// Freebuff represents the Freebuff provider identifier.
+	Freebuff = "freebuff"
+
 	// Mistral represents the Mistral AI provider identifier.
 	Mistral = "mistral"
 

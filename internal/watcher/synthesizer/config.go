@@ -58,6 +58,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeKiroKeys(ctx)...)
 	// CommandCode API Keys
 	out = append(out, s.synthesizeCommandCodeKeys(ctx)...)
+	// Freebuff API Keys
+	out = append(out, s.synthesizeFreebuffKeys(ctx)...)
 	// Mistral API Keys
 	out = append(out, s.synthesizeMistralKeys(ctx)...)
 
@@ -393,6 +395,77 @@ func (s *ConfigSynthesizer) synthesizeCommandCodeKeys(ctx *SynthesisContext) []*
 			a.Metadata = nil
 		}
 		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeFreebuffKeys creates Auth entries for Freebuff API keys.
+func (s *ConfigSynthesizer) synthesizeFreebuffKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+	out := make([]*coreauth.Auth, 0, len(cfg.FreebuffKey))
+	for i := range cfg.FreebuffKey {
+		fk := cfg.FreebuffKey[i]
+		prefix := strings.TrimSpace(fk.Prefix)
+		add := func(key, proxyURL string, weight *int, comment string) {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				return
+			}
+			proxyURL = strings.TrimSpace(proxyURL)
+			id, token := idGen.Next("freebuff:apikey", key, fk.BaseURL, proxyURL)
+			attrs := map[string]string{
+				"source":       fmt.Sprintf("config:freebuff[%s]", token),
+				"api_key":      key,
+				"config_index": strconv.Itoa(i),
+			}
+			if comment != "" {
+				attrs["comment"] = comment
+			}
+			if fk.Priority != 0 {
+				attrs["priority"] = strconv.Itoa(fk.Priority)
+			}
+			if fk.BillingClass != "" {
+				attrs["billing_class"] = string(fk.BillingClass)
+			}
+			if strings.TrimSpace(fk.BaseURL) != "" {
+				attrs["base_url"] = strings.TrimSpace(fk.BaseURL)
+			}
+			addWeightToAttrs(weight, attrs)
+			if hash := diff.ComputeFreebuffModelsHash(fk.Models); hash != "" {
+				attrs["models_hash"] = hash
+			}
+			addConfigHeadersToAttrs(fk.Headers, attrs)
+			metadata := map[string]any{}
+			if fk.DisableCooling {
+				metadata["disable_cooling"] = true
+			}
+			a := &coreauth.Auth{
+				ID:         id,
+				Provider:   "freebuff",
+				Label:      "freebuff-apikey",
+				Prefix:     prefix,
+				Status:     coreauth.StatusActive,
+				ProxyURL:   proxyURL,
+				Attributes: attrs,
+				Metadata:   metadata,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			}
+			ApplyAuthExcludedModelsMeta(a, cfg, fk.ExcludedModels, "apikey")
+			if len(a.Metadata) == 0 {
+				a.Metadata = nil
+			}
+			out = append(out, a)
+		}
+		if len(fk.APIKeyEntries) > 0 {
+			for _, entry := range fk.APIKeyEntries {
+				add(entry.APIKey, entry.ProxyURL, entry.Weight, strings.TrimSpace(entry.Comment))
+			}
+			continue
+		}
+		add(fk.APIKey, fk.ProxyURL, nil, strings.TrimSpace(fk.Comment))
 	}
 	return out
 }

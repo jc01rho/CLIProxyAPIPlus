@@ -719,3 +719,19 @@ nonstream-keepalive-interval: 0
 #     # authorize-url: "https://claude.ai/oauth/authorize"           # incognito mode
 #     token-url: "https://api.anthropic.com/v1/oauth/token"
 #     refresh-url: "https://api.anthropic.com/v1/oauth/token"       # optional refresh endpoint
+# Native Freebuff API keys. Each token maps to one Freebuff CLI account.
+# The executor keeps one reusable Freebuff session per credential and exposes
+# the configured models through /v1/models.
+freebuff-api-key:
+  - api-key: ""
+    base-url: "https://www.codebuff.com"
+    proxy-url: ""
+    prefix: "freebuff"
+    priority: 0
+    disable-cooling: false
+    excluded-models: []
+    headers: {}
+    models:
+      - name: "deepseek/deepseek-v4-flash"
+        alias: "deepseek-v4-flash"
+        agent-id: "base2-free-deepseek-flash"

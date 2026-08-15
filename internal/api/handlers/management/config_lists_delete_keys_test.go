@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -292,6 +293,203 @@ func TestCommandCodeKeysWithAuthIndexIncludesNestedEntries(t *testing.T) {
 	if !strings.Contains(string(encoded), firstIndex) ||
 		!strings.Contains(string(encoded), secondIndex) {
 		t.Fatalf("encoded response missing nested auth indexes: %s", encoded)
+	}
+}
+
+func TestPatchFreebuffKeyPreservesUnspecifiedFields(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg: &config.Config{FreebuffKey: []config.FreebuffKey{{
+			APIKey:  "token",
+			BaseURL: "https://www.codebuff.com",
+			Models: []config.FreebuffModel{{
+				Name: "deepseek/deepseek-v4-flash", Alias: "flash", AgentID: "base2-free-deepseek-flash",
+			}},
+		}}},
+		configFilePath: writeTestConfigFile(t),
+	}
+	body := []byte(`{"index":0,"value":{"priority":7}}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/freebuff-api-key", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchFreebuffKey(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(h.cfg.FreebuffKey) != 1 {
+		t.Fatalf("freebuff keys = %#v", h.cfg.FreebuffKey)
+	}
+	entry := h.cfg.FreebuffKey[0]
+	if entry.APIKey != "token" || entry.Priority != 7 || len(entry.Models) != 1 {
+		t.Fatalf("patched entry = %#v", entry)
+	}
+}
+
+func TestFreebuffKeysWithAuthIndexIncludesNestedEntries(t *testing.T) {
+	t.Parallel()
+
+	idGen := synthesizer.NewStableIDGenerator()
+	firstID, _ := idGen.Next("freebuff:apikey", "key-a", "https://www.codebuff.com", "socks5://proxy-a.example:1080")
+	secondID, _ := idGen.Next("freebuff:apikey", "key-b", "https://www.codebuff.com", "")
+	manager := coreauth.NewManager(nil, nil, nil)
+	firstAuth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID: firstID, Provider: "freebuff", Status: coreauth.StatusActive,
+		ProxyURL:   "socks5://proxy-a.example:1080",
+		Attributes: map[string]string{coreauth.AttributeAPIKey: "key-a", "base_url": "https://www.codebuff.com"},
+	})
+	if err != nil {
+		t.Fatalf("register first auth: %v", err)
+	}
+	secondAuth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID: secondID, Provider: "freebuff", Status: coreauth.StatusActive,
+		Attributes: map[string]string{coreauth.AttributeAPIKey: "key-b", "base_url": "https://www.codebuff.com"},
+	})
+	if err != nil {
+		t.Fatalf("register second auth: %v", err)
+	}
+	h := &Handler{
+		cfg: &config.Config{FreebuffKey: []config.FreebuffKey{{
+			BaseURL: "https://www.codebuff.com",
+			APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+				{APIKey: "key-a", ProxyURL: "socks5://proxy-a.example:1080"},
+				{APIKey: "key-b"},
+			},
+		}}},
+		authManager: manager,
+	}
+
+	got := h.freebuffKeysWithAuthIndex()
+	if len(got) != 1 || len(got[0].APIKeyEntries) != 2 {
+		t.Fatalf("nested response = %#v", got)
+	}
+	if got[0].APIKeyEntries[0].AuthIndex != firstAuth.EnsureIndex() ||
+		got[0].APIKeyEntries[1].AuthIndex != secondAuth.EnsureIndex() {
+		t.Fatalf("nested auth indexes = %#v", got[0].APIKeyEntries)
+	}
+}
+
+func TestDeleteFreebuffKeyRejectsMalformedIndex(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg:            &config.Config{FreebuffKey: []config.FreebuffKey{{APIKey: "must-remain"}}},
+		configFilePath: writeTestConfigFile(t),
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/freebuff-api-key?index=invalid", nil)
+
+	h.DeleteFreebuffKey(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(h.cfg.FreebuffKey) != 1 || h.cfg.FreebuffKey[0].APIKey != "must-remain" {
+		t.Fatalf("malformed index changed config: %#v", h.cfg.FreebuffKey)
+	}
+}
+
+func TestPutFreebuffKeysRejectsInvalidNestedWeight(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{cfg: &config.Config{}, configFilePath: writeTestConfigFile(t)}
+	body := []byte(fmt.Sprintf(
+		`[{"api-key-entries":[{"api-key":"token","weight":%d}]}]`,
+		config.MaxCredentialWeight+1,
+	))
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPut, "/v0/management/freebuff-api-key", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PutFreebuffKeys(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(h.cfg.FreebuffKey) != 0 {
+		t.Fatalf("invalid weight changed config: %#v", h.cfg.FreebuffKey)
+	}
+}
+
+func TestPatchFreebuffKeyRejectsInvalidNestedWeight(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg:            &config.Config{FreebuffKey: []config.FreebuffKey{{APIKey: "must-remain"}}},
+		configFilePath: writeTestConfigFile(t),
+	}
+	body := []byte(fmt.Sprintf(
+		`{"index":0,"value":{"api-key-entries":[{"api-key":"replacement","weight":%d}]}}`,
+		config.MaxCredentialWeight+1,
+	))
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/freebuff-api-key", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchFreebuffKey(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	entry := h.cfg.FreebuffKey[0]
+	if entry.APIKey != "must-remain" || len(entry.APIKeyEntries) != 0 {
+		t.Fatalf("invalid weight changed entry: %#v", entry)
+	}
+}
+
+func TestPatchFreebuffKeyRejectsAmbiguousCredentialMatch(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg: &config.Config{FreebuffKey: []config.FreebuffKey{
+			{APIKey: "duplicate", Priority: 1},
+			{APIKey: "duplicate", Priority: 2},
+		}},
+		configFilePath: writeTestConfigFile(t),
+	}
+	body := []byte(`{"match":"duplicate","value":{"priority":9}}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/freebuff-api-key", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchFreebuffKey(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if h.cfg.FreebuffKey[0].Priority != 1 || h.cfg.FreebuffKey[1].Priority != 2 {
+		t.Fatalf("ambiguous match changed config: %#v", h.cfg.FreebuffKey)
+	}
+}
+
+func TestDeleteFreebuffKeyRejectsAmbiguousCredentialMatch(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg: &config.Config{FreebuffKey: []config.FreebuffKey{
+			{APIKey: "duplicate", BaseURL: "https://a.example"},
+			{APIKey: "duplicate", BaseURL: "https://b.example"},
+		}},
+		configFilePath: writeTestConfigFile(t),
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/freebuff-api-key?api-key=duplicate", nil)
+
+	h.DeleteFreebuffKey(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(h.cfg.FreebuffKey) != 2 {
+		t.Fatalf("ambiguous match deleted config: %#v", h.cfg.FreebuffKey)
 	}
 }
 
