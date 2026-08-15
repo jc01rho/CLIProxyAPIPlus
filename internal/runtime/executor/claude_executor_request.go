@@ -2044,7 +2044,9 @@ func applyClaudeToolPrefix(body []byte, prefix string, reverseMaps ...map[string
 
 	if gjson.GetBytes(body, "tool_choice.type").String() == "tool" {
 		name := gjson.GetBytes(body, "tool_choice.name").String()
-		if name != "" && !strings.HasPrefix(name, prefix) && !builtinTools[name] {
+		// MCP-convention tool names pass through untouched so tool_choice keeps
+		// referencing the restored tool name in the tools array.
+		if name != "" && !strings.HasPrefix(name, prefix) && !builtinTools[name] && !helps.IsClaudeMCPToolName(name) {
 			newName := prefixed(name)
 			body, _ = sjson.SetBytes(body, "tool_choice.name", newName)
 			record(name, newName)
