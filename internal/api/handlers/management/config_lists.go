@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -32,6 +33,24 @@ func rejectInvalidCredentialWeight(c *gin.Context, field string, weight *int) bo
 	if errValidate := config.ValidateCredentialWeight(weight); errValidate != nil {
 		c.JSON(400, gin.H{"error": fmt.Sprintf("%s: %v", field, errValidate)})
 		return true
+	}
+	return false
+}
+
+func rejectInvalidFreebuffWeights(c *gin.Context, entries []config.FreebuffKey) bool {
+	for providerIndex := range entries {
+		for keyIndex := range entries[providerIndex].APIKeyEntries {
+			weight := entries[providerIndex].APIKeyEntries[keyIndex].Weight
+			if err := config.ValidateCredentialWeight(weight); err != nil {
+				c.JSON(400, gin.H{"error": fmt.Sprintf(
+					"freebuff-api-key[%d].api-key-entries[%d].weight: %v",
+					providerIndex,
+					keyIndex,
+					err,
+				)})
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -1681,6 +1700,164 @@ func (h *Handler) DeleteCommandCodeKey(c *gin.Context) {
 // mistral-api-key: []MistralKey
 func (h *Handler) GetMistralKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"mistral-api-key": h.mistralKeysWithAuthIndex()})
+}
+
+// freebuff-api-key: []FreebuffKey
+func (h *Handler) GetFreebuffKeys(c *gin.Context) {
+	c.JSON(200, gin.H{"freebuff-api-key": h.freebuffKeysWithAuthIndex()})
+}
+
+func (h *Handler) PutFreebuffKeys(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var entries []config.FreebuffKey
+	if err = json.Unmarshal(data, &entries); err != nil {
+		var wrapper struct {
+			Items []config.FreebuffKey `json:"items"`
+		}
+		if err = json.Unmarshal(data, &wrapper); err != nil {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		entries = wrapper.Items
+	}
+	if rejectInvalidFreebuffWeights(c, entries) {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.FreebuffKey = entries
+	h.cfg.SanitizeFreebuffKeys()
+	h.persistLocked(c)
+}
+
+func (h *Handler) PatchFreebuffKey(c *gin.Context) {
+	type freebuffKeyPatch struct {
+		APIKey         *string                             `json:"api-key"`
+		Comment        *string                             `json:"comment"`
+		Priority       *int                                `json:"priority"`
+		Prefix         *string                             `json:"prefix"`
+		BaseURL        *string                             `json:"base-url"`
+		ProxyURL       *string                             `json:"proxy-url"`
+		BillingClass   *config.BillingClass                `json:"billing-class"`
+		Models         *[]config.FreebuffModel             `json:"models"`
+		Headers        *map[string]string                  `json:"headers"`
+		ExcludedModels *[]string                           `json:"excluded-models"`
+		DisableCooling *bool                               `json:"disable-cooling"`
+		APIKeyEntries  *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
+	}
+	var body struct {
+		Index *int              `json:"index"`
+		Match *string           `json:"match"`
+		Value *freebuffKeyPatch `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	index := -1
+	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.FreebuffKey) {
+		index = *body.Index
+	}
+	if index < 0 && body.Match != nil {
+		matches := 0
+		for i := range h.cfg.FreebuffKey {
+			if h.cfg.FreebuffKey[i].ContainsAPIKey(strings.TrimSpace(*body.Match)) {
+				index = i
+				matches++
+			}
+		}
+		if matches > 1 {
+			c.JSON(400, gin.H{"error": "credential match is ambiguous; use index"})
+			return
+		}
+	}
+	if index < 0 {
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+	entry := h.cfg.FreebuffKey[index]
+	if body.Value.APIKey != nil {
+		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+	}
+	if body.Value.Comment != nil {
+		entry.Comment = strings.TrimSpace(*body.Value.Comment)
+	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
+	}
+	if body.Value.Prefix != nil {
+		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.BaseURL != nil {
+		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)
+	}
+	if body.Value.ProxyURL != nil {
+		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+	}
+	if body.Value.BillingClass != nil {
+		entry.BillingClass = *body.Value.BillingClass
+	}
+	if body.Value.Models != nil {
+		entry.Models = append([]config.FreebuffModel(nil), (*body.Value.Models)...)
+	}
+	if body.Value.Headers != nil {
+		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+	}
+	if body.Value.ExcludedModels != nil {
+		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.DisableCooling != nil {
+		entry.DisableCooling = *body.Value.DisableCooling
+	}
+	if body.Value.APIKeyEntries != nil {
+		candidate := append([]config.OpenAICompatibilityAPIKey(nil), (*body.Value.APIKeyEntries)...)
+		if rejectInvalidFreebuffWeights(c, []config.FreebuffKey{{APIKeyEntries: candidate}}) {
+			return
+		}
+		entry.APIKeyEntries = candidate
+	}
+	h.cfg.FreebuffKey[index] = entry
+	h.cfg.SanitizeFreebuffKeys()
+	h.persistLocked(c)
+}
+
+func (h *Handler) DeleteFreebuffKey(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	index := -1
+	if raw := strings.TrimSpace(c.Query("index")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "invalid index"})
+			return
+		}
+		index = parsed
+	} else if key := strings.TrimSpace(c.Query("api-key")); key != "" {
+		matches := 0
+		for i := range h.cfg.FreebuffKey {
+			if h.cfg.FreebuffKey[i].ContainsAPIKey(key) {
+				index = i
+				matches++
+			}
+		}
+		if matches > 1 {
+			c.JSON(400, gin.H{"error": "credential match is ambiguous; use index"})
+			return
+		}
+	}
+	if index < 0 || index >= len(h.cfg.FreebuffKey) {
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+	h.cfg.FreebuffKey = append(h.cfg.FreebuffKey[:index], h.cfg.FreebuffKey[index+1:]...)
+	h.cfg.SanitizeFreebuffKeys()
+	h.persistLocked(c)
 }
 
 func (h *Handler) PutMistralKeys(c *gin.Context) {

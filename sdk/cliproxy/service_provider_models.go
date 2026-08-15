@@ -31,6 +31,12 @@ func (a nativeConfiguredModelAdapter[T]) GetDisplayName() string { return a.mode
 func (a nativeConfiguredModelAdapter[T]) GetThinking() *registry.ThinkingSupport {
 	return nil
 }
+func (a nativeConfiguredModelAdapter[T]) GetMaxContextLength() int {
+	if model, ok := any(a.model).(interface{ GetMaxContextLength() int }); ok {
+		return model.GetMaxContextLength()
+	}
+	return 0
+}
 
 func buildNativeConfigModels[T nativeConfiguredModel](models []T, ownedBy, modelType string) []*ModelInfo {
 	adapted := make([]nativeConfiguredModelAdapter[T], 0, len(models))
@@ -105,6 +111,34 @@ func (s *Service) resolveConfigMistralKey(auth *coreauth.Auth) *config.MistralKe
 	return resolveNativeAPIKeyConfig(s.cfg.MistralKey, auth)
 }
 
+func (s *Service) resolveConfigFreebuffKey(auth *coreauth.Auth) *config.FreebuffKey {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	attrKey, attrBase := "", ""
+	if auth != nil && auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes[coreauth.AttributeAPIKey])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	if entry := configEntryForAuthIndex(auth, s.cfg.FreebuffKey); entry != nil {
+		if entry.MatchesCredential(attrKey, auth.ProxyURL) &&
+			(attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase)) {
+			return entry
+		}
+		return nil
+	}
+	for i := range s.cfg.FreebuffKey {
+		entry := &s.cfg.FreebuffKey[i]
+		if !entry.MatchesCredential(attrKey, auth.ProxyURL) {
+			continue
+		}
+		if attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase) {
+			return entry
+		}
+	}
+	return nil
+}
+
 func buildCommandCodeConfigModels(entry *config.CommandCodeKey) []*ModelInfo {
 	if entry == nil {
 		return nil
@@ -117,4 +151,11 @@ func buildMistralConfigModels(entry *config.MistralKey) []*ModelInfo {
 		return nil
 	}
 	return buildNativeConfigModels(entry.Models, "mistral", "mistral")
+}
+
+func buildFreebuffConfigModels(entry *config.FreebuffKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildNativeConfigModels(entry.Models, "freebuff", "freebuff")
 }

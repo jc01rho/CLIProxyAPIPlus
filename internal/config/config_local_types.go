@@ -180,6 +180,64 @@ func (cfg *Config) SanitizeCommandCodeKeys() {
 	cfg.CommandCodeKey = out
 }
 
+// FoldFreebuffLegacyAPIKey makes api-key-entries the single source of truth.
+func FoldFreebuffLegacyAPIKey(entry *FreebuffKey) {
+	if entry == nil {
+		return
+	}
+	legacy := strings.TrimSpace(entry.APIKey)
+	if legacy == "" || len(entry.APIKeyEntries) == 0 {
+		return
+	}
+	for i := range entry.APIKeyEntries {
+		if strings.TrimSpace(entry.APIKeyEntries[i].APIKey) == legacy {
+			entry.APIKey = ""
+			return
+		}
+	}
+	entry.APIKeyEntries = append([]OpenAICompatibilityAPIKey{{
+		APIKey:   legacy,
+		ProxyURL: strings.TrimSpace(entry.ProxyURL),
+	}}, entry.APIKeyEntries...)
+	entry.APIKey = ""
+}
+
+func (cfg *Config) SanitizeFreebuffKeys() {
+	if cfg == nil {
+		return
+	}
+	out := make([]FreebuffKey, 0, len(cfg.FreebuffKey))
+	for _, entry := range cfg.FreebuffKey {
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		nested := make([]OpenAICompatibilityAPIKey, 0, len(entry.APIKeyEntries))
+		for _, apiKeyEntry := range entry.APIKeyEntries {
+			apiKeyEntry.APIKey = strings.TrimSpace(apiKeyEntry.APIKey)
+			apiKeyEntry.ProxyURL = strings.TrimSpace(apiKeyEntry.ProxyURL)
+			apiKeyEntry.Comment = strings.TrimSpace(apiKeyEntry.Comment)
+			if apiKeyEntry.APIKey != "" {
+				nested = append(nested, apiKeyEntry)
+			}
+		}
+		entry.APIKeyEntries = nested
+		FoldFreebuffLegacyAPIKey(&entry)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BillingClass = normalizeBillingClass(entry.BillingClass)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		for i := range entry.Models {
+			entry.Models[i].Name = strings.TrimSpace(entry.Models[i].Name)
+			entry.Models[i].Alias = strings.TrimSpace(entry.Models[i].Alias)
+			entry.Models[i].AgentID = strings.TrimSpace(entry.Models[i].AgentID)
+		}
+		if entry.APIKey != "" || len(entry.APIKeyEntries) > 0 {
+			out = append(out, entry)
+		}
+	}
+	cfg.FreebuffKey = out
+}
+
 func (cfg *Config) SanitizeMistralKeys() {
 	if cfg == nil {
 		return

@@ -792,6 +792,10 @@ func (m *Manager) aliasRegistryModelKeysForAuth(auth *Auth, routeModel, routeKey
 			if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
 				models = asModelAliasEntries(entry.Models)
 			}
+		case "freebuff":
+			if entry := resolveFreebuffAPIKeyConfig(cfg, auth); entry != nil {
+				models = asModelAliasEntries(entry.Models)
+			}
 		case "mistral":
 			if entry := resolveMistralAPIKeyConfig(cfg, auth); entry != nil {
 				models = asModelAliasEntries(entry.Models)

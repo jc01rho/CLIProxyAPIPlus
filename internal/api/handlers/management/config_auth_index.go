@@ -34,6 +34,12 @@ type mistralKeyWithAuthIndex struct {
 	AuthIndex string `json:"auth-index,omitempty"`
 }
 
+type freebuffKeyWithAuthIndex struct {
+	config.FreebuffKey
+	APIKeyEntries []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
+	AuthIndex     string                                   `json:"auth-index,omitempty"`
+}
+
 type xaiKeyWithAuthIndex struct {
 	config.XAIKey
 	AuthIndex string `json:"auth-index,omitempty"`
@@ -283,6 +289,42 @@ func (h *Handler) mistralKeysWithAuthIndex() []mistralKeyWithAuthIndex {
 			MistralKey: entry,
 			AuthIndex:  authIndex,
 		}
+	}
+	return out
+}
+
+func (h *Handler) freebuffKeysWithAuthIndex() []freebuffKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveIndexByID := h.liveAuthIndexByID()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]freebuffKeyWithAuthIndex, len(h.cfg.FreebuffKey))
+	for i := range h.cfg.FreebuffKey {
+		entry := h.cfg.FreebuffKey[i]
+		response := freebuffKeyWithAuthIndex{FreebuffKey: entry}
+		if len(entry.APIKeyEntries) == 0 {
+			if key := strings.TrimSpace(entry.APIKey); key != "" {
+				id, _ := idGen.Next("freebuff:apikey", key, entry.BaseURL, entry.ProxyURL)
+				response.AuthIndex = liveIndexByID[id]
+			}
+		} else {
+			response.APIKeyEntries = make([]openAICompatibilityAPIKeyWithAuthIndex, len(entry.APIKeyEntries))
+			for j := range entry.APIKeyEntries {
+				apiKeyEntry := entry.APIKeyEntries[j]
+				id, _ := idGen.Next("freebuff:apikey", apiKeyEntry.APIKey, entry.BaseURL, apiKeyEntry.ProxyURL)
+				response.APIKeyEntries[j] = openAICompatibilityAPIKeyWithAuthIndex{
+					OpenAICompatibilityAPIKey: apiKeyEntry,
+					AuthIndex:                 liveIndexByID[id],
+				}
+			}
+		}
+		out[i] = response
 	}
 	return out
 }

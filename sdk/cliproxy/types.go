@@ -74,6 +74,9 @@ type APIKeyClientResult struct {
 	// CommandCodeKeyCount is the number of CommandCode API keys loaded
 	CommandCodeKeyCount int
 
+	// FreebuffKeyCount is the number of Freebuff API keys loaded
+	FreebuffKeyCount int
+
 	// MistralKeyCount is the number of Mistral API keys loaded
 	MistralKeyCount int
 }
@@ -114,8 +117,8 @@ type WatcherWrapper struct {
 	notifyTokenRefreshed  func(tokenID, accessToken, refreshToken, expiresAt string) // 方案 A: 后台刷新通知
 
 	dispatchPersistedAuth func(update watcher.AuthUpdate) bool
-	setPluginAuthParser    func(parser PluginAuthParser)
-	reloadConfigIfChanged  func()
+	setPluginAuthParser   func(parser PluginAuthParser)
+	reloadConfigIfChanged func()
 }
 
 // Start proxies to the underlying watcher Start implementation.

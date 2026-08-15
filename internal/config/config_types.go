@@ -609,6 +609,79 @@ func (m CommandCodeModel) GetAlias() string       { return m.Alias }
 func (m CommandCodeModel) GetDisplayName() string { return "" }
 func (m CommandCodeModel) GetForceMapping() bool  { return m.ForceMapping }
 
+// FreebuffKey represents a Freebuff API credential.
+type FreebuffKey struct {
+	APIKey         string                      `yaml:"api-key,omitempty" json:"api-key,omitempty"`
+	Comment        string                      `yaml:"comment,omitempty" json:"comment,omitempty"`
+	Priority       int                         `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Prefix         string                      `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	BaseURL        string                      `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	ProxyURL       string                      `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	BillingClass   BillingClass                `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+	Models         []FreebuffModel             `yaml:"models,omitempty" json:"models,omitempty"`
+	Headers        map[string]string           `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ExcludedModels []string                    `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	DisableCooling bool                        `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+	APIKeyEntries  []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
+}
+
+func (k FreebuffKey) GetAPIKey() string   { return k.APIKey }
+func (k FreebuffKey) GetBaseURL() string  { return k.BaseURL }
+func (k FreebuffKey) GetPrefix() string   { return k.Prefix }
+func (k FreebuffKey) GetProxyURL() string { return k.ProxyURL }
+
+func (k FreebuffKey) ContainsAPIKey(apiKey string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return true
+	}
+	for i := range k.APIKeyEntries {
+		if strings.TrimSpace(k.APIKeyEntries[i].APIKey) == apiKey {
+			return true
+		}
+	}
+	return false
+}
+
+func (k FreebuffKey) MatchesCredential(apiKey, proxyURL string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	proxyURL = strings.TrimSpace(proxyURL)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return strings.TrimSpace(k.ProxyURL) == proxyURL
+	}
+	for i := range k.APIKeyEntries {
+		entry := k.APIKeyEntries[i]
+		if strings.TrimSpace(entry.APIKey) == apiKey {
+			return strings.TrimSpace(entry.ProxyURL) == proxyURL
+		}
+	}
+	return false
+}
+
+// FreebuffModel maps a client alias to a Freebuff model and root agent.
+type FreebuffModel struct {
+	Name             string `yaml:"name" json:"name"`
+	Alias            string `yaml:"alias" json:"alias"`
+	AgentID          string `yaml:"agent-id" json:"agent-id"`
+	DisplayName      string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	MaxContextLength int    `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
+	ForceMapping     bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+}
+
+func (m FreebuffModel) GetName() string        { return m.Name }
+func (m FreebuffModel) GetAlias() string       { return m.Alias }
+func (m FreebuffModel) GetDisplayName() string { return m.DisplayName }
+func (m FreebuffModel) GetMaxContextLength() int {
+	return m.MaxContextLength
+}
+func (m FreebuffModel) GetForceMapping() bool { return m.ForceMapping }
+
 // MistralKey represents a Mistral API credential.
 type MistralKey struct {
 	APIKey         string            `yaml:"api-key" json:"api-key"`

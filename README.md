@@ -70,6 +70,7 @@ You can access the following providers locally and with multiple CLI accounts th
 - Claude Code multi-account load balancing
 - OpenAI Codex multi-account load balancing
 - Grok Build multi-account load balancing
+- Native Freebuff (Codebuff) executor with session reuse and `cost_mode: free`
 - OpenAI-compatible upstream providers via config (e.g., OpenRouter)
 - Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
 
@@ -105,6 +106,26 @@ xAI uses a **dedicated executor** (`XAIExecutor`), not the `openai-compatibility
         models:
           - name: grok-3
           - name: grok-3-mini
+
+
+### Freebuff (Codebuff)
+
+Freebuff uses a **dedicated executor** (`FreebuffExecutor`), not the `openai-compatibility` path. Put the CLI token from `~/.config/manicode/credentials.json` (`default.authToken`) in `freebuff-api-key`. The executor admits/reuses one Codebuff session per credential, wraps `/api/v1/chat/completions` with START/FINISH, and injects `cost_mode: "free"` plus the Buffy system-prompt marker.
+
+Use Codebuff-native tools (`read_files`, etc.). Arbitrary foreign tool names are rejected upstream as 404; that is a request-scoped 400 and does **not** cool down the credential. `401`/`403`/`429` still do.
+
+**Example config for Freebuff:**
+
+    freebuff-api-key:
+      - api-key: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+        base-url: "https://www.codebuff.com"
+        prefix: "freebuff"
+        models:
+          - name: "deepseek/deepseek-v4-flash"
+            alias: "deepseek-v4-flash"
+            agent-id: "base2-free-deepseek-flash"
+
+Management REST: `GET/PUT/PATCH/DELETE /v0/management/freebuff-api-key`.
 
 ### Generic usage flow
 

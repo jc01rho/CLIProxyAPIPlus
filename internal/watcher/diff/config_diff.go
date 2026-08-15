@@ -363,6 +363,30 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		}
 	}
 
+	// Freebuff keys (do not print key material)
+	if len(oldCfg.FreebuffKey) != len(newCfg.FreebuffKey) {
+		changes = append(changes, fmt.Sprintf("freebuff-api-key count: %d -> %d", len(oldCfg.FreebuffKey), len(newCfg.FreebuffKey)))
+	} else {
+		for i := range oldCfg.FreebuffKey {
+			o := oldCfg.FreebuffKey[i]
+			n := newCfg.FreebuffKey[i]
+			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
+				changes = append(changes, fmt.Sprintf("freebuff[%d].base-url: %s -> %s", i, formatURL(o.BaseURL), formatURL(n.BaseURL)))
+			}
+			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
+				changes = append(changes, fmt.Sprintf("freebuff[%d].api-key: updated", i))
+			}
+			if !equalStringMap(o.Headers, n.Headers) {
+				changes = append(changes, fmt.Sprintf("freebuff[%d].headers: updated", i))
+			}
+			oldModels := ComputeFreebuffModelsHash(o.Models)
+			newModels := ComputeFreebuffModelsHash(n.Models)
+			if oldModels != newModels {
+				changes = append(changes, fmt.Sprintf("freebuff[%d].models: updated", i))
+			}
+		}
+	}
+
 	// xAI keys (do not print key material)
 	if len(oldCfg.XAIKey) != len(newCfg.XAIKey) {
 		changes = append(changes, fmt.Sprintf("xai-api-key count: %d -> %d", len(oldCfg.XAIKey), len(newCfg.XAIKey)))

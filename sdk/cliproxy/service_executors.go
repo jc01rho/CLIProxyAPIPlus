@@ -204,6 +204,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"codex",
 		"claude",
 		constant.CommandCode,
+		constant.Freebuff,
 		constant.Gemini,
 		constant.GeminiInteractions,
 		"vertex",
@@ -325,6 +326,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
 	case constant.CommandCode:
 		s.coreManager.RegisterExecutor(executor.NewCommandCodeExecutor(cfg))
+	case constant.Freebuff:
+		s.coreManager.RegisterExecutor(executor.NewFreebuffExecutor(cfg))
 	case "kimi":
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(cfg))
 	case "xai":
