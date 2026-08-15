@@ -496,7 +496,7 @@ func TestReverseRemapPassesThroughCallerMCPToolsOnVirtualServerCollision(t *test
 
 	for _, name := range native {
 		response := []byte(fmt.Sprintf(`{"content":[{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}]}`, name))
-		restored, err := restoreClaudeOAuthToolNamesFromResponse(response, reverseMap)
+		restored, err := restoreClaudeOAuthToolNamesFromResponse(response, "", true, reverseMap)
 		if err != nil {
 			t.Fatalf("caller MCP tool %q failed to restore: %v", name, err)
 		}
@@ -505,7 +505,7 @@ func TestReverseRemapPassesThroughCallerMCPToolsOnVirtualServerCollision(t *test
 		}
 
 		line := []byte(fmt.Sprintf(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}}`, name))
-		restoredLine, errLine := restoreClaudeOAuthToolNamesFromStreamLine(line, reverseMap)
+		restoredLine, errLine := restoreClaudeOAuthToolNamesFromStreamLine(line, "", true, reverseMap)
 		if errLine != nil {
 			t.Fatalf("caller MCP tool %q failed to restore from stream: %v", name, errLine)
 		}
@@ -519,7 +519,7 @@ func TestReverseRemapPassesThroughCallerMCPToolsOnVirtualServerCollision(t *test
 	toolPart := strings.SplitN(alias, "__", 3)[2]
 	for _, drifted := range []string{alias, "mcp__" + server + "__" + server + "__" + toolPart, "mcp__" + server + "__abandon_read_file"} {
 		response := []byte(fmt.Sprintf(`{"content":[{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}]}`, drifted))
-		restored, err := restoreClaudeOAuthToolNamesFromResponse(response, reverseMap)
+		restored, err := restoreClaudeOAuthToolNamesFromResponse(response, "", true, reverseMap)
 		if err != nil {
 			t.Fatalf("proxied alias %q failed to restore: %v", drifted, err)
 		}
