@@ -83,3 +83,4 @@ docker-compose.override.yml
 
 # Local LLM Wiki vault
 .llm-wiki
+.omo/

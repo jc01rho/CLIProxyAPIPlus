@@ -447,7 +447,7 @@ func TestOpenAICompatExecutorBackfillsReasoningReplayForXiaomiProviderWithoutExi
 	}
 }
 
-func TestOpenAICompatExecutorOmitsMiniMaxM3ThinkingType(t *testing.T) {
+func TestOpenAICompatExecutorPreservesMiniMaxM3AdaptiveThinking(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -471,11 +471,8 @@ func TestOpenAICompatExecutorOmitsMiniMaxM3ThinkingType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
-	if thinkingType := gjson.GetBytes(gotBody, "thinking.type"); thinkingType.Exists() {
-		t.Fatalf("thinking.type should be omitted; payload=%s", gotBody)
-	}
-	if thinking := gjson.GetBytes(gotBody, "thinking"); thinking.Exists() {
-		t.Fatalf("empty thinking object should be omitted; payload=%s", gotBody)
+	if thinkingType := gjson.GetBytes(gotBody, "thinking.type").String(); thinkingType != "adaptive" {
+		t.Fatalf("thinking.type = %q, want adaptive preserved; payload=%s", thinkingType, gotBody)
 	}
 }
 

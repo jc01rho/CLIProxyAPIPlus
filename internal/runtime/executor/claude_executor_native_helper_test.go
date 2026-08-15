@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -16,6 +17,8 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 const (
 	claudeNativeHelperSessionID = "11111111-2222-4333-8444-555555555555"
@@ -104,7 +107,7 @@ func TestApplyClaudeHeadersPreservesAsyncOnlyForConfirmedNative(t *testing.T) {
 	}
 }
 
-func TestClaudeExecutorMinimalNativeHelperPreservesMarkerlessWire(t *testing.T) {
+func TestClaudeExecutorMinimalNativeHelperCloaksMarkerlessWire(t *testing.T) {
 	var upstreamBody []byte
 	var upstreamHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,21 +133,39 @@ func TestClaudeExecutorMinimalNativeHelperPreservesMarkerlessWire(t *testing.T) 
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 
-	for _, path := range []string{"system", "stream", "context_management", "output_config"} {
+	for _, path := range []string{"context_management", "output_config"} {
 		if got := gjson.GetBytes(upstreamBody, path); got.Exists() {
 			t.Fatalf("helper body unexpectedly contains %s=%s: %s", path, got.Raw, upstreamBody)
 		}
 	}
-	if bytes.Contains(upstreamBody, []byte(`"cache_control"`)) {
-		t.Fatalf("helper body unexpectedly contains cache_control: %s", upstreamBody)
+	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 2 {
+		t.Fatalf("system block count = %d, want masqueraded 2: %s", got, upstreamBody)
 	}
-	if got := gjson.GetBytes(upstreamBody, "messages.0.content").String(); got != "helper probe" {
-		t.Fatalf("messages.0.content = %q, want preserved string", got)
+	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header: cc_version=2.1.177.3bf; cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000") {
+		t.Fatalf("billing header not re-signed at current baseline: %q", got)
 	}
-	if !bytes.HasPrefix(upstreamBody, []byte(`{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":`)) {
-		t.Fatalf("helper top-level order changed: %s", upstreamBody)
+	if got := gjson.GetBytes(upstreamBody, "system.1.text").String(); got != "You are Claude Code, Anthropic's official CLI for Claude." {
+		t.Fatalf("system.1.text = %q, want Claude Code identity", got)
 	}
-	assertClaudeNativeHelperHeaders(t, upstreamHeaders, headers)
+	if !gjson.GetBytes(upstreamBody, "system.1.cache_control").Exists() {
+		t.Fatalf("identity system block missing cache_control: %s", upstreamBody)
+	}
+	if !bytes.Contains(upstreamBody, []byte("# currentDate")) {
+		t.Fatalf("helper body missing currentDate system-reminder: %s", upstreamBody)
+	}
+	if !gjson.GetBytes(upstreamBody, "metadata.user_id").Exists() {
+		t.Fatalf("helper body missing metadata.user_id: %s", upstreamBody)
+	}
+	if !bytes.Contains(upstreamBody, []byte(`"text":"helper probe"`)) {
+		t.Fatalf("helper probe text not preserved in messages: %s", upstreamBody)
+	}
+	if got := gjson.GetBytes(upstreamBody, "model").String(); got != "claude-haiku-4-5-20251001" {
+		t.Fatalf("model = %q, want preserved haiku helper model", got)
+	}
+	if got := gjson.GetBytes(upstreamBody, "max_tokens").Int(); got != 1 {
+		t.Fatalf("max_tokens = %d, want preserved 1", got)
+	}
+	assertClaudeNativeHelperHeaders(t, upstreamHeaders, headers, "application/json", "gzip, deflate, br, zstd")
 }
 
 func TestClaudeExecutorStructuredNativeHelperPreservesStreamProfile(t *testing.T) {
@@ -179,8 +200,11 @@ func TestClaudeExecutorStructuredNativeHelperPreservesStreamProfile(t *testing.T
 		}
 	}
 
-	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 3 {
-		t.Fatalf("system block count = %d, want native 3: %s", got, upstreamBody)
+	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 2 {
+		t.Fatalf("system block count = %d, want masqueraded 2: %s", got, upstreamBody)
+	}
+	if !bytes.Contains(upstreamBody, []byte("<system-reminder>\\nReturn a short title.\\n</system-reminder>")) {
+		t.Fatalf("helper instruction not moved into system-reminder message block: %s", upstreamBody)
 	}
 	if !bytes.HasPrefix(upstreamBody, []byte(`{"model":"claude-haiku-4-5-20251001","messages":`)) {
 		t.Fatalf("structured helper top-level order changed: %s", upstreamBody)
@@ -190,41 +214,32 @@ func TestClaudeExecutorStructuredNativeHelperPreservesStreamProfile(t *testing.T
 			t.Fatalf("structured helper unexpectedly contains %s=%s: %s", path, got.Raw, upstreamBody)
 		}
 	}
-	if bytes.Contains(upstreamBody, []byte(`"cache_control"`)) {
-		t.Fatalf("structured helper unexpectedly contains cache_control: %s", upstreamBody)
-	}
 	if got := gjson.GetBytes(upstreamBody, "stream").Bool(); !got {
 		t.Fatalf("structured helper stream = false, want true: %s", upstreamBody)
 	}
 	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); strings.Contains(got, "cch=00000") || !strings.Contains(got, " cch=") {
 		t.Fatalf("structured helper billing CCH was not re-signed: %q", got)
 	}
-	assertClaudeNativeHelperHeaders(t, upstreamHeaders, headers)
+	assertClaudeNativeHelperHeaders(t, upstreamHeaders, headers, "text/event-stream", "identity")
 }
 
-func assertClaudeNativeHelperHeaders(t *testing.T, got, incoming http.Header) {
+func assertClaudeNativeHelperHeaders(t *testing.T, got, incoming http.Header, wantAccept, wantAcceptEncoding string) {
 	t.Helper()
-	if got.Get("Anthropic-Beta") != incoming.Get("Anthropic-Beta") {
-		t.Fatalf("Anthropic-Beta = %q, want exact native helper profile %q", got.Get("Anthropic-Beta"), incoming.Get("Anthropic-Beta"))
-	}
-	if strings.Contains(got.Get("Anthropic-Beta"), claudeExtendedCacheTTLBeta) || strings.Contains(got.Get("Anthropic-Beta"), claudeCodeBeta) {
-		t.Fatalf("Anthropic-Beta gained standard Claude Code cache betas: %q", got.Get("Anthropic-Beta"))
+	gotBetas, incomingBetas := got.Get("Anthropic-Beta"), incoming.Get("Anthropic-Beta")
+	for _, beta := range strings.Split(incomingBetas, ",") {
+		beta = strings.TrimSpace(beta)
+		if beta != "" && !strings.Contains(gotBetas, beta) {
+			t.Fatalf("Anthropic-Beta = %q, native helper beta %q lost", gotBetas, beta)
+		}
 	}
 	for _, name := range []string{
-		"Accept",
-		"Accept-Encoding",
 		"Content-Type",
-		"User-Agent",
 		"X-App",
 		"Anthropic-Version",
 		"Anthropic-Dangerous-Direct-Browser-Access",
-		"X-Claude-Code-Session-Id",
-		"X-Client-Request-Id",
-		"X-Stainless-Async",
 		"X-Stainless-Lang",
 		"X-Stainless-Runtime",
 		"X-Stainless-Package-Version",
-		"X-Stainless-Runtime-Version",
 		"X-Stainless-OS",
 		"X-Stainless-Arch",
 		"X-Stainless-Retry-Count",
@@ -235,6 +250,28 @@ func assertClaudeNativeHelperHeaders(t *testing.T, got, incoming http.Header) {
 		if gotValue != wantValue {
 			t.Fatalf("%s = %q, want preserved %q", name, gotValue, wantValue)
 		}
+	}
+	// Pinned to the fingerprint baseline in helps/claude_device_profile.go.
+	if got := claudeNativeHelperHeaderValue(got, "X-Stainless-Runtime-Version"); got != "v24.3.0" {
+		t.Fatalf("X-Stainless-Runtime-Version = %q, want fingerprint baseline v24.3.0", got)
+	}
+	if got := claudeNativeHelperHeaderValue(got, "X-Stainless-Async"); got != "" {
+		t.Fatalf("X-Stainless-Async = %q, want dropped for helper probes", got)
+	}
+	if got := claudeNativeHelperHeaderValue(got, "X-Client-Request-Id"); got != "" {
+		t.Logf("X-Client-Request-Id = %q (regenerated when present)", got)
+	}
+	if got := claudeNativeHelperHeaderValue(got, "X-Claude-Code-Session-Id"); !uuidRe.MatchString(got) {
+		t.Fatalf("X-Claude-Code-Session-Id = %q, want re-derived fingerprint UUID", got)
+	}
+	if got := claudeNativeHelperHeaderValue(got, "User-Agent"); got != "claude-cli/2.1.177 (external, cli)" {
+		t.Fatalf("User-Agent = %q, want pinned fingerprint baseline", got)
+	}
+	if got := claudeNativeHelperHeaderValue(got, "Accept"); got != wantAccept {
+		t.Fatalf("Accept = %q, want stream-negotiated %q", got, wantAccept)
+	}
+	if got := claudeNativeHelperHeaderValue(got, "Accept-Encoding"); got != wantAcceptEncoding {
+		t.Fatalf("Accept-Encoding = %q, want %q", got, wantAcceptEncoding)
 	}
 }
 
