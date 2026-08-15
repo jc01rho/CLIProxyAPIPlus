@@ -31,11 +31,11 @@ func TestClassifyCursorErrorMapsWrappedUnauthenticatedText(t *testing.T) {
 }
 
 func TestCursorAgentHostIsRegionalNotAPI2(t *testing.T) {
-	if cursorAgentHost != "agentn.us.api5.cursor.sh" {
-		t.Fatalf("cursorAgentHost = %q, want agentn.us.api5.cursor.sh", cursorAgentHost)
+	if cursorAgentHost != "agentn.global.api5.cursor.sh" {
+		t.Fatalf("cursorAgentHost = %q, want agentn.global.api5.cursor.sh", cursorAgentHost)
 	}
-	if !strings.HasPrefix(cursorAgentURL, "https://agentn.us.api5.cursor.sh") {
-		t.Fatalf("cursorAgentURL = %q, want https://agentn.us.api5.cursor.sh", cursorAgentURL)
+	if !strings.HasPrefix(cursorAgentURL, "https://agentn.global.api5.cursor.sh") {
+		t.Fatalf("cursorAgentURL = %q, want https://agentn.global.api5.cursor.sh", cursorAgentURL)
 	}
 	if strings.Contains(cursorAgentURL, "api2.cursor.sh") {
 		t.Fatal("agent RPCs must not target api2.cursor.sh")

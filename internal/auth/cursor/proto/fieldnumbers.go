@@ -25,11 +25,14 @@ const (
 
 // AgentRunRequest (msg 91)
 const (
-	ARR_ConversationState = 1 // ConversationStateStructure
-	ARR_Action            = 2 // ConversationAction
-	ARR_ModelDetails      = 3 // ModelDetails
-	ARR_McpTools          = 4 // McpTools
-	ARR_ConversationId    = 5 // string (optional)
+	ARR_ConversationState = 1  // ConversationStateStructure
+	ARR_Action            = 2  // ConversationAction
+	ARR_ModelDetails      = 3  // ModelDetails
+	ARR_McpTools          = 4  // McpTools (send the envelope even when empty)
+	ARR_ConversationId    = 5  // string (optional)
+	ARR_RequestedModel    = 9  // RequestedModel — authoritative routing field on the current agent backend
+	ARR_UnknownVarint12   = 12 // varint, observed as 0 in cursor-agent CLI traffic
+	ARR_RequestId         = 16 // string UUID, same value as conversation_id
 )
 
 // ConversationStateStructure (msg 83)
@@ -58,7 +61,8 @@ const (
 const (
 	UM_Text            = 1 // string
 	UM_MessageId       = 2 // string
-	UM_SelectedContext = 3 // SelectedContext (optional)
+	UM_SelectedContext = 3 // SelectedContext (send empty placeholder when absent)
+	UM_Mode            = 4 // varint, 1 in cursor-agent CLI traffic
 )
 
 // SelectedContext
@@ -81,6 +85,18 @@ const (
 	MD_ThinkingDetails = 2 // ThinkingDetails (optional)
 	MD_DisplayModelId  = 3 // string
 	MD_DisplayName     = 4 // string
+)
+
+// RequestedModel
+const (
+	RM_ModelId    = 1 // string
+	RM_Parameters = 2 // repeated ModelParameter
+)
+
+// ModelParameter
+const (
+	MP_Id    = 1 // string
+	MP_Value = 2 // string
 )
 
 // McpTools (msg 307)
