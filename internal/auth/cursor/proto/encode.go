@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -47,6 +48,12 @@ type McpToolDef struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
+}
+
+// ModelParameter is a single RequestedModel parameter (id/value pair).
+type ModelParameter struct {
+	ID    string
+	Value string
 }
 
 // --- Helper: create a dynamic message and set fields ---
@@ -91,6 +98,23 @@ func marshal(msg *dynamicpb.Message) []byte {
 	return b
 }
 
+// --- protowire helpers ---
+
+func pwVarint(buf []byte, num protowire.Number, v uint64) []byte {
+	buf = protowire.AppendTag(buf, num, protowire.VarintType)
+	return protowire.AppendVarint(buf, v)
+}
+
+func pwBytes(buf []byte, num protowire.Number, v []byte) []byte {
+	buf = protowire.AppendTag(buf, num, protowire.BytesType)
+	return protowire.AppendBytes(buf, v)
+}
+
+func pwStr(buf []byte, num protowire.Number, v string) []byte {
+	buf = protowire.AppendTag(buf, num, protowire.BytesType)
+	return protowire.AppendString(buf, v)
+}
+
 // --- Encode functions mirroring cursor-fetch.ts ---
 
 // EncodeHeartbeat returns an encoded AgentClientMessage with clientHeartbeat.
@@ -103,29 +127,106 @@ func EncodeHeartbeat() []byte {
 }
 
 // EncodeRunRequest builds a full AgentClientMessage wrapping an AgentRunRequest.
-// Mirrors buildCursorRequest() in cursor-fetch.ts.
-// If p.RawCheckpoint is set, it is used directly as the conversation_state bytes
-// (from a previous conversation_checkpoint_update), skipping manual turn construction.
+//
+// Wire shape follows cursor-agent CLI traffic (cross-checked against the
+// OmniRoute and 9router reverse-engineered clients):
+//   - UserMessage carries message_id, a selected_context envelope (empty when
+//     no images) and mode=1 — without these placeholders the server may accept
+//     the request but never stream a response;
+//   - the mcp_tools envelope is always present (empty when no tools) —
+//     omitting it entirely makes cursor error;
+//   - requested_model is always sent and is the authoritative routing field on
+//     the current agent backend: requests carrying only model_details are
+//     answered with Connect not_found;
+//   - conversation_id and request_id share one client-generated UUID and a
+//     varint-0 placeholder is written at field 12.
+//
+// If p.RawCheckpoint is set, it is used directly as the conversation_state
+// bytes (from a previous conversation_checkpoint_update), skipping manual
+// turn construction.
 func EncodeRunRequest(p *RunRequestParams) []byte {
-	if p.RawCheckpoint != nil {
-		return encodeRunRequestWithCheckpoint(p)
-	}
-
 	if p.BlobStore == nil {
 		p.BlobStore = make(map[string][]byte)
 	}
 
+	var cssBytes []byte
+	if p.RawCheckpoint != nil {
+		cssBytes = p.RawCheckpoint
+	} else {
+		cssBytes = buildConversationStateBytes(p)
+	}
+
+	// ConversationAction → UserMessageAction → UserMessage
+	umBytes := buildUserMessageBytes(p.UserText, p.MessageId, p.Images)
+	caBytes := pwBytes(nil, CA_UserMessageAction, pwBytes(nil, UMA_UserMessage, umBytes))
+
+	// ModelDetails and RequestedModel both use the resolved wire model id.
+	resolvedID, rmParams := ResolveRequestedModel(p.ModelId)
+	mdBytes := buildModelDetailsBytes(resolvedID)
+	rmBytes := buildRequestedModelBytes(resolvedID, rmParams)
+
+	// McpTools envelope — always present, even when empty.
+	mcpBytes := buildMcpToolsBytes(p.McpTools)
+
+	conversationID := p.ConversationId
+	if conversationID == "" {
+		conversationID = generateId()
+	}
+
+	arrBuf := pwBytes(nil, ARR_ConversationState, cssBytes)
+	arrBuf = pwBytes(arrBuf, ARR_Action, caBytes)
+	arrBuf = pwBytes(arrBuf, ARR_ModelDetails, mdBytes)
+	arrBuf = pwBytes(arrBuf, ARR_McpTools, mcpBytes)
+	arrBuf = pwStr(arrBuf, ARR_ConversationId, conversationID)
+	arrBuf = pwBytes(arrBuf, ARR_RequestedModel, rmBytes)
+	arrBuf = pwVarint(arrBuf, ARR_UnknownVarint12, 0)
+	arrBuf = pwStr(arrBuf, ARR_RequestId, conversationID)
+
+	acmBuf := pwBytes(nil, ACM_RunRequest, arrBuf)
+
+	if p.RawCheckpoint != nil {
+		log.Debugf("cursor encode: built RunRequest with checkpoint (%d bytes), total=%d bytes", len(p.RawCheckpoint), len(acmBuf))
+	}
+	return acmBuf
+}
+
+// buildUserMessageBytes encodes a UserMessage with cursor-agent-compliant
+// placeholders: message_id fallback, an always-present selected_context
+// envelope (empty when no images) and mode=1.
+func buildUserMessageBytes(text, messageID string, images []ImageData) []byte {
+	var buf []byte
+	buf = pwStr(buf, UM_Text, text)
+	if messageID == "" {
+		messageID = generateId()
+	}
+	buf = pwStr(buf, UM_MessageId, messageID)
+
+	var scBytes []byte
+	if len(images) > 0 {
+		sc := newMsg("SelectedContext")
+		imgsField := field(sc, "selected_images")
+		imgsList := sc.Mutable(imgsField).List()
+		for _, img := range images {
+			si := newMsg("SelectedImage")
+			setStr(si, "uuid", generateId())
+			setStr(si, "mime_type", img.MimeType)
+			setBytes(si, "data", img.Data)
+			imgsList.Append(protoreflect.ValueOfMessage(si.ProtoReflect()))
+		}
+		scBytes = marshal(sc)
+	}
+	buf = pwBytes(buf, UM_SelectedContext, scBytes)
+	buf = pwVarint(buf, UM_Mode, 1)
+	return buf
+}
+
+// buildConversationStateBytes encodes root prompt blob + conversation turns.
+func buildConversationStateBytes(p *RunRequestParams) []byte {
 	// --- Conversation turns ---
-	// Each turn is serialized as bytes (ConversationTurnStructure → bytes)
 	var turnBytes [][]byte
 	for _, turn := range p.Turns {
-		// UserMessage for this turn
-		um := newMsg("UserMessage")
-		setStr(um, "text", turn.UserText)
-		setStr(um, "message_id", generateId())
-		umBytes := marshal(um)
+		umBytes := buildUserMessageBytes(turn.UserText, "", nil)
 
-		// Steps (assistant response)
 		var stepBytes [][]byte
 		if turn.AssistantText != "" {
 			am := newMsg("AssistantMessage")
@@ -135,7 +236,6 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 			stepBytes = append(stepBytes, marshal(step))
 		}
 
-		// AgentConversationTurnStructure (fields are bytes, not submessages)
 		agentTurn := newMsg("AgentConversationTurnStructure")
 		setBytes(agentTurn, "user_message", umBytes)
 		for _, sb := range stepBytes {
@@ -144,7 +244,6 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 			list.Append(protoreflect.ValueOfBytes(sb))
 		}
 
-		// ConversationTurnStructure (oneof turn → agentConversationTurn)
 		cts := newMsg("ConversationTurnStructure")
 		setMsg(cts, "agent_conversation_turn", agentTurn)
 		turnBytes = append(turnBytes, marshal(cts))
@@ -157,11 +256,9 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 
 	// --- ConversationStateStructure ---
 	css := newMsg("ConversationStateStructure")
-	// rootPromptMessagesJson: repeated bytes
 	rootField := field(css, "root_prompt_messages_json")
 	rootList := css.Mutable(rootField).List()
 	rootList.Append(protoreflect.ValueOfBytes(blobId))
-	// turns: repeated bytes (field 8) + turns_old (field 2) for compatibility
 	turnsField := field(css, "turns")
 	turnsList := css.Mutable(turnsField).List()
 	for _, tb := range turnBytes {
@@ -174,116 +271,27 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 			turnsOldList.Append(protoreflect.ValueOfBytes(tb))
 		}
 	}
-
-	// --- UserMessage (current) ---
-	userMessage := newMsg("UserMessage")
-	setStr(userMessage, "text", p.UserText)
-	setStr(userMessage, "message_id", p.MessageId)
-
-	// Images via SelectedContext
-	if len(p.Images) > 0 {
-		sc := newMsg("SelectedContext")
-		imgsField := field(sc, "selected_images")
-		imgsList := sc.Mutable(imgsField).List()
-		for _, img := range p.Images {
-			si := newMsg("SelectedImage")
-			setStr(si, "uuid", generateId())
-			setStr(si, "mime_type", img.MimeType)
-			setBytes(si, "data", img.Data)
-			imgsList.Append(protoreflect.ValueOfMessage(si.ProtoReflect()))
-		}
-		setMsg(userMessage, "selected_context", sc)
-	}
-
-	// --- UserMessageAction ---
-	uma := newMsg("UserMessageAction")
-	setMsg(uma, "user_message", userMessage)
-
-	// --- ConversationAction ---
-	ca := newMsg("ConversationAction")
-	setMsg(ca, "user_message_action", uma)
-
-	// --- ModelDetails ---
-	md := newMsg("ModelDetails")
-	setStr(md, "model_id", p.ModelId)
-	setStr(md, "display_model_id", p.ModelId)
-	setStr(md, "display_name", p.ModelId)
-
-	// --- AgentRunRequest ---
-	arr := newMsg("AgentRunRequest")
-	setMsg(arr, "conversation_state", css)
-	setMsg(arr, "action", ca)
-	setMsg(arr, "model_details", md)
-	setStr(arr, "conversation_id", p.ConversationId)
-
-	// McpTools
-	if len(p.McpTools) > 0 {
-		mcpTools := newMsg("McpTools")
-		toolsField := field(mcpTools, "mcp_tools")
-		toolsList := mcpTools.Mutable(toolsField).List()
-		for _, tool := range p.McpTools {
-			td := newMsg("McpToolDefinition")
-			setStr(td, "name", tool.Name)
-			setStr(td, "description", tool.Description)
-			if len(tool.InputSchema) > 0 {
-				setBytes(td, "input_schema", jsonToProtobufValueBytes(tool.InputSchema))
-			}
-			setStr(td, "provider_identifier", "proxy")
-			setStr(td, "tool_name", tool.Name)
-			toolsList.Append(protoreflect.ValueOfMessage(td.ProtoReflect()))
-		}
-		setMsg(arr, "mcp_tools", mcpTools)
-	}
-
-	// --- AgentClientMessage ---
-	acm := newMsg("AgentClientMessage")
-	setMsg(acm, "run_request", arr)
-
-	return marshal(acm)
+	return marshal(css)
 }
 
-// encodeRunRequestWithCheckpoint builds an AgentClientMessage using a raw checkpoint
-// as conversation_state. The checkpoint bytes are embedded directly without deserialization.
-func encodeRunRequestWithCheckpoint(p *RunRequestParams) []byte {
-	// Build UserMessage
-	userMessage := newMsg("UserMessage")
-	setStr(userMessage, "text", p.UserText)
-	setStr(userMessage, "message_id", p.MessageId)
-	if len(p.Images) > 0 {
-		sc := newMsg("SelectedContext")
-		imgsField := field(sc, "selected_images")
-		imgsList := sc.Mutable(imgsField).List()
-		for _, img := range p.Images {
-			si := newMsg("SelectedImage")
-			setStr(si, "uuid", generateId())
-			setStr(si, "mime_type", img.MimeType)
-			setBytes(si, "data", img.Data)
-			imgsList.Append(protoreflect.ValueOfMessage(si.ProtoReflect()))
-		}
-		setMsg(userMessage, "selected_context", sc)
-	}
-
-	// Build ConversationAction with UserMessageAction
-	uma := newMsg("UserMessageAction")
-	setMsg(uma, "user_message", userMessage)
-	ca := newMsg("ConversationAction")
-	setMsg(ca, "user_message_action", uma)
-	caBytes := marshal(ca)
-
-	// Build ModelDetails
+// buildModelDetailsBytes encodes ModelDetails with the resolved wire model id.
+func buildModelDetailsBytes(modelID string) []byte {
 	md := newMsg("ModelDetails")
-	setStr(md, "model_id", p.ModelId)
-	setStr(md, "display_model_id", p.ModelId)
-	setStr(md, "display_name", p.ModelId)
-	mdBytes := marshal(md)
+	setStr(md, "model_id", modelID)
+	setStr(md, "display_model_id", modelID)
+	setStr(md, "display_name", modelID)
+	return marshal(md)
+}
 
-	// Build McpTools
-	var mcpToolsBytes []byte
-	if len(p.McpTools) > 0 {
-		mcpTools := newMsg("McpTools")
+// buildMcpToolsBytes encodes the McpTools envelope. It is always present on
+// the wire — an empty message when no tools are declared — because cursor
+// errors when the envelope is omitted entirely.
+func buildMcpToolsBytes(tools []McpToolDef) []byte {
+	mcpTools := newMsg("McpTools")
+	if len(tools) > 0 {
 		toolsField := field(mcpTools, "mcp_tools")
 		toolsList := mcpTools.Mutable(toolsField).List()
-		for _, tool := range p.McpTools {
+		for _, tool := range tools {
 			td := newMsg("McpToolDefinition")
 			setStr(td, "name", tool.Name)
 			setStr(td, "description", tool.Description)
@@ -294,38 +302,96 @@ func encodeRunRequestWithCheckpoint(p *RunRequestParams) []byte {
 			setStr(td, "tool_name", tool.Name)
 			toolsList.Append(protoreflect.ValueOfMessage(td.ProtoReflect()))
 		}
-		mcpToolsBytes = marshal(mcpTools)
 	}
+	return marshal(mcpTools)
+}
 
-	// Manually assemble AgentRunRequest using protowire to embed raw checkpoint
-	var arrBuf []byte
-	// field 1: conversation_state = raw checkpoint bytes (length-delimited)
-	arrBuf = protowire.AppendTag(arrBuf, ARR_ConversationState, protowire.BytesType)
-	arrBuf = protowire.AppendBytes(arrBuf, p.RawCheckpoint)
-	// field 2: action = ConversationAction
-	arrBuf = protowire.AppendTag(arrBuf, ARR_Action, protowire.BytesType)
-	arrBuf = protowire.AppendBytes(arrBuf, caBytes)
-	// field 3: model_details = ModelDetails
-	arrBuf = protowire.AppendTag(arrBuf, ARR_ModelDetails, protowire.BytesType)
-	arrBuf = protowire.AppendBytes(arrBuf, mdBytes)
-	// field 4: mcp_tools = McpTools
-	if len(mcpToolsBytes) > 0 {
-		arrBuf = protowire.AppendTag(arrBuf, ARR_McpTools, protowire.BytesType)
-		arrBuf = protowire.AppendBytes(arrBuf, mcpToolsBytes)
+// buildRequestedModelBytes encodes a RequestedModel message.
+func buildRequestedModelBytes(modelID string, params []ModelParameter) []byte {
+	var buf []byte
+	buf = pwStr(buf, RM_ModelId, modelID)
+	for _, p := range params {
+		var mp []byte
+		mp = pwStr(mp, MP_Id, p.ID)
+		mp = pwStr(mp, MP_Value, p.Value)
+		buf = pwBytes(buf, RM_Parameters, mp)
 	}
-	// field 5: conversation_id = string
-	if p.ConversationId != "" {
-		arrBuf = protowire.AppendTag(arrBuf, ARR_ConversationId, protowire.BytesType)
-		arrBuf = protowire.AppendString(arrBuf, p.ConversationId)
+	return buf
+}
+
+// --- RequestedModel resolution (cursor-agent wire rules) ---
+
+// cursorModelAliases normalizes client-facing spelling variants to the exact
+// wire ids cursor's server routes on.
+var cursorModelAliases = map[string]string{
+	"":                      "composer-2.5",
+	"composer-2-5":          "composer-2.5",
+	"composer-2.5-sdk":      "composer-2.5",
+	"composer-latest":       "composer-2.5",
+	"composer-2-5-fast":     "composer-2.5-fast",
+	"composer-2.5-sdk-fast": "composer-2.5-fast",
+	"composer-latest-fast":  "composer-2.5-fast",
+}
+
+var cursorRoutingLevels = []string{"cost", "balance", "intelligence"}
+
+var cursorEffortSuffixes = []string{"low", "medium", "high", "xhigh", "max"}
+
+func normalizeCursorModelID(modelID string) string {
+	id := strings.TrimSpace(modelID)
+	if alias, ok := cursorModelAliases[strings.ToLower(id)]; ok {
+		return alias
 	}
+	return id
+}
 
-	// Wrap in AgentClientMessage field 1 (run_request)
-	var acmBuf []byte
-	acmBuf = protowire.AppendTag(acmBuf, ACM_RunRequest, protowire.BytesType)
-	acmBuf = protowire.AppendBytes(acmBuf, arrBuf)
+// splitCursorEffortSuffix splits "<prefix>...-<suffix>" into the base model id
+// plus an effort/reasoning ModelParameter. cursor's server has no route for
+// suffixed ids — it only accepts the base id plus the out-of-band parameter.
+func splitCursorEffortSuffix(normalized, prefix, paramID string) (string, []ModelParameter, bool) {
+	if !strings.HasPrefix(normalized, prefix) {
+		return "", nil, false
+	}
+	for _, suffix := range cursorEffortSuffixes {
+		marker := "-" + suffix
+		if strings.HasSuffix(normalized, marker) && len(normalized) > len(prefix)+len(marker) {
+			return normalized[:len(normalized)-len(marker)],
+				[]ModelParameter{{ID: paramID, Value: suffix}}, true
+		}
+	}
+	return "", nil, false
+}
 
-	log.Debugf("cursor encode: built RunRequest with checkpoint (%d bytes), total=%d bytes", len(p.RawCheckpoint), len(acmBuf))
-	return acmBuf
+// ResolveRequestedModel applies cursor-agent's wire model id rewrite rules:
+//
+//	"auto"                 → "default"
+//	"auto-cost"            → "default" + {optimization: cost}  (balance/intelligence alike)
+//	"composer-*-fast"      → base + {fast: "true"}
+//	"claude-...-<effort>"  → base + {effort: <effort>}
+//	"gpt-...-<effort>"     → base + {reasoning: <effort>}
+//
+// Everything else passes through verbatim after alias normalization.
+func ResolveRequestedModel(modelID string) (string, []ModelParameter) {
+	normalized := normalizeCursorModelID(modelID)
+	if normalized == "auto" {
+		return "default", nil
+	}
+	for _, level := range cursorRoutingLevels {
+		if normalized == "auto-"+level {
+			return "default", []ModelParameter{{ID: "optimization", Value: level}}
+		}
+	}
+	if strings.HasPrefix(normalized, "composer-") && strings.HasSuffix(normalized, "-fast") {
+		return strings.TrimSuffix(normalized, "-fast"),
+			[]ModelParameter{{ID: "fast", Value: "true"}}
+	}
+	if base, params, ok := splitCursorEffortSuffix(normalized, "claude-", "effort"); ok {
+		return base, params
+	}
+	if base, params, ok := splitCursorEffortSuffix(normalized, "gpt-", "reasoning"); ok {
+		return base, params
+	}
+	return normalized, nil
 }
 
 // ResumeRequestParams holds data for a ResumeAction request.
@@ -364,11 +430,12 @@ func EncodeResumeRequest(p *ResumeRequestParams) []byte {
 	ca := newMsg("ConversationAction")
 	setMsg(ca, "resume_action", ra)
 
-	// ModelDetails
+	// ModelDetails (resolved wire id)
+	resolvedID, _ := ResolveRequestedModel(p.ModelId)
 	md := newMsg("ModelDetails")
-	setStr(md, "model_id", p.ModelId)
-	setStr(md, "display_model_id", p.ModelId)
-	setStr(md, "display_name", p.ModelId)
+	setStr(md, "model_id", resolvedID)
+	setStr(md, "display_model_id", resolvedID)
+	setStr(md, "display_name", resolvedID)
 
 	// AgentRunRequest — no conversation_state needed for resume
 	arr := newMsg("AgentRunRequest")

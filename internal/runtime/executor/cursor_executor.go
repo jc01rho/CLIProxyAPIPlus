@@ -33,11 +33,11 @@ const (
 	// Auth (poll/refresh) stays on api2.cursor.sh. AgentService Run / GetUsableModels
 	// moved to the regional agent host; posting Agent RPCs to api2 now returns
 	// Connect unauthenticated even with a valid session token.
-	cursorAgentURL          = "https://agentn.us.api5.cursor.sh"
-	cursorAgentHost         = "agentn.us.api5.cursor.sh"
+	cursorAgentURL          = "https://agentn.global.api5.cursor.sh"
+	cursorAgentHost         = "agentn.global.api5.cursor.sh"
 	cursorRunPath           = "/agent.v1.AgentService/Run"
 	cursorModelsPath        = "/agent.v1.AgentService/GetUsableModels"
-	cursorClientVersion     = "cli-2026.05.01-eea359f"
+	cursorClientVersion     = "cli-2026.08.11-e8db854"
 	cursorAuthType          = "cursor"
 	cursorHeartbeatInterval = 5 * time.Second
 	cursorSessionTTL        = 5 * time.Minute
@@ -790,16 +790,34 @@ func (e *CursorExecutor) resumeWithToolResults(
 // --- H2Stream helpers ---
 
 func openCursorH2Stream(accessToken string) (*cursorproto.H2Stream, error) {
+	// cursor-agent access tokens can arrive as "<type>::<token>"; the agent
+	// endpoint expects the bare token after the separator.
+	if i := strings.Index(accessToken, "::"); i >= 0 {
+		accessToken = accessToken[i+2:]
+	}
+
+	requestID := uuid.New().String()
+	traceID := strings.ReplaceAll(uuid.New().String(), "-", "")
+	spanID := strings.ReplaceAll(uuid.New().String(), "-", "")[:16]
+	traceparent := fmt.Sprintf("00-%s-%s-01", traceID, spanID)
+
+	// Header set mirrors cursor-agent CLI traffic (connect-es stack), verified
+	// against the reverse-engineered OmniRoute / 9router clients.
 	headers := map[string]string{
-		":path":                    cursorRunPath,
-		"content-type":             "application/connect+proto",
-		"connect-protocol-version": "1",
-		"te":                       "trailers",
-		"authorization":            "Bearer " + accessToken,
-		"x-ghost-mode":             "true",
-		"x-cursor-client-version":  cursorClientVersion,
-		"x-cursor-client-type":     "cli",
-		"x-request-id":             uuid.New().String(),
+		":path":                     cursorRunPath,
+		"content-type":              "application/connect+proto",
+		"connect-accept-encoding":   "gzip",
+		"connect-protocol-version":  "1",
+		"te":                        "trailers",
+		"user-agent":                "connect-es/1.6.1",
+		"authorization":             "Bearer " + accessToken,
+		"x-ghost-mode":              "true",
+		"x-cursor-client-version":   cursorClientVersion,
+		"x-cursor-client-type":      "cli",
+		"x-request-id":              requestID,
+		"x-original-request-id":     requestID,
+		"traceparent":               traceparent,
+		"backend-traceparent":       traceparent,
 	}
 	return cursorproto.DialH2Stream(cursorAgentHost, headers)
 }
