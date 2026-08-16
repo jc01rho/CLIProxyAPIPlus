@@ -719,47 +719,56 @@ func extractClaudeConfig(body []byte) ThinkingConfig {
 // Note: If both thinkingLevel and thinkingBudget are present, only thinkingLevel is used.
 // This prevents the 400 error: "thinking_budget and thinking_level are not supported together"
 func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
-	prefix := "generationConfig.thinkingConfig"
-	if provider == "antigravity" || provider == "gemini-cli" {
-		prefix = "request.generationConfig.thinkingConfig"
+	// Try the provider's native prefix first, then the cross-format fallback.
+	// Cross-provider paths (gemini <-> gemini-cli) may carry the other format
+	// when no translator rewrites the body.
+	var prefixes []string
+	switch provider {
+	case "gemini-cli", "antigravity":
+		prefixes = []string{"request.generationConfig.thinkingConfig",
+			"generationConfig.thinkingConfig"}
+	case "gemini":
+		prefixes = []string{"generationConfig.thinkingConfig",
+			"request.generationConfig.thinkingConfig"}
+	default:
+		prefixes = []string{"generationConfig.thinkingConfig"}
 	}
 
-	//levelExists := gjson.GetBytes(body, prefix+".thinkingLevel").Exists()
-	//budgetExists := gjson.GetBytes(body, prefix+".thinkingBudget").Exists()
-
-	// Check thinkingLevel first (Gemini 3 format takes precedence)
-	level := gjson.GetBytes(body, prefix+".thinkingLevel")
-	if !level.Exists() {
-		// Google official Gemini Python SDK sends snake_case field names
-		level = gjson.GetBytes(body, prefix+".thinking_level")
-	}
-	if level.Exists() {
-		value := level.String()
-		switch value {
-		case "none":
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		case "auto":
-			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-		default:
-			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+	for _, prefix := range prefixes {
+		// Check thinkingLevel first (Gemini 3 format takes precedence)
+		level := gjson.GetBytes(body, prefix+".thinkingLevel")
+		if !level.Exists() {
+			// Google official Gemini Python SDK sends snake_case field names
+			level = gjson.GetBytes(body, prefix+".thinking_level")
 		}
-	}
+		if level.Exists() {
+			value := level.String()
+			switch value {
+			case "none":
+				return ThinkingConfig{Mode: ModeNone, Budget: 0}
+			case "auto":
+				return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+			default:
+				return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+			}
+		}
 
-	// Check thinkingBudget (Gemini 2.5 format)
-	budget := gjson.GetBytes(body, prefix+".thinkingBudget")
-	if !budget.Exists() {
-		// Google official Gemini Python SDK sends snake_case field names
-		budget = gjson.GetBytes(body, prefix+".thinking_budget")
-	}
-	if budget.Exists() {
-		value := int(budget.Int())
-		switch value {
-		case 0:
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		case -1:
-			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-		default:
-			return ThinkingConfig{Mode: ModeBudget, Budget: value}
+		// Check thinkingBudget (Gemini 2.5 format)
+		budget := gjson.GetBytes(body, prefix+".thinkingBudget")
+		if !budget.Exists() {
+			// Google official Gemini Python SDK sends snake_case field names
+			budget = gjson.GetBytes(body, prefix+".thinking_budget")
+		}
+		if budget.Exists() {
+			value := int(budget.Int())
+			switch value {
+			case 0:
+				return ThinkingConfig{Mode: ModeNone, Budget: 0}
+			case -1:
+				return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+			default:
+				return ThinkingConfig{Mode: ModeBudget, Budget: value}
+			}
 		}
 	}
 

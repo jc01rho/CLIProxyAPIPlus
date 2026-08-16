@@ -2861,15 +2861,16 @@ func TestThinkingE2EProviderTargets(t *testing.T) {
 			expectValue2: "auto",
 		},
 		{
-			name:         "I2",
-			from:         "interactions",
-			to:           "interactions",
-			model:        "level-model(8192)",
-			inputJSON:    `{"model":"level-model(8192)","input":"hi"}`,
-			expectField:  "generation_config.thinking_level",
-			expectValue:  "medium",
-			expectField2: "generation_config.thinking_summaries",
-			expectValue2: "auto",
+			name:        "I2",
+			from:        "interactions",
+			to:          "interactions",
+			model:       "level-model(8192)",
+			inputJSON:   `{"model":"level-model(8192)","input":"hi"}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "medium",
+			// visibility (thinking_summaries) is omit-unless-explicit; budget
+			// suffix alone does not force auto (87ceaf83 explicitness contract).
+			expectAbsent: []string{"generation_config.thinking_summaries"},
 		},
 	}
 
@@ -3688,18 +3689,20 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				assertField(tc.expectField3, tc.expectValue3)
 			}
 
+			// includeThoughts is omit-unless-explicit (87ceaf83 / TestAntigravityIncludeThoughtsPreservesExplicitness).
+			// Suffix and non-openai sources omit the field; openai-body translation may still emit it.
+			// When present the value must match. Absence is not a failure.
 			if tc.includeThoughts != "" && (tc.to == "gemini" || tc.to == "gemini-cli" || tc.to == "antigravity") {
 				path := "generationConfig.thinkingConfig.includeThoughts"
 				if tc.to == "gemini-cli" || tc.to == "antigravity" {
 					path = "request.generationConfig.thinkingConfig.includeThoughts"
 				}
 				itVal := gjson.GetBytes(body, path)
-				if !itVal.Exists() {
-					t.Fatalf("expected includeThoughts field not found, body=%s", string(body))
-				}
-				actual := fmt.Sprintf("%v", itVal.Bool())
-				if actual != tc.includeThoughts {
-					t.Fatalf("includeThoughts: expected %s, got %s, body=%s", tc.includeThoughts, actual, string(body))
+				if itVal.Exists() {
+					actual := fmt.Sprintf("%v", itVal.Bool())
+					if actual != tc.includeThoughts {
+						t.Fatalf("includeThoughts: expected %s, got %s, body=%s", tc.includeThoughts, actual, string(body))
+					}
 				}
 			}
 		})
