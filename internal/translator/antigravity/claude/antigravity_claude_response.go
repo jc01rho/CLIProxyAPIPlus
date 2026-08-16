@@ -846,14 +846,13 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	flushThinking()
 	flushText()
 	if query, results := extractWebSearchFromAntigravity(rawJSON); query != "" || len(results) > 0 {
-		ensureContentArray()
 		toolUseID := fmt.Sprintf("srvtoolu_%d", time.Now().UnixNano())
 		serverTool := `{"type":"server_tool_use","id":"","name":"web_search","input":{}}`
 		serverTool, _ = sjson.Set(serverTool, "id", toolUseID)
 		if query != "" {
 			serverTool, _ = sjson.Set(serverTool, "input.query", query)
 		}
-		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content.-1", []byte(serverTool))
+		blocks = append(blocks, []byte(serverTool))
 
 		resultBlock := `{"type":"web_search_tool_result","tool_use_id":"","content":[]}`
 		resultBlock, _ = sjson.Set(resultBlock, "tool_use_id", toolUseID)
@@ -862,7 +861,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 				resultBlock, _ = sjson.SetRaw(resultBlock, "content", string(raw))
 			}
 		}
-		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content.-1", []byte(resultBlock))
+		blocks = append(blocks, []byte(resultBlock))
 	}
 
 	if len(blocks) > 0 {
