@@ -93,7 +93,7 @@ func TestConnection(ctx context.Context, cfg config.UsageExportConfig) (*Connect
 		return nil, protocolError("keeper_invalid_response")
 	}
 	if response.StatusCode != http.StatusOK {
-		remoteErr := decodeRemoteFailure(response.StatusCode, body)
+		remoteErr := decodeRemoteFailure(response.StatusCode, body, http.Header{})
 		var stable *Error
 		if errors.As(remoteErr, &stable) {
 			return nil, stable

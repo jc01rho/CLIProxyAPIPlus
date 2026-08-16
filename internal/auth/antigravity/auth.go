@@ -167,7 +167,7 @@ func defaultAntigravityTierID(loadResp map[string]any) string {
 // running against a custom authorization server that does not require PKCE.
 func (o *AntigravityAuth) BuildAuthURL(state, redirectURI string, pkceCodes *PKCECodes) string {
 	if strings.TrimSpace(redirectURI) == "" {
-		redirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", CallbackPort)
+		redirectURI = RedirectURI
 	}
 	query := oauthform.Encode(
 		oauthform.Pair{Key: "client_id", Value: ClientID},

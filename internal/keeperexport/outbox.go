@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -200,6 +201,78 @@ func metaValue(ctx context.Context, q interface {
 	var value string
 	err := q.QueryRowContext(ctx, `SELECT value FROM outbox_meta WHERE key = ?`, key).Scan(&value)
 	return value, err
+}
+
+// MetadataRevisionFloor returns the highest keeper-side metadata revision
+// observed for the category (see SetMetadataRevisionFloor). Returns 0 when
+// no floor has been recorded.
+func (o *Outbox) MetadataRevisionFloor(ctx context.Context, category MetadataCategory) int64 {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return 0
+	}
+	value, err := metaValue(ctx, o.db, "metadata_floor_"+string(category))
+	if err != nil {
+		return 0
+	}
+	rev, parseErr := strconv.ParseInt(value, 10, 64)
+	if parseErr != nil || rev < 0 {
+		return 0
+	}
+	return rev
+}
+
+// SetMetadataRevisionFloor records the highest keeper-side revision reported
+// for a metadata category (keeper's current revision on stale/conflict, or
+// the acknowledged revision after a successful apply). The floor only moves
+// forward so a delayed report cannot walk it backwards.
+func (o *Outbox) SetMetadataRevisionFloor(ctx context.Context, category MetadataCategory, revision int64) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if revision < 0 {
+		revision = 0
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return ErrOutboxClosed
+	}
+	value, err := metaValue(ctx, o.db, "metadata_floor_"+string(category))
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read metadata revision floor: %w", err)
+	}
+	if current, parseErr := strconv.ParseInt(value, 10, 64); parseErr == nil && current >= revision {
+		return nil
+	}
+	if _, err = o.db.ExecContext(ctx, `
+		INSERT INTO outbox_meta(key,value) VALUES('metadata_floor_`+string(category)+`',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value
+	`, strconv.FormatInt(revision, 10)); err != nil {
+		return fmt.Errorf("write metadata revision floor: %w", err)
+	}
+	return nil
+}
+
+// DeleteMetadataUntilRevisionForTest removes row for the category so the next
+// PrepareMetadata will start fresh. Used by tests that simulate an outbox DB
+// reset while the durable floor remains.
+func (o *Outbox) DeleteMetadataUntilRevisionForTest(category MetadataCategory) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return ErrOutboxClosed
+	}
+	_, err := o.db.ExecContext(context.Background(),
+		`DELETE FROM outbox_metadata WHERE category = ?`, category)
+	if err != nil {
+		return o.fail(err)
+	}
+	return nil
 }
 
 func newUUIDv7() (string, error) {
@@ -458,6 +531,16 @@ func (o *Outbox) PrepareMetadata(ctx context.Context, category MetadataCategory,
 		}
 		revision = current.Revision + 1
 	}
+	// Resume above the highest keeper-side revision we have recorded (option 2
+	// floor). This lets a fresh outbox row that was reset back to revision 1
+	// continue above the durable floor instead of re-sending stale snapshots.
+	// Read via tx: the outbox is pinned to a single SQLite connection, so
+	// touching o.db while tx holds the connection would deadlock.
+	if floor, ferr := metaValue(ctx, tx, "metadata_floor_"+string(category)); ferr == nil {
+		if fv, perr := strconv.ParseInt(floor, 10, 64); perr == nil && fv+1 > revision {
+			revision = fv + 1
+		}
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO outbox_metadata(category,revision,item_digest,request_body,pending) VALUES(?,?,?,?,1)
 		ON CONFLICT(category) DO UPDATE SET revision=excluded.revision,item_digest=excluded.item_digest,request_body=excluded.request_body,pending=1`, category, revision, append([]byte(nil), itemDigest...), append([]byte(nil), body...))
 	if err != nil {
@@ -474,13 +557,21 @@ func (o *Outbox) PrepareMetadata(ctx context.Context, category MetadataCategory,
 // Advancing the revision preserves the remote snapshot until the replacement
 // has been durably acknowledged.
 func (o *Outbox) SupersedePendingMetadata(ctx context.Context, category MetadataCategory, previousRevision int64, itemDigest, body []byte) (*PreparedMetadata, error) {
+	return o.AdvancePendingMetadata(ctx, category, previousRevision, previousRevision+1, itemDigest, body)
+}
+
+// AdvancePendingMetadata supersedes a pending snapshot and jumps its revision
+// to targetRevision in one step. It is used when Keeper reports a stale or
+// conflicting revision and exposes its current revision, so the exporter can
+// converge without walking one revision at a time.
+func (o *Outbox) AdvancePendingMetadata(ctx context.Context, category MetadataCategory, previousRevision, targetRevision int64, itemDigest, body []byte) (*PreparedMetadata, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if previousRevision < 1 || previousRevision >= MaxSafeInteger || len(itemDigest) != 32 || len(body) == 0 || len(body) > MaxBodyBytes {
+	if previousRevision < 1 || targetRevision <= previousRevision || targetRevision >= MaxSafeInteger || len(itemDigest) != 32 || len(body) == 0 || len(body) > MaxBodyBytes {
 		return nil, fmt.Errorf("invalid metadata supersession")
 	}
 	o.mu.Lock()
@@ -488,19 +579,18 @@ func (o *Outbox) SupersedePendingMetadata(ctx context.Context, category Metadata
 	if o.closed {
 		return nil, ErrOutboxClosed
 	}
-	revision := previousRevision + 1
 	result, err := o.db.ExecContext(ctx, `UPDATE outbox_metadata
 		SET revision=?,item_digest=?,request_body=?,pending=1
 		WHERE category=? AND revision=? AND pending=1`,
-		revision, append([]byte(nil), itemDigest...), append([]byte(nil), body...), category, previousRevision)
+		targetRevision, append([]byte(nil), itemDigest...), append([]byte(nil), body...), category, previousRevision)
 	if err != nil {
-		return nil, o.fail(fmt.Errorf("supersede metadata preparation: %w", err))
+		return nil, o.fail(fmt.Errorf("advance metadata preparation: %w", err))
 	}
 	updated, err := result.RowsAffected()
 	if err != nil || updated != 1 {
 		return nil, o.fail(fmt.Errorf("metadata supersession does not match pending revision"))
 	}
-	return &PreparedMetadata{Category: category, Revision: revision, Body: append([]byte(nil), body...), Pending: true}, nil
+	return &PreparedMetadata{Category: category, Revision: targetRevision, Body: append([]byte(nil), body...), Pending: true}, nil
 }
 
 func (o *Outbox) PendingMetadata(ctx context.Context, categories []MetadataCategory) ([]PreparedMetadata, error) {

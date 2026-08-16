@@ -2,6 +2,8 @@ package keeperexport
 
 import "encoding/json"
 
+const HeaderCurrentRevision = "X-Keeper-Export-Current-Revision"
+
 // InstanceRef is the trusted instance identity carried by responses.
 type InstanceRef struct {
 	InstanceID  string `json:"instanceId"`

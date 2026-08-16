@@ -4363,11 +4363,15 @@ func TestClaudeExecutor_ExecuteStream_CCHMatchesFinalOrderedBody(t *testing.T) {
 	}
 	actualCCH := string(match[2])
 
-	// Recompute cch over the FINAL wire body (cch=00000 placeholder). If sign ran
-	// before order, the captured body's key order differs from what was signed, so
-	// this recomputation will not match the embedded cch.
+	// Recompute cch over the FINAL wire body's normalized hash view (cch=00000
+	// placeholder). signAnthropicMessagesBody empties model strings and omits
+	// dispatch-only members before hashing; the test must use that same view.
 	unsignedBody := billingPattern.ReplaceAll(seenBody, []byte(`${1}00000${3}`))
-	wantCCH := fmt.Sprintf("%05x", xxHash64.Checksum(unsignedBody, claudeCCHSeed)&0xFFFFF)
+	normalizedBody, err := normalizeClaudeCCHInput(unsignedBody)
+	if err != nil {
+		t.Fatalf("normalize Claude CCH input: %v", err)
+	}
+	wantCCH := fmt.Sprintf("%05x", xxHash64.Checksum(normalizedBody, claudeCCHSeed)&0xFFFFF)
 	if actualCCH != wantCCH {
 		t.Fatalf("streaming cch = %q, want %q (cch must be computed over final ordered wire body)\nbody: %s", actualCCH, wantCCH, string(seenBody))
 	}

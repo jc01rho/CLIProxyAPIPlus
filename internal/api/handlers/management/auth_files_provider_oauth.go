@@ -369,7 +369,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		return
 	}
 
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
+	redirectURI := antigravity.RedirectURI
 	authURL := authSvc.BuildAuthURL(state, redirectURI, pkceCodes)
 
 	RegisterOAuthSession(state, "antigravity")
