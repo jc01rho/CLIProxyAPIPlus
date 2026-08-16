@@ -2042,12 +2042,13 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		var next time.Time
 		if !disableCooling {
 			if retryAfter != nil {
+				// Provider Retry-After always wins, even inside an existing quota window.
 				next = now.Add(*retryAfter)
 			} else {
 				next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
-			}
-			if auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(next) {
-				next = auth.Quota.NextRecoverAt
+				if auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(next) {
+					next = auth.Quota.NextRecoverAt
+				}
 			}
 		}
 		auth.Quota.NextRecoverAt = next
