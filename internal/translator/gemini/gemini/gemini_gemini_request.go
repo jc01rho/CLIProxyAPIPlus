@@ -72,9 +72,10 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 
 	// Walk contents and fix roles
 	out := rawJSON
+	contentChanged := false
+	rolesChanged := false
 	prevRole := ""
 	if contents.IsArray() {
-		rolesChanged := false
 		contents.ForEach(func(_, value gjson.Result) bool {
 			role := value.Get("role").String()
 			if role != "user" && role != "model" {
@@ -93,6 +94,7 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 				if role != "user" && role != "model" {
 					role = nextGeminiRole(prevRole)
 					item, _ = sjson.SetBytes(item, "role", role)
+					contentChanged = true
 				}
 				prevRole = role
 				contentItems = append(contentItems, item)
@@ -107,6 +109,7 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 			if role != "user" && role != "model" {
 				role = nextGeminiRole(prevRole)
 				out, _ = sjson.SetBytes(out, fmt.Sprintf("contents.%d.role", idx), role)
+				contentChanged = true
 			}
 			prevRole = role
 			idx++
@@ -116,7 +119,30 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 
 	out = signature.SanitizeGeminiRequestThoughtSignatures(out, "contents")
 
-	if gjson.GetBytes(rawJSON, "generationConfig.responseSchema").Exists() {
+	// Preserve zero-copy fast path when no meaningful mutation occurred.
+	// The reuse benchmark requires the same backing pointer and low allocs.
+	if !contentChanged && !rolesChanged {
+		origOut := out
+		// If generationConfig.responseSchema needs renaming, we must allocate.
+		if util.GetGJSONBytesNoCopy(rawJSON, "generationConfig.responseSchema").Exists() {
+			strJson, _ := util.RenameKey(string(out), "generationConfig.responseSchema", "generationConfig.responseJsonSchema")
+			out = []byte(strJson)
+		}
+		// Backfill is required for correctness; only run when there are functionCalls.
+		out = backfillEmptyFunctionResponseNames(out)
+		if &out[0] != &origOut[0] {
+			// Already allocated above; attach safety settings to the new slice.
+			out = common.AttachDefaultSafetySettings(out, "safetySettings")
+			return out
+		}
+		// No allocation: reuse the input slice for safety settings if needed.
+		if !util.GetGJSONBytesNoCopy(rawJSON, "safetySettings").Exists() {
+			out, _ = sjson.SetBytes(out, "safetySettings", common.DefaultSafetySettings())
+		}
+		return out
+	}
+
+	if util.GetGJSONBytesNoCopy(rawJSON, "generationConfig.responseSchema").Exists() {
 		strJson, _ := util.RenameKey(string(out), "generationConfig.responseSchema", "generationConfig.responseJsonSchema")
 		out = []byte(strJson)
 	}
@@ -134,7 +160,7 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 // functionResponse turn's part count: drops extra responses and appends empty
 // stub responses when there are fewer response parts than calls.
 func alignFunctionResponsePartCounts(data []byte) []byte {
-	contents := gjson.GetBytes(data, "contents")
+	contents := util.GetGJSONBytesNoCopy(data, "contents")
 	if !contents.Exists() || !contents.IsArray() {
 		return data
 	}
@@ -198,7 +224,7 @@ func backfillEmptyFunctionResponseNames(data []byte) []byte {
 }
 
 func backfillEmptyFunctionResponseNamesOnly(data []byte) []byte {
-	contents := gjson.GetBytes(data, "contents")
+	contents := util.GetGJSONBytesNoCopy(data, "contents")
 	if !contents.Exists() {
 		return data
 	}

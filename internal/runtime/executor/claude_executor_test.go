@@ -5316,7 +5316,10 @@ func TestClaudeMessagesHaveUserRole(t *testing.T) {
 func canonicalizeGoldenVolatile(body string) string {
 	// The masquerade pipeline injects today's date into the currentDate
 	// reminder; mask it so the snapshot stays stable across days.
-	return regexp.MustCompile(`Today's date is \d{4}-\d{2}-\d{2}`).ReplaceAllLiteralString(body, `Today's date is <date>`)
+	masked := regexp.MustCompile(`Today's date is \d{4}-\d{2}-\d{2}`).ReplaceAllLiteralString(body, `Today's date is <date>`)
+	// cch hashes the date-containing body, so it also rotates daily. Mask it
+	// here; live cch correctness is asserted separately over the wire body.
+	return regexp.MustCompile(`cch=[0-9a-f]{5}`).ReplaceAllLiteralString(masked, `cch=<cch>`)
 }
 
 var claudeGoldenToolAliasPattern = regexp.MustCompile(`"mcp_*[A-Za-z0-9_]*"`)

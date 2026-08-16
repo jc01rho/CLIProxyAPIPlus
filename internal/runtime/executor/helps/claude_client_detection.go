@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -64,14 +65,9 @@ var claudeCodeSubclientByEntrypoint = map[string]string{
 // pass-through. Other first-party-looking entrypoints are cloaked until their
 // CPA-reachable request shape has been captured and reviewed.
 var nativeClaudeEntrypoints = map[string]bool{
-	"cli":                       true,
-	"sdk-cli":                   true,
-	"claude-vscode":             true,
-	"sdk-py":                    true,
-	"claude-desktop":            true,
-	"claude-desktop-3p":         true,
-	"remote":                    true,
-	"claude-code-github-action": true,
+	"cli":           true,
+	"sdk-cli":       true,
+	"claude-vscode": true,
 }
 
 type claudeCodeHelperShape uint8
@@ -238,6 +234,19 @@ func normalizedClaudeBetaHeader(headers http.Header) string {
 // foreign client and cloak it. Values that carry real discriminating power - the
 // exact beta allowlist, the body shape, the billing CCH and the session binding -
 // stay strict.
+func plausibleClaudeCodeHelperRuntimeVersion(version string) bool {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return false
+	}
+	if version[0] == 'v' || version[0] == 'V' {
+		version = version[1:]
+	}
+	majorStr, _, _ := strings.Cut(version, ".")
+	major, err := strconv.Atoi(majorStr)
+	return err == nil && major >= 18
+}
+
 func measuredClaudeCodeHelperHeadersMatch(headers http.Header, cfg *config.Config, shape claudeCodeHelperShape) bool {
 	profile := defaultClaudeDeviceProfile(cfg)
 	expected := map[string]string{
@@ -266,16 +275,20 @@ func measuredClaudeCodeHelperHeadersMatch(headers http.Header, cfg *config.Confi
 			return false
 		}
 	}
+	runtimeVersion := headerValue(headers, "X-Stainless-Runtime-Version")
+	if !plausibleClaudeCodeHelperRuntimeVersion(runtimeVersion) {
+		return false
+	}
 	candidate := ClaudeDeviceProfile{
 		UserAgent:      headerValue(headers, "User-Agent"),
 		PackageVersion: headerValue(headers, "X-Stainless-Package-Version"),
-		RuntimeVersion: headerValue(headers, "X-Stainless-Runtime-Version"),
+		RuntimeVersion: runtimeVersion,
 	}
 	if version, ok := parseClaudeCLIVersion(candidate.UserAgent); ok {
 		candidate.version = version
 		candidate.hasVersion = true
 	}
-	if !meetsClaudeDeviceProfileBaseline(candidate, profile) {
+	if !matchesClaudeDeviceProfileFingerprint(candidate, profile) {
 		return false
 	}
 	if async := headerValue(headers, "X-Stainless-Async"); (shape == claudeCodeHelperShapeStructured && async != "async") ||
@@ -484,6 +497,15 @@ func parseClaudeCodeUserAgentDetails(userAgent string) (entrypoint, agentSDKVers
 		agentSDKVersion = strings.TrimSpace(matches[2])
 	}
 	return entrypoint, agentSDKVersion
+}
+
+// ShouldCloakNativeSubclientFingerprint reports whether a confirmed native
+// client should still advertise the CLI cloak fingerprint. Official `cli`
+// clients keep their own 2.1.x software tuple; vscode and other native
+// subclients keep body attribution but must not present a distinct UA.
+func ShouldCloakNativeSubclientFingerprint(headers http.Header) bool {
+	entrypoint, _ := parseClaudeCodeUserAgentDetails(headerValue(headers, "User-Agent"))
+	return entrypoint != "" && entrypoint != "cli" && nativeClaudeEntrypoints[entrypoint]
 }
 
 func headerValue(headers http.Header, name string) string {

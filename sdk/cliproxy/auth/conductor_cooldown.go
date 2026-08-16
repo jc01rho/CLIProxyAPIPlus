@@ -1366,6 +1366,9 @@ func resultErrorFromError(err error) *Error {
 	case isRequestScopedError(err) || isRequestInvalidError(err):
 		// Prefer true request-scoped faults (including Claude OAuth cancellation)
 		// over the broader connection-lifecycle classification.
+		// Generic HTTP 400 is NOT tagged here: model-support / invalid_grant 400s
+		// must remain credential faults so fallback can cool the failing auth.
+		// Cooldown skip for unmatched 400s is handled by isRequestScopedResultError.
 		resultErr.Code = requestScopedErrorCode
 	case isConnectionLifecycleError(err):
 		// Preserve lifecycle classification for MarkResult without making the error
@@ -1619,6 +1622,9 @@ func isModelSupportErrorMessage(message string) bool {
 		"requested model is unavailable",
 		"model is not supported",
 		"model not supported",
+		"is not supported",
+		"not supported",
+		"unsupported_model",
 		"unsupported model",
 		"model unavailable",
 		"not available for your plan",
@@ -1734,6 +1740,11 @@ func isRequestScopedResultError(err *Error) bool {
 	}
 	if err.IsRequestScoped() || isRequestScopedNotFoundResultError(err) {
 		return true
+	}
+	// Generic HTTP 400 is a client-shape fault: do not cool the credential.
+	// Model-support / invalid_grant 400s remain credential faults and still cool down.
+	if statusCodeFromResult(err) == http.StatusBadRequest {
+		return !isModelSupportResultError(err) && !isInvalidGrantResultError(err)
 	}
 	return isRequestInvalidError(err)
 }

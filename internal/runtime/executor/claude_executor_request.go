@@ -818,11 +818,12 @@ func applyClaudeHeadersWithNativeProfile(
 		r.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	}
 	applyTransportNegotiation()
-	// Confirmed Claude Code requests may contribute their real software profile.
-	// Unconfirmed clients always receive the CLI baseline instead of being
-	// allowed to populate or reuse another client's software profile.
+	// Confirmed official CLI may contribute its real software profile.
+	// Confirmed vscode/agent-sdk subclients keep body attribution but must
+	// still cloak the stainless/UA fingerprint to the CLI baseline.
+	// Unconfirmed clients always receive the CLI baseline.
 	if stabilizeDeviceProfile {
-		if confirmedClaudeCode {
+		if confirmedClaudeCode && !helps.ShouldCloakNativeSubclientFingerprint(incomingHeaders) {
 			helps.ApplyClaudeDeviceProfileHeaders(r, deviceProfile)
 		} else {
 			helps.ApplyClaudeDefaultDeviceProfileHeaders(r, cfg)
