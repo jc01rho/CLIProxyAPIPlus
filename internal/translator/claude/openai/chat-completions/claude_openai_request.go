@@ -180,19 +180,21 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
 		systemBlocks := make([][]byte, 0)
 		messageAccumulator := common.NewClaudeMessageAccumulator(int(root.Get("messages.#").Int()))
+		seenConversation := false
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
 			contentResult := message.Get("content")
 			if role == "system" && !claudeSystemContentIsLossless(contentResult) {
 				role = "developer"
 			}
-
+			// Leading lossless developer messages fold into the top-level system
+			// blocks. Later or non-text developer content stays in the user path
+			// so mixed parts and mid-conversation operator instructions survive.
+			if role == "developer" && !seenConversation && claudeSystemContentIsLossless(contentResult) {
+				role = "system"
+			}
 			switch role {
-			// Developer messages rank with system messages in OpenAI's instruction
-			// hierarchy, so both become top-level Claude system blocks. Dropping the
-			// developer role, as this translator used to, silently removed operator
-			// instructions from the upstream request.
-			case "system", "developer":
+			case "system":
 				systemStart := len(systemBlocks)
 				if contentResult.Exists() && contentResult.Type == gjson.String && contentResult.String() != "" {
 					textPart := []byte(`{"type":"text","text":""}`)
@@ -219,7 +221,7 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 						}
 					}
 				}
-			case "user", "assistant":
+			case "user", "assistant", "developer":
 				contentBlocks := make([][]byte, 0, 4)
 				if preserveEmptyThinkingBlocks && role == "assistant" {
 					if reasoningContent := message.Get("reasoning_content"); reasoningContent.Type == gjson.String && strings.TrimSpace(reasoningContent.String()) != "" {
@@ -298,7 +300,14 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 				msg, _ = sjson.SetBytes(msg, "role", claudeRole)
 				msg, _ = sjson.SetRawBytes(msg, "content", common.JoinRawArray(contentBlocks))
 				msg = common.AttachMessageCacheControl(msg, message)
+				if role == "developer" {
+					messageAccumulator.Flush()
+				}
 				messageAccumulator.Append(msg)
+				if role == "developer" {
+					messageAccumulator.Flush()
+				}
+				seenConversation = true
 
 			case "tool":
 				// Handle tool result messages conversion
@@ -316,6 +325,7 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 				}
 				msg = common.AttachMessageCacheControl(msg, message)
 				messageAccumulator.Append(msg)
+				seenConversation = true
 			}
 			return true
 		})

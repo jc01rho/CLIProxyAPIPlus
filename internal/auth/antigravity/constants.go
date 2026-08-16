@@ -6,6 +6,11 @@ const (
 	ClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 	ClientSecret = "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"
 	CallbackPort = 51121
+
+	// RedirectURI is the redirect URI registered with Google for the local CLI
+	// callback server. Antigravity rejects any other value, so the CLI must
+	// never rewrite it from --oauth-callback-port.
+	RedirectURI = "http://localhost:51121/oauth-callback"
 )
 
 // Scopes defines the OAuth scopes required for Antigravity authentication

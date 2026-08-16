@@ -2,6 +2,7 @@ package antigravity
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -190,5 +191,23 @@ func jsonResponse(body string) *http.Response {
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestRedirectURIMatchesRegisteredCallbackPort(t *testing.T) {
+	want := fmt.Sprintf("http://localhost:%d/oauth-callback", CallbackPort)
+	if RedirectURI != want {
+		t.Fatalf("RedirectURI = %q, want %q", RedirectURI, want)
+	}
+	if CallbackPort != 51121 {
+		t.Fatalf("CallbackPort = %d, want 51121", CallbackPort)
+	}
+}
+
+func TestBuildAuthURLDefaultsToRegisteredRedirectURI(t *testing.T) {
+	auth := NewAntigravityAuth(nil, nil)
+	got := auth.BuildAuthURL("state", "", &PKCECodes{CodeChallenge: "challenge"})
+	if !strings.Contains(got, "redirect_uri=http%3A%2F%2Flocalhost%3A51121%2Foauth-callback") {
+		t.Fatalf("auth URL missing registered redirect: %s", got)
 	}
 }

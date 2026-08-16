@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -216,7 +217,7 @@ func (w *worker) bindIdentity() error {
 		return err
 	}
 	if status != http.StatusOK {
-		return decodeRemoteFailure(status, body)
+		return decodeRemoteFailure(status, body, http.Header{})
 	}
 	identity, perr := DecodeIdentityResponse(body)
 	if perr != nil {
@@ -248,7 +249,7 @@ func (w *worker) deliverUsage() error {
 			return err
 		}
 		if httpStatus != http.StatusOK {
-			return decodeRemoteFailure(httpStatus, response)
+			return decodeRemoteFailure(httpStatus, response, http.Header{})
 		}
 		ack, perr := DecodeUsageAck(response)
 		if perr != nil {
@@ -317,6 +318,9 @@ func (w *worker) deliverMetadata() error {
 		}
 		for _, category := range categories {
 			revision := status.MetadataRevisions[category] + 1
+			if floor := w.outbox.MetadataRevisionFloor(w.ctx, category); floor+1 > revision {
+				revision = floor + 1
+			}
 			body, digest, projectErr := ProjectMetadata(input, secret, category, revision, time.Now().UTC())
 			if projectErr != nil {
 				return projectErr
@@ -333,17 +337,37 @@ func (w *worker) deliverMetadata() error {
 	for _, item := range pending {
 		recoveredConflict := false
 		for {
-			response, status, requestErr := w.request(http.MethodPut, "/api/v1/export/metadata/"+string(item.Category), item.Body)
+			response, status, respHeaders, requestErr := w.requestWithHeaders(http.MethodPut, "/api/v1/export/metadata/"+string(item.Category), item.Body)
 			if requestErr != nil {
 				return requestErr
 			}
 			if status != http.StatusOK {
-				requestErr = decodeRemoteFailure(status, response)
+				requestErr = decodeRemoteFailure(status, response, respHeaders)
 				var remoteErr *Error
-				if recoveredConflict || !errors.As(requestErr, &remoteErr) || remoteErr.Code != "conflicting_revision" {
+				if !errors.As(requestErr, &remoteErr) {
 					return requestErr
 				}
-				replacement, replacementErr := w.supersedeConflictingMetadata(item)
+				if remoteErr.Code == "stale_revision" && remoteErr.CurrentRevision > item.Revision {
+					targetRevision := remoteErr.CurrentRevision + 1
+					if targetRevision <= item.Revision {
+						return requestErr
+					}
+					w.recordKeeperRevision(item.Category, remoteErr.CurrentRevision)
+					replacement, replacementErr := w.supersedeConflictingMetadata(item, targetRevision)
+					if replacementErr != nil {
+						return replacementErr
+					}
+					item = *replacement
+					continue
+				}
+				if recoveredConflict || remoteErr.Code != "conflicting_revision" {
+					return requestErr
+				}
+				targetRevision := item.Revision + 1
+				if remoteErr.CurrentRevision > item.Revision {
+					targetRevision = remoteErr.CurrentRevision + 1
+				}
+				replacement, replacementErr := w.supersedeConflictingMetadata(item, targetRevision)
 				if replacementErr != nil {
 					return replacementErr
 				}
@@ -366,7 +390,7 @@ func (w *worker) deliverMetadata() error {
 	return nil
 }
 
-func (w *worker) supersedeConflictingMetadata(item PreparedMetadata) (*PreparedMetadata, error) {
+func (w *worker) supersedeConflictingMetadata(item PreparedMetadata, targetRevision int64) (*PreparedMetadata, error) {
 	w.sourceMu.RLock()
 	source := w.source
 	w.sourceMu.RUnlock()
@@ -382,11 +406,21 @@ func (w *worker) supersedeConflictingMetadata(item PreparedMetadata) (*PreparedM
 			secret[i] = 0
 		}
 	}()
-	body, digest, err := ProjectMetadata(source(), secret, item.Category, item.Revision+1, time.Now().UTC())
+	if targetRevision <= item.Revision {
+		targetRevision = item.Revision + 1
+	}
+	body, digest, err := ProjectMetadata(source(), secret, item.Category, targetRevision, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
-	return w.outbox.SupersedePendingMetadata(w.ctx, item.Category, item.Revision, digest, body)
+	if targetRevision == item.Revision+1 {
+		return w.outbox.SupersedePendingMetadata(w.ctx, item.Category, item.Revision, digest, body)
+	}
+	return w.outbox.AdvancePendingMetadata(w.ctx, item.Category, item.Revision, targetRevision, digest, body)
+}
+
+func (w *worker) recordKeeperRevision(category MetadataCategory, keeperCurrent int64) {
+	_ = w.outbox.SetMetadataRevisionFloor(w.ctx, category, keeperCurrent)
 }
 
 func (w *worker) recordAttempt() {
@@ -471,10 +505,15 @@ func (w *worker) statusSnapshot() workerStatusSnapshot {
 }
 
 func (w *worker) request(method, path string, body []byte) ([]byte, int, error) {
+	data, status, _, err := w.requestWithHeaders(method, path, body)
+	return data, status, err
+}
+
+func (w *worker) requestWithHeaders(method, path string, body []byte) ([]byte, int, http.Header, error) {
 	w.recordAttempt()
 	token := w.cfg.Keeper.UsageExportToken()
 	if token == "" {
-		return nil, 0, protocolError("token_env_unset")
+		return nil, 0, nil, protocolError("token_env_unset")
 	}
 	var reader io.Reader
 	if body != nil {
@@ -482,7 +521,7 @@ func (w *worker) request(method, path string, body []byte) ([]byte, int, error) 
 	}
 	req, err := http.NewRequestWithContext(w.ctx, method, w.baseURL+path, reader)
 	if err != nil {
-		return nil, 0, protocolError("keeper_unreachable")
+		return nil, 0, nil, protocolError("keeper_unreachable")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	if body != nil {
@@ -492,46 +531,57 @@ func (w *worker) request(method, path string, body []byte) ([]byte, int, error) 
 	token = ""
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
-			return nil, 0, protocolError("keeper_timeout")
+			return nil, 0, nil, protocolError("keeper_timeout")
 		}
 		if isTLSValidationError(err) {
-			return nil, 0, protocolError("keeper_tls_error")
+			return nil, 0, nil, protocolError("keeper_tls_error")
 		}
-		return nil, 0, protocolError("keeper_unreachable")
+		return nil, 0, nil, protocolError("keeper_unreachable")
 	}
 	defer response.Body.Close()
 	if perr := validateKeeperResponseHeaders(response, MaxBodyBytes, false); perr != nil {
 		_, _ = io.Copy(io.Discard, response.Body)
-		return nil, 0, perr
+		return nil, 0, nil, perr
 	}
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, MaxBodyBytes+1))
 	if err != nil {
-		return nil, 0, protocolError("keeper_unreachable")
+		return nil, 0, nil, protocolError("keeper_unreachable")
 	}
 	if len(responseBody) > MaxBodyBytes {
-		return nil, 0, protocolError("keeper_invalid_response")
+		return nil, 0, nil, protocolError("keeper_invalid_response")
 	}
-	return responseBody, response.StatusCode, nil
+	return responseBody, response.StatusCode, response.Header, nil
 }
 
-func decodeRemoteFailure(status int, body []byte) error {
+func decodeRemoteFailure(status int, body []byte, headers http.Header) error {
+	var err error
 	if envelope, perr := DecodeErrorEnvelope(body); perr == nil && envelope.Error.HTTPStatus == status {
 		// Map the remote code to the local stable error so the
 		// remote body/message is never echoed back.
-		return protocolError(envelope.Error.Code)
+		err = protocolError(envelope.Error.Code)
+	} else {
+		switch {
+		case status == http.StatusUnauthorized:
+			err = protocolError("invalid_credential")
+		case status == http.StatusForbidden:
+			err = protocolError("insufficient_scope")
+		case status == http.StatusTooManyRequests:
+			err = protocolError("rate_limited")
+		case status >= 500:
+			err = protocolError("service_unavailable")
+		default:
+			err = protocolError("keeper_invalid_response")
+		}
 	}
-	switch {
-	case status == http.StatusUnauthorized:
-		return protocolError("invalid_credential")
-	case status == http.StatusForbidden:
-		return protocolError("insufficient_scope")
-	case status == http.StatusTooManyRequests:
-		return protocolError("rate_limited")
-	case status >= 500:
-		return protocolError("service_unavailable")
-	default:
-		return protocolError("keeper_invalid_response")
+	var remoteErr *Error
+	if errors.As(err, &remoteErr) && headers != nil {
+		if raw := strings.TrimSpace(headers.Get(HeaderCurrentRevision)); raw != "" {
+			if current, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil && current > 0 {
+				remoteErr.CurrentRevision = current
+			}
+		}
 	}
+	return err
 }
 
 func metadataItemCount(snapshot *MetadataSnapshot, category MetadataCategory) int64 {

@@ -176,9 +176,9 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			case "message", "":
 				// Handle regular message conversion
 				role := item.Get("role").String()
-				if role == "developer" {
-					role = "user"
-				}
+				// Preserve the developer role: leading developer messages are
+				// folded into the system prompt by NormalizeLeadingOpenAIInstructions
+				// below, and later ones must survive translation as-is.
 				mergeableAssistantIndex = -1
 				if role != "assistant" {
 					appendPendingReasoningMessage()

@@ -28,10 +28,6 @@ type AntigravityProjectInfo struct {
 	IsPaid    bool   // true if tier is "pro" or "ultra"
 }
 
-const (
-	antigravityCallbackPort = 51121
-)
-
 // AntigravityAuthenticator implements OAuth login for the antigravity provider.
 type AntigravityAuthenticator struct{}
 
@@ -59,10 +55,7 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 		opts = &LoginOptions{}
 	}
 
-	callbackPort := antigravityCallbackPort
-	if opts.CallbackPort > 0 {
-		callbackPort = opts.CallbackPort
-	}
+	callbackPort, redirectURI := resolveAntigravityOAuthCallback(opts.CallbackPort)
 
 	httpClient := util.SetProxy(&cfg.SDKConfig, &http.Client{})
 	authSvc := antigravity.NewAntigravityAuth(cfg, httpClient)
@@ -87,7 +80,6 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", port)
 	authURL := authSvc.BuildAuthURL(state, redirectURI, pkceCodes)
 
 	if !opts.NoBrowser {
@@ -246,6 +238,16 @@ waitForCallback:
 	}, nil
 }
 
+// resolveAntigravityOAuthCallback always returns the Google-registered
+// localhost:51121 callback. Antigravity rejects any other redirect_uri, so
+// --oauth-callback-port is ignored when it differs from CallbackPort.
+func resolveAntigravityOAuthCallback(requestedPort int) (int, string) {
+	if requestedPort > 0 && requestedPort != antigravity.CallbackPort {
+		log.Warnf("antigravity: ignoring --oauth-callback-port %d; Google requires %s", requestedPort, antigravity.RedirectURI)
+	}
+	return antigravity.CallbackPort, antigravity.RedirectURI
+}
+
 type callbackResult struct {
 	Code  string
 	Error string
@@ -254,7 +256,7 @@ type callbackResult struct {
 
 func startAntigravityCallbackServer(port int) (*http.Server, int, <-chan callbackResult, error) {
 	if port <= 0 {
-		port = antigravityCallbackPort
+		port = antigravity.CallbackPort
 	}
 	addr := fmt.Sprintf(":%d", port)
 	listener, err := net.Listen("tcp", addr)
@@ -289,7 +291,6 @@ func startAntigravityCallbackServer(port int) (*http.Server, int, <-chan callbac
 
 	return srv, port, resultCh, nil
 }
-
 
 func sanitizeAntigravityFileName(email string) string {
 	if strings.TrimSpace(email) == "" {

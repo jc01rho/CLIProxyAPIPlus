@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,6 +35,8 @@ type fakeKeeper struct {
 	usageSequences          []int64
 	metadataBodies          map[string][][]byte
 	metadataRevisions       map[string][]int64
+	staleRevisionFrom       atomic.Int64
+	keeperCurrentRevision   atomic.Int64
 	identitySeen            chan struct{}
 	usageSeen               chan struct{}
 	metadataSeen            chan struct{}
@@ -108,8 +111,19 @@ func (f *fakeKeeper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case f.metadataSeen <- struct{}{}:
 		default:
 		}
+		if current := f.keeperCurrentRevision.Load(); current > 0 {
+			w.Header().Set("X-Keeper-Export-Current-Revision", strconv.FormatInt(current, 10))
+		}
 		if f.conflictingMetadataOnce.CompareAndSwap(true, false) {
 			writeTestError(w, "conflicting_revision")
+			return
+		}
+		if from := f.staleRevisionFrom.Load(); from > 0 && snapshot.Revision >= from {
+			// Reset so the next attempt (after a one-shot jump) succeeds.
+			f.staleRevisionFrom.Store(0)
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"protocolVersion": ProtocolVersion, "error": map[string]any{"code": "stale_revision", "message": "revision is stale", "retryable": false}})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
