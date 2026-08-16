@@ -116,6 +116,10 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 		var bootstrapErr *streamBootstrapError
 		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
+			if statusCodeFromError(bootstrapErr.cause) == http.StatusBadRequest &&
+				!isModelSupportError(bootstrapErr.cause) && !isInvalidGrantError(bootstrapErr.cause) {
+				return nil, bootstrapErr.cause
+			}
 			return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
 		}
 		return nil, lastErr

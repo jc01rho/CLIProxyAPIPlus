@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"sort"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
@@ -197,12 +198,8 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	var pendingRole string
 	var pendingParts [][]byte
 	var pendingToolUseParts [][]byte
-	type pendingToolUseMessage struct {
-		callID string
-		raw    []byte
-	}
-	var pendingToolUseMessages []pendingToolUseMessage
 	seenToolUseCallIDs := map[string]bool{}
+	emittedToolResultCallIDs := map[string]bool{}
 	appendMessage := func(msg []byte) {
 		messageBlocks = append(messageBlocks, msg)
 	}
@@ -435,15 +432,21 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				appendToolUse(toolUse)
 
 			case "function_call_output", "custom_tool_call_output":
-				flushPendingReasoning()
 				// Map to user tool_result
 				rawID := item.Get("call_id").String()
 				callID := util.SanitizeClaudeToolID(rawID)
-				if rawID != "" {
-					if _, exists := emittedToolResults[rawID]; exists {
+				dedupKey := rawID
+				if dedupKey == "" {
+					dedupKey = callID
+				}
+				if dedupKey != "" {
+					if _, exists := emittedToolResults[dedupKey]; exists {
 						return true
 					}
-					emittedToolResults[rawID] = struct{}{}
+					emittedToolResults[dedupKey] = struct{}{}
+					if emittedToolResultCallIDs[dedupKey] {
+						return true
+					}
 				}
 				output := item.Get("output")
 				if rawID != "" {
@@ -451,11 +454,12 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 						output = lastItem.Get("output")
 					}
 				}
-				// Integrated fork: local maps an orphan tool_result (no matching
-				// tool_use) to a text user message because Anthropic rejects orphan
-				// tool_result blocks; the upstream path continues to emit a
-				// tool_result for the matched case.
-				if !seenToolUseCallIDs[callID] {
+				// Orphan tool_result (no tool_use anywhere in the request) becomes
+				// a text user message because Anthropic rejects dangling tool_result
+				// blocks. If the conversation already has any tool_use, keep the
+				// output as a tool_result so later unmatched custom/empty ids still
+				// group with adjacent results.
+				if len(seenToolUseCallIDs) == 0 {
 					outputStr := output.String()
 					usr := []byte(`{"role":"user","content":""}`)
 					usr, _ = sjson.SetBytes(usr, "content", fmt.Sprintf("[tool_result without adjacent tool_use: %s]\n%s", callID, outputStr))
@@ -466,18 +470,37 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				toolResult, _ = sjson.SetBytes(toolResult, "tool_use_id", callID)
 				toolResult = applyResponsesToolResultContent(toolResult, output)
 
+				if dedupKey != "" {
+					emittedToolResultCallIDs[dedupKey] = true
+					emittedToolResultCallIDs[callID] = true
+				}
+				// Keep consecutive tool_results in one user message. Flush only
+				// when a different role (typically the preceding assistant
+				// tool_use) is still pending.
+				if pendingRole != "" && pendingRole != "user" {
+					flushPendingReasoning()
+				}
+
 				appendParts("user", toolResult)
 			}
 			return true
 		})
 	}
 	flushPendingReasoning()
-	// Local: append remaining pending tool_use messages with a synthesized
-	// error tool_result so upstream never sees a dangling tool_use.
-	for _, pending := range pendingToolUseMessages {
-		appendMessage(pending.raw)
+	// Synthesize an error tool_result for any tool_use that never received a
+	// matching function_call_output. The tool_use itself is already in
+	// messageBlocks via appendToolUse; only the missing user result is added.
+	ids := make([]string, 0, len(seenToolUseCallIDs))
+	for callID := range seenToolUseCallIDs {
+		if emittedToolResultCallIDs[callID] {
+			continue
+		}
+		ids = append(ids, callID)
+	}
+	sort.Strings(ids)
+	for _, callID := range ids {
 		toolResult := []byte(`{"type":"tool_result","tool_use_id":"","content":"[missing tool_result for this tool_use in conversation history]","is_error":true}`)
-		toolResult, _ = sjson.SetBytes(toolResult, "tool_use_id", pending.callID)
+		toolResult, _ = sjson.SetBytes(toolResult, "tool_use_id", callID)
 		usr := []byte(`{"role":"user","content":[]}`)
 		usr, _ = sjson.SetRawBytes(usr, "content.-1", toolResult)
 		appendMessage(usr)
@@ -487,7 +510,6 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	if len(messageBlocks) == 0 && len(systemBlocks) > 0 {
 		messageBlocks = append(messageBlocks, []byte(`{"role":"user","content":[{"type":"text","text":""}]}`))
 	}
-	pendingToolUseMessages = nil
 	out = common.SetRawArrayItems(out, "messages", messageBlocks)
 	if len(systemBlocks) > 0 {
 		out, _ = sjson.SetRawBytes(out, "system", common.JoinRawArray(systemBlocks))

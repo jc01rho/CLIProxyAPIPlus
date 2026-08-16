@@ -233,6 +233,28 @@ func meetsClaudeDeviceProfileBaseline(candidate, baseline ClaudeDeviceProfile) b
 	if baseline.UserAgent == "" || !baseline.hasVersion {
 		return false
 	}
+	// Official Claude Code 2.1.x clients share package 0.94.0 but bump the
+	// CLI patch and stainless runtime independently of our cloak fingerprint
+	// (2.1.177 / v24.3.0). Matching major.minor + package keeps those clients
+	// on pass-through; a different line or package is rewritten to baseline.
+	return plausibleClaudeCLIVersion(candidate.version, baseline.version) &&
+		candidate.PackageVersion == baseline.PackageVersion
+}
+
+// matchesClaudeDeviceProfileFingerprint reports whether the candidate matches
+// the measured baseline exactly (CLI version + stainless package + runtime).
+// Native-helper recognition uses this strict check so official 2.1.x clients
+// that share the package but bump the CLI patch and runtime keep pass-through
+// via `meetsClaudeDeviceProfileBaseline`, while a bit-identical tuple is the
+// only signal that authorises the executor to inject helper system blocks
+// instead of cloaking.
+func matchesClaudeDeviceProfileFingerprint(candidate, baseline ClaudeDeviceProfile) bool {
+	if candidate.UserAgent == "" || !candidate.hasVersion {
+		return false
+	}
+	if baseline.UserAgent == "" || !baseline.hasVersion {
+		return false
+	}
 	return candidate.version.Compare(baseline.version) == 0 &&
 		candidate.PackageVersion == baseline.PackageVersion &&
 		candidate.RuntimeVersion == baseline.RuntimeVersion
@@ -245,7 +267,7 @@ func pinClaudeDeviceProfilePlatform(profile, baseline ClaudeDeviceProfile) Claud
 }
 
 // normalizeClaudeDeviceProfile pins stabilized profiles to the configured platform
-// and replaces any software tuple that does not exactly match the measured baseline.
+// and replaces any software tuple that is not on the measured 2.1 line + package.
 func normalizeClaudeDeviceProfile(profile, baseline ClaudeDeviceProfile) ClaudeDeviceProfile {
 	profile = pinClaudeDeviceProfilePlatform(profile, baseline)
 	if !meetsClaudeDeviceProfileBaseline(profile, baseline) {
