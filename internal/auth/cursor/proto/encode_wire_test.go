@@ -180,13 +180,17 @@ func TestResolveRequestedModel(t *testing.T) {
 		{"composer-2.5-sdk", "composer-2.5", nil},
 		{"composer-2.5-fast", "composer-2.5", []ModelParameter{{ID: "fast", Value: "true"}}},
 		{"composer-2-5-fast", "composer-2.5", []ModelParameter{{ID: "fast", Value: "true"}}},
-		{"claude-sonnet-4.6-high", "claude-sonnet-4.6", []ModelParameter{{ID: "effort", Value: "high"}}},
-		{"gpt-5.2-xhigh", "gpt-5.2", []ModelParameter{{ID: "reasoning", Value: "xhigh"}}},
-		{"gpt-5.2", "gpt-5.2", nil},
+		{"claude-sonnet-4.6-high", "claude-4.6-sonnet-medium", nil},
+		{"claude-4.6-opus", "claude-4.6-opus-max", nil},
+		{"claude-4.6-opus-high", "claude-4.6-opus-high", nil},
+		{"gpt-5.2-xhigh", "gpt-5.2-xhigh", nil},
+		{"gpt-5.2", "gpt-5.2-xhigh", nil},
+		{"grok-4.5", "cursor-grok-4.5-high", nil},
+		{"grok-4.5-fast", "grok-4.5", []ModelParameter{{ID: "effort", Value: "high"}, {ID: "fast", Value: "true"}}},
 		{"some-custom-model", "some-custom-model", nil},
 	}
 	for _, c := range cases {
-		gotID, gotParams := ResolveRequestedModel(c.in)
+		gotID, gotParams := ResolveRequestedModel(c.in, "")
 		if gotID != c.wantID {
 			t.Errorf("ResolveRequestedModel(%q) id = %q, want %q", c.in, gotID, c.wantID)
 		}
@@ -199,5 +203,48 @@ func TestResolveRequestedModel(t *testing.T) {
 				t.Errorf("ResolveRequestedModel(%q) params[%d] = %v, want %v", c.in, i, gotParams[i], c.params[i])
 			}
 		}
+	}
+}
+
+func TestResolveRequestedModelReasoningEffort(t *testing.T) {
+	cases := []struct {
+		in, effort, wantID string
+		params             []ModelParameter
+	}{
+		{"claude-4.6-opus", "high", "claude-4.6-opus-high", nil},
+		{"grok-4.5", "low", "cursor-grok-4.5-low", nil},
+		{"grok-4.5-fast", "medium", "grok-4.5", []ModelParameter{{ID: "effort", Value: "medium"}, {ID: "fast", Value: "true"}}},
+		{"composer-2.5", "high", "composer-2.5", nil},
+	}
+	for _, c := range cases {
+		gotID, gotParams := ResolveRequestedModel(c.in, c.effort)
+		if gotID != c.wantID {
+			t.Errorf("ResolveRequestedModel(%q, %q) id = %q, want %q", c.in, c.effort, gotID, c.wantID)
+		}
+		if len(gotParams) != len(c.params) {
+			t.Errorf("ResolveRequestedModel(%q, %q) params = %v, want %v", c.in, c.effort, gotParams, c.params)
+			continue
+		}
+		for i := range gotParams {
+			if gotParams[i] != c.params[i] {
+				t.Errorf("ResolveRequestedModel(%q, %q) params[%d] = %v, want %v", c.in, c.effort, i, gotParams[i], c.params[i])
+			}
+		}
+	}
+}
+
+func TestEncodeRunRequestOmitsModelDetailsWhenParameterized(t *testing.T) {
+	plain := parseFields(t, EncodeRunRequest(&RunRequestParams{ModelId: "composer-2.5", UserText: "hi"}))
+	param := parseFields(t, EncodeRunRequest(&RunRequestParams{ModelId: "composer-2.5-fast", UserText: "hi"}))
+	plainARR := parseFields(t, plain[1][0].data)
+	paramARR := parseFields(t, param[1][0].data)
+	if _, ok := plainARR[3]; !ok {
+		t.Fatal("unparameterized request must include AgentRunRequest.model_details")
+	}
+	if _, ok := paramARR[3]; ok {
+		t.Fatal("parameterized request must omit AgentRunRequest.model_details")
+	}
+	if _, ok := paramARR[9]; !ok {
+		t.Fatal("parameterized request must still include requested_model")
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -22,16 +21,17 @@ import (
 
 // RunRequestParams holds all data needed to build an AgentRunRequest.
 type RunRequestParams struct {
-	ModelId        string
-	SystemPrompt   string
-	UserText       string
-	MessageId      string
-	ConversationId string
-	Images         []ImageData
-	Turns          []TurnData
-	McpTools       []McpToolDef
-	BlobStore      map[string][]byte // hex(sha256) -> data, populated during encoding
-	RawCheckpoint  []byte            // if non-nil, use as conversation_state directly (from server checkpoint)
+	ModelId         string
+	ReasoningEffort string
+	SystemPrompt    string
+	UserText        string
+	MessageId       string
+	ConversationId  string
+	Images          []ImageData
+	Turns           []TurnData
+	McpTools        []McpToolDef
+	BlobStore       map[string][]byte // hex(sha256) -> data, populated during encoding
+	RawCheckpoint   []byte            // if non-nil, use as conversation_state directly (from server checkpoint)
 }
 
 type ImageData struct {
@@ -160,8 +160,9 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 	umBytes := buildUserMessageBytes(p.UserText, p.MessageId, p.Images)
 	caBytes := pwBytes(nil, CA_UserMessageAction, pwBytes(nil, UMA_UserMessage, umBytes))
 
-	// ModelDetails and RequestedModel both use the resolved wire model id.
-	resolvedID, rmParams := ResolveRequestedModel(p.ModelId)
+	// RequestedModel always carries the resolved wire id. model_details is
+	// only sent for unparameterized ids (opencodex/cursor-agent: params XOR details).
+	resolvedID, rmParams := ResolveRequestedModel(p.ModelId, p.ReasoningEffort)
 	mdBytes := buildModelDetailsBytes(resolvedID)
 	rmBytes := buildRequestedModelBytes(resolvedID, rmParams)
 
@@ -175,7 +176,9 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 
 	arrBuf := pwBytes(nil, ARR_ConversationState, cssBytes)
 	arrBuf = pwBytes(arrBuf, ARR_Action, caBytes)
-	arrBuf = pwBytes(arrBuf, ARR_ModelDetails, mdBytes)
+	if len(rmParams) == 0 {
+		arrBuf = pwBytes(arrBuf, ARR_ModelDetails, mdBytes)
+	}
 	arrBuf = pwBytes(arrBuf, ARR_McpTools, mcpBytes)
 	arrBuf = pwStr(arrBuf, ARR_ConversationId, conversationID)
 	arrBuf = pwBytes(arrBuf, ARR_RequestedModel, rmBytes)
@@ -319,81 +322,6 @@ func buildRequestedModelBytes(modelID string, params []ModelParameter) []byte {
 	return buf
 }
 
-// --- RequestedModel resolution (cursor-agent wire rules) ---
-
-// cursorModelAliases normalizes client-facing spelling variants to the exact
-// wire ids cursor's server routes on.
-var cursorModelAliases = map[string]string{
-	"":                      "composer-2.5",
-	"composer-2-5":          "composer-2.5",
-	"composer-2.5-sdk":      "composer-2.5",
-	"composer-latest":       "composer-2.5",
-	"composer-2-5-fast":     "composer-2.5-fast",
-	"composer-2.5-sdk-fast": "composer-2.5-fast",
-	"composer-latest-fast":  "composer-2.5-fast",
-}
-
-var cursorRoutingLevels = []string{"cost", "balance", "intelligence"}
-
-var cursorEffortSuffixes = []string{"low", "medium", "high", "xhigh", "max"}
-
-func normalizeCursorModelID(modelID string) string {
-	id := strings.TrimSpace(modelID)
-	if alias, ok := cursorModelAliases[strings.ToLower(id)]; ok {
-		return alias
-	}
-	return id
-}
-
-// splitCursorEffortSuffix splits "<prefix>...-<suffix>" into the base model id
-// plus an effort/reasoning ModelParameter. cursor's server has no route for
-// suffixed ids — it only accepts the base id plus the out-of-band parameter.
-func splitCursorEffortSuffix(normalized, prefix, paramID string) (string, []ModelParameter, bool) {
-	if !strings.HasPrefix(normalized, prefix) {
-		return "", nil, false
-	}
-	for _, suffix := range cursorEffortSuffixes {
-		marker := "-" + suffix
-		if strings.HasSuffix(normalized, marker) && len(normalized) > len(prefix)+len(marker) {
-			return normalized[:len(normalized)-len(marker)],
-				[]ModelParameter{{ID: paramID, Value: suffix}}, true
-		}
-	}
-	return "", nil, false
-}
-
-// ResolveRequestedModel applies cursor-agent's wire model id rewrite rules:
-//
-//	"auto"                 → "default"
-//	"auto-cost"            → "default" + {optimization: cost}  (balance/intelligence alike)
-//	"composer-*-fast"      → base + {fast: "true"}
-//	"claude-...-<effort>"  → base + {effort: <effort>}
-//	"gpt-...-<effort>"     → base + {reasoning: <effort>}
-//
-// Everything else passes through verbatim after alias normalization.
-func ResolveRequestedModel(modelID string) (string, []ModelParameter) {
-	normalized := normalizeCursorModelID(modelID)
-	if normalized == "auto" {
-		return "default", nil
-	}
-	for _, level := range cursorRoutingLevels {
-		if normalized == "auto-"+level {
-			return "default", []ModelParameter{{ID: "optimization", Value: level}}
-		}
-	}
-	if strings.HasPrefix(normalized, "composer-") && strings.HasSuffix(normalized, "-fast") {
-		return strings.TrimSuffix(normalized, "-fast"),
-			[]ModelParameter{{ID: "fast", Value: "true"}}
-	}
-	if base, params, ok := splitCursorEffortSuffix(normalized, "claude-", "effort"); ok {
-		return base, params
-	}
-	if base, params, ok := splitCursorEffortSuffix(normalized, "gpt-", "reasoning"); ok {
-		return base, params
-	}
-	return normalized, nil
-}
-
 // ResumeRequestParams holds data for a ResumeAction request.
 type ResumeRequestParams struct {
 	ModelId        string
@@ -431,7 +359,7 @@ func EncodeResumeRequest(p *ResumeRequestParams) []byte {
 	setMsg(ca, "resume_action", ra)
 
 	// ModelDetails (resolved wire id)
-	resolvedID, _ := ResolveRequestedModel(p.ModelId)
+	resolvedID, _ := ResolveRequestedModel(p.ModelId, "")
 	md := newMsg("ModelDetails")
 	setStr(md, "model_id", resolvedID)
 	setStr(md, "display_model_id", resolvedID)
