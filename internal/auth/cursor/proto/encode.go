@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -128,26 +130,20 @@ func EncodeHeartbeat() []byte {
 
 // EncodeRunRequest builds a full AgentClientMessage wrapping an AgentRunRequest.
 //
-// Wire shape follows cursor-agent CLI traffic (cross-checked against the
-// OmniRoute, 9router, and opencodex reverse-engineered clients):
-//   - UserMessage carries message_id, a selected_context envelope (empty when
-//     no images) and mode=1 — without these placeholders the server may accept
-//     the request but never stream a response;
-//   - the mcp_tools envelope is always present (empty when no tools) —
-//     omitting it entirely makes cursor error;
-//   - model_details and requested_model are mutually exclusive on the wire
-//     (opencodex request-builder.ts compose_requested_model): model_details
-//     carries the plain resolved id when there are no explicit model
-//     parameters, requested_model (with its id/value parameter list) is sent
-//     only when there are explicit parameters (e.g. grok-*-fast effort+fast).
-//     Sending both together — even with requested_model carrying only a bare
-//     model_id and no parameters — makes the backend see conflicting model
-//     selections and answer with Connect not_found;
-//   - conversation_id (field 5) is the only identifier sent; the real
-//     AgentRunRequest schema (agent.v1.AgentRunRequest, msg 91 in
-//     opencodex's generated agent_pb.ts) defines only fields 1-9 -- earlier
-//     reverse-engineered field 12 (varint placeholder) and field 16
-//     (duplicate request_id string) do not exist and must not be sent.
+// Wire shape is byte-level aligned with opencodex's cursor adapter
+// (protobuf-request.ts, generated from the real agent.v1 schema):
+//   - UserMessageAction always carries request_context { env: { time_zone } }
+//     alongside the user_message — the server answers Connect not_found when
+//     the action has no request_context;
+//   - UserMessage carries only text + message_id on plain turns (no empty
+//     selected_context envelope, no synthetic mode field);
+//   - model_details and requested_model are mutually exclusive: model_details
+//     (model_id/display_model_id/display_name/display_name_short all set to
+//     the resolved id) is sent for unparameterized models, requested_model
+//     only when explicit model parameters exist;
+//   - mcp_tools is sent only when tools are declared (no empty envelope);
+//   - AgentRunRequest fields 12/16 do not exist in the real schema (msg 91
+//     defines only fields 1-9) and are never sent.
 //
 // If p.RawCheckpoint is set, it is used directly as the conversation_state
 // bytes (from a previous conversation_checkpoint_update), skipping manual
@@ -164,9 +160,15 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 		cssBytes = buildConversationStateBytes(p)
 	}
 
-	// ConversationAction → UserMessageAction → UserMessage
+	// ConversationAction → UserMessageAction → UserMessage.
+	// UserMessageAction also carries request_context { env: { time_zone } } —
+	// cursor's agent server expects the client environment on every action and
+	// answers Connect not_found when it is absent (byte-level parity with
+	// opencodex protobuf-request.ts).
 	umBytes := buildUserMessageBytes(p.UserText, p.MessageId, p.Images)
-	caBytes := pwBytes(nil, CA_UserMessageAction, pwBytes(nil, UMA_UserMessage, umBytes))
+	umaBytes := pwBytes(nil, UMA_UserMessage, umBytes)
+	umaBytes = pwBytes(umaBytes, UMA_RequestContext, buildRequestContextBytes())
+	caBytes := pwBytes(nil, CA_UserMessageAction, umaBytes)
 
 	// model_details XOR requested_model — see EncodeRunRequest doc comment.
 	resolvedID, rmParams := ResolveRequestedModel(p.ModelId, p.ReasoningEffort)
@@ -175,9 +177,6 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 	if len(rmParams) > 0 {
 		rmBytes = buildRequestedModelBytes(resolvedID, rmParams)
 	}
-
-	// McpTools envelope — always present, even when empty.
-	mcpBytes := buildMcpToolsBytes(p.McpTools)
 
 	conversationID := p.ConversationId
 	if conversationID == "" {
@@ -189,7 +188,11 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 	if len(rmParams) == 0 {
 		arrBuf = pwBytes(arrBuf, ARR_ModelDetails, mdBytes)
 	}
-	arrBuf = pwBytes(arrBuf, ARR_McpTools, mcpBytes)
+	// mcp_tools is sent only when tools are declared — opencodex omits the
+	// envelope entirely for tool-less turns.
+	if len(p.McpTools) > 0 {
+		arrBuf = pwBytes(arrBuf, ARR_McpTools, buildMcpToolsBytes(p.McpTools))
+	}
 	arrBuf = pwStr(arrBuf, ARR_ConversationId, conversationID)
 	if len(rmParams) > 0 {
 		arrBuf = pwBytes(arrBuf, ARR_RequestedModel, rmBytes)
@@ -203,9 +206,9 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 	return acmBuf
 }
 
-// buildUserMessageBytes encodes a UserMessage with cursor-agent-compliant
-// placeholders: message_id fallback, an always-present selected_context
-// envelope (empty when no images) and mode=1.
+// buildUserMessageBytes encodes a UserMessage. Mirrors opencodex: text and
+// message_id only for plain turns; selected_context is attached only when the
+// turn actually carries images (no empty envelope, no synthetic mode field).
 func buildUserMessageBytes(text, messageID string, images []ImageData) []byte {
 	var buf []byte
 	buf = pwStr(buf, UM_Text, text)
@@ -214,7 +217,6 @@ func buildUserMessageBytes(text, messageID string, images []ImageData) []byte {
 	}
 	buf = pwStr(buf, UM_MessageId, messageID)
 
-	var scBytes []byte
 	if len(images) > 0 {
 		sc := newMsg("SelectedContext")
 		imgsField := field(sc, "selected_images")
@@ -226,11 +228,32 @@ func buildUserMessageBytes(text, messageID string, images []ImageData) []byte {
 			setBytes(si, "data", img.Data)
 			imgsList.Append(protoreflect.ValueOfMessage(si.ProtoReflect()))
 		}
-		scBytes = marshal(sc)
+		buf = pwBytes(buf, UM_SelectedContext, marshal(sc))
 	}
-	buf = pwBytes(buf, UM_SelectedContext, scBytes)
-	buf = pwVarint(buf, UM_Mode, 1)
 	return buf
+}
+
+// buildRequestContextBytes encodes RequestContext { env: { time_zone } }.
+// opencodex attaches this to every UserMessageAction/ResumeAction; cursor's
+// agent server rejects (Connect not_found) action messages without it.
+func buildRequestContextBytes() []byte {
+	env := pwStr(nil, RCE_TimeZone, cursorTimeZone())
+	return pwBytes(nil, RC_Env, env)
+}
+
+// cursorTimeZone resolves the local IANA time zone name for the request
+// context. TZ env wins; otherwise the /etc/localtime symlink target; UTC as
+// last resort.
+func cursorTimeZone() string {
+	if tz := os.Getenv("TZ"); tz != "" {
+		return tz
+	}
+	if link, err := os.Readlink("/etc/localtime"); err == nil {
+		if i := strings.Index(link, "zoneinfo/"); i >= 0 {
+			return link[i+len("zoneinfo/"):]
+		}
+	}
+	return "UTC"
 }
 
 // buildConversationStateBytes encodes root prompt blob + conversation turns.
@@ -293,6 +316,7 @@ func buildModelDetailsBytes(modelID string) []byte {
 	setStr(md, "model_id", modelID)
 	setStr(md, "display_model_id", modelID)
 	setStr(md, "display_name", modelID)
+	setStr(md, "display_name_short", modelID)
 	return marshal(md)
 }
 
@@ -342,8 +366,11 @@ type ResumeRequestParams struct {
 // EncodeResumeRequest builds an AgentClientMessage with ResumeAction.
 // Used to resume a conversation by conversation_id without re-sending full history.
 func EncodeResumeRequest(p *ResumeRequestParams) []byte {
-	// RequestContext with tools
+	// RequestContext with env.time_zone (required by the server router) and tools
 	rc := newMsg("RequestContext")
+	rcEnv := newMsg("RequestContextEnv")
+	setStr(rcEnv, "time_zone", cursorTimeZone())
+	setMsg(rc, "env", rcEnv)
 	if len(p.McpTools) > 0 {
 		toolsField := field(rc, "tools")
 		toolsList := rc.Mutable(toolsField).List()

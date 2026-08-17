@@ -73,18 +73,36 @@ func TestEncodeRunRequestWireShape(t *testing.T) {
 		t.Fatal("conversation_state (field 1) missing")
 	}
 
-	// field 2: action → user_message_action → user_message placeholders
+	// field 2: action → user_message_action → user_message + request_context
 	ca := parseFields(t, arr[2][0].data)
 	uma := parseFields(t, ca[1][0].data)
 	um := parseFields(t, uma[1][0].data)
 	if _, ok := um[2]; !ok || len(um[2][0].data) == 0 {
 		t.Fatal("UserMessage.message_id (field 2) missing/empty")
 	}
-	if _, ok := um[3]; !ok {
-		t.Fatal("UserMessage.selected_context (field 3) envelope missing")
+	// opencodex parity: no selected_context envelope, no synthetic mode on
+	// text-only turns.
+	if _, ok := um[3]; ok {
+		t.Fatal("UserMessage.selected_context (field 3) must be absent when no images")
 	}
-	if len(um[4]) == 0 || !um[4][0].isVar || um[4][0].varint != 1 {
-		t.Fatalf("UserMessage.mode (field 4) must be varint 1, got %v", um[4])
+	if _, ok := um[4]; ok {
+		t.Fatal("UserMessage.mode (field 4) must be absent (proto3 default)")
+	}
+	// request_context (UserMessageAction field 2) must carry env.time_zone —
+	// cursor's agent server answers Connect not_found without it.
+	rc, ok := uma[2]
+	if !ok {
+		t.Fatal("UserMessageAction.request_context (field 2) missing")
+	}
+	rcF := parseFields(t, rc[0].data)
+	env, ok := rcF[4]
+	if !ok {
+		t.Fatal("RequestContext.env (field 4) missing")
+	}
+	envF := parseFields(t, env[0].data)
+	tz, ok := envF[10]
+	if !ok || len(tz[0].data) == 0 {
+		t.Fatal("RequestContextEnv.time_zone (field 10) missing/empty")
 	}
 
 	// field 3: model_details uses resolved id
@@ -126,26 +144,26 @@ func TestEncodeRunRequestWireShape(t *testing.T) {
 	}
 }
 
-func TestEncodeRunRequestEmptyPlaceholders(t *testing.T) {
+func TestEncodeRunRequestOmitsEmptyEnvelopes(t *testing.T) {
 	p := &RunRequestParams{ModelId: "composer-2.5", UserText: "hi"}
 	buf := EncodeRunRequest(p)
 	acm := parseFields(t, buf)
 	arr := parseFields(t, acm[1][0].data)
 
-	// mcp_tools envelope must be present even when empty
-	if _, ok := arr[4]; !ok {
-		t.Fatal("mcp_tools (field 4) envelope must be present when no tools")
-	}
-	if len(arr[4][0].data) != 0 {
-		t.Fatalf("empty mcp_tools envelope must encode to 0 bytes, got %d", len(arr[4][0].data))
+	// opencodex parity: no mcp_tools envelope at all when no tools are declared.
+	if _, ok := arr[4]; ok {
+		t.Fatal("mcp_tools (field 4) must be omitted when no tools")
 	}
 
-	// selected_context envelope present (empty) inside UserMessage
+	// request_context still present even on the minimal turn.
 	ca := parseFields(t, arr[2][0].data)
 	uma := parseFields(t, ca[1][0].data)
+	if _, ok := uma[2]; !ok {
+		t.Fatal("UserMessageAction.request_context (field 2) must always be present")
+	}
 	um := parseFields(t, uma[1][0].data)
-	if _, ok := um[3]; !ok || len(um[3][0].data) != 0 {
-		t.Fatal("selected_context (field 3) must be an empty envelope when no images")
+	if _, ok := um[3]; ok {
+		t.Fatal("selected_context (field 3) must be omitted when no images")
 	}
 }
 
