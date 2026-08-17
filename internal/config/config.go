@@ -65,7 +65,7 @@ type Config struct {
 	// UsageExport configures the disabled-by-default durable Keeper usage outbox.
 	UsageExport UsageExportConfig `yaml:"usage-export" json:"usage-export"`
 
-	// DisableCooling disables quota cooldown scheduling when true.
+	// DisableCooling disables auth/model cooldown scheduling when true unless a credential or provider overrides it.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
 	// SaveCooldownStatus persists runtime cooldown status next to auth files when true.
