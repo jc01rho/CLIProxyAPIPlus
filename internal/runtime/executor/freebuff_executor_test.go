@@ -761,3 +761,48 @@ func TestFreebuffFinishRunRetriesServerErrorOnce(t *testing.T) {
 		t.Fatalf("FINISH attempts = %d, want 2", got)
 	}
 }
+
+func TestFreebuffResolveModelAcceptsProviderAliasAndShortNames(t *testing.T) {
+	executor := NewFreebuffExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "token"}}
+	cases := []struct {
+		in, model, agent string
+	}{
+		{"freebuff", "deepseek/deepseek-v4-pro", "base2-free-deepseek"},
+		{"codebuff", "deepseek/deepseek-v4-pro", "base2-free-deepseek"},
+		{"deepseek-v4-pro", "deepseek/deepseek-v4-pro", "base2-free-deepseek"},
+		{"deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash", "base2-free-deepseek-flash"},
+		{"claude-fable-5", "anthropic/claude-fable-5", "base2-free-fable"},
+		{"openai/gpt-5.6-luna", "openai/gpt-5.6-luna", "base2-free-luna"},
+	}
+	for _, tc := range cases {
+		model, agentID := executor.resolveModel(auth, tc.in)
+		if model != tc.model || agentID != tc.agent {
+			t.Fatalf("resolveModel(%q) = %q, %q, want %q, %q", tc.in, model, agentID, tc.model, tc.agent)
+		}
+	}
+}
+
+func TestFreebuffResolveModelFillsMissingConfigAgentID(t *testing.T) {
+	executor := NewFreebuffExecutor(&config.Config{FreebuffKey: []config.FreebuffKey{{
+		APIKey: "token",
+		Models: []config.FreebuffModel{{Name: "freebuff", Alias: "freebuff"}},
+	}}})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "token"}}
+	model, agentID := executor.resolveModel(auth, "freebuff")
+	if model != "deepseek/deepseek-v4-pro" || agentID != "base2-free-deepseek" {
+		t.Fatalf("resolveModel() = %q, %q", model, agentID)
+	}
+}
+
+func TestFreebuffResolveModelKeepsExplicitConfigAgentID(t *testing.T) {
+	executor := NewFreebuffExecutor(&config.Config{FreebuffKey: []config.FreebuffKey{{
+		APIKey: "token",
+		Models: []config.FreebuffModel{{Name: "custom-model", Alias: "freebuff", AgentID: "custom-agent"}},
+	}}})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "token"}}
+	model, agentID := executor.resolveModel(auth, "freebuff")
+	if model != "custom-model" || agentID != "custom-agent" {
+		t.Fatalf("resolveModel() = %q, %q", model, agentID)
+	}
+}

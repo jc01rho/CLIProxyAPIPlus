@@ -30,7 +30,7 @@ const (
 	ARR_ModelDetails      = 3  // ModelDetails
 	ARR_McpTools          = 4  // McpTools (send the envelope even when empty)
 	ARR_ConversationId    = 5  // string (optional)
-	ARR_RequestedModel    = 9  // RequestedModel — authoritative routing field on the current agent backend
+	ARR_RequestedModel    = 9  // RequestedModel -- only sent when explicit model parameters exist; mutually exclusive with ARR_ModelDetails
 	ARR_UnknownVarint12   = 12 // varint, observed as 0 in cursor-agent CLI traffic
 	ARR_RequestId         = 16 // string UUID, same value as conversation_id
 )

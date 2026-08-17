@@ -107,10 +107,12 @@ func TestEncodeRunRequestWireShape(t *testing.T) {
 		t.Fatal("conversation_id (field 5) empty")
 	}
 
-	// field 9: requested_model = {model_id}
-	rm := parseFields(t, arr[9][0].data)
-	if got := string(rm[1][0].data); got != "composer-2.5" {
-		t.Fatalf("requested_model.model_id = %q, want composer-2.5", got)
+	// field 9: requested_model must be absent for an unparameterized model --
+	// opencodex (cursor-agent CLI reference) only sends requested_model when
+	// explicit model parameters exist; sending it alongside model_details for a
+	// plain model triggers a conflicting-selection "Connect not_found" upstream.
+	if _, ok := arr[9]; ok {
+		t.Fatalf("requested_model (field 9) must be absent for unparameterized model, got %v", arr[9])
 	}
 
 	// field 12: varint 0 placeholder

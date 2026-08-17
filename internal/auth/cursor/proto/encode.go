@@ -129,15 +129,20 @@ func EncodeHeartbeat() []byte {
 // EncodeRunRequest builds a full AgentClientMessage wrapping an AgentRunRequest.
 //
 // Wire shape follows cursor-agent CLI traffic (cross-checked against the
-// OmniRoute and 9router reverse-engineered clients):
+// OmniRoute, 9router, and opencodex reverse-engineered clients):
 //   - UserMessage carries message_id, a selected_context envelope (empty when
 //     no images) and mode=1 — without these placeholders the server may accept
 //     the request but never stream a response;
 //   - the mcp_tools envelope is always present (empty when no tools) —
 //     omitting it entirely makes cursor error;
-//   - requested_model is always sent and is the authoritative routing field on
-//     the current agent backend: requests carrying only model_details are
-//     answered with Connect not_found;
+//   - model_details and requested_model are mutually exclusive on the wire
+//     (opencodex request-builder.ts compose_requested_model): model_details
+//     carries the plain resolved id when there are no explicit model
+//     parameters, requested_model (with its id/value parameter list) is sent
+//     only when there are explicit parameters (e.g. grok-*-fast effort+fast).
+//     Sending both together — even with requested_model carrying only a bare
+//     model_id and no parameters — makes the backend see conflicting model
+//     selections and answer with Connect not_found;
 //   - conversation_id and request_id share one client-generated UUID and a
 //     varint-0 placeholder is written at field 12.
 //
@@ -160,11 +165,13 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 	umBytes := buildUserMessageBytes(p.UserText, p.MessageId, p.Images)
 	caBytes := pwBytes(nil, CA_UserMessageAction, pwBytes(nil, UMA_UserMessage, umBytes))
 
-	// RequestedModel always carries the resolved wire id. model_details is
-	// only sent for unparameterized ids (opencodex/cursor-agent: params XOR details).
+	// model_details XOR requested_model — see EncodeRunRequest doc comment.
 	resolvedID, rmParams := ResolveRequestedModel(p.ModelId, p.ReasoningEffort)
 	mdBytes := buildModelDetailsBytes(resolvedID)
-	rmBytes := buildRequestedModelBytes(resolvedID, rmParams)
+	var rmBytes []byte
+	if len(rmParams) > 0 {
+		rmBytes = buildRequestedModelBytes(resolvedID, rmParams)
+	}
 
 	// McpTools envelope — always present, even when empty.
 	mcpBytes := buildMcpToolsBytes(p.McpTools)
@@ -181,7 +188,9 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 	}
 	arrBuf = pwBytes(arrBuf, ARR_McpTools, mcpBytes)
 	arrBuf = pwStr(arrBuf, ARR_ConversationId, conversationID)
-	arrBuf = pwBytes(arrBuf, ARR_RequestedModel, rmBytes)
+	if len(rmParams) > 0 {
+		arrBuf = pwBytes(arrBuf, ARR_RequestedModel, rmBytes)
+	}
 	arrBuf = pwVarint(arrBuf, ARR_UnknownVarint12, 0)
 	arrBuf = pwStr(arrBuf, ARR_RequestId, conversationID)
 

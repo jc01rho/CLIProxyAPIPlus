@@ -430,21 +430,82 @@ func (e *FreebuffExecutor) resolveModel(auth *cliproxyauth.Auth, model string) (
 			}
 			for _, configured := range key.Models {
 				if configured.Alias == model || configured.Name == model {
-					return configured.Name, configured.AgentID
+					return resolveFreebuffConfiguredModel(configured.Name, configured.AgentID, model)
 				}
 			}
 		}
 	}
-	agentID := map[string]string{
-		"deepseek/deepseek-v4-pro":   "base2-free-deepseek",
-		"deepseek/deepseek-v4-flash": "base2-free-deepseek-flash",
-		"mimo/mimo-v2.5":             "base2-free-mimo",
-		"minimax/minimax-m3":         "base2-free-minimax-m3",
-		"z-ai/glm-5.2":               "base2-free-glm",
-		"openai/gpt-5.6-luna":        "base2-free-luna",
-		"anthropic/claude-fable-5":   "base2-free-fable",
+	return lookupFreebuffBuiltin(model)
+}
+
+const freebuffDefaultModelID = "deepseek/deepseek-v4-pro"
+
+type freebuffBuiltinModel struct {
+	id    string
+	agent string
+}
+
+var freebuffBuiltinModels = []freebuffBuiltinModel{
+	{id: "deepseek/deepseek-v4-pro", agent: "base2-free-deepseek"},
+	{id: "deepseek/deepseek-v4-flash", agent: "base2-free-deepseek-flash"},
+	{id: "mimo/mimo-v2.5", agent: "base2-free-mimo"},
+	{id: "minimax/minimax-m3", agent: "base2-free-minimax-m3"},
+	{id: "z-ai/glm-5.2", agent: "base2-free-glm"},
+	{id: "openai/gpt-5.6-luna", agent: "base2-free-luna"},
+	{id: "anthropic/claude-fable-5", agent: "base2-free-fable"},
+}
+
+func isFreebuffProviderAlias(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "", "freebuff", "codebuff":
+		return true
+	default:
+		return false
 	}
-	return model, agentID[model]
+}
+
+func freebuffModelShortName(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if i := strings.LastIndex(model, "/"); i >= 0 {
+		return model[i+1:]
+	}
+	return model
+}
+
+func lookupFreebuffBuiltin(model string) (string, string) {
+	model = strings.TrimSpace(model)
+	if isFreebuffProviderAlias(model) {
+		return freebuffBuiltinModels[0].id, freebuffBuiltinModels[0].agent
+	}
+	lower := strings.ToLower(model)
+	short := freebuffModelShortName(model)
+	for _, item := range freebuffBuiltinModels {
+		idLower := strings.ToLower(item.id)
+		if lower == idLower || short == freebuffModelShortName(item.id) {
+			return item.id, item.agent
+		}
+	}
+	return model, ""
+}
+
+func resolveFreebuffConfiguredModel(name, agentID, requested string) (string, string) {
+	if strings.TrimSpace(agentID) != "" {
+		return name, agentID
+	}
+	canon, builtinAgent := lookupFreebuffBuiltin(name)
+	if builtinAgent == "" {
+		canon, builtinAgent = lookupFreebuffBuiltin(requested)
+	}
+	if builtinAgent == "" {
+		return name, ""
+	}
+	if isFreebuffProviderAlias(name) {
+		return canon, builtinAgent
+	}
+	if _, nameAgent := lookupFreebuffBuiltin(name); nameAgent != "" {
+		return canon, builtinAgent
+	}
+	return name, builtinAgent
 }
 
 func (e *FreebuffExecutor) ensureSession(ctx context.Context, auth *cliproxyauth.Auth, state *freebuffCredentialState, model string) (*freebuffSession, error) {
