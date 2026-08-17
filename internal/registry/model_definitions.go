@@ -532,6 +532,10 @@ func GetCursorModels() []*ModelInfo {
 	return []*ModelInfo{
 		{ID: "composer-2.5", Object: "model", OwnedBy: "cursor", Type: "cursor", DisplayName: "Composer 2.5", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 		{ID: "composer-2", Object: "model", OwnedBy: "cursor", Type: "cursor", DisplayName: "Composer 2", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "grok-4.5-high", Object: "model", OwnedBy: "cursor", Type: "cursor", DisplayName: "Grok 4.5", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "grok-4.6-xhigh", Object: "model", OwnedBy: "cursor", Type: "cursor", DisplayName: "Grok 4.6", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "grok-4.5-fast", Object: "model", OwnedBy: "cursor", Type: "cursor", DisplayName: "Grok 4.5 Fast", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "grok-4.6-fast", Object: "model", OwnedBy: "cursor", Type: "cursor", DisplayName: "Grok 4.6 Fast", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 		{ID: "claude-4-sonnet", Object: "model", OwnedBy: "cursor", Type: "cursor", DisplayName: "Claude 4 Sonnet", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 		{ID: "claude-3.5-sonnet", Object: "model", OwnedBy: "cursor", Type: "cursor", DisplayName: "Claude 3.5 Sonnet", ContextLength: 200000, MaxCompletionTokens: 8192},
 		{ID: "gpt-4o", Object: "model", OwnedBy: "cursor", Type: "cursor", DisplayName: "GPT-4o", ContextLength: 128000, MaxCompletionTokens: 16384},

@@ -804,20 +804,20 @@ func openCursorH2Stream(accessToken string) (*cursorproto.H2Stream, error) {
 	// Header set mirrors cursor-agent CLI traffic (connect-es stack), verified
 	// against the reverse-engineered OmniRoute / 9router clients.
 	headers := map[string]string{
-		":path":                     cursorRunPath,
-		"content-type":              "application/connect+proto",
-		"connect-accept-encoding":   "gzip",
-		"connect-protocol-version":  "1",
-		"te":                        "trailers",
-		"user-agent":                "connect-es/1.6.1",
-		"authorization":             "Bearer " + accessToken,
-		"x-ghost-mode":              "true",
-		"x-cursor-client-version":   cursorClientVersion,
-		"x-cursor-client-type":      "cli",
-		"x-request-id":              requestID,
-		"x-original-request-id":     requestID,
-		"traceparent":               traceparent,
-		"backend-traceparent":       traceparent,
+		":path":                    cursorRunPath,
+		"content-type":             "application/connect+proto",
+		"connect-accept-encoding":  "gzip",
+		"connect-protocol-version": "1",
+		"te":                       "trailers",
+		"user-agent":               "connect-es/1.6.1",
+		"authorization":            "Bearer " + accessToken,
+		"x-ghost-mode":             "true",
+		"x-cursor-client-version":  cursorClientVersion,
+		"x-cursor-client-type":     "cli",
+		"x-request-id":             requestID,
+		"x-original-request-id":    requestID,
+		"traceparent":              traceparent,
+		"backend-traceparent":      traceparent,
 	}
 	return cursorproto.DialH2Stream(cursorAgentHost, headers)
 }
@@ -1104,15 +1104,16 @@ func processH2SessionFrames(
 // --- OpenAI request parsing ---
 
 type parsedOpenAIRequest struct {
-	Model        string
-	Messages     []gjson.Result
-	Tools        []gjson.Result
-	Stream       bool
-	SystemPrompt string
-	UserText     string
-	Images       []cursorproto.ImageData
-	Turns        []cursorproto.TurnData
-	ToolResults  []toolResultInfo
+	Model           string
+	ReasoningEffort string
+	Messages        []gjson.Result
+	Tools           []gjson.Result
+	Stream          bool
+	SystemPrompt    string
+	UserText        string
+	Images          []cursorproto.ImageData
+	Turns           []cursorproto.TurnData
+	ToolResults     []toolResultInfo
 }
 
 type toolResultInfo struct {
@@ -1122,8 +1123,9 @@ type toolResultInfo struct {
 
 func parseOpenAIRequest(payload []byte) *parsedOpenAIRequest {
 	p := &parsedOpenAIRequest{
-		Model:  gjson.GetBytes(payload, "model").String(),
-		Stream: gjson.GetBytes(payload, "stream").Bool(),
+		Model:           gjson.GetBytes(payload, "model").String(),
+		ReasoningEffort: extractCursorReasoningEffort(payload),
+		Stream:          gjson.GetBytes(payload, "stream").Bool(),
 	}
 
 	messages := gjson.GetBytes(payload, "messages").Array()
@@ -1315,14 +1317,15 @@ func parseDataURL(url string) *cursorproto.ImageData {
 
 func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string) *cursorproto.RunRequestParams {
 	params := &cursorproto.RunRequestParams{
-		ModelId:        parsed.Model,
-		SystemPrompt:   parsed.SystemPrompt,
-		UserText:       parsed.UserText,
-		MessageId:      uuid.New().String(),
-		ConversationId: conversationId,
-		Images:         parsed.Images,
-		Turns:          parsed.Turns,
-		BlobStore:      make(map[string][]byte),
+		ModelId:         parsed.Model,
+		ReasoningEffort: parsed.ReasoningEffort,
+		SystemPrompt:    parsed.SystemPrompt,
+		UserText:        parsed.UserText,
+		MessageId:       uuid.New().String(),
+		ConversationId:  conversationId,
+		Images:          parsed.Images,
+		Turns:           parsed.Turns,
+		BlobStore:       make(map[string][]byte),
 	}
 
 	// Convert OpenAI tools to McpToolDefs
@@ -1679,11 +1682,22 @@ func parseModelEntry(data []byte) *registry.ModelInfo {
 	return info
 }
 
+func extractCursorReasoningEffort(payload []byte) string {
+	if v := strings.TrimSpace(gjson.GetBytes(payload, "reasoning_effort").String()); v != "" {
+		return v
+	}
+	return strings.TrimSpace(gjson.GetBytes(payload, "reasoning.effort").String())
+}
+
 // GetCursorFallbackModels returns hardcoded fallback models.
 func GetCursorFallbackModels() []*registry.ModelInfo {
 	return []*registry.ModelInfo{
 		{ID: "composer-2.5", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Composer 2.5", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 		{ID: "composer-2", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Composer 2", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "grok-4.5-high", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Grok 4.5", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "grok-4.6-xhigh", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Grok 4.6", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "grok-4.5-fast", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Grok 4.5 Fast", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "grok-4.6-fast", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Grok 4.6 Fast", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 		{ID: "claude-4-sonnet", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Claude 4 Sonnet", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 		{ID: "claude-3.5-sonnet", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "Claude 3.5 Sonnet", ContextLength: 200000, MaxCompletionTokens: 8192},
 		{ID: "gpt-4o", Object: "model", OwnedBy: "cursor", Type: cursorAuthType, DisplayName: "GPT-4o", ContextLength: 128000, MaxCompletionTokens: 16384},
