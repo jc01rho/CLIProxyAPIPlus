@@ -31,9 +31,13 @@ const (
 	ARR_McpTools          = 4  // McpTools (send the envelope even when empty)
 	ARR_ConversationId    = 5  // string (optional)
 	ARR_RequestedModel    = 9  // RequestedModel -- only sent when explicit model parameters exist; mutually exclusive with ARR_ModelDetails
-	ARR_UnknownVarint12   = 12 // varint, observed as 0 in cursor-agent CLI traffic
-	ARR_RequestId         = 16 // string UUID, same value as conversation_id
 )
+
+// Fields 12 and 16 were previously written as reverse-engineered guesses
+// ("UnknownVarint12" / "RequestId") but do not exist in the real
+// agent.v1.AgentRunRequest schema (msg 91), which defines only fields 1-9
+// (see opencodex's generated agent_pb.ts). Sending them added spurious
+// unknown fields to the wire and has been removed.
 
 // ConversationStateStructure (msg 83)
 const (
