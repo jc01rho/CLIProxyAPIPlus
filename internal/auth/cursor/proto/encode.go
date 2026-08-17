@@ -143,8 +143,11 @@ func EncodeHeartbeat() []byte {
 //     Sending both together — even with requested_model carrying only a bare
 //     model_id and no parameters — makes the backend see conflicting model
 //     selections and answer with Connect not_found;
-//   - conversation_id and request_id share one client-generated UUID and a
-//     varint-0 placeholder is written at field 12.
+//   - conversation_id (field 5) is the only identifier sent; the real
+//     AgentRunRequest schema (agent.v1.AgentRunRequest, msg 91 in
+//     opencodex's generated agent_pb.ts) defines only fields 1-9 -- earlier
+//     reverse-engineered field 12 (varint placeholder) and field 16
+//     (duplicate request_id string) do not exist and must not be sent.
 //
 // If p.RawCheckpoint is set, it is used directly as the conversation_state
 // bytes (from a previous conversation_checkpoint_update), skipping manual
@@ -191,8 +194,6 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 	if len(rmParams) > 0 {
 		arrBuf = pwBytes(arrBuf, ARR_RequestedModel, rmBytes)
 	}
-	arrBuf = pwVarint(arrBuf, ARR_UnknownVarint12, 0)
-	arrBuf = pwStr(arrBuf, ARR_RequestId, conversationID)
 
 	acmBuf := pwBytes(nil, ACM_RunRequest, arrBuf)
 

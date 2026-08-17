@@ -115,14 +115,14 @@ func TestEncodeRunRequestWireShape(t *testing.T) {
 		t.Fatalf("requested_model (field 9) must be absent for unparameterized model, got %v", arr[9])
 	}
 
-	// field 12: varint 0 placeholder
-	if len(arr[12]) == 0 || !arr[12][0].isVar || arr[12][0].varint != 0 {
-		t.Fatalf("field 12 must be varint 0, got %v", arr[12])
+	// fields 12 and 16 do not exist in the real AgentRunRequest schema
+	// (agent.v1.AgentRunRequest, msg 91 -- only fields 1-9 are defined per
+	// opencodex's generated agent_pb.ts) and must never be sent.
+	if _, ok := arr[12]; ok {
+		t.Fatalf("field 12 does not exist in AgentRunRequest and must not be sent, got %v", arr[12])
 	}
-
-	// field 16: request_id present and equals conversation_id
-	if !bytes.Equal(arr[16][0].data, arr[5][0].data) {
-		t.Fatalf("request_id (%q) != conversation_id (%q)", arr[16][0].data, arr[5][0].data)
+	if _, ok := arr[16]; ok {
+		t.Fatalf("field 16 does not exist in AgentRunRequest and must not be sent, got %v", arr[16])
 	}
 }
 
