@@ -25,12 +25,12 @@ const (
 
 // AgentRunRequest (msg 91)
 const (
-	ARR_ConversationState = 1  // ConversationStateStructure
-	ARR_Action            = 2  // ConversationAction
-	ARR_ModelDetails      = 3  // ModelDetails
-	ARR_McpTools          = 4  // McpTools (send the envelope even when empty)
-	ARR_ConversationId    = 5  // string (optional)
-	ARR_RequestedModel    = 9  // RequestedModel -- only sent when explicit model parameters exist; mutually exclusive with ARR_ModelDetails
+	ARR_ConversationState = 1 // ConversationStateStructure
+	ARR_Action            = 2 // ConversationAction
+	ARR_ModelDetails      = 3 // ModelDetails
+	ARR_McpTools          = 4 // McpTools (send the envelope even when empty)
+	ARR_ConversationId    = 5 // string (optional)
+	ARR_RequestedModel    = 9 // RequestedModel -- only sent when explicit model parameters exist; mutually exclusive with ARR_ModelDetails
 )
 
 // Fields 12 and 16 were previously written as reverse-engineered guesses
@@ -58,7 +58,8 @@ const (
 
 // UserMessageAction (msg 55)
 const (
-	UMA_UserMessage = 1 // UserMessage
+	UMA_UserMessage    = 1 // UserMessage
+	UMA_RequestContext = 2 // RequestContext (env.time_zone — required by the server router)
 )
 
 // UserMessage (msg 63)
@@ -85,22 +86,35 @@ const (
 
 // ModelDetails (msg 88)
 const (
-	MD_ModelId         = 1 // string
-	MD_ThinkingDetails = 2 // ThinkingDetails (optional)
-	MD_DisplayModelId  = 3 // string
-	MD_DisplayName     = 4 // string
+	MD_ModelId          = 1 // string
+	MD_ThinkingDetails  = 2 // ThinkingDetails (optional)
+	MD_DisplayModelId   = 3 // string
+	MD_DisplayName      = 4 // string
+	MD_DisplayNameShort = 5 // string
 )
 
-// RequestedModel
+// RequestedModel (real schema: max_mode=2, parameters=3 — parameters at field 2
+// was silently dropped by the server, which parses it as max_mode)
 const (
 	RM_ModelId    = 1 // string
-	RM_Parameters = 2 // repeated ModelParameter
+	RM_MaxMode    = 2 // bool (proto3 default false — never serialized)
+	RM_Parameters = 3 // repeated ModelParameter
 )
 
 // ModelParameter
 const (
 	MP_Id    = 1 // string
 	MP_Value = 2 // string
+)
+
+// RequestContext (additional field; RC_Rules/RC_Tools declared below)
+const (
+	RC_Env = 4 // RequestContextEnv
+)
+
+// RequestContextEnv
+const (
+	RCE_TimeZone = 10 // string (IANA name, e.g. "Asia/Seoul")
 )
 
 // McpTools (msg 307)
