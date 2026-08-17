@@ -280,6 +280,7 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 		BillingClass        *string                          `json:"billing-class"`
 		Headers             *map[string]string               `json:"headers"`
 		ExcludedModels      *[]string                        `json:"excluded-models"`
+		DisableCooling      json.RawMessage                  `json:"disable-cooling"`
 		RequestRetry        *int                             `json:"request-retry"`
 		RequestScopedErrors *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
 	}
@@ -351,6 +352,9 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if !applyDisableCoolingPatch(c, body.Value.DisableCooling, &entry.DisableCooling) {
+		return
 	}
 	if body.Value.RequestRetry != nil {
 		entry.RequestRetry = body.Value.RequestRetry
@@ -464,6 +468,7 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 		ProxyURL            *string                          `json:"proxy-url"`
 		Headers             *map[string]string               `json:"headers"`
 		ExcludedModels      *[]string                        `json:"excluded-models"`
+		DisableCooling      json.RawMessage                  `json:"disable-cooling"`
 		RequestRetry        *int                             `json:"request-retry"`
 		RequestScopedErrors *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
 	}
@@ -533,6 +538,9 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if !applyDisableCoolingPatch(c, body.Value.DisableCooling, &entry.DisableCooling) {
+		return
 	}
 	if body.Value.RequestRetry != nil {
 		entry.RequestRetry = body.Value.RequestRetry
@@ -649,6 +657,7 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 		Headers                 *map[string]string               `json:"headers"`
 		ExcludedModels          *[]string                        `json:"excluded-models"`
 		RebuildMidSystemMessage *bool                            `json:"rebuild-mid-system-message"`
+		DisableCooling          json.RawMessage                  `json:"disable-cooling"`
 		RequestRetry            *int                             `json:"request-retry"`
 		RequestScopedErrors     *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
 	}
@@ -717,6 +726,9 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 	if body.Value.RebuildMidSystemMessage != nil {
 		entry.RebuildMidSystemMessage = *body.Value.RebuildMidSystemMessage
+	}
+	if !applyDisableCoolingPatch(c, body.Value.DisableCooling, &entry.DisableCooling) {
+		return
 	}
 	if body.Value.RequestRetry != nil {
 		entry.RequestRetry = body.Value.RequestRetry
@@ -829,7 +841,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Name                  *string                             `json:"name"`
 		Prefix                *string                             `json:"prefix"`
 		Disabled              *bool                               `json:"disabled"`
-		DisableCooling        *bool                               `json:"disable-cooling"`
+		DisableCooling        json.RawMessage                     `json:"disable-cooling"`
 		BaseURL               *string                             `json:"base-url"`
 		BillingClass          *string                             `json:"billing-class"`
 		APIKeyEntries         *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
@@ -879,8 +891,8 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	if body.Value.Disabled != nil {
 		entry.Disabled = *body.Value.Disabled
 	}
-	if body.Value.DisableCooling != nil {
-		entry.DisableCooling = *body.Value.DisableCooling
+	if !applyDisableCoolingPatch(c, body.Value.DisableCooling, &entry.DisableCooling) {
+		return
 	}
 	if body.Value.RequestRetry != nil {
 		entry.RequestRetry = body.Value.RequestRetry
@@ -1001,6 +1013,7 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 		Headers        *map[string]string          `json:"headers"`
 		Models         *[]config.VertexCompatModel `json:"models"`
 		ExcludedModels *[]string                   `json:"excluded-models"`
+		DisableCooling json.RawMessage             `json:"disable-cooling"`
 		RequestRetry   *int                        `json:"request-retry"`
 	}
 	var body struct {
@@ -1081,6 +1094,9 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if !applyDisableCoolingPatch(c, body.Value.DisableCooling, &entry.DisableCooling) {
+		return
 	}
 	if body.Value.RequestRetry != nil {
 		entry.RequestRetry = body.Value.RequestRetry
@@ -1397,6 +1413,7 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 		Models              *[]config.CodexModel             `json:"models"`
 		Headers             *map[string]string               `json:"headers"`
 		ExcludedModels      *[]string                        `json:"excluded-models"`
+		DisableCooling      json.RawMessage                  `json:"disable-cooling"`
 		RequestRetry        *int                             `json:"request-retry"`
 		RequestScopedErrors *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
 	}
@@ -1469,6 +1486,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if !applyDisableCoolingPatch(c, body.Value.DisableCooling, &entry.DisableCooling) {
+		return
 	}
 	if body.Value.RequestRetry != nil {
 		entry.RequestRetry = body.Value.RequestRetry
@@ -2103,7 +2123,7 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 		Models              *[]config.XAIModel               `json:"models"`
 		Headers             *map[string]string               `json:"headers"`
 		ExcludedModels      *[]string                        `json:"excluded-models"`
-		DisableCooling      *bool                            `json:"disable-cooling"`
+		DisableCooling      json.RawMessage                  `json:"disable-cooling"`
 		RequestRetry        *int                             `json:"request-retry"`
 		RequestScopedErrors *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
 	}
@@ -2180,8 +2200,8 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
 	}
-	if body.Value.DisableCooling != nil {
-		entry.DisableCooling = *body.Value.DisableCooling
+	if !applyDisableCoolingPatch(c, body.Value.DisableCooling, &entry.DisableCooling) {
+		return
 	}
 	if body.Value.RequestRetry != nil {
 		entry.RequestRetry = body.Value.RequestRetry
@@ -2246,6 +2266,23 @@ func (h *Handler) DeleteXAIKey(c *gin.Context) {
 		}
 	}
 	c.JSON(400, gin.H{"error": "missing api-key or index"})
+}
+
+func applyDisableCoolingPatch(c *gin.Context, raw json.RawMessage, target **bool) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		*target = nil
+		return true
+	}
+	var value bool
+	if errUnmarshal := json.Unmarshal(raw, &value); errUnmarshal != nil {
+		c.JSON(400, gin.H{"error": "disable-cooling must be a boolean or null"})
+		return false
+	}
+	*target = &value
+	return true
 }
 
 func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {

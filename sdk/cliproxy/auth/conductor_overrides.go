@@ -22,7 +22,7 @@ func nextTransientErrorRetryAfter(now time.Time) time.Time {
 		return time.Time{}
 	}
 	if seconds == 0 {
-		return now.Add(time.Minute)
+		return now.Add(transientErrorCooldown)
 	}
 	return now.Add(time.Duration(seconds) * time.Second)
 }
