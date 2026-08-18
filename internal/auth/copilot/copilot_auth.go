@@ -23,12 +23,14 @@ const (
 	// copilotAPIEndpoint is the base URL for making API requests.
 	copilotAPIEndpoint = "https://api.githubcopilot.com"
 
-	// Common HTTP header values for Copilot API requests.
-	copilotUserAgent     = "GithubCopilot/1.0"
-	copilotEditorVersion = "vscode/1.100.0"
-	copilotPluginVersion = "copilot/1.300.0"
-	copilotIntegrationID = "vscode-chat"
-	copilotOpenAIIntent  = "conversation-panel"
+	// Common HTTP header values for Copilot API requests. Values mirror
+	// senpi's COPILOT_HEADERS (packages/ai/src/auth/oauth/github-copilot.ts).
+	copilotUserAgent        = "GitHubCopilotChat/0.35.0"
+	copilotEditorVersion    = "vscode/1.107.0"
+	copilotPluginVersion    = "copilot-chat/0.35.0"
+	copilotIntegrationID    = "vscode-chat"
+	copilotOpenAIIntent     = "conversation-panel"
+	copilotGitHubAPIVersion = "2026-06-01"
 )
 
 // CopilotAPIToken represents the Copilot API token response.
@@ -58,16 +60,35 @@ type CopilotAuth struct {
 	httpClient   *http.Client
 	deviceClient *DeviceFlowClient
 	cfg          *config.Config
+	// domain is the GitHub domain this auth instance is bound to; empty
+	// means github.com. Enterprise credentials carry their own domain.
+	domain string
 }
 
 // NewCopilotAuth creates a new CopilotAuth service instance.
 // It initializes an HTTP client with proxy settings from the provided configuration.
 func NewCopilotAuth(cfg *config.Config) *CopilotAuth {
+	return NewCopilotAuthWithDomain(cfg, "")
+}
+
+// NewCopilotAuthWithDomain creates a CopilotAuth bound to a specific GitHub
+// domain (empty means github.com) so GitHub Enterprise accounts use their
+// own device/token/API endpoints.
+func NewCopilotAuthWithDomain(cfg *config.Config, domain string) *CopilotAuth {
 	return &CopilotAuth{
 		httpClient:   util.SetProxy(&cfg.SDKConfig, &http.Client{Timeout: 30 * time.Second}),
-		deviceClient: NewDeviceFlowClient(cfg),
+		deviceClient: NewDeviceFlowClientForDomain(cfg, domain),
 		cfg:          cfg,
+		domain:       strings.TrimSpace(domain),
 	}
+}
+
+// Domain returns the GitHub domain this instance is bound to ("" = github.com).
+func (c *CopilotAuth) Domain() string {
+	if c == nil {
+		return ""
+	}
+	return c.domain
 }
 
 // StartDeviceFlow initiates the device flow authentication.
@@ -109,16 +130,17 @@ func (c *CopilotAuth) GetCopilotAPIToken(ctx context.Context, githubAccessToken 
 		return nil, NewAuthenticationError(ErrTokenExchangeFailed, fmt.Errorf("github access token is empty"))
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, copilotAPITokenURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, CopilotAPITokenURLForDomain(c.domain), nil)
 	if err != nil {
 		return nil, NewAuthenticationError(ErrTokenExchangeFailed, err)
 	}
 
-	req.Header.Set("Authorization", "token "+githubAccessToken)
+	req.Header.Set("Authorization", "Bearer "+githubAccessToken)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", copilotUserAgent)
 	req.Header.Set("Editor-Version", copilotEditorVersion)
 	req.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
+	req.Header.Set("Copilot-Integration-Id", copilotIntegrationID)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -202,7 +224,24 @@ func (c *CopilotAuth) LoadAndValidateToken(ctx context.Context, storage *Copilot
 
 // GetAPIEndpoint returns the Copilot API endpoint URL.
 func (c *CopilotAuth) GetAPIEndpoint() string {
-	return copilotAPIEndpoint
+	return FallbackAPIEndpointForDomain(c.domain)
+}
+
+// ResolveAPIBaseURL determines the Copilot API base URL for a token. It
+// prefers the token response's endpoints.api when the host is trusted
+// (static allowlist or the credential's enterprise domain) and falls back
+// to the domain default. The trust check prevents SSRF via hostile token
+// responses.
+func (c *CopilotAuth) ResolveAPIBaseURL(apiToken *CopilotAPIToken) string {
+	if apiToken != nil {
+		if ep := strings.TrimRight(strings.TrimSpace(apiToken.Endpoints.API), "/"); ep != "" {
+			if parsed, err := url.Parse(ep); err == nil && parsed.Scheme == "https" && isAllowedCopilotHostForDomain(parsed.Host, c.domain) {
+				return ep
+			}
+			log.Warnf("copilot: ignoring untrusted API endpoint %q, using default", ep)
+		}
+	}
+	return FallbackAPIEndpointForDomain(c.domain)
 }
 
 // MakeAuthenticatedRequest creates an authenticated HTTP request to the Copilot API.
@@ -220,6 +259,7 @@ func (c *CopilotAuth) MakeAuthenticatedRequest(ctx context.Context, method, url 
 	req.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
 	req.Header.Set("Openai-Intent", copilotOpenAIIntent)
 	req.Header.Set("Copilot-Integration-Id", copilotIntegrationID)
+	req.Header.Set("X-GitHub-Api-Version", copilotGitHubAPIVersion)
 
 	return req, nil
 }
@@ -233,6 +273,92 @@ type CopilotModelEntry struct {
 	Name         string         `json:"name,omitempty"`
 	Version      string         `json:"version,omitempty"`
 	Capabilities map[string]any `json:"capabilities,omitempty"`
+	// Policy carries the account policy state for the model ("enabled",
+	// "disabled", ...). Models whose policy is disabled cannot be used.
+	Policy *CopilotModelPolicy `json:"policy,omitempty"`
+	// ModelPickerEnabled reports whether the model is enabled in the
+	// account's Copilot model picker.
+	ModelPickerEnabled *bool `json:"model_picker_enabled,omitempty"`
+}
+
+// CopilotModelPolicy is the policy object attached to a Copilot model.
+type CopilotModelPolicy struct {
+	State string `json:"state,omitempty"`
+}
+
+// PolicyState returns the model policy state ("" when absent).
+func (e *CopilotModelEntry) PolicyState() string {
+	if e == nil || e.Policy == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Policy.State)
+}
+
+// IsModelPickerEnabled reports the explicit model_picker_enabled flag,
+// defaulting to false when the API omits it.
+func (e *CopilotModelEntry) IsModelPickerEnabled() bool {
+	return e != nil && e.ModelPickerEnabled != nil && *e.ModelPickerEnabled
+}
+
+// SupportsToolCalls reports whether the model supports tool calls. Only an
+// explicit capabilities.supports.tool_calls=false disables it; missing
+// capability metadata keeps the model available. Mirrors senpi's
+// parseAvailableCopilotModelIds() check.
+func (e *CopilotModelEntry) SupportsToolCalls() bool {
+	if e == nil || e.Capabilities == nil {
+		return true
+	}
+	supportsRaw, ok := e.Capabilities["supports"]
+	if !ok {
+		return true
+	}
+	supports, ok := supportsRaw.(map[string]any)
+	if !ok {
+		return true
+	}
+	if toolCalls, ok := supports["tool_calls"].(bool); ok && !toolCalls {
+		return false
+	}
+	return true
+}
+
+// FilterAvailableCopilotModels applies senpi's availability rules to a raw
+// /models response: models with capabilities.supports.tool_calls=false are
+// dropped; preferred set is model_picker_enabled=true with policy not
+// disabled; when allowPolicyFallback is true (individual accounts) and no
+// picker-enabled models exist, models with an explicit enabled policy are
+// returned instead.
+func FilterAvailableCopilotModels(entries []CopilotModelEntry, allowPolicyFallback bool) []CopilotModelEntry {
+	pickerEntries := make([]CopilotModelEntry, 0, len(entries))
+	policyEnabledEntries := make([]CopilotModelEntry, 0, len(entries))
+	hasPolicyMetadata := false
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.ID) == "" {
+			continue
+		}
+		if !entry.SupportsToolCalls() {
+			continue
+		}
+		if entry.Policy != nil || entry.ModelPickerEnabled != nil {
+			hasPolicyMetadata = true
+		}
+		if entry.IsModelPickerEnabled() && entry.PolicyState() != "disabled" {
+			pickerEntries = append(pickerEntries, entry)
+		}
+		if entry.PolicyState() == "enabled" {
+			policyEnabledEntries = append(policyEnabledEntries, entry)
+		}
+	}
+	// When the response carries no policy/picker metadata at all, the filter
+	// has no signal to apply; keep every entry so accounts behind older API
+	// shapes do not lose their catalog.
+	if !hasPolicyMetadata {
+		return entries
+	}
+	if len(pickerEntries) > 0 || !allowPolicyFallback {
+		return pickerEntries
+	}
+	return policyEnabledEntries
 }
 
 // CopilotModelLimits holds the token limits returned by the Copilot /models API
@@ -328,15 +454,7 @@ func (c *CopilotAuth) ListModels(ctx context.Context, apiToken *CopilotAPIToken)
 	}
 
 	// Build models URL, validating the endpoint host to prevent SSRF.
-	modelsURL := copilotAPIEndpoint + "/models"
-	if ep := strings.TrimRight(apiToken.Endpoints.API, "/"); ep != "" {
-		parsed, err := url.Parse(ep)
-		if err == nil && parsed.Scheme == "https" && allowedCopilotAPIHosts[parsed.Host] {
-			modelsURL = ep + "/models"
-		} else {
-			log.Warnf("copilot: ignoring untrusted API endpoint %q, using default", ep)
-		}
-	}
+	modelsURL := c.ResolveAPIBaseURL(apiToken) + "/models"
 
 	req, err := c.MakeAuthenticatedRequest(ctx, http.MethodGet, modelsURL, nil, apiToken)
 	if err != nil {

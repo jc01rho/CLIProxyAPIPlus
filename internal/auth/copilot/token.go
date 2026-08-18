@@ -30,6 +30,9 @@ type CopilotTokenStorage struct {
 	Email string `json:"email,omitempty"`
 	// Name is the GitHub display name associated with this token.
 	Name string `json:"name,omitempty"`
+	// EnterpriseDomain is the GitHub Enterprise host this credential belongs
+	// to (empty for github.com).
+	EnterpriseDomain string `json:"enterprise_domain,omitempty"`
 	// Type indicates the authentication provider type, always "github-copilot" for this storage.
 	Type string `json:"type"`
 }
