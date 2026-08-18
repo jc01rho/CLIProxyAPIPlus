@@ -30,14 +30,12 @@ import (
 )
 
 const (
-	// Auth (poll/refresh) stays on api2.cursor.sh. AgentService Run / GetUsableModels
-	// moved to the regional agent host; posting Agent RPCs to api2 now returns
-	// Connect unauthenticated even with a valid session token.
-	cursorAgentURL          = "https://agentn.global.api5.cursor.sh"
-	cursorAgentHost         = "agentn.global.api5.cursor.sh"
+	// Match senpi's current Cursor client for both AgentService and OAuth.
+	cursorAgentURL          = "https://api2.cursor.sh"
+	cursorAgentHost         = "api2.cursor.sh"
 	cursorRunPath           = "/agent.v1.AgentService/Run"
 	cursorModelsPath        = "/agent.v1.AgentService/GetUsableModels"
-	cursorClientVersion     = "cli-2026.08.11-e8db854"
+	cursorClientVersion     = "cli-2026.07.23-e383d2b"
 	cursorAuthType          = "cursor"
 	cursorHeartbeatInterval = 5 * time.Second
 	cursorSessionTTL        = 5 * time.Minute
@@ -300,6 +298,9 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 
 	parsed := parseOpenAIRequest(payload)
+	if req.Model != "" {
+		parsed.Model = req.Model
+	}
 	ccSessId := extractClaudeCodeSessionId(req.Payload)
 	conversationId := deriveConversationId(apiKeyFromContext(ctx), ccSessId, parsed.SystemPrompt)
 	params := buildRunRequestParams(parsed, conversationId)
@@ -394,6 +395,9 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	parsed := parseOpenAIRequest(payload)
+	if req.Model != "" {
+		parsed.Model = req.Model
+	}
 	log.Debugf("cursor: parsed request: model=%s userText=%d chars, turns=%d, tools=%d, toolResults=%d",
 		parsed.Model, len(parsed.UserText), len(parsed.Turns), len(parsed.Tools), len(parsed.ToolResults))
 
@@ -790,36 +794,33 @@ func (e *CursorExecutor) resumeWithToolResults(
 // --- H2Stream helpers ---
 
 func openCursorH2Stream(accessToken string) (*cursorproto.H2Stream, error) {
-	// cursor-agent access tokens can arrive as "<type>::<token>"; the agent
-	// endpoint expects the bare token after the separator.
-	if i := strings.Index(accessToken, "::"); i >= 0 {
-		accessToken = accessToken[i+2:]
-	}
+	headers := cursorRunHeaders(accessToken)
+	return cursorproto.DialH2Stream(cursorAgentHost, headers)
+}
 
+func cursorRunHeaders(accessToken string) map[string]string {
+	accessToken = normalizeCursorAccessToken(accessToken)
 	requestID := uuid.New().String()
-	traceID := strings.ReplaceAll(uuid.New().String(), "-", "")
-	spanID := strings.ReplaceAll(uuid.New().String(), "-", "")[:16]
-	traceparent := fmt.Sprintf("00-%s-%s-01", traceID, spanID)
-
-	// Header set mirrors cursor-agent CLI traffic (connect-es stack), verified
-	// against the reverse-engineered OmniRoute / 9router clients.
-	headers := map[string]string{
+	// Match senpi's fixed Connect headers. Do not advertise compression or add
+	// tracing headers that the decoder/transport does not otherwise implement.
+	return map[string]string{
 		":path":                    cursorRunPath,
 		"content-type":             "application/connect+proto",
-		"connect-accept-encoding":  "gzip",
 		"connect-protocol-version": "1",
 		"te":                       "trailers",
-		"user-agent":               "connect-es/1.6.1",
 		"authorization":            "Bearer " + accessToken,
 		"x-ghost-mode":             "true",
 		"x-cursor-client-version":  cursorClientVersion,
 		"x-cursor-client-type":     "cli",
 		"x-request-id":             requestID,
-		"x-original-request-id":    requestID,
-		"traceparent":              traceparent,
-		"backend-traceparent":      traceparent,
 	}
-	return cursorproto.DialH2Stream(cursorAgentHost, headers)
+}
+
+func normalizeCursorAccessToken(accessToken string) string {
+	if i := strings.Index(accessToken, "::"); i >= 0 {
+		return accessToken[i+2:]
+	}
+	return accessToken
 }
 
 func cursorH2Heartbeat(ctx context.Context, stream *cursorproto.H2Stream) {
@@ -1317,15 +1318,19 @@ func parseDataURL(url string) *cursorproto.ImageData {
 
 func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string) *cursorproto.RunRequestParams {
 	params := &cursorproto.RunRequestParams{
-		ModelId:         parsed.Model,
-		ReasoningEffort: parsed.ReasoningEffort,
-		SystemPrompt:    parsed.SystemPrompt,
-		UserText:        parsed.UserText,
-		MessageId:       uuid.New().String(),
-		ConversationId:  conversationId,
-		Images:          parsed.Images,
-		Turns:           parsed.Turns,
-		BlobStore:       make(map[string][]byte),
+		ModelId:            parsed.Model,
+		ReasoningEffort:    parsed.ReasoningEffort,
+		DisplayModelId:     parsed.Model,
+		DisplayName:        parsed.Model,
+		SystemPrompt:       parsed.SystemPrompt,
+		UserText:           parsed.UserText,
+		MessageId:          uuid.New().String(),
+		ConversationId:     conversationId,
+		Resume:             parsed.UserText == "" && len(parsed.Images) == 0,
+		Images:             parsed.Images,
+		Turns:              parsed.Turns,
+		RootPromptMessages: buildCursorRootPromptMessages(parsed.Messages),
+		BlobStore:          make(map[string][]byte),
 	}
 
 	// Convert OpenAI tools to McpToolDefs
@@ -1339,6 +1344,31 @@ func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string) *
 	}
 
 	return params
+}
+
+func buildCursorRootPromptMessages(messages []gjson.Result) [][]byte {
+	activeUserIndex := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Get("role").String() == "user" {
+			activeUserIndex = i
+			break
+		}
+	}
+	if activeUserIndex < 0 {
+		activeUserIndex = len(messages)
+	}
+
+	var roots [][]byte
+	for i := 0; i < activeUserIndex; i++ {
+		message := messages[i]
+		switch message.Get("role").String() {
+		case "user", "assistant", "tool":
+			if raw := strings.TrimSpace(message.Raw); raw != "" {
+				roots = append(roots, []byte(raw))
+			}
+		}
+	}
+	return roots
 }
 
 // --- Helpers ---
@@ -1410,25 +1440,15 @@ func extractClaudeCodeSessionId(payload []byte) string {
 
 // deriveConversationId generates a deterministic conversation_id.
 // Priority: session_id (stable across resume) > system prompt hash (fallback).
-func deriveConversationId(apiKey, sessionId, systemPrompt string) string {
-	var input string
-	if sessionId != "" {
-		// Best: use Claude Code's session_id — stable even across resume
-		input = "cursor-conv:" + apiKey + ":" + sessionId
-	} else {
-		// Fallback: use system prompt content minus volatile cch
-		stable := systemPrompt
-		if idx := strings.Index(stable, "cch="); idx >= 0 {
-			end := strings.IndexAny(stable[idx:], "; \n")
-			if end > 0 {
-				stable = stable[:idx] + stable[idx+end:]
-			}
-		}
-		if len(stable) > 500 {
-			stable = stable[:500]
-		}
-		input = "cursor-conv:" + apiKey + ":" + stable
+func deriveConversationId(apiKey, sessionId, _ string) string {
+	if sessionId == "" {
+		return uuid.New().String()
 	}
+
+	// Keep a stable UUID-shaped identity for Claude Code sessions while
+	// avoiding collisions between unrelated OpenAI clients that share a proxy
+	// API key and default system prompt.
+	input := "cursor-conv:" + apiKey + ":" + sessionId
 	h := sha256.Sum256([]byte(input))
 	s := hex.EncodeToString(h[:16])
 	return fmt.Sprintf("%s-%s-%s-%s-%s", s[:8], s[8:12], s[12:16], s[16:20], s[20:32])
@@ -1512,6 +1532,7 @@ func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	if accessToken == "" {
 		return FilterCursorModels(GetCursorFallbackModels())
 	}
+	accessToken = normalizeCursorAccessToken(accessToken)
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

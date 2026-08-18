@@ -82,11 +82,6 @@ func ResolveRequestedModel(modelID, reasoningEffort string) (string, []ModelPara
 			return "default", []ModelParameter{{ID: "optimization", Value: level}}
 		}
 	}
-	if strings.HasPrefix(normalized, "composer-") && strings.HasSuffix(normalized, "-fast") {
-		return strings.TrimSuffix(normalized, "-fast"),
-			[]ModelParameter{{ID: "fast", Value: "true"}}
-	}
-
 	base, existing, fast := parseCursorRequestedModel(normalized)
 	effort := resolveCursorEffort(base, existing, reasoningEffort, fast)
 	return composeCursorWireModel(base, effort, fast)
@@ -182,7 +177,7 @@ func composeCursorWireModel(base, effort string, fast bool) (string, []ModelPara
 		return base, params
 	}
 	if fast && strings.HasPrefix(base, "composer-") {
-		return base, []ModelParameter{{ID: "fast", Value: "true"}}
+		return base + "-fast", nil
 	}
 	if effort != "" {
 		wire := base + "-" + effort

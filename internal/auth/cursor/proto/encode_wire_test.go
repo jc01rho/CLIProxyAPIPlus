@@ -2,6 +2,8 @@ package proto
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"testing"
 
@@ -73,64 +75,46 @@ func TestEncodeRunRequestWireShape(t *testing.T) {
 		t.Fatal("conversation_state (field 1) missing")
 	}
 
-	// field 2: action → user_message_action → user_message + request_context
+	// field 2: action → user_message_action → user_message
 	ca := parseFields(t, arr[2][0].data)
 	uma := parseFields(t, ca[1][0].data)
 	um := parseFields(t, uma[1][0].data)
 	if _, ok := um[2]; !ok || len(um[2][0].data) == 0 {
 		t.Fatal("UserMessage.message_id (field 2) missing/empty")
 	}
-	// opencodex parity: no selected_context envelope, no synthetic mode on
-	// text-only turns.
+	// senpi parity: no request_context on the user action itself.
+	if _, ok := uma[2]; ok {
+		t.Fatal("UserMessageAction.request_context must be absent")
+	}
+	// No selected_context envelope or synthetic mode on text-only turns.
 	if _, ok := um[3]; ok {
 		t.Fatal("UserMessage.selected_context (field 3) must be absent when no images")
 	}
 	if _, ok := um[4]; ok {
 		t.Fatal("UserMessage.mode (field 4) must be absent (proto3 default)")
 	}
-	// request_context (UserMessageAction field 2) must carry env.time_zone —
-	// cursor's agent server answers Connect not_found without it.
-	rc, ok := uma[2]
-	if !ok {
-		t.Fatal("UserMessageAction.request_context (field 2) missing")
-	}
-	rcF := parseFields(t, rc[0].data)
-	env, ok := rcF[4]
-	if !ok {
-		t.Fatal("RequestContext.env (field 4) missing")
-	}
-	envF := parseFields(t, env[0].data)
-	tz, ok := envF[10]
-	if !ok || len(tz[0].data) == 0 {
-		t.Fatal("RequestContextEnv.time_zone (field 10) missing/empty")
-	}
-
-	// field 3: model_details uses resolved id
+	// field 3: model_details uses the resolved id.
 	md := parseFields(t, arr[3][0].data)
 	if got := string(md[1][0].data); got != "composer-2.5" {
 		t.Fatalf("model_details.model_id = %q, want composer-2.5", got)
 	}
-
-	// field 4: mcp_tools envelope present (non-empty: 1 tool)
-	if _, ok := arr[4]; !ok {
-		t.Fatal("mcp_tools (field 4) envelope missing")
+	if _, ok := md[5]; ok {
+		t.Fatal("model_details.display_name_short must be absent")
 	}
-	mcp := parseFields(t, arr[4][0].data)
-	if len(mcp[1]) != 1 {
-		t.Fatalf("mcp_tools entry count = %d, want 1", len(mcp[1]))
+
+	// senpi does not advertise tools in AgentRunRequest.mcp_tools.
+	if _, ok := arr[4]; ok {
+		t.Fatal("mcp_tools (field 4) must be absent")
+	}
+
+	// senpi always includes requested_model, even when no parameters exist.
+	if _, ok := arr[9]; !ok {
+		t.Fatal("requested_model (field 9) missing")
 	}
 
 	// field 5: conversation_id present
 	if len(arr[5][0].data) == 0 {
 		t.Fatal("conversation_id (field 5) empty")
-	}
-
-	// field 9: requested_model must be absent for an unparameterized model --
-	// opencodex (cursor-agent CLI reference) only sends requested_model when
-	// explicit model parameters exist; sending it alongside model_details for a
-	// plain model triggers a conflicting-selection "Connect not_found" upstream.
-	if _, ok := arr[9]; ok {
-		t.Fatalf("requested_model (field 9) must be absent for unparameterized model, got %v", arr[9])
 	}
 
 	// fields 12 and 16 do not exist in the real AgentRunRequest schema
@@ -150,20 +134,71 @@ func TestEncodeRunRequestOmitsEmptyEnvelopes(t *testing.T) {
 	acm := parseFields(t, buf)
 	arr := parseFields(t, acm[1][0].data)
 
-	// opencodex parity: no mcp_tools envelope at all when no tools are declared.
+	// senpi parity: no mcp_tools envelope at all, even when tools are absent.
 	if _, ok := arr[4]; ok {
 		t.Fatal("mcp_tools (field 4) must be omitted when no tools")
 	}
 
-	// request_context still present even on the minimal turn.
 	ca := parseFields(t, arr[2][0].data)
 	uma := parseFields(t, ca[1][0].data)
-	if _, ok := uma[2]; !ok {
-		t.Fatal("UserMessageAction.request_context (field 2) must always be present")
+	if _, ok := uma[2]; ok {
+		t.Fatal("UserMessageAction.request_context (field 2) must be omitted")
 	}
 	um := parseFields(t, uma[1][0].data)
 	if _, ok := um[3]; ok {
 		t.Fatal("selected_context (field 3) must be omitted when no images")
+	}
+}
+
+func TestEncodeRunRequestUsesBlobReferencesForConversationTurns(t *testing.T) {
+	p := &RunRequestParams{
+		ModelId:            "composer-2.5",
+		SystemPrompt:       "system",
+		UserText:           "current",
+		Turns:              []TurnData{{UserText: "prior user", AssistantText: "prior assistant"}},
+		RootPromptMessages: [][]byte{[]byte(`{"role":"user","content":"prior user"}`)},
+	}
+	buf := EncodeRunRequest(p)
+	arr := parseFields(t, parseFields(t, buf)[1][0].data)
+	css := parseFields(t, arr[1][0].data)
+	turns := css[8]
+	if len(turns) != 1 {
+		t.Fatalf("conversation_state.turns count = %d, want 1", len(turns))
+	}
+	turnID := turns[0].data
+	if len(turnID) != sha256.Size {
+		t.Fatalf("conversation turn reference length = %d, want %d", len(turnID), sha256.Size)
+	}
+	turnBytes, ok := p.BlobStore[hex.EncodeToString(turnID)]
+	if !ok {
+		t.Fatalf("conversation turn blob %x missing from BlobStore", turnID)
+	}
+	turn := parseFields(t, turnBytes)
+	agentTurn := parseFields(t, turn[1][0].data)
+	userID := agentTurn[1][0].data
+	if len(userID) != sha256.Size {
+		t.Fatalf("user message reference length = %d, want %d", len(userID), sha256.Size)
+	}
+	if _, ok := p.BlobStore[hex.EncodeToString(userID)]; !ok {
+		t.Fatalf("user message blob %x missing from BlobStore", userID)
+	}
+	stepID := agentTurn[2][0].data
+	if len(stepID) != sha256.Size {
+		t.Fatalf("conversation step reference length = %d, want %d", len(stepID), sha256.Size)
+	}
+	if _, ok := p.BlobStore[hex.EncodeToString(stepID)]; !ok {
+		t.Fatalf("conversation step blob %x missing from BlobStore", stepID)
+	}
+	rootIDs := css[1]
+	if len(rootIDs) != 2 {
+		t.Fatalf("root_prompt_messages_json count = %d, want system plus prior message", len(rootIDs))
+	}
+	rootMessageID := rootIDs[1].data
+	if len(rootMessageID) != sha256.Size {
+		t.Fatalf("root message reference length = %d, want %d", len(rootMessageID), sha256.Size)
+	}
+	if _, ok := p.BlobStore[hex.EncodeToString(rootMessageID)]; !ok {
+		t.Fatalf("root message blob %x missing from BlobStore", rootMessageID)
 	}
 }
 
@@ -198,8 +233,8 @@ func TestResolveRequestedModel(t *testing.T) {
 		{"composer-2.5", "composer-2.5", nil},
 		{"composer-2-5", "composer-2.5", nil},
 		{"composer-2.5-sdk", "composer-2.5", nil},
-		{"composer-2.5-fast", "composer-2.5", []ModelParameter{{ID: "fast", Value: "true"}}},
-		{"composer-2-5-fast", "composer-2.5", []ModelParameter{{ID: "fast", Value: "true"}}},
+		{"composer-2.5-fast", "composer-2.5-fast", nil},
+		{"composer-2-5-fast", "composer-2.5-fast", nil},
 		{"claude-sonnet-4.6-high", "claude-4.6-sonnet-medium", nil},
 		{"claude-4.6-opus", "claude-4.6-opus-max", nil},
 		{"claude-4.6-opus-high", "claude-4.6-opus-high", nil},
@@ -253,7 +288,7 @@ func TestResolveRequestedModelReasoningEffort(t *testing.T) {
 	}
 }
 
-func TestEncodeRunRequestOmitsModelDetailsWhenParameterized(t *testing.T) {
+func TestEncodeRunRequestIncludesBothModelSelectors(t *testing.T) {
 	plain := parseFields(t, EncodeRunRequest(&RunRequestParams{ModelId: "composer-2.5", UserText: "hi"}))
 	param := parseFields(t, EncodeRunRequest(&RunRequestParams{ModelId: "composer-2.5-fast", UserText: "hi"}))
 	plainARR := parseFields(t, plain[1][0].data)
@@ -261,10 +296,13 @@ func TestEncodeRunRequestOmitsModelDetailsWhenParameterized(t *testing.T) {
 	if _, ok := plainARR[3]; !ok {
 		t.Fatal("unparameterized request must include AgentRunRequest.model_details")
 	}
-	if _, ok := paramARR[3]; ok {
-		t.Fatal("parameterized request must omit AgentRunRequest.model_details")
+	if _, ok := plainARR[9]; !ok {
+		t.Fatal("unparameterized request must include AgentRunRequest.requested_model")
+	}
+	if _, ok := paramARR[3]; !ok {
+		t.Fatal("parameterized request must include AgentRunRequest.model_details")
 	}
 	if _, ok := paramARR[9]; !ok {
-		t.Fatal("parameterized request must still include requested_model")
+		t.Fatal("parameterized request must include AgentRunRequest.requested_model")
 	}
 }
