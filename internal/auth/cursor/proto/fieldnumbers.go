@@ -25,12 +25,13 @@ const (
 
 // AgentRunRequest (msg 91)
 const (
-	ARR_ConversationState = 1 // ConversationStateStructure
-	ARR_Action            = 2 // ConversationAction
-	ARR_ModelDetails      = 3 // ModelDetails
-	ARR_McpTools          = 4 // McpTools (send the envelope even when empty)
-	ARR_ConversationId    = 5 // string (optional)
-	ARR_RequestedModel    = 9 // RequestedModel -- only sent when explicit model parameters exist; mutually exclusive with ARR_ModelDetails
+	ARR_ConversationState  = 1 // ConversationStateStructure
+	ARR_Action             = 2 // ConversationAction
+	ARR_ModelDetails       = 3 // ModelDetails
+	ARR_McpTools           = 4 // McpTools
+	ARR_ConversationId     = 5 // string (optional)
+	ARR_RequestedModel     = 9 // RequestedModel
+	ARR_CustomSystemPrompt = 8 // string
 )
 
 // Fields 12 and 16 were previously written as reverse-engineered guesses
@@ -54,20 +55,21 @@ const (
 // ConversationAction (msg 54) oneof "action"
 const (
 	CA_UserMessageAction = 1 // UserMessageAction
+	CA_ResumeAction      = 2 // ResumeAction
 )
 
 // UserMessageAction (msg 55)
 const (
 	UMA_UserMessage    = 1 // UserMessage
-	UMA_RequestContext = 2 // RequestContext (env.time_zone — required by the server router)
+	UMA_RequestContext = 2 // RequestContext
 )
 
 // UserMessage (msg 63)
 const (
 	UM_Text            = 1 // string
 	UM_MessageId       = 2 // string
-	UM_SelectedContext = 3 // SelectedContext (send empty placeholder when absent)
-	UM_Mode            = 4 // varint, 1 in cursor-agent CLI traffic
+	UM_SelectedContext = 3 // SelectedContext
+	UM_Mode            = 4 // varint
 )
 
 // SelectedContext
@@ -93,8 +95,7 @@ const (
 	MD_DisplayNameShort = 5 // string
 )
 
-// RequestedModel (real schema: max_mode=2, parameters=3 — parameters at field 2
-// was silently dropped by the server, which parses it as max_mode)
+// RequestedModel (real schema: max_mode=2, parameters=3).
 const (
 	RM_ModelId    = 1 // string
 	RM_MaxMode    = 2 // bool (proto3 default false — never serialized)

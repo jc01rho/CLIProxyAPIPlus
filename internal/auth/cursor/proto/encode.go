@@ -8,8 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
-	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -23,17 +21,23 @@ import (
 
 // RunRequestParams holds all data needed to build an AgentRunRequest.
 type RunRequestParams struct {
-	ModelId         string
-	ReasoningEffort string
-	SystemPrompt    string
-	UserText        string
-	MessageId       string
-	ConversationId  string
-	Images          []ImageData
-	Turns           []TurnData
-	McpTools        []McpToolDef
-	BlobStore       map[string][]byte // hex(sha256) -> data, populated during encoding
-	RawCheckpoint   []byte            // if non-nil, use as conversation_state directly (from server checkpoint)
+	ModelId            string
+	ReasoningEffort    string
+	DisplayModelId     string
+	DisplayName        string
+	MaxMode            bool
+	SystemPrompt       string
+	UserText           string
+	MessageId          string
+	ConversationId     string
+	Resume             bool
+	CustomSystemPrompt string
+	Images             []ImageData
+	Turns              []TurnData
+	RootPromptMessages [][]byte
+	McpTools           []McpToolDef
+	BlobStore          map[string][]byte // hex(sha256) -> data, populated during encoding
+	RawCheckpoint      []byte            // if non-nil, use as conversation_state directly (from server checkpoint)
 }
 
 type ImageData struct {
@@ -130,20 +134,16 @@ func EncodeHeartbeat() []byte {
 
 // EncodeRunRequest builds a full AgentClientMessage wrapping an AgentRunRequest.
 //
-// Wire shape is byte-level aligned with opencodex's cursor adapter
-// (protobuf-request.ts, generated from the real agent.v1 schema):
-//   - UserMessageAction always carries request_context { env: { time_zone } }
-//     alongside the user_message — the server answers Connect not_found when
-//     the action has no request_context;
-//   - UserMessage carries only text + message_id on plain turns (no empty
-//     selected_context envelope, no synthetic mode field);
-//   - model_details and requested_model are mutually exclusive: model_details
-//     (model_id/display_model_id/display_name/display_name_short all set to
-//     the resolved id) is sent for unparameterized models, requested_model
-//     only when explicit model parameters exist;
-//   - mcp_tools is sent only when tools are declared (no empty envelope);
-//   - AgentRunRequest fields 12/16 do not exist in the real schema (msg 91
-//     defines only fields 1-9) and are never sent.
+// Wire shape mirrors senpi's cursor-agent.ts builder:
+//   - UserMessageAction contains only user_message; empty active turns use
+//     ResumeAction;
+//   - UserMessage carries text + message_id, with selected_context only for
+//     images;
+//   - model_details and requested_model are both sent;
+//   - conversation turns and their nested messages are content-addressed blobs;
+//   - top-level mcp_tools is omitted; tool definitions are exchanged through
+//     the server-driven request-context/exec path;
+//   - AgentRunRequest fields 12/16 do not exist in the real schema.
 //
 // If p.RawCheckpoint is set, it is used directly as the conversation_state
 // bytes (from a previous conversation_checkpoint_update), skipping manual
@@ -160,23 +160,28 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 		cssBytes = buildConversationStateBytes(p)
 	}
 
-	// ConversationAction → UserMessageAction → UserMessage.
-	// UserMessageAction also carries request_context { env: { time_zone } } —
-	// cursor's agent server expects the client environment on every action and
-	// answers Connect not_found when it is absent (byte-level parity with
-	// opencodex protobuf-request.ts).
-	umBytes := buildUserMessageBytes(p.UserText, p.MessageId, p.Images)
-	umaBytes := pwBytes(nil, UMA_UserMessage, umBytes)
-	umaBytes = pwBytes(umaBytes, UMA_RequestContext, buildRequestContextBytes())
-	caBytes := pwBytes(nil, CA_UserMessageAction, umaBytes)
-
-	// model_details XOR requested_model — see EncodeRunRequest doc comment.
-	resolvedID, rmParams := ResolveRequestedModel(p.ModelId, p.ReasoningEffort)
-	mdBytes := buildModelDetailsBytes(resolvedID)
-	var rmBytes []byte
-	if len(rmParams) > 0 {
-		rmBytes = buildRequestedModelBytes(resolvedID, rmParams)
+	// ConversationAction: senpi uses ResumeAction when there is no active
+	// user content, otherwise UserMessageAction.
+	var caBytes []byte
+	if p.Resume || (p.UserText == "" && len(p.Images) == 0) {
+		caBytes = pwBytes(nil, CA_ResumeAction, nil)
+	} else {
+		umBytes := buildUserMessageBytes(p.UserText, p.MessageId, p.Images)
+		umaBytes := pwBytes(nil, UMA_UserMessage, umBytes)
+		caBytes = pwBytes(nil, CA_UserMessageAction, umaBytes)
 	}
+
+	resolvedID, rmParams := ResolveRequestedModel(p.ModelId, p.ReasoningEffort)
+	displayModelID := p.DisplayModelId
+	if displayModelID == "" {
+		displayModelID = p.ModelId
+	}
+	displayName := p.DisplayName
+	if displayName == "" {
+		displayName = displayModelID
+	}
+	mdBytes := buildModelDetailsBytes(resolvedID, displayModelID, displayName)
+	rmBytes := buildRequestedModelBytes(resolvedID, p.MaxMode, rmParams)
 
 	conversationID := p.ConversationId
 	if conversationID == "" {
@@ -185,17 +190,11 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 
 	arrBuf := pwBytes(nil, ARR_ConversationState, cssBytes)
 	arrBuf = pwBytes(arrBuf, ARR_Action, caBytes)
-	if len(rmParams) == 0 {
-		arrBuf = pwBytes(arrBuf, ARR_ModelDetails, mdBytes)
-	}
-	// mcp_tools is sent only when tools are declared — opencodex omits the
-	// envelope entirely for tool-less turns.
-	if len(p.McpTools) > 0 {
-		arrBuf = pwBytes(arrBuf, ARR_McpTools, buildMcpToolsBytes(p.McpTools))
-	}
+	arrBuf = pwBytes(arrBuf, ARR_ModelDetails, mdBytes)
 	arrBuf = pwStr(arrBuf, ARR_ConversationId, conversationID)
-	if len(rmParams) > 0 {
-		arrBuf = pwBytes(arrBuf, ARR_RequestedModel, rmBytes)
+	arrBuf = pwBytes(arrBuf, ARR_RequestedModel, rmBytes)
+	if p.CustomSystemPrompt != "" {
+		arrBuf = pwStr(arrBuf, ARR_CustomSystemPrompt, p.CustomSystemPrompt)
 	}
 
 	acmBuf := pwBytes(nil, ACM_RunRequest, arrBuf)
@@ -233,56 +232,34 @@ func buildUserMessageBytes(text, messageID string, images []ImageData) []byte {
 	return buf
 }
 
-// buildRequestContextBytes encodes RequestContext { env: { time_zone } }.
-// opencodex attaches this to every UserMessageAction/ResumeAction; cursor's
-// agent server rejects (Connect not_found) action messages without it.
-func buildRequestContextBytes() []byte {
-	env := pwStr(nil, RCE_TimeZone, cursorTimeZone())
-	return pwBytes(nil, RC_Env, env)
-}
-
-// cursorTimeZone resolves the local IANA time zone name for the request
-// context. TZ env wins; otherwise the /etc/localtime symlink target; UTC as
-// last resort.
-func cursorTimeZone() string {
-	if tz := os.Getenv("TZ"); tz != "" {
-		return tz
-	}
-	if link, err := os.Readlink("/etc/localtime"); err == nil {
-		if i := strings.Index(link, "zoneinfo/"); i >= 0 {
-			return link[i+len("zoneinfo/"):]
-		}
-	}
-	return "UTC"
-}
-
 // buildConversationStateBytes encodes root prompt blob + conversation turns.
 func buildConversationStateBytes(p *RunRequestParams) []byte {
 	// --- Conversation turns ---
-	var turnBytes [][]byte
+	var turnBlobIDs [][]byte
 	for _, turn := range p.Turns {
-		umBytes := buildUserMessageBytes(turn.UserText, "", nil)
+		umBytes := buildUserMessageBytes(turn.UserText, generateId(), nil)
+		userBlobID := storeBlob(p.BlobStore, umBytes)
 
-		var stepBytes [][]byte
+		var stepBlobIDs [][]byte
 		if turn.AssistantText != "" {
 			am := newMsg("AssistantMessage")
 			setStr(am, "text", turn.AssistantText)
 			step := newMsg("ConversationStep")
 			setMsg(step, "assistant_message", am)
-			stepBytes = append(stepBytes, marshal(step))
+			stepBlobIDs = append(stepBlobIDs, storeBlob(p.BlobStore, marshal(step)))
 		}
 
 		agentTurn := newMsg("AgentConversationTurnStructure")
-		setBytes(agentTurn, "user_message", umBytes)
-		for _, sb := range stepBytes {
+		setBytes(agentTurn, "user_message", userBlobID)
+		for _, stepBlobID := range stepBlobIDs {
 			stepsField := field(agentTurn, "steps")
 			list := agentTurn.Mutable(stepsField).List()
-			list.Append(protoreflect.ValueOfBytes(sb))
+			list.Append(protoreflect.ValueOfBytes(stepBlobID))
 		}
 
 		cts := newMsg("ConversationTurnStructure")
 		setMsg(cts, "agent_conversation_turn", agentTurn)
-		turnBytes = append(turnBytes, marshal(cts))
+		turnBlobIDs = append(turnBlobIDs, storeBlob(p.BlobStore, marshal(cts)))
 	}
 
 	// --- System prompt blob ---
@@ -295,58 +272,36 @@ func buildConversationStateBytes(p *RunRequestParams) []byte {
 	rootField := field(css, "root_prompt_messages_json")
 	rootList := css.Mutable(rootField).List()
 	rootList.Append(protoreflect.ValueOfBytes(blobId))
+	for _, message := range p.RootPromptMessages {
+		if len(message) == 0 {
+			continue
+		}
+		rootList.Append(protoreflect.ValueOfBytes(storeBlob(p.BlobStore, message)))
+	}
 	turnsField := field(css, "turns")
 	turnsList := css.Mutable(turnsField).List()
-	for _, tb := range turnBytes {
-		turnsList.Append(protoreflect.ValueOfBytes(tb))
-	}
-	turnsOldField := field(css, "turns_old")
-	if turnsOldField != nil {
-		turnsOldList := css.Mutable(turnsOldField).List()
-		for _, tb := range turnBytes {
-			turnsOldList.Append(protoreflect.ValueOfBytes(tb))
-		}
+	for _, turnBlobID := range turnBlobIDs {
+		turnsList.Append(protoreflect.ValueOfBytes(turnBlobID))
 	}
 	return marshal(css)
 }
 
-// buildModelDetailsBytes encodes ModelDetails with the resolved wire model id.
-func buildModelDetailsBytes(modelID string) []byte {
+// buildModelDetailsBytes encodes the senpi ModelDetails shape.
+func buildModelDetailsBytes(modelID, displayModelID, displayName string) []byte {
 	md := newMsg("ModelDetails")
 	setStr(md, "model_id", modelID)
-	setStr(md, "display_model_id", modelID)
-	setStr(md, "display_name", modelID)
-	setStr(md, "display_name_short", modelID)
+	setStr(md, "display_model_id", displayModelID)
+	setStr(md, "display_name", displayName)
 	return marshal(md)
 }
 
-// buildMcpToolsBytes encodes the McpTools envelope. It is always present on
-// the wire — an empty message when no tools are declared — because cursor
-// errors when the envelope is omitted entirely.
-func buildMcpToolsBytes(tools []McpToolDef) []byte {
-	mcpTools := newMsg("McpTools")
-	if len(tools) > 0 {
-		toolsField := field(mcpTools, "mcp_tools")
-		toolsList := mcpTools.Mutable(toolsField).List()
-		for _, tool := range tools {
-			td := newMsg("McpToolDefinition")
-			setStr(td, "name", tool.Name)
-			setStr(td, "description", tool.Description)
-			if len(tool.InputSchema) > 0 {
-				setBytes(td, "input_schema", jsonToProtobufValueBytes(tool.InputSchema))
-			}
-			setStr(td, "provider_identifier", "proxy")
-			setStr(td, "tool_name", tool.Name)
-			toolsList.Append(protoreflect.ValueOfMessage(td.ProtoReflect()))
-		}
-	}
-	return marshal(mcpTools)
-}
-
 // buildRequestedModelBytes encodes a RequestedModel message.
-func buildRequestedModelBytes(modelID string, params []ModelParameter) []byte {
+func buildRequestedModelBytes(modelID string, maxMode bool, params []ModelParameter) []byte {
 	var buf []byte
 	buf = pwStr(buf, RM_ModelId, modelID)
+	if maxMode {
+		buf = pwVarint(buf, RM_MaxMode, 1)
+	}
 	for _, p := range params {
 		var mp []byte
 		mp = pwStr(mp, MP_Id, p.ID)
@@ -366,30 +321,8 @@ type ResumeRequestParams struct {
 // EncodeResumeRequest builds an AgentClientMessage with ResumeAction.
 // Used to resume a conversation by conversation_id without re-sending full history.
 func EncodeResumeRequest(p *ResumeRequestParams) []byte {
-	// RequestContext with env.time_zone (required by the server router) and tools
-	rc := newMsg("RequestContext")
-	rcEnv := newMsg("RequestContextEnv")
-	setStr(rcEnv, "time_zone", cursorTimeZone())
-	setMsg(rc, "env", rcEnv)
-	if len(p.McpTools) > 0 {
-		toolsField := field(rc, "tools")
-		toolsList := rc.Mutable(toolsField).List()
-		for _, tool := range p.McpTools {
-			td := newMsg("McpToolDefinition")
-			setStr(td, "name", tool.Name)
-			setStr(td, "description", tool.Description)
-			if len(tool.InputSchema) > 0 {
-				setBytes(td, "input_schema", jsonToProtobufValueBytes(tool.InputSchema))
-			}
-			setStr(td, "provider_identifier", "proxy")
-			setStr(td, "tool_name", tool.Name)
-			toolsList.Append(protoreflect.ValueOfMessage(td.ProtoReflect()))
-		}
-	}
-
 	// ResumeAction
 	ra := newMsg("ResumeAction")
-	setMsg(ra, "request_context", rc)
 
 	// ConversationAction with resume_action
 	ca := newMsg("ConversationAction")
@@ -399,33 +332,14 @@ func EncodeResumeRequest(p *ResumeRequestParams) []byte {
 	resolvedID, _ := ResolveRequestedModel(p.ModelId, "")
 	md := newMsg("ModelDetails")
 	setStr(md, "model_id", resolvedID)
-	setStr(md, "display_model_id", resolvedID)
-	setStr(md, "display_name", resolvedID)
+	setStr(md, "display_model_id", p.ModelId)
+	setStr(md, "display_name", p.ModelId)
 
 	// AgentRunRequest — no conversation_state needed for resume
 	arr := newMsg("AgentRunRequest")
 	setMsg(arr, "action", ca)
 	setMsg(arr, "model_details", md)
 	setStr(arr, "conversation_id", p.ConversationId)
-
-	// McpTools at top level
-	if len(p.McpTools) > 0 {
-		mcpTools := newMsg("McpTools")
-		toolsField := field(mcpTools, "mcp_tools")
-		toolsList := mcpTools.Mutable(toolsField).List()
-		for _, tool := range p.McpTools {
-			td := newMsg("McpToolDefinition")
-			setStr(td, "name", tool.Name)
-			setStr(td, "description", tool.Description)
-			if len(tool.InputSchema) > 0 {
-				setBytes(td, "input_schema", jsonToProtobufValueBytes(tool.InputSchema))
-			}
-			setStr(td, "provider_identifier", "proxy")
-			setStr(td, "tool_name", tool.Name)
-			toolsList.Append(protoreflect.ValueOfMessage(td.ProtoReflect()))
-		}
-		setMsg(arr, "mcp_tools", mcpTools)
-	}
 
 	acm := newMsg("AgentClientMessage")
 	setMsg(acm, "run_request", arr)
@@ -685,6 +599,12 @@ func ProtobufValueBytesToJSON(data []byte) (interface{}, error) {
 func sha256Sum(data []byte) []byte {
 	h := sha256.Sum256(data)
 	return h[:]
+}
+
+func storeBlob(blobStore map[string][]byte, data []byte) []byte {
+	blobID := sha256Sum(data)
+	blobStore[hex.EncodeToString(blobID)] = append([]byte(nil), data...)
+	return append([]byte(nil), blobID...)
 }
 
 var idCounter uint64

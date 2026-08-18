@@ -30,18 +30,51 @@ func TestClassifyCursorErrorMapsWrappedUnauthenticatedText(t *testing.T) {
 	}
 }
 
-func TestCursorAgentHostIsRegionalNotAPI2(t *testing.T) {
-	if cursorAgentHost != "agentn.global.api5.cursor.sh" {
-		t.Fatalf("cursorAgentHost = %q, want agentn.global.api5.cursor.sh", cursorAgentHost)
+func TestCursorAgentHostMatchesSenpi(t *testing.T) {
+	if cursorAgentHost != "api2.cursor.sh" {
+		t.Fatalf("cursorAgentHost = %q, want api2.cursor.sh", cursorAgentHost)
 	}
-	if !strings.HasPrefix(cursorAgentURL, "https://agentn.global.api5.cursor.sh") {
-		t.Fatalf("cursorAgentURL = %q, want https://agentn.global.api5.cursor.sh", cursorAgentURL)
+	if !strings.HasPrefix(cursorAgentURL, "https://api2.cursor.sh") {
+		t.Fatalf("cursorAgentURL = %q, want https://api2.cursor.sh", cursorAgentURL)
 	}
-	if strings.Contains(cursorAgentURL, "api2.cursor.sh") {
-		t.Fatal("agent RPCs must not target api2.cursor.sh")
+	if !strings.HasPrefix(cursorClientVersion, "cli-2026.07.") {
+		t.Fatalf("cursorClientVersion = %q, want the senpi July 2026 pin", cursorClientVersion)
 	}
-	if !strings.HasPrefix(cursorClientVersion, "cli-2026.05.") && !strings.HasPrefix(cursorClientVersion, "cli-2026.08.") {
-		t.Fatalf("cursorClientVersion = %q, want a May 2026+ CLI pin", cursorClientVersion)
+}
+
+func TestCursorRunHeadersMatchSenpi(t *testing.T) {
+	headers := cursorRunHeaders("access::token")
+	if got := headers["authorization"]; got != "Bearer token" {
+		t.Fatalf("authorization = %q, want Bearer token", got)
+	}
+	for _, name := range []string{
+		"connect-accept-encoding",
+		"user-agent",
+		"x-original-request-id",
+		"traceparent",
+		"backend-traceparent",
+	} {
+		if _, ok := headers[name]; ok {
+			t.Fatalf("senpi-incompatible header %q was sent", name)
+		}
+	}
+	if headers["content-type"] != "application/connect+proto" ||
+		headers["connect-protocol-version"] != "1" ||
+		headers["te"] != "trailers" ||
+		headers["x-ghost-mode"] != "true" ||
+		headers["x-cursor-client-type"] != "cli" {
+		t.Fatalf("protocol headers = %#v", headers)
+	}
+}
+
+func TestDeriveConversationIDUsesFreshIDsWithoutSession(t *testing.T) {
+	first := deriveConversationId("client-key", "", "same prompt")
+	second := deriveConversationId("client-key", "", "same prompt")
+	if first == second {
+		t.Fatalf("conversation IDs collided without a session identity: %q", first)
+	}
+	if got := deriveConversationId("client-key", "session-1", "same prompt"); got != deriveConversationId("client-key", "session-1", "same prompt") {
+		t.Fatalf("conversation ID for the same session was not stable: %q", got)
 	}
 }
 
