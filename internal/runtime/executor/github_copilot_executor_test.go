@@ -442,8 +442,8 @@ func TestApplyHeaders_GitHubAPIVersion(t *testing.T) {
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
 	e.applyHeaders(req, "token", nil)
-	if got := req.Header.Get("X-Github-Api-Version"); got != "2025-04-01" {
-		t.Fatalf("X-Github-Api-Version = %q, want 2025-04-01", got)
+	if got := req.Header.Get("X-Github-Api-Version"); got != "2026-06-01" {
+		t.Fatalf("X-Github-Api-Version = %q, want 2026-06-01", got)
 	}
 }
 
@@ -999,5 +999,37 @@ func TestCopilotModelEntry_Limits(t *testing.T) {
 				t.Errorf("MaxContextWindowTokens = %d, want %d", limits.MaxContextWindowTokens, tt.wantContext)
 			}
 		})
+	}
+}
+
+func TestCopilotEnterpriseDomainFromAuth(t *testing.T) {
+	t.Parallel()
+
+	if got := copilotEnterpriseDomainFromAuth(nil); got != "" {
+		t.Fatalf("nil auth domain = %q, want empty", got)
+	}
+
+	// Storage wins when populated.
+	storageAuth := &cliproxyauth.Auth{
+		Storage:  &copilotauth.CopilotTokenStorage{EnterpriseDomain: "company.ghe.com"},
+		Metadata: map[string]any{"enterprise_domain": "other.ghe.com"},
+	}
+	if got := copilotEnterpriseDomainFromAuth(storageAuth); got != "company.ghe.com" {
+		t.Fatalf("storage-backed domain = %q, want company.ghe.com", got)
+	}
+
+	// Metadata fallback covers reload-from-disk records.
+	metaAuth := &cliproxyauth.Auth{Metadata: map[string]any{"enterprise_domain": "meta.ghe.com"}}
+	if got := copilotEnterpriseDomainFromAuth(metaAuth); got != "meta.ghe.com" {
+		t.Fatalf("metadata-backed domain = %q, want meta.ghe.com", got)
+	}
+
+	// Default github.com credentials carry no domain.
+	plainAuth := &cliproxyauth.Auth{
+		Storage:  &copilotauth.CopilotTokenStorage{Username: "octocat"},
+		Metadata: map[string]any{"access_token": "gho_x"},
+	}
+	if got := copilotEnterpriseDomainFromAuth(plainAuth); got != "" {
+		t.Fatalf("plain auth domain = %q, want empty", got)
 	}
 }

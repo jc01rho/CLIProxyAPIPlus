@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -22,10 +23,21 @@ func DoGitHubCopilotLogin(cfg *config.Config, options *LoginOptions) {
 	}
 
 	manager := newAuthManager()
+
+	promptFn := options.Prompt
+	if promptFn == nil {
+		promptFn = func(prompt string) (string, error) {
+			fmt.Print(prompt)
+			var value string
+			fmt.Scanln(&value)
+			return strings.TrimSpace(value), nil
+		}
+	}
+
 	authOpts := &sdkAuth.LoginOptions{
 		NoBrowser: options.NoBrowser,
 		Metadata:  map[string]string{},
-		Prompt:    options.Prompt,
+		Prompt:    promptFn,
 	}
 
 	record, savedPath, err := manager.Login(context.Background(), "github-copilot", cfg, authOpts)

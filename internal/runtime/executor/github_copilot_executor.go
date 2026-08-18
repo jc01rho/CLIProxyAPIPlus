@@ -43,7 +43,7 @@ const (
 	copilotPluginVersion = "copilot-chat/0.35.0"
 	copilotIntegrationID = "vscode-chat"
 	copilotOpenAIIntent  = "conversation-edits"
-	copilotGitHubAPIVer  = "2025-04-01"
+	copilotGitHubAPIVer  = "2026-06-01"
 )
 
 // GitHubCopilotExecutor handles requests to the GitHub Copilot API.
@@ -480,7 +480,7 @@ func (e *GitHubCopilotExecutor) Refresh(ctx context.Context, auth *cliproxyauth.
 	}
 
 	// Validate the token can still get a Copilot API token
-	copilotAuth := copilotauth.NewCopilotAuth(e.cfg)
+	copilotAuth := copilotauth.NewCopilotAuthWithDomain(e.cfg, copilotEnterpriseDomainFromAuth(auth))
 	_, err := copilotAuth.GetCopilotAPIToken(ctx, accessToken)
 	if err != nil {
 		return nil, statusErr{code: http.StatusUnauthorized, msg: fmt.Sprintf("github-copilot token validation failed: %v", err)}
@@ -574,17 +574,16 @@ func (e *GitHubCopilotExecutor) ensureAPIToken(ctx context.Context, auth *clipro
 	e.mu.RUnlock()
 
 	// Get a new Copilot API token
-	copilotAuth := copilotauth.NewCopilotAuth(e.cfg)
+	domain := copilotEnterpriseDomainFromAuth(auth)
+	copilotAuth := copilotauth.NewCopilotAuthWithDomain(e.cfg, domain)
 	apiToken, err := copilotAuth.GetCopilotAPIToken(ctx, accessToken)
 	if err != nil {
 		return "", "", statusErr{code: http.StatusUnauthorized, msg: fmt.Sprintf("failed to get copilot api token: %v", err)}
 	}
 
-	// Use endpoint from token response, fall back to default
-	apiEndpoint := githubCopilotBaseURL
-	if apiToken.Endpoints.API != "" {
-		apiEndpoint = strings.TrimRight(apiToken.Endpoints.API, "/")
-	}
+	// Use the trusted endpoint from the token response, falling back to the
+	// domain default (copilot-api.{enterprise} for GitHub Enterprise).
+	apiEndpoint := strings.TrimRight(copilotAuth.ResolveAPIBaseURL(apiToken), "/")
 
 	// Cache the token with thread-safe access
 	expiresAt := time.Now().Add(githubCopilotTokenCacheTTL)
@@ -1677,9 +1676,15 @@ func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg 
 		return registry.GetGitHubCopilotModels()
 	}
 
-	copilotAuth := copilotauth.NewCopilotAuth(cfg)
+	domain := copilotEnterpriseDomainFromAuth(auth)
+	copilotAuth := copilotauth.NewCopilotAuthWithDomain(cfg, domain)
 
-	entries, err := copilotAuth.ListModelsWithGitHubToken(ctx, accessToken)
+	apiToken, err := copilotAuth.GetCopilotAPIToken(ctx, accessToken)
+	if err != nil {
+		log.Warnf("github-copilot: failed to get api token for models: %v, using static models", err)
+		return registry.GetGitHubCopilotModels()
+	}
+	entries, err := copilotAuth.ListModels(ctx, apiToken)
 	if err != nil {
 		log.Warnf("github-copilot: failed to fetch dynamic models: %v, using static models", err)
 		return registry.GetGitHubCopilotModels()
@@ -1688,6 +1693,16 @@ func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg 
 	if len(entries) == 0 {
 		log.Debug("github-copilot: API returned no models, using static models")
 		return registry.GetGitHubCopilotModels()
+	}
+
+	// Apply senpi's availability rules: drop tool-call-less models, prefer
+	// model-picker-enabled models, and fall back to policy-enabled models on
+	// individual accounts.
+	allowPolicyFallback := strings.Contains(copilotAuth.ResolveAPIBaseURL(apiToken), "api.individual.githubcopilot.com")
+	if filtered := copilotauth.FilterAvailableCopilotModels(entries, allowPolicyFallback); len(filtered) > 0 {
+		entries = filtered
+	} else {
+		log.Debug("github-copilot: availability filter removed all models, keeping unfiltered list")
 	}
 
 	// Build a lookup from the static definitions so we can enrich dynamic entries
@@ -1767,4 +1782,18 @@ func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg 
 
 	log.Debugf("github-copilot: fetched %d models from API", len(models))
 	return models
+}
+
+// copilotEnterpriseDomainFromAuth reads the GitHub Enterprise domain recorded
+// on the credential ("" for github.com).
+func copilotEnterpriseDomainFromAuth(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if storage, ok := auth.Storage.(*copilotauth.CopilotTokenStorage); ok && storage != nil {
+		if d := strings.TrimSpace(storage.EnterpriseDomain); d != "" {
+			return d
+		}
+	}
+	return strings.TrimSpace(metaStringValue(auth.Metadata, "enterprise_domain"))
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
+	copilotauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/copilot"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
@@ -907,7 +908,7 @@ func (h *Handler) GetCopilotQuota(c *gin.Context) {
 		return
 	}
 
-	apiURL := "https://api.github.com/copilot_internal/user"
+	apiURL := fmt.Sprintf("https://api.%s/copilot_internal/user", resolveCopilotDomain(auth))
 	req, errNewRequest := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, apiURL, nil)
 	if errNewRequest != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build request"})
@@ -991,6 +992,28 @@ func (h *Handler) findCopilotAuth(authIndex string) *coreauth.Auth {
 	}
 
 	return firstCopilot
+}
+
+// resolveCopilotDomain returns the GitHub host for a Copilot credential,
+// defaulting to github.com. Enterprise credentials store their own domain.
+func resolveCopilotDomain(auth *coreauth.Auth) string {
+	if auth != nil {
+		if storage, ok := auth.Storage.(*copilotauth.CopilotTokenStorage); ok && storage != nil {
+			if d := strings.TrimSpace(storage.EnterpriseDomain); d != "" {
+				return d
+			}
+		}
+		if auth.Metadata != nil {
+			if raw, exists := auth.Metadata["enterprise_domain"]; exists {
+				if d, ok := raw.(string); ok {
+					if d = strings.TrimSpace(d); d != "" {
+						return d
+					}
+				}
+			}
+		}
+	}
+	return "github.com"
 }
 
 // enrichCopilotTokenResponse fetches quota information and adds it to the Copilot token response body

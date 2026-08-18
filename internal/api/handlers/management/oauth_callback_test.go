@@ -13,8 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
-func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
-
+func TestPostOAuthCallbackPersistsAntigravityGoogleRedirect(t *testing.T) {
 	authDir := filepath.Join(t.TempDir(), "missing-auth")
 	state := "test-antigravity-state"
 	RegisterOAuthSession(state, "antigravity")
@@ -24,7 +23,7 @@ func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
 	router := gin.New()
 	router.POST("/v0/management/oauth-callback", h.PostOAuthCallback)
 
-	body := `{"provider":"antigravity","redirect_url":"http://localhost:59788/oauth-callback?state=test-antigravity-state&code=test-code"}`
+	body := `{"provider":"antigravity","redirect_url":"http://localhost:51121/oauth-callback?state=test-antigravity-state&code=4%2F0A-test-code&iss=https%3A%2F%2Faccounts.google.com&scope=openid%20email%20profile&authuser=3&prompt=consent"}`
 	req := httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -45,7 +44,7 @@ func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
 	if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
 		t.Fatalf("failed to decode callback payload: %v", errUnmarshal)
 	}
-	if payload.State != state || payload.Code != "test-code" || payload.Error != "" {
+	if payload.State != state || payload.Code != "4/0A-test-code" || payload.Error != "" {
 		t.Fatalf("unexpected callback payload: %+v", payload)
 	}
 }

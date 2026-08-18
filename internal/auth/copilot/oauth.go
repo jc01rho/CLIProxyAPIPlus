@@ -35,10 +35,19 @@ const (
 type DeviceFlowClient struct {
 	httpClient *http.Client
 	cfg        *config.Config
+	// domain is the GitHub domain for the flow; empty means github.com.
+	// GitHub Enterprise logins set this to the enterprise host.
+	domain string
 }
 
 // NewDeviceFlowClient creates a new device flow client.
 func NewDeviceFlowClient(cfg *config.Config) *DeviceFlowClient {
+	return NewDeviceFlowClientForDomain(cfg, "")
+}
+
+// NewDeviceFlowClientForDomain creates a device flow client bound to a
+// specific GitHub domain (empty means github.com).
+func NewDeviceFlowClientForDomain(cfg *config.Config, domain string) *DeviceFlowClient {
 	client := &http.Client{Timeout: 30 * time.Second}
 	if cfg != nil {
 		client = util.SetProxy(&cfg.SDKConfig, client)
@@ -46,17 +55,19 @@ func NewDeviceFlowClient(cfg *config.Config) *DeviceFlowClient {
 	return &DeviceFlowClient{
 		httpClient: client,
 		cfg:        cfg,
+		domain:     strings.TrimSpace(domain),
 	}
 }
 
-// deviceCodeEndpoint returns the device code endpoint, checking for config override.
+// deviceCodeEndpoint returns the device code endpoint, checking for config
+// override first, then the bound GitHub domain (enterprise support).
 func (c *DeviceFlowClient) deviceCodeEndpoint() string {
 	if c.cfg != nil {
 		if ep := c.cfg.GetOAuthEndpointOverride("github-copilot").DeviceAuthorizeURL; ep != "" {
 			return ep
 		}
 	}
-	return copilotDeviceCodeURL
+	return DeviceCodeURLForDomain(c.domain)
 }
 
 // tokenEndpoint returns the token endpoint, checking for config override.
@@ -73,17 +84,18 @@ func (c *DeviceFlowClient) tokenEndpoint(forRefresh ...bool) string {
 			return override.TokenURL
 		}
 	}
-	return copilotTokenURL
+	return AccessTokenURLForDomain(c.domain)
 }
 
-// userinfoEndpoint returns the userinfo endpoint, checking for config override.
+// userinfoEndpoint returns the userinfo endpoint, checking for config
+// override first, then the bound GitHub domain (enterprise support).
 func (c *DeviceFlowClient) userinfoEndpoint() string {
 	if c.cfg != nil {
 		if ep := c.cfg.GetOAuthEndpointOverride("github-copilot").UserinfoURL; ep != "" {
 			return ep
 		}
 	}
-	return copilotUserInfoURL
+	return UserInfoURLForDomain(c.domain)
 }
 
 // RequestDeviceCode initiates the device flow by requesting a device code from GitHub.
@@ -98,6 +110,7 @@ func (c *DeviceFlowClient) RequestDeviceCode(ctx context.Context) (*DeviceCodeRe
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", copilotUserAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -192,6 +205,7 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", copilotUserAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

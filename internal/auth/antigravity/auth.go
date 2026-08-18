@@ -238,12 +238,15 @@ func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redir
 		}
 	}()
 
+	bodyBytes, errRead := readAntigravityOAuthResponseBody(resp)
+	if errRead != nil {
+		return nil, fmt.Errorf("antigravity token exchange: read response: %w", errRead)
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, errRead := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		if errRead != nil {
-			return nil, fmt.Errorf("antigravity token exchange: read response: %w", errRead)
-		}
 		body := strings.TrimSpace(string(bodyBytes))
+		if len(body) > 8<<10 {
+			body = body[:8<<10]
+		}
 		if body == "" {
 			return nil, fmt.Errorf("antigravity token exchange: request failed: status %d", resp.StatusCode)
 		}
@@ -251,7 +254,7 @@ func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redir
 	}
 
 	var token TokenResponse
-	if errDecode := json.NewDecoder(resp.Body).Decode(&token); errDecode != nil {
+	if errDecode := json.Unmarshal(bodyBytes, &token); errDecode != nil {
 		return nil, fmt.Errorf("antigravity token exchange: decode response: %w", errDecode)
 	}
 	return &token, nil

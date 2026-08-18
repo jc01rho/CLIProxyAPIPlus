@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/copilot"
@@ -40,7 +41,12 @@ func (a GitHubCopilotAuthenticator) Login(ctx context.Context, cfg *config.Confi
 		opts = &LoginOptions{}
 	}
 
-	authSvc := copilot.NewCopilotAuth(cfg)
+	enterpriseDomain, errDomain := resolveCopilotEnterpriseDomain(opts)
+	if errDomain != nil {
+		return nil, fmt.Errorf("github-copilot: %w", errDomain)
+	}
+
+	authSvc := copilot.NewCopilotAuthWithDomain(cfg, enterpriseDomain)
 
 	// Start the device flow
 	fmt.Println("Starting GitHub Copilot authentication...")
@@ -79,8 +85,20 @@ func (a GitHubCopilotAuthenticator) Login(ctx context.Context, cfg *config.Confi
 		return nil, fmt.Errorf("github-copilot: failed to verify Copilot access - you may not have an active Copilot subscription: %w", err)
 	}
 
+	// Enable model policies so premium models (Claude, Grok, ...) are usable
+	// without a manual policy acceptance step. Best effort: failures only
+	// limit the affected models. Mirrors senpi's enableAllGitHubCopilotModels.
+	fmt.Println("Enabling Copilot models...")
+	if entries, errModels := authSvc.ListModels(ctx, apiToken); errModels != nil {
+		log.Warnf("github-copilot: model policy enablement skipped: %v", errModels)
+	} else {
+		enabled := authSvc.EnableAllModelsForEntries(ctx, apiToken, entries)
+		log.Debugf("github-copilot: enabled model policies for %d/%d models", enabled, len(entries))
+	}
+
 	// Create the token storage
 	tokenStorage := authSvc.CreateTokenStorage(authBundle)
+	tokenStorage.EnterpriseDomain = enterpriseDomain
 
 	// Build metadata with token information for the executor
 	metadata := map[string]any{
@@ -96,6 +114,9 @@ func (a GitHubCopilotAuthenticator) Login(ctx context.Context, cfg *config.Confi
 
 	if apiToken.ExpiresAt > 0 {
 		metadata["api_token_expires_at"] = apiToken.ExpiresAt
+	}
+	if enterpriseDomain != "" {
+		metadata["enterprise_domain"] = enterpriseDomain
 	}
 
 	fileName := fmt.Sprintf("github-copilot-%s.json", authBundle.Username)
@@ -124,7 +145,7 @@ func RefreshGitHubCopilotToken(ctx context.Context, cfg *config.Config, storage 
 		return fmt.Errorf("no token available")
 	}
 
-	authSvc := copilot.NewCopilotAuth(cfg)
+	authSvc := copilot.NewCopilotAuthWithDomain(cfg, storage.EnterpriseDomain)
 
 	// Validate the token can still get a Copilot API token
 	_, err := authSvc.GetCopilotAPIToken(ctx, storage.AccessToken)
@@ -133,4 +154,31 @@ func RefreshGitHubCopilotToken(ctx context.Context, cfg *config.Config, storage 
 	}
 
 	return nil
+}
+
+// resolveCopilotEnterpriseDomain determines the GitHub Enterprise domain for a
+// login. An explicit opts.Metadata["enterprise_domain"] wins; otherwise the
+// interactive prompt (when available) asks for it, blank meaning github.com.
+func resolveCopilotEnterpriseDomain(opts *LoginOptions) (string, error) {
+	if opts != nil && opts.Metadata != nil {
+		if explicit := strings.TrimSpace(opts.Metadata["enterprise_domain"]); explicit != "" {
+			domain, err := copilot.NormalizeEnterpriseDomain(explicit)
+			if err != nil || domain == "" {
+				return "", fmt.Errorf("invalid GitHub Enterprise URL/domain: %s", explicit)
+			}
+			return domain, nil
+		}
+	}
+	if opts == nil || opts.Prompt == nil {
+		return "", nil
+	}
+	input, err := opts.Prompt("GitHub Enterprise URL/domain (blank for github.com): ")
+	if err != nil {
+		return "", fmt.Errorf("enterprise domain prompt failed: %w", err)
+	}
+	domain, err := copilot.NormalizeEnterpriseDomain(input)
+	if err != nil {
+		return "", err
+	}
+	return domain, nil
 }
