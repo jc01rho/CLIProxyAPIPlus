@@ -361,6 +361,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	providers = m.filterProvidersForThreshold(routeModel, providers, opts)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
@@ -544,6 +545,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	providers = m.filterProvidersForThreshold(routeModel, providers, opts)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
@@ -736,6 +738,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	responseAlias := requestedModelAliasFromOptions(opts, routeModel)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	providers = m.filterProvidersForThreshold(routeModel, providers, opts)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
