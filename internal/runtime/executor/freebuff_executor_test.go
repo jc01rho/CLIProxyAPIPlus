@@ -143,7 +143,6 @@ func TestFreebuffSessionAdmissionRejectsInvalidPostState(t *testing.T) {
 		{name: "inactive", status: "none", model: "model-a"},
 		{name: "ended", status: "ended", model: "model-a"},
 		{name: "model locked", status: "model_locked", model: "model-a"},
-		{name: "wrong model", status: "active", model: "model-b"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -804,5 +803,173 @@ func TestFreebuffResolveModelKeepsExplicitConfigAgentID(t *testing.T) {
 	model, agentID := executor.resolveModel(auth, "freebuff")
 	if model != "custom-model" || agentID != "custom-agent" {
 		t.Fatalf("resolveModel() = %q, %q", model, agentID)
+	}
+}
+
+func TestFreebuffSessionAdmissionCoercesToAdmittedModel(t *testing.T) {
+	var startBodies []string
+	var chatModels []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/freebuff/session", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = io.WriteString(w, `{"status":"none"}`)
+		case http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "active", "model": "model-b", "instanceId": "coerced-instance",
+			})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+	mux.HandleFunc("/api/v1/agent-runs", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		startBodies = append(startBodies, string(body))
+		_ = json.NewEncoder(w).Encode(map[string]any{"runId": "run-coerced"})
+	})
+	mux.HandleFunc("/api/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		chatModels = append(chatModels, r.Header.Get("x-freebuff-model"))
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	executor := NewFreebuffExecutor(&config.Config{FreebuffKey: []config.FreebuffKey{
+		{APIKey: "token", BaseURL: server.URL, Models: []config.FreebuffModel{
+			{Name: "model-a", Alias: "alias-a", AgentID: "agent-a"},
+			{Name: "model-b", AgentID: "agent-b"},
+		}},
+	}})
+	auth := &cliproxyauth.Auth{ID: "freebuff-coerced", Attributes: map[string]string{
+		cliproxyauth.AttributeAPIKey: "token", "base_url": server.URL,
+	}}
+	state := executor.stateFor(auth)
+	session, run, payload, resp, err := executor.openChat(t.Context(), auth, state, "model-a", "agent-a", []byte(`{"model":"model-a","messages":[]}`))
+	if err != nil {
+		t.Fatalf("openChat() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if session.model != "model-b" || session.instanceID != "coerced-instance" {
+		t.Fatalf("session = %#v, want admitted model-b on coerced-instance", session)
+	}
+	if run == nil || run.id != "run-coerced" {
+		t.Fatalf("run = %#v, want run-coerced", run)
+	}
+	if len(startBodies) != 1 || !strings.Contains(startBodies[0], `"agentId":"agent-b"`) {
+		t.Fatalf("START bodies = %v, want agent-b for the admitted model", startBodies)
+	}
+	if len(chatModels) != 1 || chatModels[0] != "model-b" {
+		t.Fatalf("chat x-freebuff-model headers = %v, want model-b", chatModels)
+	}
+	body := string(payload)
+	if !strings.Contains(body, `"model":"model-b"`) || !strings.Contains(body, `"n":"agent-b"`) {
+		t.Fatalf("payload = %s, want coerced model and agent", body)
+	}
+}
+
+func TestFreebuffCoercedSessionReusedWithoutReadmission(t *testing.T) {
+	var methods []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/freebuff/session", func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		switch r.Method {
+		case http.MethodGet:
+			if r.Header.Get("x-freebuff-instance-id") == "" {
+				_, _ = io.WriteString(w, `{"status":"none"}`)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "active", "model": "model-b", "instanceId": "coerced-instance",
+			})
+		case http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "active", "model": "model-b", "instanceId": "coerced-instance",
+			})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	executor := NewFreebuffExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		cliproxyauth.AttributeAPIKey: "token", "base_url": server.URL,
+	}}
+	state := executor.stateFor(auth)
+	if _, err := executor.ensureSession(t.Context(), auth, state, "model-a"); err != nil {
+		t.Fatalf("ensureSession() first error = %v", err)
+	}
+	methods = nil
+	session, err := executor.ensureSession(t.Context(), auth, state, "model-a")
+	if err != nil {
+		t.Fatalf("ensureSession() second error = %v", err)
+	}
+	if session.model != "model-b" || session.instanceID != "coerced-instance" {
+		t.Fatalf("session = %#v, want coerced session reuse", session)
+	}
+	if got := strings.Join(methods, ","); got != "GET" {
+		t.Fatalf("second admission methods = %s, want a single GET without re-admission", got)
+	}
+}
+
+func TestFreebuffQueuedSessionActivationCoercesModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "active", "model": "model-b", "instanceId": "activated-instance",
+		})
+	}))
+	defer server.Close()
+
+	executor := NewFreebuffExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		cliproxyauth.AttributeAPIKey: "token", "base_url": server.URL,
+	}}
+	session, err := executor.waitForSession(t.Context(), auth, "model-a", "queued-instance")
+	if err != nil {
+		t.Fatalf("waitForSession() error = %v", err)
+	}
+	if session.model != "model-b" || session.instanceID != "activated-instance" {
+		t.Fatalf("session = %#v, want coerced activation", session)
+	}
+}
+
+func TestFreebuffSessionAdmissionRetriesAfterModelLocked(t *testing.T) {
+	var posts, deletes int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/freebuff/session", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = io.WriteString(w, `{"status":"none"}`)
+		case http.MethodPost:
+			posts++
+			if posts == 1 {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status": "model_locked", "model": "model-old", "instanceId": "locked-instance",
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "active", "model": "model-a", "instanceId": "fresh-instance",
+			})
+		default:
+			deletes++
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	executor := NewFreebuffExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		cliproxyauth.AttributeAPIKey: "token", "base_url": server.URL,
+	}}
+	state := executor.stateFor(auth)
+	session, err := executor.ensureSession(t.Context(), auth, state, "model-a")
+	if err != nil {
+		t.Fatalf("ensureSession() error = %v", err)
+	}
+	if session.instanceID != "fresh-instance" || posts != 2 || deletes != 1 {
+		t.Fatalf("session = %#v, posts = %d, deletes = %d", session, posts, deletes)
 	}
 }
