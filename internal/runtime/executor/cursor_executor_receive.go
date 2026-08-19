@@ -1,0 +1,694 @@
+package executor
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
+	log "github.com/sirupsen/logrus"
+)
+
+const cursorExecHeartbeatInterval = 3 * time.Second
+
+type cursorToolCallUpdateKind int
+
+const (
+	cursorToolCallStarted cursorToolCallUpdateKind = iota + 1
+	cursorToolCallArgumentsDelta
+	cursorToolCallCompleted
+)
+
+type cursorToolCallUpdate struct {
+	Kind           cursorToolCallUpdateKind
+	CallID         string
+	ToolCallID     string
+	ToolName       string
+	ArgumentsDelta string
+}
+
+type cursorExecRequest struct {
+	caseNum int
+	args    []byte
+}
+
+type cursorPendingMcp struct {
+	exec      pendingMcpExec
+	stopPulse func()
+}
+
+type cursorStreamedToolState struct {
+	callID     string
+	toolCallID string
+	toolName   string
+	args       string
+}
+
+// processH2SessionFrames mirrors Senpi's server-frame dispatcher. It keeps the
+// Connect stream active while MCP work is outstanding, but all other exec
+// variants are answered immediately with a typed result and stream_close.
+func processH2SessionFrames(
+	ctx context.Context,
+	stream *cursorproto.H2Stream,
+	blobStore map[string][]byte,
+	mcpTools []cursorproto.McpToolDef,
+	onText func(text string, isThinking bool),
+	onToolCall func(update cursorToolCallUpdate),
+	onMcpExec func(exec pendingMcpExec),
+	toolResultCh <-chan []toolResultInfo,
+	tokenUsage *cursorTokenUsage,
+	onCheckpoint func(data []byte),
+) error {
+	var buf bytes.Buffer
+	var pendingMcp *cursorPendingMcp
+	turnEnded := false
+	streamedTools := make(map[string]*cursorStreamedToolState)
+
+	stopPendingHeartbeat := func() {
+		if pendingMcp != nil && pendingMcp.stopPulse != nil {
+			pendingMcp.stopPulse()
+		}
+	}
+	defer stopPendingHeartbeat()
+
+	log.Debugf("cursor: processH2SessionFrames started for streamID=%s, waiting for data...", stream.ID())
+	for {
+		var resultsCh <-chan []toolResultInfo
+		if pendingMcp != nil {
+			resultsCh = toolResultCh
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case toolResults, ok := <-resultsCh:
+			if !ok {
+				return nil
+			}
+			matched := false
+			for _, tr := range toolResults {
+				if tr.ToolCallId != pendingMcp.exec.ToolCallId {
+					continue
+				}
+				matched = true
+				result := cursorproto.EncodeExecMcpResult(pendingMcp.exec.ExecMsgId, pendingMcp.exec.ExecId, tr.Content, false)
+				if err := cursorWriteClientMessage(stream, result); err != nil {
+					return err
+				}
+				break
+			}
+			if !matched {
+				result := cursorproto.EncodeExecMcpError(pendingMcp.exec.ExecMsgId, pendingMcp.exec.ExecId, "MCP tool result was not returned by the proxy client")
+				if err := cursorWriteClientMessage(stream, result); err != nil {
+					return err
+				}
+			}
+			stopPendingHeartbeat()
+			if err := cursorWriteClientMessage(stream, cursorproto.EncodeExecControlStreamClose(pendingMcp.exec.ExecMsgId)); err != nil {
+				return err
+			}
+			pendingMcp = nil
+			if turnEnded {
+				return nil
+			}
+
+		case data, ok := <-stream.Data():
+			if !ok {
+				return stream.Err()
+			}
+			buf.Write(data)
+
+			for {
+				flags, payload, consumed, complete := cursorproto.ParseConnectFrame(buf.Bytes())
+				if !complete {
+					break
+				}
+				buf.Next(consumed)
+
+				if flags&cursorproto.ConnectEndStreamFlag != 0 {
+					if err := cursorproto.ParseConnectEndStream(payload); err != nil {
+						return err
+					}
+					continue
+				}
+
+				msg, err := cursorproto.DecodeAgentServerMessage(payload)
+				if err != nil {
+					log.Debugf("cursor: failed to decode server message: %v", err)
+					continue
+				}
+
+				switch msg.Type {
+				case cursorproto.ServerMsgTextDelta:
+					if msg.Text != "" && onText != nil {
+						onText(msg.Text, false)
+					}
+				case cursorproto.ServerMsgThinkingDelta:
+					if msg.Text != "" && onText != nil {
+						onText(msg.Text, true)
+					}
+				case cursorproto.ServerMsgThinkingCompleted, cursorproto.ServerMsgHeartbeat:
+					// The OpenAI-compatible caller owns block presentation; no wire response is required.
+				case cursorproto.ServerMsgToolCallStarted, cursorproto.ServerMsgPartialToolCall,
+					cursorproto.ServerMsgToolCallDelta, cursorproto.ServerMsgToolCallCompleted:
+					handleCursorToolCallUpdate(payload, msg, streamedTools, onToolCall)
+				case cursorproto.ServerMsgTokenDelta:
+					if tokenUsage != nil {
+						tokenUsage.addOutput(msg.TokenDelta)
+					}
+				case cursorproto.ServerMsgCheckpoint:
+					if onCheckpoint != nil && len(msg.CheckpointData) > 0 {
+						onCheckpoint(msg.CheckpointData)
+					}
+				case cursorproto.ServerMsgKvGetBlob:
+					data := blobStore[cursorproto.BlobIdHex(msg.BlobId)]
+					if err := cursorWriteClientMessage(stream, cursorproto.EncodeKvGetBlobResult(msg.KvId, data)); err != nil {
+						return err
+					}
+				case cursorproto.ServerMsgKvSetBlob:
+					if blobStore != nil {
+						blobStore[cursorproto.BlobIdHex(msg.BlobId)] = append([]byte(nil), msg.BlobData...)
+					}
+					if err := cursorWriteClientMessage(stream, cursorproto.EncodeKvSetBlobResult(msg.KvId)); err != nil {
+						return err
+					}
+				case cursorproto.ServerMsgTurnEnded:
+					if pendingMcp == nil {
+						return nil
+					}
+					turnEnded = true
+				default:
+					req, ok := cursorExecRequestFromPayload(payload)
+					if !ok {
+						continue
+					}
+					if req.caseNum == cursorproto.ESM_McpArgs {
+						if pendingMcp != nil {
+							if err := cursorWriteClientMessage(stream, cursorproto.EncodeExecControlThrow(msg.ExecMsgId, "Concurrent MCP exec frames are not supported by this proxy", "exec_dispatch_failed")); err != nil {
+								return err
+							}
+							if err := cursorWriteClientMessage(stream, cursorproto.EncodeExecControlStreamClose(msg.ExecMsgId)); err != nil {
+								return err
+							}
+							continue
+						}
+						if onMcpExec == nil {
+							if err := cursorWriteClientMessage(stream, cursorproto.EncodeExecMcpError(msg.ExecMsgId, msg.ExecId, "MCP relay is unavailable for this request")); err != nil {
+								return err
+							}
+							if err := cursorWriteClientMessage(stream, cursorproto.EncodeExecControlStreamClose(msg.ExecMsgId)); err != nil {
+								return err
+							}
+							continue
+						}
+
+						toolCallID := msg.McpToolCallId
+						if toolCallID == "" {
+							toolCallID = uuid.New().String()
+						}
+						exec := pendingMcpExec{
+							ExecMsgId:  msg.ExecMsgId,
+							ExecId:     msg.ExecId,
+							ToolCallId: toolCallID,
+							ToolName:   msg.McpToolName,
+							Args:       decodeMcpArgsToJSON(msg.McpArgs),
+						}
+						onMcpExec(exec)
+						if toolResultCh == nil {
+							return nil
+						}
+						pendingMcp = &cursorPendingMcp{
+							exec:      exec,
+							stopPulse: startCursorExecHeartbeat(ctx, stream, msg.ExecMsgId),
+						}
+						continue
+					}
+
+					if err := dispatchCursorExec(ctx, stream, msg, req, mcpTools); err != nil {
+						return err
+					}
+				}
+			}
+
+		case <-stream.Done():
+			return stream.Err()
+		}
+	}
+}
+
+func handleCursorToolCallUpdate(
+	payload []byte,
+	msg *cursorproto.DecodedServerMessage,
+	states map[string]*cursorStreamedToolState,
+	emit func(cursorToolCallUpdate),
+) {
+	if emit == nil || msg.ToolCallCase != 15 { // MCP is the only downstream-executable streamed call in CPA.
+		return
+	}
+	key := msg.ToolCallId
+	if key == "" {
+		key = msg.CallId
+	}
+	state := states[key]
+	if state == nil && msg.CallId != "" {
+		state = states[msg.CallId]
+	}
+	if state != nil {
+		if msg.ToolCallId != "" {
+			state.toolCallID = msg.ToolCallId
+			states[msg.ToolCallId] = state
+		}
+		if msg.CallId != "" {
+			state.callID = msg.CallId
+			states[msg.CallId] = state
+		}
+		if state.toolName == "" {
+			state.toolName = cursorMcpToolNameFromServerPayload(payload, msg.Type)
+		}
+	}
+
+	ensureStarted := func() *cursorStreamedToolState {
+		if state != nil {
+			return state
+		}
+		state = &cursorStreamedToolState{
+			callID:     msg.CallId,
+			toolCallID: msg.ToolCallId,
+			toolName:   cursorMcpToolNameFromServerPayload(payload, msg.Type),
+		}
+		if key != "" {
+			states[key] = state
+		}
+		if msg.CallId != "" {
+			states[msg.CallId] = state
+		}
+		if msg.ToolCallId != "" {
+			states[msg.ToolCallId] = state
+		}
+		emit(cursorToolCallUpdate{
+			Kind:       cursorToolCallStarted,
+			CallID:     state.callID,
+			ToolCallID: state.toolCallID,
+			ToolName:   state.toolName,
+		})
+		return state
+	}
+
+	switch msg.Type {
+	case cursorproto.ServerMsgToolCallStarted:
+		ensureStarted()
+	case cursorproto.ServerMsgPartialToolCall:
+		state = ensureStarted()
+		snapshot := msg.ArgsTextDelta
+		chunk := snapshot
+		if strings.HasPrefix(snapshot, state.args) {
+			chunk = strings.TrimPrefix(snapshot, state.args)
+		}
+		if chunk == "" {
+			return
+		}
+		state.args += chunk
+		emit(cursorToolCallUpdate{
+			Kind:           cursorToolCallArgumentsDelta,
+			CallID:         state.callID,
+			ToolCallID:     state.toolCallID,
+			ArgumentsDelta: chunk,
+		})
+	case cursorproto.ServerMsgToolCallDelta:
+		// ToolCallDelta carries nested shell/task/edit interaction updates rather
+		// than argument JSON. It is intentionally consumed without fabricating an
+		// OpenAI function-argument fragment.
+		ensureStarted()
+	case cursorproto.ServerMsgToolCallCompleted:
+		state = ensureStarted()
+		emit(cursorToolCallUpdate{
+			Kind:       cursorToolCallCompleted,
+			CallID:     state.callID,
+			ToolCallID: state.toolCallID,
+			ToolName:   state.toolName,
+		})
+	}
+}
+
+func cursorMcpToolNameFromServerPayload(payload []byte, messageType cursorproto.ServerMessageType) string {
+	interaction, ok := cursorBytesField(payload, cursorproto.ASM_InteractionUpdate)
+	if !ok {
+		return ""
+	}
+	var updateField int
+	switch messageType {
+	case cursorproto.ServerMsgToolCallStarted:
+		updateField = cursorproto.IU_ToolCallStarted
+	case cursorproto.ServerMsgToolCallCompleted:
+		updateField = cursorproto.IU_ToolCallCompleted
+	case cursorproto.ServerMsgPartialToolCall:
+		updateField = cursorproto.IU_PartialToolCall
+	default:
+		return ""
+	}
+	update, ok := cursorBytesField(interaction, updateField)
+	if !ok {
+		return ""
+	}
+	toolCall, ok := cursorBytesField(update, cursorproto.TCU_ToolCall)
+	if !ok {
+		return ""
+	}
+	mcpTool, ok := cursorBytesField(toolCall, 15)
+	if !ok {
+		return ""
+	}
+	mcpArgs, ok := cursorBytesField(mcpTool, 1)
+	if !ok {
+		return ""
+	}
+	if name, ok := cursorStringField(mcpArgs, cursorproto.MCA_ToolName); ok && name != "" {
+		return name
+	}
+	name, _ := cursorStringField(mcpArgs, cursorproto.MCA_Name)
+	return name
+}
+
+func dispatchCursorExec(
+	ctx context.Context,
+	stream *cursorproto.H2Stream,
+	msg *cursorproto.DecodedServerMessage,
+	req cursorExecRequest,
+	mcpTools []cursorproto.McpToolDef,
+) error {
+	stopPulse := startCursorExecHeartbeat(ctx, stream, msg.ExecMsgId)
+	defer stopPulse()
+
+	const unavailable = "The proxy cannot execute local tools in its own environment. Use an advertised MCP tool instead."
+	const notImplemented = "This Cursor exec capability is not implemented by the proxy."
+
+	var response []byte
+	switch req.caseNum {
+	case cursorproto.ESM_ShellArgs, cursorproto.ESM_ShellStreamArgs:
+		response = cursorproto.EncodeExecShellRejected(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), cursorStringFieldOrEmpty(req.args, 2), unavailable)
+	case cursorproto.ESM_WriteArgs:
+		response = cursorproto.EncodeExecWriteRejected(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), unavailable)
+	case cursorproto.ESM_DeleteArgs:
+		response = cursorproto.EncodeExecDeleteRejected(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), unavailable)
+	case cursorproto.ESM_GrepArgs:
+		response = cursorproto.EncodeExecGrepError(msg.ExecMsgId, msg.ExecId, unavailable)
+	case cursorproto.ESM_ReadArgs:
+		response = cursorproto.EncodeExecReadRejected(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), unavailable)
+	case cursorproto.ESM_LsArgs:
+		response = cursorproto.EncodeExecLsRejected(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), unavailable)
+	case cursorproto.ESM_DiagnosticsArgs:
+		response = cursorEncodeExecDiagnosticsError(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), unavailable)
+	case cursorproto.ESM_RequestContextArgs:
+		response = cursorproto.EncodeExecRequestContextResult(msg.ExecMsgId, msg.ExecId, mcpTools)
+	case cursorproto.ESM_BackgroundShellSpawn:
+		response = cursorproto.EncodeExecBackgroundShellSpawnRejected(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), cursorStringFieldOrEmpty(req.args, 2), unavailable)
+	case cursorproto.ESM_ListMcpResourcesArgs:
+		response = cursorproto.EncodeExecListMcpResourcesEmptyResult(msg.ExecMsgId, msg.ExecId)
+	case cursorproto.ESM_ReadMcpResourceArgs:
+		response = cursorproto.EncodeExecReadMcpResourceNotFound(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 2))
+	case cursorproto.ESM_FetchArgs:
+		response = cursorproto.EncodeExecFetchError(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), notImplemented)
+	case cursorproto.ESM_RecordScreenArgs:
+		response = cursorproto.EncodeExecRecordScreenError(msg.ExecMsgId, msg.ExecId, notImplemented)
+	case cursorproto.ESM_ComputerUseArgs:
+		response = cursorproto.EncodeExecComputerUseError(msg.ExecMsgId, msg.ExecId, notImplemented)
+	case cursorproto.ESM_WriteShellStdinArgs:
+		response = cursorproto.EncodeExecWriteShellStdinError(msg.ExecMsgId, msg.ExecId, notImplemented)
+	case cursorproto.ESM_ExecuteHookArgs:
+		request, _ := cursorBytesField(req.args, cursorproto.EHA_Request)
+		hookCase := cursorFirstBytesFieldNumber(request)
+		if result, ok := cursorproto.EncodeExecHookNeutralResult(msg.ExecMsgId, msg.ExecId, hookCase); ok {
+			response = result
+		} else {
+			response = cursorproto.EncodeExecControlThrow(msg.ExecMsgId, "Unsupported Cursor hook request", "unknown_hook_request")
+		}
+	case cursorproto.ESM_SubagentArgs:
+		response = cursorproto.EncodeExecSubagentError(msg.ExecMsgId, msg.ExecId, "Subagents are not implemented by the proxy")
+	case cursorproto.ESM_RedactedReadArgs:
+		response = cursorproto.EncodeExecRedactedReadError(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), "Secret redaction is not implemented by the proxy")
+	case cursorproto.ESM_ForceBackgroundShellArgs:
+		response = cursorproto.EncodeExecForceBackgroundShellNotFound(msg.ExecMsgId, msg.ExecId)
+	case cursorproto.ESM_ForceBackgroundSubagentArgs:
+		response = cursorproto.EncodeExecForceBackgroundSubagentNotFound(msg.ExecMsgId, msg.ExecId)
+	case cursorproto.ESM_McpStateArgs:
+		response = cursorproto.EncodeExecMcpStateResult(msg.ExecMsgId, msg.ExecId, mcpTools)
+	case cursorproto.ESM_SubagentAwaitArgs:
+		response = cursorproto.EncodeExecSubagentAwaitNotFound(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1))
+	case cursorproto.ESM_SmartModeClassifierArgs:
+		response = cursorproto.EncodeExecSmartModeClassifierError(msg.ExecMsgId, msg.ExecId, "Smart-mode classification is not implemented by the proxy")
+	case cursorproto.ESM_CanvasDiagnosticsArgs:
+		response = cursorproto.EncodeExecCanvasDiagnosticsError(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), notImplemented)
+	case cursorproto.ESM_ShellAllowlistPrecheckArgs:
+		response = cursorproto.EncodeExecShellAllowlistPrecheckResult(msg.ExecMsgId, msg.ExecId, false)
+	case cursorproto.ESM_McpAllowlistPrecheckArgs:
+		response = cursorproto.EncodeExecMcpAllowlistPrecheckResult(msg.ExecMsgId, msg.ExecId, false)
+	case cursorproto.ESM_WebFetchAllowlistPrecheckArgs:
+		response = cursorproto.EncodeExecWebFetchAllowlistPrecheckResult(msg.ExecMsgId, msg.ExecId, false)
+	case cursorproto.ESM_GitDiffRequest:
+		response = cursorproto.EncodeExecControlThrow(msg.ExecMsgId, "Git diff is not implemented by the proxy", "exec_variant_unsupported")
+	case cursorproto.ESM_PiReadArgs:
+		response = cursorproto.EncodeExecPiReadError(msg.ExecMsgId, msg.ExecId, unavailable)
+	case cursorproto.ESM_PiBashArgs:
+		response = cursorproto.EncodeExecPiBashError(msg.ExecMsgId, msg.ExecId, unavailable)
+	case cursorproto.ESM_PiEditArgs:
+		response = cursorproto.EncodeExecPiEditError(msg.ExecMsgId, msg.ExecId, unavailable)
+	case cursorproto.ESM_PiWriteArgs:
+		response = cursorproto.EncodeExecPiWriteError(msg.ExecMsgId, msg.ExecId, unavailable)
+	case cursorproto.ESM_PiGrepArgs:
+		response = cursorproto.EncodeExecPiGrepError(msg.ExecMsgId, msg.ExecId, unavailable)
+	case cursorproto.ESM_PiFindArgs:
+		response = cursorproto.EncodeExecPiFindError(msg.ExecMsgId, msg.ExecId, unavailable)
+	case cursorproto.ESM_PiLsArgs:
+		response = cursorproto.EncodeExecPiLsError(msg.ExecMsgId, msg.ExecId, unavailable)
+	case cursorproto.ESM_MiniSweAgentBashArgs:
+		response = cursorproto.EncodeExecMiniSweAgentBashRejected(msg.ExecMsgId, msg.ExecId, cursorStringFieldOrEmpty(req.args, 1), cursorStringFieldOrEmpty(req.args, 2), unavailable)
+	case cursorproto.ESM_ConversationSearchArgs:
+		response = cursorproto.EncodeExecConversationSearchError(msg.ExecMsgId, msg.ExecId, "Conversation search is not implemented by the proxy")
+	case cursorproto.ESM_AgentStoreConflictArgs:
+		response = cursorproto.EncodeExecAgentStoreConflictError(msg.ExecMsgId, msg.ExecId, "Agent-store conflict handling is not implemented by the proxy")
+	default:
+		response = cursorproto.EncodeExecControlThrow(msg.ExecMsgId, fmt.Sprintf("No handler for Cursor exec message case %d", req.caseNum), "exec_variant_unsupported")
+	}
+
+	if err := cursorWriteClientMessage(stream, response); err != nil {
+		return err
+	}
+	return cursorWriteClientMessage(stream, cursorproto.EncodeExecControlStreamClose(msg.ExecMsgId))
+}
+
+func startCursorExecHeartbeat(ctx context.Context, stream *cursorproto.H2Stream, execMsgID uint32) func() {
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		timer := time.NewTimer(cursorExecHeartbeatInterval)
+		defer timer.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-timer.C:
+				if err := cursorWriteClientMessage(stream, cursorproto.EncodeExecControlHeartbeat(execMsgID)); err != nil {
+					return
+				}
+				// Schedule only after the synchronous H2 write above has succeeded.
+				timer.Reset(cursorExecHeartbeatInterval)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+func cursorWriteClientMessage(stream *cursorproto.H2Stream, payload []byte) error {
+	if err := stream.Write(cursorproto.FrameConnectMessage(payload, 0)); err != nil {
+		return fmt.Errorf("cursor: failed to write server-frame response: %w", err)
+	}
+	return nil
+}
+
+func cursorExecRequestFromPayload(payload []byte) (cursorExecRequest, bool) {
+	execMessage, ok := cursorBytesField(payload, cursorproto.ASM_ExecServerMessage)
+	if !ok {
+		return cursorExecRequest{}, false
+	}
+	for len(execMessage) > 0 {
+		num, typ, tagLen := consumeTag(execMessage)
+		if tagLen < 0 {
+			return cursorExecRequest{}, false
+		}
+		execMessage = execMessage[tagLen:]
+		if typ == 2 {
+			value, valueLen := consumeBytes(execMessage)
+			if valueLen < 0 {
+				return cursorExecRequest{}, false
+			}
+			execMessage = execMessage[valueLen:]
+			if num != cursorproto.ESM_ExecId && num != 19 {
+				return cursorExecRequest{caseNum: num, args: append([]byte(nil), value...)}, true
+			}
+			continue
+		}
+		valueLen := consumeFieldValue(num, typ, execMessage)
+		if valueLen < 0 {
+			return cursorExecRequest{}, false
+		}
+		execMessage = execMessage[valueLen:]
+	}
+	return cursorExecRequest{}, false
+}
+
+func cursorBytesField(data []byte, target int) ([]byte, bool) {
+	for len(data) > 0 {
+		num, typ, tagLen := consumeTag(data)
+		if tagLen < 0 {
+			return nil, false
+		}
+		data = data[tagLen:]
+		if typ == 2 {
+			value, valueLen := consumeBytes(data)
+			if valueLen < 0 {
+				return nil, false
+			}
+			if num == target {
+				return value, true
+			}
+			data = data[valueLen:]
+			continue
+		}
+		valueLen := consumeFieldValue(num, typ, data)
+		if valueLen < 0 {
+			return nil, false
+		}
+		data = data[valueLen:]
+	}
+	return nil, false
+}
+
+func cursorStringField(data []byte, target int) (string, bool) {
+	value, ok := cursorBytesField(data, target)
+	return string(value), ok
+}
+
+func cursorStringFieldOrEmpty(data []byte, target int) string {
+	value, _ := cursorStringField(data, target)
+	return value
+}
+
+func cursorFirstBytesFieldNumber(data []byte) int {
+	for len(data) > 0 {
+		num, typ, tagLen := consumeTag(data)
+		if tagLen < 0 {
+			return 0
+		}
+		data = data[tagLen:]
+		valueLen := consumeFieldValue(num, typ, data)
+		if valueLen < 0 {
+			return 0
+		}
+		if typ == 2 {
+			return num
+		}
+		data = data[valueLen:]
+	}
+	return 0
+}
+
+// The proto package intentionally exposes no diagnostics-error encoder. Keep
+// the missing modern result helper local to the executor as requested.
+func cursorEncodeExecDiagnosticsError(execMsgID uint32, execID, path, reason string) []byte {
+	var diagnosticsError []byte
+	diagnosticsError = cursorAppendString(diagnosticsError, 1, path)
+	diagnosticsError = cursorAppendString(diagnosticsError, 2, reason)
+	diagnosticsResult := cursorAppendBytes(nil, 2, diagnosticsError)
+
+	var execClient []byte
+	execClient = cursorAppendVarintField(execClient, cursorproto.ECM_Id, uint64(execMsgID))
+	execClient = cursorAppendString(execClient, cursorproto.ECM_ExecId, execID)
+	execClient = cursorAppendBytes(execClient, cursorproto.ECM_DiagnosticsResult, diagnosticsResult)
+	return cursorAppendBytes(nil, cursorproto.ACM_ExecClientMessage, execClient)
+}
+
+func cursorAppendVarint(dst []byte, value uint64) []byte {
+	for value >= 0x80 {
+		dst = append(dst, byte(value)|0x80)
+		value >>= 7
+	}
+	return append(dst, byte(value))
+}
+
+func cursorAppendTag(dst []byte, fieldNumber, wireType int) []byte {
+	return cursorAppendVarint(dst, uint64(fieldNumber<<3|wireType))
+}
+
+func cursorAppendVarintField(dst []byte, fieldNumber int, value uint64) []byte {
+	dst = cursorAppendTag(dst, fieldNumber, 0)
+	return cursorAppendVarint(dst, value)
+}
+
+func cursorAppendBytes(dst []byte, fieldNumber int, value []byte) []byte {
+	dst = cursorAppendTag(dst, fieldNumber, 2)
+	dst = cursorAppendVarint(dst, uint64(len(value)))
+	return append(dst, value...)
+}
+
+func cursorAppendString(dst []byte, fieldNumber int, value string) []byte {
+	return cursorAppendBytes(dst, fieldNumber, []byte(value))
+}
+
+func isCursorResourceExhausted(err error) bool {
+	if err == nil {
+		return false
+	}
+	var connectErr *cursorproto.ConnectError
+	if errors.As(err, &connectErr) {
+		return connectErr.Code == "resource_exhausted"
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "resource_exhausted") || strings.Contains(message, "resource exhausted")
+}
+
+func (e *CursorExecutor) effectiveCursorConversation(baseConversationID string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if rotated := e.rotations[baseConversationID]; rotated != "" {
+		return rotated
+	}
+	return baseConversationID
+}
+
+// rotateCursorConversation records the one allowed rotation and migrates the
+// cached checkpoint plus any retained MCP session to the replacement key. The
+// active Run reuses its existing blob-store map directly.
+func (e *CursorExecutor) rotateCursorConversation(baseConversationID, currentConversationID, authID string) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.rotations[baseConversationID] != "" {
+		return "", false
+	}
+
+	rotated := uuid.New().String()
+	e.rotations[baseConversationID] = rotated
+	if checkpoint := e.checkpoints[currentConversationID]; checkpoint != nil {
+		e.checkpoints[rotated] = checkpoint
+		delete(e.checkpoints, currentConversationID)
+	}
+
+	oldSuffix := ":" + currentConversationID
+	for key, session := range e.sessions {
+		if !strings.HasSuffix(key, oldSuffix) || (authID != "" && session.authID != authID) {
+			continue
+		}
+		prefix := strings.TrimSuffix(key, oldSuffix)
+		e.sessions[prefix+":"+rotated] = session
+		delete(e.sessions, key)
+	}
+	return rotated, true
+}

@@ -180,7 +180,7 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
 	if displayName == "" {
 		displayName = displayModelID
 	}
-	mdBytes := buildModelDetailsBytes(resolvedID, displayModelID, displayName)
+	mdBytes := buildModelDetailsBytes(resolvedID, displayModelID, displayName, p.MaxMode)
 	rmBytes := buildRequestedModelBytes(resolvedID, p.MaxMode, rmParams)
 
 	conversationID := p.ConversationId
@@ -217,19 +217,29 @@ func buildUserMessageBytes(text, messageID string, images []ImageData) []byte {
 	buf = pwStr(buf, UM_MessageId, messageID)
 
 	if len(images) > 0 {
-		sc := newMsg("SelectedContext")
-		imgsField := field(sc, "selected_images")
-		imgsList := sc.Mutable(imgsField).List()
-		for _, img := range images {
-			si := newMsg("SelectedImage")
-			setStr(si, "uuid", generateId())
-			setStr(si, "mime_type", img.MimeType)
-			setBytes(si, "data", img.Data)
-			imgsList.Append(protoreflect.ValueOfMessage(si.ProtoReflect()))
-		}
-		buf = pwBytes(buf, UM_SelectedContext, marshal(sc))
+		buf = pwBytes(buf, UM_SelectedContext, EncodeSelectedContext(images))
 	}
 	return buf
+}
+
+// EncodeSelectedImage encodes one SelectedImage (uuid=2, mime_type=7, data=8),
+// mirroring senpi's cursor-agent.ts image conversion.
+func EncodeSelectedImage(uuid, mimeType string, data []byte) []byte {
+	var si []byte
+	si = pwStr(si, SI_Uuid, uuid)
+	si = pwStr(si, SI_MimeType, mimeType)
+	si = pwBytes(si, SI_Data, data)
+	return si
+}
+
+// EncodeSelectedContext encodes a SelectedContext carrying the given images,
+// one selected_images entry per image.
+func EncodeSelectedContext(images []ImageData) []byte {
+	var sc []byte
+	for _, img := range images {
+		sc = pwBytes(sc, SC_SelectedImages, EncodeSelectedImage(generateId(), img.MimeType, img.Data))
+	}
+	return sc
 }
 
 // buildConversationStateBytes encodes root prompt blob + conversation turns.
@@ -286,12 +296,16 @@ func buildConversationStateBytes(p *RunRequestParams) []byte {
 	return marshal(css)
 }
 
-// buildModelDetailsBytes encodes the senpi ModelDetails shape.
-func buildModelDetailsBytes(modelID, displayModelID, displayName string) []byte {
+// buildModelDetailsBytes encodes the senpi ModelDetails shape. max_mode
+// (field 7) is only written when true, matching senpi's conditional set.
+func buildModelDetailsBytes(modelID, displayModelID, displayName string, maxMode bool) []byte {
 	md := newMsg("ModelDetails")
 	setStr(md, "model_id", modelID)
 	setStr(md, "display_model_id", displayModelID)
 	setStr(md, "display_name", displayName)
+	if maxMode {
+		setBool(md, "max_mode", true)
+	}
 	return marshal(md)
 }
 
@@ -529,6 +543,326 @@ func EncodeExecWriteShellStdinError(execMsgId uint32, execId string, errMsg stri
 	result := newMsg("WriteShellStdinResult")
 	setMsg(result, "error", wsErr)
 	return encodeExecClientMsg(execMsgId, execId, "write_shell_stdin_result", result)
+}
+
+// --- Raw exec response encoders (protowire only) ---
+//
+// The embedded FileDescriptorProto in descriptor.go predates the modern exec
+// result message types (ListMcpResourcesExecResult, Pi*ExecResult, etc.), so
+// these encoders build the wire bytes directly with the pw* helpers instead
+// of going through dynamicpb. Each function returns the full
+// AgentClientMessage wrapping one ExecClientMessage case, mirroring senpi's
+// sendExecClientMessage() default answers.
+
+// encodeExecClientMsgRaw is the protowire-only equivalent of
+// encodeExecClientMsg for result types the embedded descriptor does not know.
+func encodeExecClientMsgRaw(id uint32, execId string, caseNum protowire.Number, resultBytes []byte) []byte {
+	var ecm []byte
+	ecm = pwVarint(ecm, ECM_Id, uint64(id))
+	ecm = pwStr(ecm, ECM_ExecId, execId)
+	ecm = pwBytes(ecm, caseNum, resultBytes)
+	return pwBytes(nil, ACM_ExecClientMessage, ecm)
+}
+
+// EncodeExecListMcpResourcesEmptyResult answers listMcpResourcesExecArgs (17)
+// with an explicit empty success: this client hosts no MCP resources.
+func EncodeExecListMcpResourcesEmptyResult(execMsgId uint32, execId string) []byte {
+	result := pwBytes(nil, LMR_Success, nil) // empty ListMcpResourcesSuccess
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_ListMcpResourcesResult, result)
+}
+
+// EncodeExecReadMcpResourceNotFound answers readMcpResourceExecArgs (18) with
+// the dedicated not-found variant.
+func EncodeExecReadMcpResourceNotFound(execMsgId uint32, execId, uri string) []byte {
+	var nf []byte
+	nf = pwStr(nf, RMNF_Uri, uri)
+	result := pwBytes(nil, RMR_NotFound, nf)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_ReadMcpResourceResult, result)
+}
+
+// EncodeExecRecordScreenError answers recordScreenArgs (21) with a
+// RecordScreenFailure (the result message's error variant).
+func EncodeExecRecordScreenError(execMsgId uint32, execId, errMsg string) []byte {
+	var failure []byte
+	failure = pwStr(failure, RSF_Error, errMsg)
+	result := pwBytes(nil, RSCR_Failure, failure)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_RecordScreenResult, result)
+}
+
+// EncodeExecComputerUseError answers computerUseArgs (22) with a
+// ComputerUseError.
+func EncodeExecComputerUseError(execMsgId uint32, execId, errMsg string) []byte {
+	var cerr []byte
+	cerr = pwStr(cerr, CUE_Error, errMsg)
+	result := pwBytes(nil, CUR_Error, cerr)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_ComputerUseResult, result)
+}
+
+// EncodeExecRedactedReadError answers redactedReadArgs (29) with a ReadError:
+// no secret redaction is implemented, and serving a plain read would hand
+// back exactly the unredacted bytes the frame exists to withhold.
+func EncodeExecRedactedReadError(execMsgId uint32, execId, path, errMsg string) []byte {
+	var rerr []byte
+	rerr = pwStr(rerr, RER_Path, path)
+	rerr = pwStr(rerr, RER_Error, errMsg)
+	result := pwBytes(nil, RR_Error, rerr)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_RedactedReadResult, result)
+}
+
+// EncodeExecForceBackgroundShellNotFound answers forceBackgroundShellArgs
+// (30). Backgrounding targets a running tool call; this executor runs every
+// shell to completion in band, so there is never one to move.
+func EncodeExecForceBackgroundShellNotFound(execMsgId uint32, execId string) []byte {
+	result := pwVarint(nil, FBS_Status, FBS_STATUS_NotFound)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_ForceBackgroundShellResult, result)
+}
+
+// EncodeExecForceBackgroundSubagentNotFound answers
+// forceBackgroundSubagentArgs (31); no subagent is ever spawned.
+func EncodeExecForceBackgroundSubagentNotFound(execMsgId uint32, execId string) []byte {
+	result := pwVarint(nil, FBS_Status, FBS_STATUS_NotFound)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_ForceBackgroundSubagentResult, result)
+}
+
+// EncodeExecSubagentError answers subagentArgs (28) with a SubagentError.
+func EncodeExecSubagentError(execMsgId uint32, execId, errMsg string) []byte {
+	var serr []byte
+	serr = pwStr(serr, SAE_Error, errMsg)
+	result := pwBytes(nil, SAR_Error, serr)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_SubagentResult, result)
+}
+
+// EncodeExecSubagentAwaitNotFound answers subagentAwaitArgs (37): no subagent
+// was ever spawned, so every awaited id is genuinely unknown.
+func EncodeExecSubagentAwaitNotFound(execMsgId uint32, execId, agentId string) []byte {
+	var nf []byte
+	nf = pwStr(nf, SANF_AgentId, agentId)
+	result := pwBytes(nil, SAW_NotFound, nf)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_SubagentAwaitResult, result)
+}
+
+// EncodeExecMcpStateResult answers mcpStateExecArgs (36) with the advertised
+// tools regrouped under their synthetic provider identifier, mirroring senpi's
+// buildMcpStateResult().
+func EncodeExecMcpStateResult(execMsgId uint32, execId string, tools []McpToolDef) []byte {
+	// All tools are advertised under one synthetic provider ("proxy"), the same
+	// identifier EncodeExecRequestContextResult stamps on each definition.
+	var server []byte
+	server = pwStr(server, MSTS_ServerName, "proxy")
+	server = pwStr(server, MSTS_ServerIdentifier, "proxy")
+	for _, tool := range tools {
+		server = pwBytes(server, MSTS_Tools, encodeMcpToolDefinitionBytes(tool))
+	}
+	server = pwStr(server, MSTS_Status, "connected")
+	success := pwBytes(nil, MSS_Servers, server)
+	result := pwBytes(nil, MSR_Success, success)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_McpStateResult, result)
+}
+
+// encodeMcpToolDefinitionBytes encodes one McpToolDefinition with the same
+// field layout as the request-context encoder (raw protowire variant).
+func encodeMcpToolDefinitionBytes(tool McpToolDef) []byte {
+	var td []byte
+	td = pwStr(td, MTD_Name, tool.Name)
+	td = pwStr(td, MTD_Description, tool.Description)
+	if len(tool.InputSchema) > 0 {
+		td = pwBytes(td, MTD_InputSchema, jsonToProtobufValueBytes(tool.InputSchema))
+	}
+	td = pwStr(td, MTD_ProviderIdentifier, "proxy")
+	td = pwStr(td, MTD_ToolName, tool.Name)
+	return td
+}
+
+// EncodeExecHookNeutralResult answers executeHookArgs (27) with the neutral
+// response for the request's oneof case: the matching response case with
+// every field unset means "no hook had anything to say". Returns ok=false
+// for an unmodelled request case, which the caller should answer with
+// EncodeExecControlThrow instead (mirrors senpi's buildNeutralHookResult).
+func EncodeExecHookNeutralResult(execMsgId uint32, execId string, requestCase int) (msg []byte, ok bool) {
+	switch requestCase {
+	case EXH_PreCompact, EXH_SubagentStart, EXH_SubagentStop, EXH_PreToolUse,
+		EXH_PostToolUse, EXH_PostToolUseFailure, EXH_BeforeSubmitPrompt,
+		EXH_AfterAgentResponse, EXH_AfterAgentThought, EXH_Stop:
+	default:
+		return nil, false
+	}
+	response := pwBytes(nil, protowire.Number(requestCase), nil)
+	result := pwBytes(nil, EHR_Response, response)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_ExecuteHookResult, result), true
+}
+
+// EncodeExecSmartModeClassifierError answers smartModeClassifierArgs (38).
+// Answering ALLOW would silently wave through actions the server asked us to
+// judge, so the honest answer is that no classifier exists here.
+func EncodeExecSmartModeClassifierError(execMsgId uint32, execId, errMsg string) []byte {
+	var serr []byte
+	serr = pwStr(serr, SMCE_Error, errMsg)
+	result := pwBytes(nil, SMCR_Error, serr)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_SmartModeClassifierResult, result)
+}
+
+// EncodeExecCanvasDiagnosticsError answers canvasDiagnosticsArgs (40).
+func EncodeExecCanvasDiagnosticsError(execMsgId uint32, execId, path, errMsg string) []byte {
+	var cerr []byte
+	cerr = pwStr(cerr, CDE_Path, path)
+	cerr = pwStr(cerr, CDE_Error, errMsg)
+	result := pwBytes(nil, CDR_Error, cerr)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_CanvasDiagnosticsResult, result)
+}
+
+// EncodeExecShellAllowlistPrecheckResult answers shellAllowlistPrecheckArgs
+// (41). This client keeps no allowlist, so the honest default is false (a
+// false costs an approval round-trip; a true would grant one never
+// configured). allowlisted=false is the proto3 default, so the result
+// message is empty on the wire.
+func EncodeExecShellAllowlistPrecheckResult(execMsgId uint32, execId string, allowlisted bool) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_ShellAllowlistPrecheckResult, encodeAllowlistPrecheckResult(allowlisted))
+}
+
+// EncodeExecMcpAllowlistPrecheckResult answers mcpAllowlistPrecheckArgs (42).
+func EncodeExecMcpAllowlistPrecheckResult(execMsgId uint32, execId string, allowlisted bool) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_McpAllowlistPrecheckResult, encodeAllowlistPrecheckResult(allowlisted))
+}
+
+// EncodeExecWebFetchAllowlistPrecheckResult answers
+// webFetchAllowlistPrecheckArgs (43).
+func EncodeExecWebFetchAllowlistPrecheckResult(execMsgId uint32, execId string, allowlisted bool) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_WebFetchAllowlistPrecheckResult, encodeAllowlistPrecheckResult(allowlisted))
+}
+
+func encodeAllowlistPrecheckResult(allowlisted bool) []byte {
+	if !allowlisted {
+		return nil // proto3 default false: nothing is serialized
+	}
+	return pwVarint(nil, ALP_Allowlisted, 1)
+}
+
+// --- Pi exec result encoders (request cases 45-51 → result cases 46-52) ---
+
+func encodePiErrorResult(errMsg string) []byte {
+	var perr []byte
+	perr = pwStr(perr, PIE_Error, errMsg)
+	return pwBytes(nil, PI_Error, perr)
+}
+
+func encodePiRejectedResult(reason string) []byte {
+	var rej []byte
+	rej = pwStr(rej, PIR_Reason, reason)
+	return pwBytes(nil, PI_Rejected, rej)
+}
+
+// EncodeExecPiReadError answers piReadArgs (45) with a PiReadExecError.
+func EncodeExecPiReadError(execMsgId uint32, execId, errMsg string) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_PiReadResult, encodePiErrorResult(errMsg))
+}
+
+// EncodeExecPiBashError answers piBashArgs (46) with a PiBashExecError.
+func EncodeExecPiBashError(execMsgId uint32, execId, errMsg string) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_PiBashResult, encodePiErrorResult(errMsg))
+}
+
+// EncodeExecPiEditError answers piEditArgs (47) with a PiEditExecError.
+func EncodeExecPiEditError(execMsgId uint32, execId, errMsg string) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_PiEditResult, encodePiErrorResult(errMsg))
+}
+
+// EncodeExecPiEditRejected answers piEditArgs (47) with a PiEditExecRejected.
+func EncodeExecPiEditRejected(execMsgId uint32, execId, reason string) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_PiEditResult, encodePiRejectedResult(reason))
+}
+
+// EncodeExecPiWriteError answers piWriteArgs (48) with a PiWriteExecError.
+func EncodeExecPiWriteError(execMsgId uint32, execId, errMsg string) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_PiWriteResult, encodePiErrorResult(errMsg))
+}
+
+// EncodeExecPiWriteRejected answers piWriteArgs (48) with a
+// PiWriteExecRejected.
+func EncodeExecPiWriteRejected(execMsgId uint32, execId, reason string) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_PiWriteResult, encodePiRejectedResult(reason))
+}
+
+// EncodeExecPiGrepError answers piGrepArgs (49) with a PiGrepExecError.
+func EncodeExecPiGrepError(execMsgId uint32, execId, errMsg string) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_PiGrepResult, encodePiErrorResult(errMsg))
+}
+
+// EncodeExecPiFindError answers piFindArgs (50) with a PiFindExecError.
+func EncodeExecPiFindError(execMsgId uint32, execId, errMsg string) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_PiFindResult, encodePiErrorResult(errMsg))
+}
+
+// EncodeExecPiLsError answers piLsArgs (51) with a PiLsExecError.
+func EncodeExecPiLsError(execMsgId uint32, execId, errMsg string) []byte {
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_PiLsResult, encodePiErrorResult(errMsg))
+}
+
+// EncodeExecMiniSweAgentBashRejected answers miniSweAgentBashArgs (52) with a
+// ShellResult.rejected under the mini-SWE frame number (55) — the same
+// ShellArgs/ShellResult pair as shellArgs under its own case.
+func EncodeExecMiniSweAgentBashRejected(execMsgId uint32, execId, command, workDir, reason string) []byte {
+	var rej []byte
+	rej = pwStr(rej, SREJ_Command, command)
+	rej = pwStr(rej, SREJ_WorkingDir, workDir)
+	rej = pwStr(rej, SREJ_Reason, reason)
+	result := pwBytes(nil, SR_Rejected, rej)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_MiniSweAgentBashResult, result)
+}
+
+// EncodeExecConversationSearchError answers conversationSearchArgs (53):
+// Cursor conversation history lives server-side and this client keeps no
+// local index of it to search.
+func EncodeExecConversationSearchError(execMsgId uint32, execId, errMsg string) []byte {
+	var cerr []byte
+	cerr = pwStr(cerr, CSE_Error, errMsg)
+	result := pwBytes(nil, CSR_Error, cerr)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_ConversationSearchResult, result)
+}
+
+// EncodeExecAgentStoreConflictError answers agentStoreConflictArgs (54): the
+// agent store is Cursor's own on-disk journal, which this client never
+// writes.
+func EncodeExecAgentStoreConflictError(execMsgId uint32, execId, errMsg string) []byte {
+	var cerr []byte
+	cerr = pwStr(cerr, ASCE_Error, errMsg)
+	result := pwBytes(nil, ASCR_Error, cerr)
+	return encodeExecClientMsgRaw(execMsgId, execId, ECM_AgentStoreConflictResult, result)
+}
+
+// --- ExecClientControlMessage encoders ---
+//
+// Control messages travel in AgentClientMessage case 5
+// (exec_client_control_message), alongside but separate from typed results.
+
+// EncodeExecControlStreamClose wraps an ExecClientStreamClose, sent after
+// every exec answer (result or throw) to close out the frame's lifecycle.
+func EncodeExecControlStreamClose(id uint32) []byte {
+	inner := pwVarint(nil, ECSC_Id, uint64(id))
+	ctrl := pwBytes(nil, ECCM_StreamClose, inner)
+	return pwBytes(nil, ACM_ExecClientControlMsg, ctrl)
+}
+
+// EncodeExecControlThrow reports an exec frame that cannot be answered in
+// band (e.g. gitDiffRequest, which has no error variant, or an unsupported
+// hook request). The server surfaces the error to the model instead of
+// blocking on a reply that never comes.
+func EncodeExecControlThrow(id uint32, errMsg, errCode string) []byte {
+	var inner []byte
+	inner = pwVarint(inner, ECT_Id, uint64(id))
+	inner = pwStr(inner, ECT_Error, errMsg)
+	if errCode != "" {
+		inner = pwStr(inner, ECT_ErrorCode, errCode)
+	}
+	ctrl := pwBytes(nil, ECCM_Throw, inner)
+	return pwBytes(nil, ACM_ExecClientControlMsg, ctrl)
+}
+
+// EncodeExecControlHeartbeat wraps an ExecClientHeartbeat carrying the exec
+// frame's id — scheduled every few seconds while an exec frame is handled.
+func EncodeExecControlHeartbeat(id uint32) []byte {
+	inner := pwVarint(nil, ECHB_Id, uint64(id))
+	ctrl := pwBytes(nil, ECCM_Heartbeat, inner)
+	return pwBytes(nil, ACM_ExecClientControlMsg, ctrl)
 }
 
 // encodeExecClientMsg wraps an exec result in AgentClientMessage.

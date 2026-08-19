@@ -48,6 +48,7 @@ type CursorExecutor struct {
 	mu          sync.Mutex
 	sessions    map[string]*cursorSession
 	checkpoints map[string]*savedCheckpoint // keyed by conversationId
+	rotations   map[string]string           // base conversationId -> one rotated wire conversationId
 }
 
 // savedCheckpoint stores the server's conversation_checkpoint_update for reuse.
@@ -85,6 +86,7 @@ func NewCursorExecutor(cfg *config.Config) *CursorExecutor {
 		cfg:         cfg,
 		sessions:    make(map[string]*cursorSession),
 		checkpoints: make(map[string]*savedCheckpoint),
+		rotations:   make(map[string]string),
 	}
 	go e.cleanupLoop()
 	return e
@@ -302,39 +304,56 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		parsed.Model = req.Model
 	}
 	ccSessId := extractClaudeCodeSessionId(req.Payload)
-	conversationId := deriveConversationId(apiKeyFromContext(ctx), ccSessId, parsed.SystemPrompt)
+	baseConversationId := deriveConversationId(apiKeyFromContext(ctx), ccSessId, parsed.SystemPrompt)
+	conversationId := e.effectiveCursorConversation(baseConversationId)
 	params := buildRunRequestParams(parsed, conversationId)
 
-	requestBytes := cursorproto.EncodeRunRequest(params)
-	framedRequest := cursorproto.FrameConnectMessage(requestBytes, 0)
-
-	stream, err := openCursorH2Stream(accessToken)
-	if err != nil {
-		return resp, err
-	}
-	defer stream.Close()
-
-	// Send the request frame
-	if err := stream.Write(framedRequest); err != nil {
-		return resp, fmt.Errorf("cursor: failed to send request: %w", err)
-	}
-
-	// Start heartbeat
-	sessionCtx, sessionCancel := context.WithCancel(ctx)
-	defer sessionCancel()
-	go cursorH2Heartbeat(sessionCtx, stream)
-
-	// Collect full text from streaming response
+	// Collect full text from the streamed Run response. A poisoned conversation
+	// can return resource_exhausted before producing any token delta; in that
+	// specific case retry once with a fresh wire conversation id.
 	var fullText strings.Builder
-	if streamErr := processH2SessionFrames(sessionCtx, stream, params.BlobStore, nil,
-		func(text string, isThinking bool) {
-			fullText.WriteString(text)
-		},
-		nil,
-		nil,
-		nil, // tokenUsage - non-streaming
-		nil, // onCheckpoint - non-streaming doesn't persist
-	); streamErr != nil && fullText.Len() == 0 {
+	usage := &cursorTokenUsage{}
+	usage.setInputEstimate(len(payload))
+	for attempt := 0; ; attempt++ {
+		requestBytes := cursorproto.EncodeRunRequest(params)
+		stream, openErr := openCursorH2Stream(accessToken)
+		if openErr != nil {
+			return resp, openErr
+		}
+		if writeErr := stream.Write(cursorproto.FrameConnectMessage(requestBytes, 0)); writeErr != nil {
+			stream.Close()
+			return resp, fmt.Errorf("cursor: failed to send request: %w", writeErr)
+		}
+
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		go cursorH2Heartbeat(attemptCtx, stream)
+		streamErr := processH2SessionFrames(attemptCtx, stream, params.BlobStore, nil,
+			func(text string, isThinking bool) {
+				fullText.WriteString(text)
+			},
+			nil,
+			nil,
+			nil,
+			usage,
+			nil, // non-streaming requests do not persist checkpoints
+		)
+		attemptCancel()
+		stream.Close()
+
+		if streamErr == nil {
+			break
+		}
+		if attempt == 0 && !usage.sawTokenDelta() && isCursorResourceExhausted(streamErr) {
+			if rotated, ok := e.rotateCursorConversation(baseConversationId, conversationId, ""); ok {
+				conversationId = rotated
+				params.ConversationId = rotated
+				fullText.Reset()
+				continue
+			}
+		}
+		if fullText.Len() > 0 {
+			break
+		}
 		return resp, classifyCursorError(fmt.Errorf("cursor: stream error: %w", streamErr))
 	}
 
@@ -401,7 +420,8 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	log.Debugf("cursor: parsed request: model=%s userText=%d chars, turns=%d, tools=%d, toolResults=%d",
 		parsed.Model, len(parsed.UserText), len(parsed.Turns), len(parsed.Tools), len(parsed.ToolResults))
 
-	conversationId := deriveConversationId(apiKeyFromContext(ctx), ccSessionId, parsed.SystemPrompt)
+	baseConversationId := deriveConversationId(apiKeyFromContext(ctx), ccSessionId, parsed.SystemPrompt)
+	conversationId := e.effectiveCursorConversation(baseConversationId)
 	authID := auth.ID // e.g. "cursor.json" or "cursor-account2.json"
 	log.Debugf("cursor: conversationId=%s authID=%s", conversationId, authID)
 
@@ -468,36 +488,29 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	params := buildRunRequestParams(parsed, conversationId)
 
 	if hasCheckpoint && saved.data != nil && saved.authID == authID {
-		// Same auth — use checkpoint normally
+		// Preserve server-managed checkpoint state, but replace its history with
+		// the request's freshly rebuilt root prompt blobs and turns. Cursor's
+		// echoed checkpoint can contain empty historical user placeholders.
 		log.Debugf("cursor: using saved checkpoint (%d bytes) for conv=%s auth=%s", len(saved.data), checkpointKey, authID)
-		params.RawCheckpoint = saved.data
-		// Merge saved blobStore into params
-		if params.BlobStore == nil {
-			params.BlobStore = make(map[string][]byte)
-		}
 		for k, v := range saved.blobStore {
 			if _, exists := params.BlobStore[k]; !exists {
 				params.BlobStore[k] = v
 			}
 		}
+		mergedCheckpoint, mergeErr := mergeCursorCheckpointHistory(saved.data, params)
+		if mergeErr != nil {
+			log.Warnf("cursor: failed to merge checkpoint history for conv=%s: %v; rebuilding state", checkpointKey, mergeErr)
+		} else {
+			params.RawCheckpoint = mergedCheckpoint
+		}
 	} else if hasCheckpoint && saved.data != nil && saved.authID != authID {
-		// Auth changed (quota failover) — checkpoint is not portable across accounts.
-		// Discard and flatten conversation history into userText.
-		log.Infof("cursor: auth migrated (%s → %s) for conv=%s, discarding checkpoint and flattening context", saved.authID, authID, checkpointKey)
+		// Checkpoints are account-specific. The complete request history is
+		// already rebuilt into root_prompt_messages_json and turns, so a new
+		// account can start from that state without flattening it into user text.
+		log.Infof("cursor: auth migrated (%s → %s) for conv=%s, discarding checkpoint and rebuilding context", saved.authID, authID, checkpointKey)
 		e.mu.Lock()
 		delete(e.checkpoints, checkpointKey)
 		e.mu.Unlock()
-		if len(parsed.ToolResults) > 0 || len(parsed.Turns) > 0 {
-			flattenConversationIntoUserText(parsed)
-			params = buildRunRequestParams(parsed, conversationId)
-		}
-	} else if len(parsed.ToolResults) > 0 || len(parsed.Turns) > 0 {
-		// Fallback: no checkpoint available (cold resume / proxy restart).
-		// Flatten the full conversation history (including tool interactions) into userText.
-		// Cursor's turns encoding is not reliably read by the model, but userText always works.
-		log.Debugf("cursor: no checkpoint, flattening %d turns + %d tool results into userText", len(parsed.Turns), len(parsed.ToolResults))
-		flattenConversationIntoUserText(parsed)
-		params = buildRunRequestParams(parsed, conversationId)
 	}
 	requestBytes := cursorproto.EncodeRunRequest(params)
 	framedRequest := cursorproto.FrameConnectMessage(requestBytes, 0)
@@ -512,11 +525,10 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		return nil, fmt.Errorf("cursor: failed to send request: %w", err)
 	}
 
-	// Use a session-scoped context for the heartbeat that is NOT tied to the HTTP request.
-	// This ensures the heartbeat survives across request boundaries during MCP tool execution.
-	// Mirrors the TS plugin's setInterval-based heartbeat that lives independently of HTTP responses.
+	// Use a session-scoped context that is NOT tied to the HTTP request. Run
+	// heartbeats are armed per transport attempt below so conversation rotation
+	// can stop the old heartbeat before opening the retry stream.
 	sessionCtx, sessionCancel := context.WithCancel(context.Background())
-	go cursorH2Heartbeat(sessionCtx, stream)
 
 	chunks := make(chan cliproxyexecutor.StreamChunk, 64)
 	chatId := "chatcmpl-" + uuid.New().String()[:28]
@@ -597,90 +609,172 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		toolCallIndex := 0
 		usage := &cursorTokenUsage{}
 		usage.setInputEstimate(len(payload))
+		type streamedToolCall struct {
+			index int
+			args  string
+		}
+		streamedToolCalls := make(map[string]*streamedToolCall)
 
-		streamErr := processH2SessionFrames(sessionCtx, stream, params.BlobStore, params.McpTools,
-			func(text string, isThinking bool) {
-				if isThinking {
-					if !thinkingActive {
-						thinkingActive = true
-						sendChunkSwitchable(`{"role":"assistant","content":"<think>"}`, "")
+		processAttempt := func() error {
+			attemptCtx, attemptCancel := context.WithCancel(sessionCtx)
+			go cursorH2Heartbeat(attemptCtx, stream)
+			defer attemptCancel()
+			return processH2SessionFrames(attemptCtx, stream, params.BlobStore, params.McpTools,
+				func(text string, isThinking bool) {
+					if isThinking {
+						if !thinkingActive {
+							thinkingActive = true
+							sendChunkSwitchable(`{"role":"assistant","content":"<think>"}`, "")
+						}
+						sendChunkSwitchable(fmt.Sprintf(`{"content":%s}`, jsonString(text)), "")
+					} else {
+						if thinkingActive {
+							thinkingActive = false
+							sendChunkSwitchable(`{"content":"</think>"}`, "")
+						}
+						sendChunkSwitchable(fmt.Sprintf(`{"content":%s}`, jsonString(text)), "")
 					}
-					sendChunkSwitchable(fmt.Sprintf(`{"content":%s}`, jsonString(text)), "")
-				} else {
+				},
+				func(update cursorToolCallUpdate) {
+					key := update.ToolCallID
+					if key == "" {
+						key = update.CallID
+					}
+					switch update.Kind {
+					case cursorToolCallStarted:
+						if key == "" || streamedToolCalls[key] != nil {
+							return
+						}
+						call := &streamedToolCall{index: toolCallIndex}
+						toolCallIndex++
+						streamedToolCalls[key] = call
+						if update.CallID != "" {
+							streamedToolCalls[update.CallID] = call
+						}
+						if update.ToolCallID != "" {
+							streamedToolCalls[update.ToolCallID] = call
+						}
+						toolCallJSON := fmt.Sprintf(`{"tool_calls":[{"index":%d,"id":%s,"type":"function","function":{"name":%s,"arguments":""}}]}`,
+							call.index, jsonString(key), jsonString(update.ToolName))
+						sendChunkSwitchable(toolCallJSON, "")
+					case cursorToolCallArgumentsDelta:
+						call := streamedToolCalls[key]
+						if call == nil || update.ArgumentsDelta == "" {
+							return
+						}
+						call.args += update.ArgumentsDelta
+						toolCallJSON := fmt.Sprintf(`{"tool_calls":[{"index":%d,"function":{"arguments":%s}}]}`,
+							call.index, jsonString(update.ArgumentsDelta))
+						sendChunkSwitchable(toolCallJSON, "")
+					}
+				},
+				func(exec pendingMcpExec) {
 					if thinkingActive {
 						thinkingActive = false
 						sendChunkSwitchable(`{"content":"</think>"}`, "")
 					}
-					sendChunkSwitchable(fmt.Sprintf(`{"content":%s}`, jsonString(text)), "")
-				}
-			},
-			func(exec pendingMcpExec) {
-				if thinkingActive {
-					thinkingActive = false
-					sendChunkSwitchable(`{"content":"</think>"}`, "")
-				}
-				toolCallJSON := fmt.Sprintf(`{"tool_calls":[{"index":%d,"id":"%s","type":"function","function":{"name":"%s","arguments":%s}}]}`,
-					toolCallIndex, exec.ToolCallId, exec.ToolName, jsonString(exec.Args))
-				toolCallIndex++
-				sendChunkSwitchable(toolCallJSON, "")
-				sendChunkSwitchable(`{}`, `"tool_calls"`)
-				sendDoneSwitchable()
+					if call := streamedToolCalls[exec.ToolCallId]; call != nil {
+						missing := exec.Args
+						if strings.HasPrefix(exec.Args, call.args) {
+							missing = strings.TrimPrefix(exec.Args, call.args)
+						}
+						if missing != "" {
+							toolCallJSON := fmt.Sprintf(`{"tool_calls":[{"index":%d,"function":{"arguments":%s}}]}`,
+								call.index, jsonString(missing))
+							sendChunkSwitchable(toolCallJSON, "")
+							call.args += missing
+						}
+					} else {
+						toolCallJSON := fmt.Sprintf(`{"tool_calls":[{"index":%d,"id":%s,"type":"function","function":{"name":%s,"arguments":%s}}]}`,
+							toolCallIndex, jsonString(exec.ToolCallId), jsonString(exec.ToolName), jsonString(exec.Args))
+						toolCallIndex++
+						sendChunkSwitchable(toolCallJSON, "")
+					}
+					sendChunkSwitchable(`{}`, `"tool_calls"`)
+					sendDoneSwitchable()
 
-				// Close current output to end the current HTTP SSE response
-				outMu.Lock()
-				if currentOut != nil {
-					close(currentOut)
-					currentOut = nil
-				}
-				outMu.Unlock()
+					// Close current output to end the current HTTP SSE response
+					outMu.Lock()
+					if currentOut != nil {
+						close(currentOut)
+						currentOut = nil
+					}
+					outMu.Unlock()
 
-				// Create new resume output channel, reuse the same toolResultCh
-				resumeOut := make(chan cliproxyexecutor.StreamChunk, 64)
-				log.Debugf("cursor: saving session %s for MCP tool resume (tool=%s)", sessionKey, exec.ToolName)
-				e.mu.Lock()
-				e.sessions[sessionKey] = &cursorSession{
-					stream:       stream,
-					blobStore:    params.BlobStore,
-					mcpTools:     params.McpTools,
-					pending:      []pendingMcpExec{exec},
-					cancel:       sessionCancel,
-					createdAt:    time.Now(),
-					authID:       authID,
-					toolResultCh: toolResultCh, // reuse same channel across rounds
-					resumeOutCh:  resumeOut,
-					switchOutput: func(ch chan cliproxyexecutor.StreamChunk) {
-						outMu.Lock()
-						currentOut = ch
-						// Reset translator state so the new HTTP response gets
-						// a fresh message_start, content_block_start, etc.
-						streamParam = nil
-						// New response needs its own message ID
-						chatId = "chatcmpl-" + uuid.New().String()[:28]
-						created = time.Now().Unix()
-						outMu.Unlock()
-					},
-				}
-				e.mu.Unlock()
-				resumeOutCh = resumeOut
+					// Create new resume output channel, reuse the same toolResultCh
+					resumeOut := make(chan cliproxyexecutor.StreamChunk, 64)
+					log.Debugf("cursor: saving session %s for MCP tool resume (tool=%s)", sessionKey, exec.ToolName)
+					e.mu.Lock()
+					e.sessions[sessionKey] = &cursorSession{
+						stream:       stream,
+						blobStore:    params.BlobStore,
+						mcpTools:     params.McpTools,
+						pending:      []pendingMcpExec{exec},
+						cancel:       sessionCancel,
+						createdAt:    time.Now(),
+						authID:       authID,
+						toolResultCh: toolResultCh, // reuse same channel across rounds
+						resumeOutCh:  resumeOut,
+						switchOutput: func(ch chan cliproxyexecutor.StreamChunk) {
+							outMu.Lock()
+							currentOut = ch
+							// Reset translator state so the new HTTP response gets
+							// a fresh message_start, content_block_start, etc.
+							streamParam = nil
+							// New response needs its own message ID
+							chatId = "chatcmpl-" + uuid.New().String()[:28]
+							created = time.Now().Unix()
+							outMu.Unlock()
+						},
+					}
+					e.mu.Unlock()
+					resumeOutCh = resumeOut
 
-				// processH2SessionFrames will now block on toolResultCh (inline wait loop)
-				// while continuing to handle KV messages
-			},
-			toolResultCh,
-			usage,
-			func(cpData []byte) {
-				// Save checkpoint keyed by conversationId, tagged with authID for migration detection
-				e.mu.Lock()
-				e.checkpoints[checkpointKey] = &savedCheckpoint{
-					data:      cpData,
-					blobStore: params.BlobStore,
-					authID:    authID,
-					updatedAt: time.Now(),
+					// processH2SessionFrames will now block on toolResultCh (inline wait loop)
+					// while continuing to handle KV messages
+				},
+				toolResultCh,
+				usage,
+				func(cpData []byte) {
+					// Save checkpoint keyed by conversationId, tagged with authID for migration detection
+					e.mu.Lock()
+					e.checkpoints[checkpointKey] = &savedCheckpoint{
+						data:      cpData,
+						blobStore: params.BlobStore,
+						authID:    authID,
+						updatedAt: time.Now(),
+					}
+					e.mu.Unlock()
+					log.Debugf("cursor: saved checkpoint (%d bytes) for conv=%s auth=%s", len(cpData), checkpointKey, authID)
+				},
+			)
+		}
+
+		streamErr := processAttempt()
+		if streamErr != nil && !usage.sawTokenDelta() && isCursorResourceExhausted(streamErr) {
+			if rotated, ok := e.rotateCursorConversation(baseConversationId, conversationId, authID); ok {
+				log.Infof("cursor: rotating resource-exhausted conversation %s to %s and retrying Run once", conversationId, rotated)
+				stream.Close()
+				conversationId = rotated
+				sessionKey = authID + ":" + rotated
+				checkpointKey = rotated
+				params.ConversationId = rotated
+				requestBytes = cursorproto.EncodeRunRequest(params)
+				retryStream, retryErr := openCursorH2Stream(accessToken)
+				if retryErr == nil {
+					retryErr = retryStream.Write(cursorproto.FrameConnectMessage(requestBytes, 0))
 				}
-				e.mu.Unlock()
-				log.Debugf("cursor: saved checkpoint (%d bytes) for conv=%s auth=%s", len(cpData), checkpointKey, authID)
-			},
-		)
+				if retryErr == nil {
+					stream = retryStream
+					streamErr = processAttempt()
+				} else {
+					if retryStream != nil {
+						retryStream.Close()
+					}
+					streamErr = fmt.Errorf("cursor: failed to retry rotated conversation: %w", retryErr)
+				}
+			}
+		}
 
 		// processH2SessionFrames returned — stream is done.
 		// Check if error happened before any chunks were emitted.
@@ -846,12 +940,14 @@ func cursorH2Heartbeat(ctx context.Context, stream *cursorproto.H2Stream) {
 type cursorTokenUsage struct {
 	mu             sync.Mutex
 	outputTokens   int64
-	inputTokensEst int64 // estimated from request payload size
+	inputTokensEst int64 // fallback only when Cursor emits no token_delta
+	sawDelta       bool
 }
 
 func (u *cursorTokenUsage) addOutput(delta int64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.sawDelta = true
 	u.outputTokens += delta
 }
 
@@ -868,238 +964,16 @@ func (u *cursorTokenUsage) setInputEstimate(payloadBytes int) {
 func (u *cursorTokenUsage) get() (input, output int64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.inputTokensEst, u.outputTokens
+	if u.sawDelta {
+		return 0, u.outputTokens
+	}
+	return u.inputTokensEst, 0
 }
 
-func processH2SessionFrames(
-	ctx context.Context,
-	stream *cursorproto.H2Stream,
-	blobStore map[string][]byte,
-	mcpTools []cursorproto.McpToolDef,
-	onText func(text string, isThinking bool),
-	onMcpExec func(exec pendingMcpExec),
-	toolResultCh <-chan []toolResultInfo, // nil for no tool result injection; non-nil to wait for results
-	tokenUsage *cursorTokenUsage, // tracks accumulated token usage (may be nil)
-	onCheckpoint func(data []byte), // called when server sends conversation_checkpoint_update
-) error {
-	var buf bytes.Buffer
-	rejectReason := "Tool not available in this environment. Use the MCP tools provided instead."
-	log.Debugf("cursor: processH2SessionFrames started for streamID=%s, waiting for data...", stream.ID())
-	for {
-		select {
-		case <-ctx.Done():
-			log.Debugf("cursor: processH2SessionFrames exiting: context done")
-			return ctx.Err()
-		case data, ok := <-stream.Data():
-			if !ok {
-				log.Debugf("cursor: processH2SessionFrames[%s]: exiting: stream data channel closed", stream.ID())
-				return stream.Err() // may be RST_STREAM, GOAWAY, or nil for clean close
-			}
-			// Log first 20 bytes of raw data for debugging
-			previewLen := min(20, len(data))
-			log.Debugf("cursor: processH2SessionFrames[%s]: received %d bytes from dataCh, first bytes: %x (%q)", stream.ID(), len(data), data[:previewLen], string(data[:previewLen]))
-			buf.Write(data)
-			log.Debugf("cursor: processH2SessionFrames[%s]: buf total=%d", stream.ID(), buf.Len())
-
-			// Process all complete frames
-			for {
-				currentBuf := buf.Bytes()
-				if len(currentBuf) == 0 {
-					break
-				}
-				flags, payload, consumed, ok := cursorproto.ParseConnectFrame(currentBuf)
-				if !ok {
-					// Log detailed info about why parsing failed
-					previewLen := min(20, len(currentBuf))
-					log.Debugf("cursor: incomplete frame in buffer, waiting for more data (buf=%d bytes, first bytes: %x = %q)", len(currentBuf), currentBuf[:previewLen], string(currentBuf[:previewLen]))
-					break
-				}
-				buf.Next(consumed)
-				log.Debugf("cursor: parsed Connect frame flags=0x%02x payload=%d bytes consumed=%d", flags, len(payload), consumed)
-
-				if flags&cursorproto.ConnectEndStreamFlag != 0 {
-					if err := cursorproto.ParseConnectEndStream(payload); err != nil {
-						log.Warnf("cursor: connect end stream error: %v", err)
-						return err // propagate server-side errors (quota, rate limit, etc.)
-					}
-					continue
-				}
-
-				msg, err := cursorproto.DecodeAgentServerMessage(payload)
-				if err != nil {
-					log.Debugf("cursor: failed to decode server message: %v", err)
-					continue
-				}
-
-				log.Debugf("cursor: decoded server message type=%d", msg.Type)
-				switch msg.Type {
-				case cursorproto.ServerMsgTextDelta:
-					if msg.Text != "" && onText != nil {
-						onText(msg.Text, false)
-					}
-				case cursorproto.ServerMsgThinkingDelta:
-					if msg.Text != "" && onText != nil {
-						onText(msg.Text, true)
-					}
-				case cursorproto.ServerMsgThinkingCompleted:
-					// Handled by caller
-
-				case cursorproto.ServerMsgTurnEnded:
-					log.Debugf("cursor: TurnEnded received, stream will finish")
-					return nil // clean completion
-
-				case cursorproto.ServerMsgHeartbeat:
-					// Server heartbeat, ignore silently
-					continue
-
-				case cursorproto.ServerMsgCheckpoint:
-					if onCheckpoint != nil && len(msg.CheckpointData) > 0 {
-						onCheckpoint(msg.CheckpointData)
-					}
-					continue
-
-				case cursorproto.ServerMsgTokenDelta:
-					if tokenUsage != nil && msg.TokenDelta > 0 {
-						tokenUsage.addOutput(msg.TokenDelta)
-					}
-					continue
-
-				case cursorproto.ServerMsgKvGetBlob:
-					blobKey := cursorproto.BlobIdHex(msg.BlobId)
-					data := blobStore[blobKey]
-					resp := cursorproto.EncodeKvGetBlobResult(msg.KvId, data)
-					stream.Write(cursorproto.FrameConnectMessage(resp, 0))
-
-				case cursorproto.ServerMsgKvSetBlob:
-					blobKey := cursorproto.BlobIdHex(msg.BlobId)
-					blobStore[blobKey] = append([]byte(nil), msg.BlobData...)
-					resp := cursorproto.EncodeKvSetBlobResult(msg.KvId)
-					stream.Write(cursorproto.FrameConnectMessage(resp, 0))
-
-				case cursorproto.ServerMsgExecRequestCtx:
-					resp := cursorproto.EncodeExecRequestContextResult(msg.ExecMsgId, msg.ExecId, mcpTools)
-					stream.Write(cursorproto.FrameConnectMessage(resp, 0))
-
-				case cursorproto.ServerMsgExecMcpArgs:
-					if onMcpExec != nil {
-						decodedArgs := decodeMcpArgsToJSON(msg.McpArgs)
-						toolCallId := msg.McpToolCallId
-						if toolCallId == "" {
-							toolCallId = uuid.New().String()
-						}
-						log.Debugf("cursor: received mcpArgs from server: execMsgId=%d execId=%q toolName=%s toolCallId=%s",
-							msg.ExecMsgId, msg.ExecId, msg.McpToolName, toolCallId)
-						pending := pendingMcpExec{
-							ExecMsgId:  msg.ExecMsgId,
-							ExecId:     msg.ExecId,
-							ToolCallId: toolCallId,
-							ToolName:   msg.McpToolName,
-							Args:       decodedArgs,
-						}
-						onMcpExec(pending)
-
-						if toolResultCh == nil {
-							return nil
-						}
-
-						// Inline mode: wait for tool result while handling KV/heartbeat
-						log.Debugf("cursor: waiting for tool result on channel (inline mode)...")
-						var toolResults []toolResultInfo
-					waitLoop:
-						for {
-							select {
-							case <-ctx.Done():
-								return ctx.Err()
-							case results, ok := <-toolResultCh:
-								if !ok {
-									return nil
-								}
-								toolResults = results
-								break waitLoop
-							case waitData, ok := <-stream.Data():
-								if !ok {
-									return stream.Err()
-								}
-								buf.Write(waitData)
-								for {
-									cb := buf.Bytes()
-									if len(cb) == 0 {
-										break
-									}
-									wf, wp, wc, wok := cursorproto.ParseConnectFrame(cb)
-									if !wok {
-										break
-									}
-									buf.Next(wc)
-									if wf&cursorproto.ConnectEndStreamFlag != 0 {
-										continue
-									}
-									wmsg, werr := cursorproto.DecodeAgentServerMessage(wp)
-									if werr != nil {
-										continue
-									}
-									switch wmsg.Type {
-									case cursorproto.ServerMsgKvGetBlob:
-										blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
-										d := blobStore[blobKey]
-										stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvGetBlobResult(wmsg.KvId, d), 0))
-									case cursorproto.ServerMsgKvSetBlob:
-										blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
-										blobStore[blobKey] = append([]byte(nil), wmsg.BlobData...)
-										stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvSetBlobResult(wmsg.KvId), 0))
-									case cursorproto.ServerMsgExecRequestCtx:
-										stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecRequestContextResult(wmsg.ExecMsgId, wmsg.ExecId, mcpTools), 0))
-									case cursorproto.ServerMsgCheckpoint:
-										if onCheckpoint != nil && len(wmsg.CheckpointData) > 0 {
-											onCheckpoint(wmsg.CheckpointData)
-										}
-									}
-								}
-							case <-stream.Done():
-								return stream.Err()
-							}
-						}
-
-						// Send MCP result
-						for _, tr := range toolResults {
-							if tr.ToolCallId == pending.ToolCallId {
-								log.Debugf("cursor: sending inline MCP result for tool=%s", pending.ToolName)
-								resultBytes := cursorproto.EncodeExecMcpResult(pending.ExecMsgId, pending.ExecId, tr.Content, false)
-								stream.Write(cursorproto.FrameConnectMessage(resultBytes, 0))
-								break
-							}
-						}
-						continue
-					}
-
-				case cursorproto.ServerMsgExecReadArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecReadRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
-				case cursorproto.ServerMsgExecWriteArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecWriteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
-				case cursorproto.ServerMsgExecDeleteArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecDeleteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
-				case cursorproto.ServerMsgExecLsArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecLsRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
-				case cursorproto.ServerMsgExecGrepArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecGrepError(msg.ExecMsgId, msg.ExecId, rejectReason), 0))
-				case cursorproto.ServerMsgExecShellArgs, cursorproto.ServerMsgExecShellStream:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecShellRejected(msg.ExecMsgId, msg.ExecId, msg.Command, msg.WorkingDirectory, rejectReason), 0))
-				case cursorproto.ServerMsgExecBgShellSpawn:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecBackgroundShellSpawnRejected(msg.ExecMsgId, msg.ExecId, msg.Command, msg.WorkingDirectory, rejectReason), 0))
-				case cursorproto.ServerMsgExecFetchArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecFetchError(msg.ExecMsgId, msg.ExecId, msg.Url, rejectReason), 0))
-				case cursorproto.ServerMsgExecDiagnostics:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecDiagnosticsResult(msg.ExecMsgId, msg.ExecId), 0))
-				case cursorproto.ServerMsgExecWriteShellStdin:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecWriteShellStdinError(msg.ExecMsgId, msg.ExecId, rejectReason), 0))
-				}
-			}
-
-		case <-stream.Done():
-			log.Debugf("cursor: processH2SessionFrames exiting: stream done")
-			return stream.Err()
-		}
-	}
+func (u *cursorTokenUsage) sawTokenDelta() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.sawDelta
 }
 
 // --- OpenAI request parsing ---
@@ -1115,6 +989,7 @@ type parsedOpenAIRequest struct {
 	Images          []cursorproto.ImageData
 	Turns           []cursorproto.TurnData
 	ToolResults     []toolResultInfo
+	ActiveUserIndex int
 }
 
 type toolResultInfo struct {
@@ -1127,88 +1002,101 @@ func parseOpenAIRequest(payload []byte) *parsedOpenAIRequest {
 		Model:           gjson.GetBytes(payload, "model").String(),
 		ReasoningEffort: extractCursorReasoningEffort(payload),
 		Stream:          gjson.GetBytes(payload, "stream").Bool(),
+		ActiveUserIndex: -1,
 	}
 
 	messages := gjson.GetBytes(payload, "messages").Array()
 	p.Messages = messages
+	p.Tools = gjson.GetBytes(payload, "tools").Array()
 
-	// Extract system prompt
+	// Cursor's normal system prompt lives in the root prompt blob head. There
+	// is no separate CPA custom-system-prompt override concept.
 	var systemParts []string
 	for _, msg := range messages {
-		if msg.Get("role").String() == "system" {
-			systemParts = append(systemParts, extractTextContent(msg.Get("content")))
+		switch msg.Get("role").String() {
+		case "system", "developer":
+			if text := strings.TrimSpace(extractTextContent(msg.Get("content"))); text != "" {
+				systemParts = append(systemParts, text)
+			}
 		}
 	}
-	if len(systemParts) > 0 {
-		p.SystemPrompt = strings.Join(systemParts, "\n")
-	} else {
+	if len(systemParts) == 0 {
 		p.SystemPrompt = "You are a helpful assistant."
+	} else {
+		p.SystemPrompt = strings.Join(systemParts, "\n")
 	}
 
-	// Extract turns, tool results, and last user message
-	var pendingUser string
-	for _, msg := range messages {
-		role := msg.Get("role").String()
-		switch role {
-		case "system":
-			continue
-		case "tool":
-			p.ToolResults = append(p.ToolResults, toolResultInfo{
-				ToolCallId: msg.Get("tool_call_id").String(),
-				Content:    extractTextContent(msg.Get("content")),
-			})
+	// senpi only treats the final message as active when it is a user message.
+	// A trailing assistant/tool message resumes the conversation instead.
+	if len(messages) > 0 && messages[len(messages)-1].Get("role").String() == "user" {
+		p.ActiveUserIndex = len(messages) - 1
+		content := messages[p.ActiveUserIndex].Get("content")
+		p.UserText = strings.TrimSpace(extractTextContent(content))
+		p.Images = extractImages(content)
+	}
+
+	// Only a contiguous trailing tool-result suffix belongs to the currently
+	// pending MCP round. Older tool messages remain history and must not trigger
+	// a stale H2 session resume.
+	for i := len(messages) - 1; i >= 0 && messages[i].Get("role").String() == "tool"; i-- {
+		p.ToolResults = append(p.ToolResults, toolResultInfo{
+			ToolCallId: messages[i].Get("tool_call_id").String(),
+			Content:    extractTextContent(messages[i].Get("content")),
+		})
+	}
+	for left, right := 0, len(p.ToolResults)-1; left < right; left, right = left+1, right-1 {
+		p.ToolResults[left], p.ToolResults[right] = p.ToolResults[right], p.ToolResults[left]
+	}
+
+	// Rebuild prior user/assistant turns for ConversationStateStructure.turns.
+	// Root prompt blobs below carry the richer tool/image history used for the
+	// actual model prompt.
+	historyEnd := len(messages)
+	if p.ActiveUserIndex >= 0 {
+		historyEnd = p.ActiveUserIndex
+	}
+	var pending *cursorproto.TurnData
+	for i := 0; i < historyEnd; i++ {
+		msg := messages[i]
+		switch msg.Get("role").String() {
 		case "user":
-			if pendingUser != "" {
-				p.Turns = append(p.Turns, cursorproto.TurnData{UserText: pendingUser})
+			if pending != nil {
+				p.Turns = append(p.Turns, *pending)
 			}
-			pendingUser = extractTextContent(msg.Get("content"))
-			p.Images = extractImages(msg.Get("content"))
+			text := strings.TrimSpace(extractTextContent(msg.Get("content")))
+			if text == "" {
+				pending = nil
+			} else {
+				pending = &cursorproto.TurnData{UserText: text}
+			}
 		case "assistant":
 			assistantText := extractTextContent(msg.Get("content"))
-			if pendingUser != "" {
-				p.Turns = append(p.Turns, cursorproto.TurnData{
-					UserText:      pendingUser,
-					AssistantText: assistantText,
-				})
-				pendingUser = ""
-			} else if len(p.Turns) > 0 && assistantText != "" {
-				// Assistant message after tool results (no pending user) —
-				// append to the last turn's assistant text to preserve context.
+			if pending != nil {
+				pending.AssistantText = assistantText
+				p.Turns = append(p.Turns, *pending)
+				pending = nil
+			} else if assistantText != "" && len(p.Turns) > 0 {
 				last := &p.Turns[len(p.Turns)-1]
-				if last.AssistantText != "" {
-					last.AssistantText += "\n" + assistantText
-				} else {
+				if last.AssistantText == "" {
 					last.AssistantText = assistantText
+				} else {
+					last.AssistantText += "\n" + assistantText
 				}
 			}
 		}
 	}
-
-	if pendingUser != "" {
-		p.UserText = pendingUser
-	} else if len(p.Turns) > 0 && len(p.ToolResults) == 0 {
-		last := p.Turns[len(p.Turns)-1]
-		p.Turns = p.Turns[:len(p.Turns)-1]
-		p.UserText = last.UserText
+	if pending != nil {
+		p.Turns = append(p.Turns, *pending)
 	}
-
-	// Extract tools
-	p.Tools = gjson.GetBytes(payload, "tools").Array()
 
 	return p
 }
 
-// bakeToolResultsIntoTurns merges tool results into the last turn's assistant text
-// when there's no active H2 session to resume. This ensures the model sees the
-// full tool interaction context in a new conversation.
-// flattenConversationIntoUserText flattens the full conversation history
-// (turns + tool results) into the UserText field as plain text.
-// This is the fallback for cold resume when no checkpoint is available.
-// Cursor reliably reads UserText but ignores structured turns.
+// flattenConversationIntoUserText remains available as a last-resort fallback
+// for callers that explicitly need a plain-text replay. Normal Run requests use
+// structured root prompt blobs and turns instead.
 func flattenConversationIntoUserText(parsed *parsedOpenAIRequest) {
 	var buf strings.Builder
-
-	// Flatten turns into readable context
 	for _, turn := range parsed.Turns {
 		if turn.UserText != "" {
 			buf.WriteString("USER: ")
@@ -1221,13 +1109,10 @@ func flattenConversationIntoUserText(parsed *parsedOpenAIRequest) {
 			buf.WriteString("\n\n")
 		}
 	}
-
-	// Flatten tool results
 	for _, tr := range parsed.ToolResults {
 		buf.WriteString("TOOL_RESULT (call_id: ")
 		buf.WriteString(tr.ToolCallId)
 		buf.WriteString("): ")
-		// Truncate very large tool results to avoid overwhelming the context
 		content := tr.Content
 		if len(content) > 8000 {
 			content = content[:8000] + "\n... [truncated]"
@@ -1235,20 +1120,16 @@ func flattenConversationIntoUserText(parsed *parsedOpenAIRequest) {
 		buf.WriteString(content)
 		buf.WriteString("\n\n")
 	}
-
 	if buf.Len() > 0 {
 		buf.WriteString("The above is the previous conversation context including tool call results.\n")
 		buf.WriteString("Continue your response based on this context.\n\n")
 	}
-
-	// Prepend flattened history to the current UserText
 	if parsed.UserText != "" {
 		parsed.UserText = buf.String() + "Current request: " + parsed.UserText
 	} else {
 		parsed.UserText = buf.String() + "Continue from the conversation above."
 	}
-
-	// Clear turns and tool results since they're now in UserText
+	parsed.Images = nil
 	parsed.Turns = nil
 	parsed.ToolResults = nil
 }
@@ -1257,16 +1138,19 @@ func extractTextContent(content gjson.Result) string {
 	if content.Type == gjson.String {
 		return content.String()
 	}
-	if content.IsArray() {
-		var parts []string
-		for _, part := range content.Array() {
-			if part.Get("type").String() == "text" {
-				parts = append(parts, part.Get("text").String())
+	if !content.IsArray() {
+		return ""
+	}
+	parts := make([]string, 0, len(content.Array()))
+	for _, part := range content.Array() {
+		switch part.Get("type").String() {
+		case "text", "input_text", "output_text":
+			if text := part.Get("text").String(); text != "" {
+				parts = append(parts, text)
 			}
 		}
-		return strings.Join(parts, "")
 	}
-	return content.String()
+	return strings.Join(parts, "\n")
 }
 
 func extractImages(content gjson.Result) []cursorproto.ImageData {
@@ -1275,45 +1159,104 @@ func extractImages(content gjson.Result) []cursorproto.ImageData {
 	}
 	var images []cursorproto.ImageData
 	for _, part := range content.Array() {
-		if part.Get("type").String() == "image_url" {
-			url := part.Get("image_url.url").String()
-			if strings.HasPrefix(url, "data:") {
-				img := parseDataURL(url)
-				if img != nil {
-					images = append(images, *img)
-				}
-			}
+		image := cursorImageFromContentPart(part)
+		if image == nil || len(image.Data) == 0 {
+			continue
 		}
+		images = append(images, *image)
 	}
 	return images
 }
 
+func cursorImageFromContentPart(part gjson.Result) *cursorproto.ImageData {
+	var dataURL, mimeType, encoded string
+	switch part.Get("type").String() {
+	case "image_url":
+		dataURL = part.Get("image_url.url").String()
+		if dataURL == "" && part.Get("image_url").Type == gjson.String {
+			dataURL = part.Get("image_url").String()
+		}
+	case "input_image":
+		dataURL = part.Get("image_url").String()
+		if dataURL == "" {
+			dataURL = part.Get("image_url.url").String()
+		}
+	case "image":
+		dataURL = part.Get("image_url").String()
+		if dataURL == "" {
+			dataURL = part.Get("url").String()
+		}
+		mimeType = part.Get("mime_type").String()
+		if mimeType == "" {
+			mimeType = part.Get("mimeType").String()
+		}
+		encoded = part.Get("data").String()
+		if encoded == "" {
+			encoded = part.Get("source.data").String()
+		}
+		if mimeType == "" {
+			mimeType = part.Get("source.media_type").String()
+		}
+	default:
+		return nil
+	}
+
+	if strings.HasPrefix(dataURL, "data:") {
+		return parseDataURL(dataURL)
+	}
+	if encoded == "" {
+		return nil
+	}
+	data, ok := decodeCursorBase64(encoded)
+	if !ok {
+		return nil
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	return &cursorproto.ImageData{MimeType: mimeType, Data: data}
+}
+
 func parseDataURL(url string) *cursorproto.ImageData {
-	// data:image/png;base64,...
 	if !strings.HasPrefix(url, "data:") {
 		return nil
 	}
-	parts := strings.SplitN(url[5:], ";", 2)
-	if len(parts) != 2 {
+	comma := strings.IndexByte(url, ',')
+	if comma < 0 {
 		return nil
 	}
-	mimeType := parts[0]
-	if !strings.HasPrefix(parts[1], "base64,") {
+	metadata := strings.Split(url[5:comma], ";")
+	if len(metadata) == 0 {
 		return nil
 	}
-	encoded := parts[1][7:]
-	data, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		// Try RawStdEncoding for unpadded base64
-		data, err = base64.RawStdEncoding.DecodeString(encoded)
-		if err != nil {
-			return nil
+	base64Encoded := false
+	for _, item := range metadata[1:] {
+		if strings.EqualFold(item, "base64") {
+			base64Encoded = true
+			break
 		}
 	}
-	return &cursorproto.ImageData{
-		MimeType: mimeType,
-		Data:     data,
+	if !base64Encoded {
+		return nil
 	}
+	data, ok := decodeCursorBase64(url[comma+1:])
+	if !ok {
+		return nil
+	}
+	mimeType := metadata[0]
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	return &cursorproto.ImageData{MimeType: mimeType, Data: data}
+}
+
+func decodeCursorBase64(encoded string) ([]byte, bool) {
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err == nil {
+		return data, true
+	}
+	data, err = base64.RawStdEncoding.DecodeString(encoded)
+	return data, err == nil
 }
 
 func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string) *cursorproto.RunRequestParams {
@@ -1326,14 +1269,16 @@ func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string) *
 		UserText:           parsed.UserText,
 		MessageId:          uuid.New().String(),
 		ConversationId:     conversationId,
-		Resume:             parsed.UserText == "" && len(parsed.Images) == 0,
+		Resume:             parsed.ActiveUserIndex < 0 || (parsed.UserText == "" && len(parsed.Images) == 0),
 		Images:             parsed.Images,
 		Turns:              parsed.Turns,
-		RootPromptMessages: buildCursorRootPromptMessages(parsed.Messages),
+		RootPromptMessages: buildCursorRootPromptMessages(parsed),
 		BlobStore:          make(map[string][]byte),
 	}
 
-	// Convert OpenAI tools to McpToolDefs
+	// Preserve CPA's MCP relay: definitions are held for the server-driven
+	// request-context exec response, while EncodeRunRequest omits top-level
+	// AgentRunRequest.mcp_tools like senpi.
 	for _, tool := range parsed.Tools {
 		fn := tool.Get("function")
 		params.McpTools = append(params.McpTools, cursorproto.McpToolDef{
@@ -1346,29 +1291,243 @@ func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string) *
 	return params
 }
 
-func buildCursorRootPromptMessages(messages []gjson.Result) [][]byte {
-	activeUserIndex := -1
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Get("role").String() == "user" {
-			activeUserIndex = i
-			break
-		}
-	}
-	if activeUserIndex < 0 {
-		activeUserIndex = len(messages)
+func buildCursorRootPromptMessages(parsed *parsedOpenAIRequest) [][]byte {
+	historyEnd := len(parsed.Messages)
+	if parsed.ActiveUserIndex >= 0 {
+		historyEnd = parsed.ActiveUserIndex
 	}
 
+	toolNames := make(map[string]string)
 	var roots [][]byte
-	for i := 0; i < activeUserIndex; i++ {
-		message := messages[i]
+	appendJSON := func(value any) {
+		data, err := json.Marshal(value)
+		if err == nil {
+			roots = append(roots, data)
+		}
+	}
+
+	for i := 0; i < historyEnd; i++ {
+		message := parsed.Messages[i]
 		switch message.Get("role").String() {
-		case "user", "assistant", "tool":
-			if raw := strings.TrimSpace(message.Raw); raw != "" {
-				roots = append(roots, []byte(raw))
+		case "system", "developer":
+			// The combined system prompt is already the first root blob.
+			continue
+		case "user":
+			content := buildCursorRootUserContent(message.Get("content"))
+			if len(content) > 0 {
+				appendJSON(map[string]any{"role": "user", "content": content})
 			}
+		case "assistant":
+			content := buildCursorRootAssistantContent(message, toolNames)
+			if len(content) > 0 {
+				appendJSON(map[string]any{"role": "assistant", "content": content})
+			}
+		case "tool":
+			toolCallID := message.Get("tool_call_id").String()
+			toolName := message.Get("name").String()
+			if toolName == "" {
+				toolName = toolNames[toolCallID]
+			}
+			item := map[string]any{
+				"type":       "tool-result",
+				"toolName":   toolName,
+				"toolCallId": toolCallID,
+				"result":     extractTextContent(message.Get("content")),
+			}
+			appendJSON(map[string]any{
+				"role":    "tool",
+				"id":      toolCallID,
+				"content": []any{item},
+			})
 		}
 	}
 	return roots
+}
+
+func buildCursorRootUserContent(content gjson.Result) []any {
+	if content.Type == gjson.String {
+		if text := strings.TrimSpace(content.String()); text != "" {
+			return []any{map[string]any{"type": "text", "text": text}}
+		}
+		return nil
+	}
+	if !content.IsArray() {
+		return nil
+	}
+	var result []any
+	for _, part := range content.Array() {
+		switch part.Get("type").String() {
+		case "text", "input_text", "output_text":
+			if text := strings.TrimSpace(part.Get("text").String()); text != "" {
+				result = append(result, map[string]any{"type": "text", "text": text})
+			}
+		case "image_url", "input_image", "image":
+			if image, mimeType := cursorRootImageReference(part); image != "" {
+				result = append(result, map[string]any{"type": "image", "image": image, "mediaType": mimeType})
+			}
+		}
+	}
+	return result
+}
+
+func cursorRootImageReference(part gjson.Result) (image, mimeType string) {
+	mimeType = part.Get("mime_type").String()
+	if mimeType == "" {
+		mimeType = part.Get("mimeType").String()
+	}
+	if mimeType == "" {
+		mimeType = part.Get("source.media_type").String()
+	}
+	switch part.Get("type").String() {
+	case "image_url":
+		image = part.Get("image_url.url").String()
+		if image == "" && part.Get("image_url").Type == gjson.String {
+			image = part.Get("image_url").String()
+		}
+	case "input_image":
+		image = part.Get("image_url").String()
+		if image == "" {
+			image = part.Get("image_url.url").String()
+		}
+	case "image":
+		image = part.Get("image_url").String()
+		if image == "" {
+			image = part.Get("url").String()
+		}
+		encoded := part.Get("data").String()
+		if encoded == "" {
+			encoded = part.Get("source.data").String()
+		}
+		if image == "" && encoded != "" {
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
+			}
+			image = "data:" + mimeType + ";base64," + encoded
+		}
+	}
+	if strings.HasPrefix(image, "data:") {
+		if parsed := parseDataURL(image); parsed != nil {
+			mimeType = parsed.MimeType
+		}
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	return image, mimeType
+}
+
+func buildCursorRootAssistantContent(message gjson.Result, toolNames map[string]string) []any {
+	var content []any
+	messageContent := message.Get("content")
+	if messageContent.Type == gjson.String {
+		if text := messageContent.String(); text != "" {
+			content = append(content, map[string]any{"type": "text", "text": text})
+		}
+	} else if messageContent.IsArray() {
+		for _, part := range messageContent.Array() {
+			switch part.Get("type").String() {
+			case "text", "output_text":
+				if text := part.Get("text").String(); text != "" {
+					content = append(content, map[string]any{"type": "text", "text": text})
+				}
+			}
+		}
+	}
+
+	for _, call := range message.Get("tool_calls").Array() {
+		toolCallID := call.Get("id").String()
+		toolName := call.Get("function.name").String()
+		if toolCallID != "" {
+			toolNames[toolCallID] = toolName
+		}
+		args := make(map[string]any)
+		if rawArgs := strings.TrimSpace(call.Get("function.arguments").String()); rawArgs != "" {
+			_ = json.Unmarshal([]byte(rawArgs), &args)
+		}
+		content = append(content, map[string]any{
+			"type":       "tool-call",
+			"toolCallId": toolCallID,
+			"toolName":   toolName,
+			"args":       args,
+		})
+	}
+	return content
+}
+
+func mergeCursorCheckpointHistory(checkpoint []byte, params *cursorproto.RunRequestParams) ([]byte, error) {
+	freshParams := *params
+	freshParams.RawCheckpoint = nil
+	freshRequest := cursorproto.EncodeRunRequest(&freshParams)
+	freshState, err := cursorWireBytesField(freshRequest, cursorproto.ACM_RunRequest)
+	if err != nil {
+		return nil, err
+	}
+	freshState, err = cursorWireBytesField(freshState, cursorproto.ARR_ConversationState)
+	if err != nil {
+		return nil, err
+	}
+
+	preserved, err := filterCursorWireFields(checkpoint, func(fieldNumber int) bool {
+		return fieldNumber != cursorproto.CSS_RootPromptMessagesJson && fieldNumber != cursorproto.CSS_Turns
+	})
+	if err != nil {
+		return nil, err
+	}
+	history, err := filterCursorWireFields(freshState, func(fieldNumber int) bool {
+		return fieldNumber == cursorproto.CSS_RootPromptMessagesJson || fieldNumber == cursorproto.CSS_Turns
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append(preserved, history...), nil
+}
+
+func cursorWireBytesField(data []byte, target int) ([]byte, error) {
+	for len(data) > 0 {
+		num, typ, tagLen := consumeTag(data)
+		if tagLen < 0 {
+			return nil, fmt.Errorf("invalid protobuf tag")
+		}
+		data = data[tagLen:]
+		if typ == 2 {
+			value, valueLen := consumeBytes(data)
+			if valueLen < 0 {
+				return nil, fmt.Errorf("invalid protobuf bytes field %d", num)
+			}
+			if num == target {
+				return append([]byte(nil), value...), nil
+			}
+			data = data[valueLen:]
+			continue
+		}
+		valueLen := consumeFieldValue(num, typ, data)
+		if valueLen < 0 {
+			return nil, fmt.Errorf("invalid protobuf field %d", num)
+		}
+		data = data[valueLen:]
+	}
+	return nil, fmt.Errorf("protobuf field %d not found", target)
+}
+
+func filterCursorWireFields(data []byte, keep func(fieldNumber int) bool) ([]byte, error) {
+	var filtered []byte
+	for len(data) > 0 {
+		fieldStart := data
+		num, typ, tagLen := consumeTag(data)
+		if tagLen < 0 {
+			return nil, fmt.Errorf("invalid protobuf tag")
+		}
+		valueLen := consumeFieldValue(num, typ, data[tagLen:])
+		if valueLen < 0 {
+			return nil, fmt.Errorf("invalid protobuf field %d", num)
+		}
+		fieldLen := tagLen + valueLen
+		if keep(num) {
+			filtered = append(filtered, fieldStart[:fieldLen]...)
+		}
+		data = fieldStart[fieldLen:]
+	}
+	return filtered, nil
 }
 
 // --- Helpers ---
