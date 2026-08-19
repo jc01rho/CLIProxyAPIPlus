@@ -175,8 +175,8 @@ func TestStripKimiFixedSamplingFields(t *testing.T) {
 		{name: "normalized kimi-for-coding strips all fixed fields", model: "kimi-for-coding", wantRemoved: fullyFixed},
 		{name: "k2.5 strips only temperature", model: "kimi-k2.5", wantRemoved: []string{"temperature"}, wantPreserved: []string{"top_p", "presence_penalty", "frequency_penalty", "n"}},
 		{name: "k2-thinking strips only temperature", model: "kimi-k2-thinking", wantRemoved: []string{"temperature"}, wantPreserved: []string{"top_p"}},
-		{name: "moonshot-v1 untouched", model: "moonshot-v1-8k", wantRemoved: nil, wantPreserved: append(append([]string{"model", "messages", "max_tokens"}, fullyFixed...))},
-		{name: "empty model untouched", model: "", wantRemoved: nil, wantPreserved: append(append([]string{"model", "messages"}, fullyFixed...))},
+		{name: "moonshot-v1 untouched", model: "moonshot-v1-8k", wantRemoved: nil, wantPreserved: append([]string{"model", "messages", "max_tokens"}, fullyFixed...)},
+		{name: "empty model untouched", model: "", wantRemoved: nil, wantPreserved: append([]string{"model", "messages"}, fullyFixed...)},
 	}
 
 	for _, tt := range tests {
