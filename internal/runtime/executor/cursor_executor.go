@@ -343,7 +343,7 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		if streamErr == nil {
 			break
 		}
-		if attempt == 0 && !usage.sawTokenDelta() && isCursorResourceExhausted(streamErr) {
+		if attempt == 0 && !usage.sawTokenEvidence() && isCursorResourceExhausted(streamErr) {
 			if rotated, ok := e.rotateCursorConversation(baseConversationId, conversationId, ""); ok {
 				conversationId = rotated
 				params.ConversationId = rotated
@@ -751,7 +751,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 
 		streamErr := processAttempt()
-		if streamErr != nil && !usage.sawTokenDelta() && isCursorResourceExhausted(streamErr) {
+		if streamErr != nil && !usage.sawTokenEvidence() && isCursorResourceExhausted(streamErr) {
 			if rotated, ok := e.rotateCursorConversation(baseConversationId, conversationId, authID); ok {
 				log.Infof("cursor: rotating resource-exhausted conversation %s to %s and retrying Run once", conversationId, rotated)
 				stream.Close()
@@ -936,12 +936,20 @@ func cursorH2Heartbeat(ctx context.Context, stream *cursorproto.H2Stream) {
 
 // --- Response processing ---
 
-// cursorTokenUsage tracks token counts from Cursor's TokenDeltaUpdate messages.
+// cursorTokenUsage tracks token counts from Cursor's TokenDeltaUpdate and the
+// production TurnEndedUpdate billed split (schema 2026.08.11). The billed split
+// is authoritative for context accounting; the tokenDelta-accumulated output is
+// kept only when the server omits the billed output field. Reasoning tokens are
+// never folded into output (no Usage field represents them).
 type cursorTokenUsage struct {
 	mu             sync.Mutex
 	outputTokens   int64
-	inputTokensEst int64 // fallback only when Cursor emits no token_delta
+	inputTokens    int64 // billed input (cache-INCLUSIVE remainder backed out)
+	cacheRead      int64
+	cacheWrite     int64
+	inputTokensEst int64 // fallback only when Cursor emits no token_delta/turnEnded
 	sawDelta       bool
+	sawTurnEnded   bool
 }
 
 func (u *cursorTokenUsage) addOutput(delta int64) {
@@ -949,6 +957,34 @@ func (u *cursorTokenUsage) addOutput(delta int64) {
 	defer u.mu.Unlock()
 	u.sawDelta = true
 	u.outputTokens += delta
+}
+
+// applyBilledTurnEndedUsage copies Cursor's authoritative billed split onto the
+// usage. input_tokens is cache-INCLUSIVE on api2.cursor.sh, so the uncached
+// remainder is backed out for CPA's exclusive usage.input.
+func (u *cursorTokenUsage) applyBilledTurnEndedUsage(input, output, cacheRead, cacheWrite *int64) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if input == nil && output == nil && cacheRead == nil && cacheWrite == nil {
+		return
+	}
+	u.sawTurnEnded = true
+	if cacheRead != nil {
+		u.cacheRead = *cacheRead
+	}
+	if cacheWrite != nil {
+		u.cacheWrite = *cacheWrite
+	}
+	if output != nil {
+		u.outputTokens = *output
+	}
+	if input != nil {
+		// input_tokens is cache-INCLUSIVE on api2.cursor.sh; back out cache for CPA exclusive input
+		u.inputTokens = *input - u.cacheRead - u.cacheWrite
+		if u.inputTokens < 0 {
+			u.inputTokens = 0
+		}
+	}
 }
 
 func (u *cursorTokenUsage) setInputEstimate(payloadBytes int) {
@@ -964,8 +1000,8 @@ func (u *cursorTokenUsage) setInputEstimate(payloadBytes int) {
 func (u *cursorTokenUsage) get() (input, output int64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.sawDelta {
-		return 0, u.outputTokens
+	if u.sawTurnEnded || u.sawDelta {
+		return u.inputTokens, u.outputTokens
 	}
 	return u.inputTokensEst, 0
 }
@@ -974,6 +1010,35 @@ func (u *cursorTokenUsage) sawTokenDelta() bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.sawDelta
+}
+
+// sawTokenEvidence reports whether the stream produced or billed any tokens.
+// A resource_exhausted end-stream WITH evidence is a mid-flight context
+// overflow; WITHOUT it, the conversation is poisoned/rate-limited and must stay
+// on the rotation path.
+func (u *cursorTokenUsage) sawTokenEvidence() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.sawDelta || u.sawTurnEnded || u.outputTokens > 0 || u.inputTokens > 0 || u.cacheRead > 0 || u.cacheWrite > 0
+}
+
+// applyCheckpointTokenDetails feeds a checkpoint's tokenDetails.usedTokens (the
+// server's live conversation size, sent mid-turn) into the in-flight usage. It
+// never overrides the billed turnEnded split once that arrived.
+func (u *cursorTokenUsage) applyCheckpointTokenDetails(usedTokens int64) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.sawTurnEnded {
+		return
+	}
+	if usedTokens <= 0 {
+		return
+	}
+	input := usedTokens - u.outputTokens - u.cacheRead - u.cacheWrite
+	if input < 0 {
+		input = 0
+	}
+	u.inputTokens = input
 }
 
 // --- OpenAI request parsing ---

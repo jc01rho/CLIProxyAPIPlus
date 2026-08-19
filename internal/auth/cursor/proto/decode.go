@@ -84,8 +84,17 @@ type DecodedServerMessage struct {
 	// For TokenDeltaUpdate
 	TokenDelta int64
 
+	// For TurnEndedUpdate billed tokens (production schema 2026.08.11)
+	TurnEndedInput      *int64
+	TurnEndedOutput     *int64
+	TurnEndedCacheRead  *int64
+	TurnEndedCacheWrite *int64
+
 	// For conversation checkpoint update (raw bytes, not decoded)
 	CheckpointData []byte
+	// CheckpointUsedTokens is the tokenDetails.usedTokens varint pulled from
+	// the raw ConversationStateStructure (field 5 → CTD_UsedTokens).
+	CheckpointUsedTokens int64
 }
 
 // DecodeAgentServerMessage parses an AgentServerMessage and returns
@@ -203,9 +212,9 @@ func decodeInteractionUpdate(data []byte, msg *DecodedServerMessage) {
 				// heartbeat from server
 				msg.Type = ServerMsgHeartbeat
 			case IU_TurnEnded:
-				// turn_ended - critical: model finished generating
 				msg.Type = ServerMsgTurnEnded
-				log.Debugf("decodeInteractionUpdate: TurnEndedUpdate - stream should end")
+				decodeTurnEndedUpdate(val, msg)
+				log.Debugf("decodeInteractionUpdate: TurnEndedUpdate billed=%v out=%v cr=%v cw=%v - stream should end", msg.TurnEndedInput, msg.TurnEndedOutput, msg.TurnEndedCacheRead, msg.TurnEndedCacheWrite)
 			case IU_StepStarted:
 				// step_started - ignore
 				log.Debugf("decodeInteractionUpdate: StepStartedUpdate (ignored)")
@@ -650,6 +659,85 @@ func decodeBytesField(data []byte, targetField protowire.Number) []byte {
 		}
 	}
 	return nil
+}
+
+func decodeTurnEndedUpdate(data []byte, msg *DecodedServerMessage) {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return
+		}
+		data = data[n:]
+		switch typ {
+		case protowire.VarintType:
+			val, m := protowire.ConsumeVarint(data)
+			if m < 0 {
+				return
+			}
+			data = data[m:]
+			v := int64(val)
+			switch num {
+			case TEU_InputTokens:
+				msg.TurnEndedInput = &v
+			case TEU_OutputTokens:
+				msg.TurnEndedOutput = &v
+			case TEU_CacheReadTokens:
+				msg.TurnEndedCacheRead = &v
+			case TEU_CacheWriteTokens:
+				msg.TurnEndedCacheWrite = &v
+			}
+		default:
+			m := protowire.ConsumeFieldValue(num, typ, data)
+			if m < 0 {
+				return
+			}
+			data = data[m:]
+		}
+	}
+}
+
+// decodeCheckpointUsedTokens extracts tokenDetails.usedTokens (CTD field inside
+// ConversationStateStructure field 5) from a raw checkpoint bytes payload.
+func decodeCheckpointUsedTokens(checkpointData []byte) int64 {
+	for len(checkpointData) > 0 {
+		num, typ, n := protowire.ConsumeTag(checkpointData)
+		if n < 0 {
+			return 0
+		}
+		checkpointData = checkpointData[n:]
+		if num == 5 && typ == protowire.BytesType { // field 5 is ConversationStateStructure.tokenDetails
+			inner, m := protowire.ConsumeBytes(checkpointData)
+			if m < 0 {
+				return 0
+			}
+			for len(inner) > 0 {
+				subNum, subTyp, k := protowire.ConsumeTag(inner)
+				if k < 0 {
+					return 0
+				}
+				inner = inner[k:]
+				if subNum == CTD_UsedTokens && subTyp == protowire.VarintType {
+					v, p := protowire.ConsumeVarint(inner)
+					if p < 0 {
+						return 0
+					}
+					return int64(v)
+				}
+				m2 := protowire.ConsumeFieldValue(subNum, subTyp, inner)
+				if m2 < 0 {
+					return 0
+				}
+				inner = inner[m2:]
+			}
+			return 0
+		}
+		m := protowire.ConsumeFieldValue(num, typ, checkpointData)
+		if m < 0 {
+			return 0
+		}
+		checkpointData = checkpointData[m:]
+	}
+	return 0
 }
 
 // decodeVarintField extracts an int64 from the first matching varint field in a submessage.

@@ -173,6 +173,15 @@ const (
 	IU_StepCompleted     = 17 // StepCompletedUpdate
 )
 
+// TurnEndedUpdate billed token fields (Cursor production schema 2026.08.11)
+const (
+	TEU_InputTokens      = 1 // int64
+	TEU_OutputTokens     = 2 // int64
+	TEU_CacheReadTokens  = 3 // int64
+	TEU_CacheWriteTokens = 4 // int64
+	TEU_ReasoningTokens  = 5 // int64
+)
+
 // ToolCallStartedUpdate / ToolCallCompletedUpdate (identical shapes)
 const (
 	TCU_CallId   = 1 // string
@@ -217,6 +226,12 @@ const (
 // ThinkingDeltaUpdate (msg 97)
 const (
 	TKD_Text = 1 // string
+)
+
+// ConversationTokenDetails (ConversationStateStructure field 5)
+const (
+	CTD_UsedTokens = 1 // uint32
+	CTD_MaxTokens  = 2 // uint32
 )
 
 // KvServerMessage (msg 271)
@@ -456,11 +471,11 @@ const (
 
 // ListMcpResourcesExecResult oneof "result": success=1, error=2, rejected=3
 const (
-	LMR_Success   = 1 // ListMcpResourcesSuccess (empty message = no resources)
-	LMR_Error     = 2 // ListMcpResourcesError
-	LMR_Rejected  = 3 // ListMcpResourcesRejected
-	LMRE_Error    = 1 // ListMcpResourcesError.error
-	LMRR_Reason   = 1 // ListMcpResourcesRejected.reason
+	LMR_Success  = 1 // ListMcpResourcesSuccess (empty message = no resources)
+	LMR_Error    = 2 // ListMcpResourcesError
+	LMR_Rejected = 3 // ListMcpResourcesRejected
+	LMRE_Error   = 1 // ListMcpResourcesError.error
+	LMRR_Reason  = 1 // ListMcpResourcesRejected.reason
 )
 
 // ReadMcpResourceExecResult oneof "result"
@@ -483,7 +498,7 @@ const (
 
 // SubagentResult oneof "result"
 const (
-	SAR_Error  = 2 // SubagentError
+	SAR_Error   = 2 // SubagentError
 	SAE_AgentId = 1 // SubagentError.agent_id (optional)
 	SAE_Error   = 2 // SubagentError.error
 )
@@ -580,9 +595,9 @@ const (
 
 // ReadResult error variant (used for redacted_read answers)
 const (
-	RR_Error    = 2 // ReadResult.error
-	RER_Path    = 1 // ReadError.path
-	RER_Error   = 2 // ReadError.error
+	RR_Error  = 2 // ReadResult.error
+	RER_Path  = 1 // ReadError.path
+	RER_Error = 2 // ReadError.error
 )
 
 // --- Rejection struct fields ---
