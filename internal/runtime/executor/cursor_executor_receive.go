@@ -165,6 +165,9 @@ func processH2SessionFrames(
 					if onCheckpoint != nil && len(msg.CheckpointData) > 0 {
 						onCheckpoint(msg.CheckpointData)
 					}
+					if tokenUsage != nil && len(msg.CheckpointData) > 0 {
+						tokenUsage.applyCheckpointTokenDetails(msg.CheckpointUsedTokens)
+					}
 				case cursorproto.ServerMsgKvGetBlob:
 					data := blobStore[cursorproto.BlobIdHex(msg.BlobId)]
 					if err := cursorWriteClientMessage(stream, cursorproto.EncodeKvGetBlobResult(msg.KvId, data)); err != nil {
@@ -182,6 +185,9 @@ func processH2SessionFrames(
 						return nil
 					}
 					turnEnded = true
+					if tokenUsage != nil {
+						tokenUsage.applyBilledTurnEndedUsage(msg.TurnEndedInput, msg.TurnEndedOutput, msg.TurnEndedCacheRead, msg.TurnEndedCacheWrite)
+					}
 				default:
 					req, ok := cursorExecRequestFromPayload(payload)
 					if !ok {
