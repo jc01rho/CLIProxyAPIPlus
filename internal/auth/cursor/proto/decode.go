@@ -32,6 +32,10 @@ const (
 	ServerMsgExecBgShellSpawn                      // Rejected: background shell
 	ServerMsgExecWriteShellStdin                   // Rejected: write shell stdin
 	ServerMsgExecOther                             // Other exec types (respond with empty)
+	ServerMsgToolCallStarted                       // ToolCallStartedUpdate
+	ServerMsgToolCallCompleted                     // ToolCallCompletedUpdate
+	ServerMsgPartialToolCall                       // PartialToolCallUpdate (args text snapshot)
+	ServerMsgToolCallDelta                         // ToolCallDeltaUpdate
 	ServerMsgTurnEnded                             // Turn has ended (no more output)
 	ServerMsgHeartbeat                             // Server heartbeat
 	ServerMsgTokenDelta                            // Token usage delta
@@ -58,6 +62,15 @@ type DecodedServerMessage struct {
 	McpToolName   string
 	McpToolCallId string
 	McpArgs       map[string][]byte // arg name -> protobuf-encoded value
+
+	// For tool call streaming updates. CallId is the ToolCall*Update envelope
+	// correlation id; ToolCallId and ToolCallCase come from the nested ToolCall
+	// (modern builds carry the call id on the envelope, field 57).
+	CallId            string // ToolCall*Update.call_id
+	ToolCallId        string // ToolCall.tool_call_id
+	ToolCallCase      int    // ToolCall.tool oneof case number (0 when unset)
+	ArgsTextDelta     string // PartialToolCallUpdate.args_text_delta (cumulative snapshot)
+	ToolCallDeltaData []byte // raw ToolCallDelta bytes (ToolCallDeltaUpdate)
 
 	// For rejection context
 	Path             string
@@ -165,32 +178,142 @@ func decodeInteractionUpdate(data []byte, msg *DecodedServerMessage) {
 			case IU_ThinkingCompleted:
 				msg.Type = ServerMsgThinkingCompleted
 				log.Debugf("decodeInteractionUpdate: ThinkingCompleted")
-			case 2:
-				// tool_call_started - ignore but log
-				log.Debugf("decodeInteractionUpdate: ToolCallStarted (ignored)")
-			case 3:
-				// tool_call_completed - ignore but log
-				log.Debugf("decodeInteractionUpdate: ToolCallCompleted (ignored)")
-			case 8:
+			case IU_ToolCallStarted:
+				msg.Type = ServerMsgToolCallStarted
+				decodeToolCallUpdate(val, msg)
+				log.Debugf("decodeInteractionUpdate: ToolCallStarted call_id=%q tool_call_id=%q case=%d", msg.CallId, msg.ToolCallId, msg.ToolCallCase)
+			case IU_ToolCallCompleted:
+				msg.Type = ServerMsgToolCallCompleted
+				decodeToolCallUpdate(val, msg)
+				log.Debugf("decodeInteractionUpdate: ToolCallCompleted call_id=%q tool_call_id=%q case=%d", msg.CallId, msg.ToolCallId, msg.ToolCallCase)
+			case IU_PartialToolCall:
+				msg.Type = ServerMsgPartialToolCall
+				decodeToolCallUpdate(val, msg)
+				log.Debugf("decodeInteractionUpdate: PartialToolCall call_id=%q args_len=%d", msg.CallId, len(msg.ArgsTextDelta))
+			case IU_ToolCallDelta:
+				msg.Type = ServerMsgToolCallDelta
+				decodeToolCallDeltaUpdate(val, msg)
+				log.Debugf("decodeInteractionUpdate: ToolCallDelta call_id=%q delta_len=%d", msg.CallId, len(msg.ToolCallDeltaData))
+			case IU_TokenDelta:
 				// token_delta - extract token count
 				msg.Type = ServerMsgTokenDelta
-				msg.TokenDelta = decodeVarintField(val, 1)
+				msg.TokenDelta = decodeVarintField(val, TKDU_Tokens)
 				log.Debugf("decodeInteractionUpdate: TokenDeltaUpdate tokens=%d", msg.TokenDelta)
-			case 13:
+			case IU_Heartbeat:
 				// heartbeat from server
 				msg.Type = ServerMsgHeartbeat
-			case 14:
+			case IU_TurnEnded:
 				// turn_ended - critical: model finished generating
 				msg.Type = ServerMsgTurnEnded
 				log.Debugf("decodeInteractionUpdate: TurnEndedUpdate - stream should end")
-			case 16:
+			case IU_StepStarted:
 				// step_started - ignore
 				log.Debugf("decodeInteractionUpdate: StepStartedUpdate (ignored)")
-			case 17:
+			case IU_StepCompleted:
 				// step_completed - ignore
 				log.Debugf("decodeInteractionUpdate: StepCompletedUpdate (ignored)")
 			default:
 				log.Debugf("decodeInteractionUpdate: unknown field %d", num)
+			}
+		} else {
+			n := protowire.ConsumeFieldValue(num, typ, data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+		}
+	}
+}
+
+// decodeToolCallUpdate parses the shared envelope of ToolCallStartedUpdate,
+// ToolCallCompletedUpdate and PartialToolCallUpdate (call_id=1, tool_call=2,
+// plus args_text_delta=3 on the partial variant).
+func decodeToolCallUpdate(data []byte, msg *DecodedServerMessage) {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return
+		}
+		data = data[n:]
+
+		if typ == protowire.BytesType {
+			val, n := protowire.ConsumeBytes(data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+			switch num {
+			case TCU_CallId:
+				msg.CallId = string(val)
+			case TCU_ToolCall:
+				decodeToolCall(val, msg)
+			case PTCU_ArgsTextDelta:
+				msg.ArgsTextDelta = string(val)
+			}
+		} else {
+			n := protowire.ConsumeFieldValue(num, typ, data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+		}
+	}
+}
+
+// decodeToolCall extracts the envelope tool_call_id (field 57) and the oneof
+// tool-variant case number from a ToolCall. The variant's args are left for
+// the caller's own tool dispatch; every oneof variant is a message field.
+func decodeToolCall(data []byte, msg *DecodedServerMessage) {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return
+		}
+		data = data[n:]
+
+		if typ == protowire.BytesType {
+			val, n := protowire.ConsumeBytes(data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+			if num == TC_ToolCallId {
+				msg.ToolCallId = string(val)
+			} else {
+				msg.ToolCallCase = int(num)
+			}
+		} else {
+			n := protowire.ConsumeFieldValue(num, typ, data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+		}
+	}
+}
+
+// decodeToolCallDeltaUpdate parses a ToolCallDeltaUpdate: call_id=1,
+// tool_call_delta=2. The delta submessage (Shell/Task/Edit variants, each
+// wrapping a nested InteractionUpdate) is kept raw for the caller.
+func decodeToolCallDeltaUpdate(data []byte, msg *DecodedServerMessage) {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return
+		}
+		data = data[n:]
+
+		if typ == protowire.BytesType {
+			val, n := protowire.ConsumeBytes(data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+			switch num {
+			case TCDU_CallId:
+				msg.CallId = string(val)
+			case TCDU_ToolCallDelta:
+				msg.ToolCallDeltaData = append([]byte(nil), val...)
 			}
 		} else {
 			n := protowire.ConsumeFieldValue(num, typ, data)
