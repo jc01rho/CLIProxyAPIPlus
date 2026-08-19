@@ -126,17 +126,37 @@ func TestNormalizeDeltaContentArray(t *testing.T) {
 }
 
 func TestStripOpenAICompatProviderUnsupportedFields_Kimi(t *testing.T) {
-	payload := []byte(`{"model":"kimi-k2.5","messages":[],"reasoning_effort":"high","reasoning":{"enabled":true},"reasoningSummary":"auto","include":["reasoning"],"verbosity":"detailed"}`)
+	payload := []byte(`{"model":"kimi-k2.5","messages":[],"reasoning_effort":"high","reasoning":{"enabled":true},"reasoningSummary":"auto","include":["reasoning"],"verbosity":"detailed","temperature":0.5,"top_p":0.9}`)
 	compat := &config.OpenAICompatibility{Name: "kimi", BaseURL: "https://api.moonshot.cn/v1"}
 
 	got := stripOpenAICompatProviderUnsupportedFields("openai-compatible-kimi", compat, payload)
-	for _, field := range []string{"reasoning_effort", "reasoning", "reasoningSummary", "include", "verbosity"} {
+	for _, field := range []string{"reasoning_effort", "reasoning", "reasoningSummary", "include", "verbosity", "temperature"} {
 		if gjson.GetBytes(got, field).Exists() {
 			t.Fatalf("%s should be removed for OpenAI-compatible Kimi provider, got %s", field, got)
 		}
 	}
+	if !gjson.GetBytes(got, "top_p").Exists() {
+		t.Fatalf("top_p should be preserved for kimi-k2.5, got %s", got)
+	}
 	if model := gjson.GetBytes(got, "model").String(); model != "kimi-k2.5" {
 		t.Fatalf("model = %q, want kimi-k2.5; payload=%s", model, got)
+	}
+}
+
+func TestStripOpenAICompatProviderUnsupportedFields_KimiK3FixedSampling(t *testing.T) {
+	payload := []byte(`{"model":"kimi-k3","messages":[],"temperature":0.5,"top_p":0.9,"presence_penalty":0.1,"frequency_penalty":0.2,"n":2,"max_tokens":64}`)
+	compat := &config.OpenAICompatibility{Name: "kimi", BaseURL: "https://api.moonshot.cn/v1"}
+
+	got := stripOpenAICompatProviderUnsupportedFields("openai-compatible-kimi", compat, payload)
+	for _, field := range []string{"temperature", "top_p", "presence_penalty", "frequency_penalty", "n"} {
+		if gjson.GetBytes(got, field).Exists() {
+			t.Fatalf("%s should be removed for kimi-k3, got %s", field, got)
+		}
+	}
+	for _, field := range []string{"model", "messages", "max_tokens"} {
+		if !gjson.GetBytes(got, field).Exists() {
+			t.Fatalf("%s should be preserved for kimi-k3, got %s", field, got)
+		}
 	}
 }
 

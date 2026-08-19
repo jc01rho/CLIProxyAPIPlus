@@ -145,6 +145,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	if err != nil {
 		return resp, err
 	}
+	body = stripKimiFixedSamplingFields(body, upstreamModel)
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
 
 	url := kimiauth.KimiAPIBaseURL + "/v1/chat/completions"
@@ -270,6 +271,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	if err != nil {
 		return nil, err
 	}
+	body = stripKimiFixedSamplingFields(body, upstreamModel)
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
 
 	url := kimiauth.KimiAPIBaseURL + "/v1/chat/completions"
@@ -828,6 +830,61 @@ func stripKimiUnsupportedFields(payload []byte) []byte {
 	for _, path := range paths {
 		updated, err := sjson.DeleteBytes(payload, path)
 		if err == nil {
+			payload = updated
+		}
+	}
+	return payload
+}
+
+// kimiSamplingConstraintModelBase normalizes a Kimi model name to the lowercase
+// base used for parameter-constraint matching: the thinking suffix (e.g.
+// "(1024)"), any "[1m]" context marker, and the "kimi-" prefix are removed, so
+// "kimi-k3[1m](high)", "k3(1024)", and "Kimi-K3" all map to "k3".
+func kimiSamplingConstraintModelBase(model string) string {
+	parsed := thinking.ParseSuffix(model)
+	base := strings.ToLower(strings.TrimSpace(parsed.ModelName))
+	base = strings.TrimSuffix(base, "[1m]")
+	return stripKimiPrefix(base)
+}
+
+// kimiFixedSamplingFields returns the top-level request fields whose values the
+// Kimi API does not allow clients to override for the given model. Kimi fixes
+// the sampling parameters of its reasoning models (the API answers
+// "invalid temperature: only 1 is allowed for this model" for any other
+// value), so the proxy must drop client-supplied values and let upstream apply
+// the per-mode defaults instead of forwarding them.
+func kimiFixedSamplingFields(model string) []string {
+	base := kimiSamplingConstraintModelBase(model)
+	matches := func(names ...string) bool {
+		for _, name := range names {
+			if base == name || strings.HasPrefix(base, name+"-") {
+				return true
+			}
+		}
+		return false
+	}
+	if matches("k3", "k2.6", "k2.7-code", "for-coding") {
+		return []string{"temperature", "top_p", "presence_penalty", "frequency_penalty", "n"}
+	}
+	if matches("k2.5", "k2-thinking") {
+		return []string{"temperature"}
+	}
+	return nil
+}
+
+// stripKimiFixedSamplingFields removes client-supplied sampling fields that the
+// Kimi API fixes for the model. The payload is returned unchanged when the
+// model has no fixed fields or the field is absent.
+func stripKimiFixedSamplingFields(payload []byte, model string) []byte {
+	fields := kimiFixedSamplingFields(model)
+	if len(fields) == 0 || len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return payload
+	}
+	for _, field := range fields {
+		if !gjson.GetBytes(payload, field).Exists() {
+			continue
+		}
+		if updated, err := sjson.DeleteBytes(payload, field); err == nil {
 			payload = updated
 		}
 	}
