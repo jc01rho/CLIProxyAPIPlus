@@ -58,9 +58,10 @@ type freebuffCredentialState struct {
 }
 
 type freebuffSession struct {
-	model      string
-	instanceID string
-	expiresAt  time.Time
+	model          string
+	instanceID     string
+	expiresAt      time.Time
+	requestedModel string
 }
 
 type freebuffRun struct {
@@ -162,7 +163,7 @@ func (e *FreebuffExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 		return resp, err
 	}
 	defer httpResp.Body.Close()
-	defer e.startSessionHeartbeat(ctx, auth, state, model, session.instanceID)()
+	defer e.startSessionHeartbeat(ctx, auth, state, freebuffSessionModel(session, model), session.instanceID)()
 	finished := false
 	finish := func(status string, completionID string, finishErr error) {
 		if finished {
@@ -261,7 +262,7 @@ func (e *FreebuffExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		defer close(out)
 		defer e.releaseCredentialState(stateKey, state, true)
 		defer httpResp.Body.Close()
-		defer e.startSessionHeartbeat(ctx, auth, state, model, session.instanceID)()
+		defer e.startSessionHeartbeat(ctx, auth, state, freebuffSessionModel(session, model), session.instanceID)()
 		completed := false
 		var lastID string
 		var param any
@@ -514,31 +515,36 @@ func (e *FreebuffExecutor) ensureSession(ctx context.Context, auth *cliproxyauth
 	skipLookup := false
 	if state.session != nil && state.session.instanceID != "" {
 		cached := state.session
-		if cached.model != model {
+		if cached.model != model && cached.requestedModel != model {
 			if _, _, err := e.sessionRequest(ctx, auth, http.MethodDelete, cached.model, cached.instanceID); err != nil {
 				return nil, err
 			}
 			state.session = nil
 			skipLookup = true
 		} else {
-			current, status, refreshErr := e.sessionRequest(ctx, auth, http.MethodGet, model, cached.instanceID)
+			// Refresh against the admitted model: upstream may have admitted
+			// the session for a coerced model different from the request.
+			admitted := cached.model
+			current, status, refreshErr := e.sessionRequest(ctx, auth, http.MethodGet, admitted, cached.instanceID)
 			if refreshErr != nil {
 				return nil, refreshErr
 			}
-			if status == "active" && current.instanceID != "" && current.model == model {
+			if status == "active" && current.instanceID != "" && current.model == admitted {
+				current.requestedModel = cached.requestedModel
 				state.session = current
 				return current, nil
 			}
 			if status == "queued" && current.instanceID != "" {
-				ready, err := e.waitForSession(ctx, auth, model, current.instanceID)
+				ready, err := e.waitForSession(ctx, auth, admitted, current.instanceID)
 				if err != nil {
 					return nil, err
 				}
+				ready.requestedModel = cached.requestedModel
 				state.session = ready
 				return ready, nil
 			}
-			if current.instanceID != "" && (status == "active" || status == "model_locked" || current.model != model) {
-				if _, _, err := e.sessionRequest(ctx, auth, http.MethodDelete, model, current.instanceID); err != nil {
+			if current.instanceID != "" && (status == "active" || status == "model_locked" || current.model != admitted) {
+				if _, _, err := e.sessionRequest(ctx, auth, http.MethodDelete, admitted, current.instanceID); err != nil {
 					return nil, err
 				}
 				skipLookup = true
@@ -552,6 +558,7 @@ func (e *FreebuffExecutor) ensureSession(ctx context.Context, auth *cliproxyauth
 			return nil, err
 		}
 		if status == "active" && current.instanceID != "" && current.model == model {
+			current.requestedModel = model
 			state.session = current
 			return current, nil
 		}
@@ -560,6 +567,7 @@ func (e *FreebuffExecutor) ensureSession(ctx context.Context, auth *cliproxyauth
 			if waitErr != nil {
 				return nil, waitErr
 			}
+			ready.requestedModel = model
 			state.session = ready
 			return ready, nil
 		}
@@ -573,6 +581,14 @@ func (e *FreebuffExecutor) ensureSession(ctx context.Context, auth *cliproxyauth
 	if err != nil {
 		return nil, err
 	}
+	if createdStatus == "model_locked" && created.instanceID != "" {
+		// The slot is still locked to another model; release it and retry once.
+		if _, _, errDelete := e.sessionRequest(ctx, auth, http.MethodDelete, model, created.instanceID); errDelete == nil {
+			if retry, retryStatus, retryErr := e.sessionRequest(ctx, auth, http.MethodPost, model, ""); retryErr == nil {
+				created, createdStatus = retry, retryStatus
+			}
+		}
+	}
 	if created.instanceID == "" {
 		return nil, statusErr{code: http.StatusBadGateway, msg: "freebuff: session response missing instanceId"}
 	}
@@ -581,15 +597,17 @@ func (e *FreebuffExecutor) ensureSession(ctx context.Context, auth *cliproxyauth
 		if waitErr != nil {
 			return nil, waitErr
 		}
+		ready.requestedModel = model
 		state.session = ready
 		return ready, nil
 	}
-	if createdStatus != "active" || created.model != model {
+	if createdStatus != "active" {
 		cleanupCtx, cancelCleanup := freebuffCleanupContext(ctx)
 		_, _, _ = e.sessionRequest(cleanupCtx, auth, http.MethodDelete, model, created.instanceID)
 		cancelCleanup()
 		return nil, statusErr{code: http.StatusBadGateway, msg: "freebuff: invalid session admission response"}
 	}
+	created.requestedModel = model
 	state.session = created
 	return created, nil
 }
@@ -599,16 +617,17 @@ func (e *FreebuffExecutor) openChat(ctx context.Context, auth *cliproxyauth.Auth
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	run, err := e.startRun(ctx, auth, agentID)
+	sessionModel, sessionAgent := e.coerceToAdmittedSession(auth, model, agentID, session)
+	run, err := e.startRun(ctx, auth, sessionAgent)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	payload, err := buildFreebuffPayload(basePayload, model, agentID, run.id, session.instanceID)
+	payload, err := buildFreebuffPayload(basePayload, sessionModel, sessionAgent, run.id, session.instanceID)
 	if err != nil {
 		e.finishRunDetached(ctx, auth, run, "failed", "", err)
 		return nil, nil, nil, nil, err
 	}
-	resp, err := e.chat(ctx, auth, model, session.instanceID, payload)
+	resp, err := e.chat(ctx, auth, sessionModel, session.instanceID, payload)
 	if err != nil {
 		status := "failed"
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -618,6 +637,29 @@ func (e *FreebuffExecutor) openChat(ctx context.Context, auth *cliproxyauth.Auth
 		return nil, nil, nil, nil, err
 	}
 	return session, run, payload, resp, nil
+}
+
+// coerceToAdmittedSession follows upstream session admission when it admits the
+// credential for a model different from the requested one (Codebuff coerces
+// limited-tier accounts to an alternate model). The admitted model drives the
+// run, payload and chat so they stay consistent with the session row.
+func (e *FreebuffExecutor) coerceToAdmittedSession(auth *cliproxyauth.Auth, model, agentID string, session *freebuffSession) (string, string) {
+	admitted := freebuffSessionModel(session, "")
+	if admitted == "" || admitted == model {
+		return model, agentID
+	}
+	if _, admittedAgent := e.resolveModel(auth, admitted); admittedAgent != "" {
+		agentID = admittedAgent
+	}
+	log.Debugf("freebuff executor: session admitted model %q instead of requested %q; coercing", admitted, model)
+	return admitted, agentID
+}
+
+func freebuffSessionModel(session *freebuffSession, fallback string) string {
+	if session != nil && session.model != "" {
+		return session.model
+	}
+	return fallback
 }
 
 func (e *FreebuffExecutor) invalidateSession(state *freebuffCredentialState) {
@@ -649,12 +691,11 @@ func (e *FreebuffExecutor) waitForSession(ctx context.Context, auth *cliproxyaut
 		if current.instanceID != "" {
 			cleanupInstanceID = current.instanceID
 		}
-		if status == "active" && current.instanceID != "" && current.model == model {
+		if status == "active" && current.instanceID != "" {
+			// Upstream may activate the queued session for a different model
+			// (limited-tier coercion); accept it and let the caller coerce.
 			retain = true
 			return current, nil
-		}
-		if status == "active" && current.model != model {
-			return nil, statusErr{code: http.StatusConflict, msg: "freebuff: queued session activated with a different model"}
 		}
 		if status != "queued" {
 			return nil, statusErr{code: http.StatusBadGateway, msg: "freebuff: unexpected session queue status"}
@@ -746,6 +787,7 @@ func (e *FreebuffExecutor) applyHeartbeatSession(
 	if state.session == nil || state.session.model != model || state.session.instanceID != instanceID {
 		return
 	}
+	current.requestedModel = state.session.requestedModel
 	state.session = current
 }
 
