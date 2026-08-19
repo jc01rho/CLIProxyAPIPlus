@@ -166,3 +166,52 @@ func (m *Manager) annotateThresholdDecisionNoMatch(ctx context.Context, routeMod
 	}
 	return SetBillingDecisionInContext(ctx, thresholdRuleTargetBillingClass(rule), reason)
 }
+
+func (m *Manager) filterProvidersForThreshold(routeModel string, providers []string, opts cliproxyexecutor.Options) []string {
+	if m == nil || len(providers) == 0 {
+		return providers
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil || len(cfg.Routing.TokenThresholdRules) == 0 {
+		return providers
+	}
+	count, ok := estimatedInputTokensFromMetadata(opts.Metadata)
+	if !ok || count <= 0 {
+		return providers
+	}
+	rule, ok := matchTokenThresholdRule(cfg.Routing.TokenThresholdRules, routeModel, count)
+	if !ok {
+		return providers
+	}
+	target := strings.TrimSpace(string(rule.BillingClass))
+	if target == "" {
+		return providers
+	}
+	matchedProviders := make([]string, 0, len(providers))
+	seen := make(map[string]struct{}, len(providers))
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, provider := range providers {
+		providerKey := strings.ToLower(strings.TrimSpace(provider))
+		if providerKey == "" {
+			continue
+		}
+		if _, done := seen[providerKey]; done {
+			continue
+		}
+		for _, auth := range m.auths {
+			if auth == nil || auth.Disabled || strings.ToLower(strings.TrimSpace(auth.Provider)) != providerKey {
+				continue
+			}
+			if strings.EqualFold(authBillingClass(auth), target) {
+				matchedProviders = append(matchedProviders, providerKey)
+				seen[providerKey] = struct{}{}
+				break
+			}
+		}
+	}
+	if len(matchedProviders) == 0 {
+		return providers
+	}
+	return matchedProviders
+}
