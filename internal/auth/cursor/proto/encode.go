@@ -4,6 +4,7 @@
 package proto
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -898,6 +899,70 @@ func listFields(msg *dynamicpb.Message) []string {
 }
 
 // --- Utilities ---
+
+// cursorUnsupportedSchemaKeys are the JSON-Schema composition keywords
+// Cursor's gateway cannot carry. An advertised tool whose input schema
+// contains oneOf, anyOf, or allOf is rejected upstream with a wrapped
+// provider 400 for the WHOLE request (zero tokens, resource_exhausted
+// end-stream). MCP tools imported from external servers routinely ship such
+// schemas (e.g. ast-grep's scan). "not" is tolerated upstream and kept.
+var cursorUnsupportedSchemaKeys = map[string]struct{}{
+	"oneOf": {},
+	"anyOf": {},
+	"allOf": {},
+}
+
+// SanitizeCursorToolSchema strips the JSON-Schema composition keywords
+// Cursor's gateway rejects (oneOf/anyOf/allOf) from a tool's input schema,
+// preserving every other key including "not". It mirrors senpi's
+// sanitizeCursorToolSchema: parse, delete the unsupported keys at every
+// object level (top-level and nested), and re-serialize. The input slice is
+// never mutated.
+//
+// A nil, empty, or invalid JSON input is returned unchanged, as is a JSON
+// value that is not an object (the callers only feed tool input schemas,
+// which are always objects; any other shape is passed through intact).
+func SanitizeCursorToolSchema(parameters []byte) []byte {
+	if len(parameters) == 0 {
+		return parameters
+	}
+	dec := json.NewDecoder(bytes.NewReader(parameters))
+	dec.UseNumber()
+	var parsed any
+	if err := dec.Decode(&parsed); err != nil {
+		return parameters
+	}
+	sanitized := sanitizeSchemaValue(parsed)
+	out, err := json.Marshal(sanitized)
+	if err != nil {
+		return parameters
+	}
+	return out
+}
+
+// sanitizeSchemaValue recursively walks a decoded JSON value, deleting the
+// unsupported composition keywords from every object while leaving all other
+// keys (including "not") intact.
+func sanitizeSchemaValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, child := range v {
+			if _, unsupported := cursorUnsupportedSchemaKeys[key]; unsupported {
+				delete(v, key)
+				continue
+			}
+			v[key] = sanitizeSchemaValue(child)
+		}
+		return v
+	case []any:
+		for i, child := range v {
+			v[i] = sanitizeSchemaValue(child)
+		}
+		return v
+	default:
+		return value
+	}
+}
 
 // jsonToProtobufValueBytes converts a JSON schema (json.RawMessage) to protobuf Value binary.
 // This mirrors the TS pattern: toBinary(ValueSchema, fromJson(ValueSchema, jsonSchema))

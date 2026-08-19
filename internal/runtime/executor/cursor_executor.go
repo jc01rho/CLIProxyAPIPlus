@@ -1284,7 +1284,10 @@ func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string) *
 		params.McpTools = append(params.McpTools, cursorproto.McpToolDef{
 			Name:        fn.Get("name").String(),
 			Description: fn.Get("description").String(),
-			InputSchema: json.RawMessage(fn.Get("parameters").Raw),
+			// Cursor's gateway rejects tools whose input schema carries
+			// oneOf/anyOf/allOf (resource_exhausted); strip them before the
+			// schema reaches the exec context.
+			InputSchema: json.RawMessage(cursorproto.SanitizeCursorToolSchema([]byte(fn.Get("parameters").Raw))),
 		})
 	}
 
