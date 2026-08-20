@@ -13,9 +13,9 @@ func FilterKiloModels(models []*registry.ModelInfo) []*registry.ModelInfo {
 }
 
 // FilterCursorModels keeps advertised cursor models whose ID or display
-// name contains "free", "composer", or "grok".
+// name contains "free", "composer", "grok", "opus", "sonnet", or "kimi-k3".
 func FilterCursorModels(models []*registry.ModelInfo) []*registry.ModelInfo {
-	return filterModelsContaining(models, "free", "composer", "grok")
+	return filterModelsContaining(models, "free", "composer", "grok", "opus", "sonnet", "kimi-k3")
 }
 
 // FilterKiroModels keeps advertised kiro models whose ID or display name

@@ -110,6 +110,7 @@ attemptLoop:
 					return resp, err
 				}
 			}
+			requestPayload = ensureAntigravityGeminiLeadingUserContent(baseModel, requestPayload)
 
 			if errTokens := antigravityEnsureRequestTokens(auth, requestPayload); errTokens != nil {
 			err = errTokens
@@ -348,6 +349,7 @@ attemptLoop:
 					return resp, err
 				}
 			}
+			requestPayload = ensureAntigravityGeminiLeadingUserContent(baseModel, requestPayload)
 			if errTokens := antigravityEnsureRequestTokens(auth, requestPayload); errTokens != nil {
 				err = errTokens
 				antigravityRecordRequestOutcome(auth, http.StatusTooManyRequests, nil, errTokens)
