@@ -2772,7 +2772,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 					if usage, ok := event["usage"].(float64); ok {
 						upstreamCreditUsage = usage
 						hasUpstreamUsage = true
-						log.Infof("kiro: streamToChannel received meteringEvent (direct): usage=%.4f %s", usage, unit)
+						log.Debugf("kiro: streamToChannel received meteringEvent (direct): usage=%.4f %s", usage, unit)
 					}
 				}
 			}

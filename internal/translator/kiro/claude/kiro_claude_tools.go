@@ -446,7 +446,7 @@ func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseSt
 				ToolUseID: toolUseID,
 				Name:      toolName,
 			}
-			log.Infof("kiro: starting new tool use: %s (ID: %s)", toolName, toolUseID)
+			log.Debugf("kiro: starting new tool use: %s (ID: %s)", toolName, toolUseID)
 		}
 	}
 
@@ -487,7 +487,7 @@ func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseSt
 			// Store truncation info in the state for upstream handling
 			currentToolUse.TruncationInfo = &truncInfo
 		} else {
-			log.Infof("kiro: tool use %s input length: %d bytes (no truncation)", currentToolUse.Name, len(fullInput))
+			log.Debugf("kiro: tool use %s input length: %d bytes (no truncation)", currentToolUse.Name, len(fullInput))
 		}
 
 		// Create the tool use with truncation info if applicable
@@ -507,7 +507,7 @@ func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseSt
 			processedIDs[currentToolUse.ToolUseID] = true
 		}
 
-		log.Infof("kiro: completed tool use: %s (ID: %s, truncated: %v)", currentToolUse.Name, currentToolUse.ToolUseID, truncInfo.IsTruncated)
+		log.Debugf("kiro: completed tool use: %s (ID: %s, truncated: %v)", currentToolUse.Name, currentToolUse.ToolUseID, truncInfo.IsTruncated)
 		return toolUses, nil
 	}
 
