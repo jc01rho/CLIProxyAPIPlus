@@ -31,7 +31,7 @@ func TestFilterKiloModelsDropsPaidStaticCatalog(t *testing.T) {
 	}
 }
 
-func TestFilterCursorModelsKeepsFreeComposerGrok(t *testing.T) {
+func TestFilterCursorModelsKeepsFreeComposerGrokOpusSonnetKimi(t *testing.T) {
 	got := FilterCursorModels([]*registry.ModelInfo{
 		{ID: "composer-2.5", DisplayName: "Composer 2.5"},
 		{ID: "claude-4-sonnet", DisplayName: "Claude 4 Sonnet"},
@@ -40,19 +40,42 @@ func TestFilterCursorModelsKeepsFreeComposerGrok(t *testing.T) {
 		{ID: "cursor-small", DisplayName: "Cursor Small"},
 		{ID: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
 		{ID: "some-free-tier", DisplayName: "Some Free Tier"},
+		{ID: "claude-opus-5", DisplayName: "Claude Opus 5"},
+		{ID: "kimi-k3", DisplayName: "Kimi K3"},
 	})
-	assertModelIDs(t, got, "composer-2.5", "grok-4.5", "some-free-tier")
+	assertModelIDs(t, got, "composer-2.5", "claude-4-sonnet", "grok-4.5", "some-free-tier", "claude-opus-5", "kimi-k3")
 }
 
-func TestFetchCursorModelsWithoutTokenKeepsComposerOnly(t *testing.T) {
+func TestFetchCursorModelsWithoutTokenKeepsAllowedFamiliesOnly(t *testing.T) {
 	got := FetchCursorModels(context.Background(), nil, nil)
 	if len(got) == 0 {
 		t.Fatal("expected filtered cursor fallback models")
 	}
 	for _, model := range got {
-		if !catalogContains(model, "free", "composer", "grok") {
+		if !catalogContains(model, "free", "composer", "grok", "opus", "sonnet", "kimi") {
 			t.Fatalf("kept disallowed cursor model %q (%q)", model.ID, model.DisplayName)
 		}
+	}
+	var sawOpus, sawSonnet, sawKimi bool
+	for _, model := range got {
+		if catalogContains(model, "opus") {
+			sawOpus = true
+		}
+		if catalogContains(model, "sonnet") {
+			sawSonnet = true
+		}
+		if catalogContains(model, "kimi-k3") {
+			sawKimi = true
+		}
+	}
+	if !sawOpus {
+		t.Fatal("expected an opus model in cursor fallback catalog")
+	}
+	if !sawSonnet {
+		t.Fatal("expected a sonnet model in cursor fallback catalog")
+	}
+	if !sawKimi {
+		t.Fatal("expected kimi-k3 in cursor fallback catalog")
 	}
 }
 

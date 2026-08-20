@@ -351,6 +351,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 			action = "countTokens"
 		}
 	}
+	body = helps.EnsureGeminiLeadingUserContent(body, "contents")
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, action)
 	if opts.Alt != "" && action != "countTokens" {
@@ -479,6 +480,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 			action = "countTokens"
 		}
 	}
+	body = helps.EnsureGeminiLeadingUserContent(body, "contents")
 
 	// For API key auth, use simpler URL format without project/location
 	if baseURL == "" {
@@ -593,6 +595,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
 
 	action := getVertexAction(baseModel, true)
+	body = helps.EnsureGeminiLeadingUserContent(body, "contents")
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, action)
 	// Imagen models don't support streaming, skip SSE params
@@ -741,6 +744,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
 
 	action := getVertexAction(baseModel, true)
+	body = helps.EnsureGeminiLeadingUserContent(body, "contents")
 	// For API key auth, use simpler URL format without project/location
 	if baseURL == "" {
 		baseURL = "https://aiplatform.googleapis.com"
@@ -878,6 +882,7 @@ func (e *GeminiVertexExecutor) countTokensWithServiceAccount(ctx context.Context
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "tools")
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "generationConfig")
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
+	translatedReq = helps.EnsureGeminiLeadingUserContent(translatedReq, "contents")
 
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, "countTokens")
@@ -969,6 +974,7 @@ func (e *GeminiVertexExecutor) countTokensWithAPIKey(ctx context.Context, auth *
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "tools")
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "generationConfig")
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
+	translatedReq = helps.EnsureGeminiLeadingUserContent(translatedReq, "contents")
 
 	// For API key auth, use simpler URL format without project/location
 	if baseURL == "" {
