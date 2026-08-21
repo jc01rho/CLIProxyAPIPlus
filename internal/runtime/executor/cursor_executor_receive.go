@@ -661,6 +661,19 @@ func isCursorResourceExhausted(err error) bool {
 	return strings.Contains(message, "resource_exhausted") || strings.Contains(message, "resource exhausted")
 }
 
+// isCursorZeroTokenResourceExhausted reports whether a stream failure is the
+// poisoned-conversation signal that makes the wire conversation id eligible for
+// rotation, mirroring senpi's isZeroTokenResourceExhausted
+// (packages/ai/src/api/cursor-conversation-rotation.ts). senpi gates strictly on
+// whether a streamed tokenDelta arrived: checkpoint and billed turnEnded frames
+// report context size, not generation progress, so neither clears the gate.
+func isCursorZeroTokenResourceExhausted(err error, usage *cursorTokenUsage) bool {
+	if !isCursorResourceExhausted(err) {
+		return false
+	}
+	return usage == nil || !usage.sawTokenDelta()
+}
+
 func (e *CursorExecutor) effectiveCursorConversation(baseConversationID string) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()

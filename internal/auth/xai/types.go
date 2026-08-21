@@ -22,7 +22,13 @@ const (
 	// DeviceCodeGrantType is the OAuth2 device authorization grant type (RFC 8628).
 	DeviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 	// defaultPollInterval is used when the device endpoint omits interval.
+	// RFC 8628 section 3.5 also mandates this as the slow_down backoff increment.
 	defaultPollInterval = 5 * time.Second
+	// minPollInterval is the floor applied to a server-reported slow_down interval.
+	minPollInterval = 1 * time.Second
+	// defaultTokenLifetimeSeconds is assumed when a token response omits expires_in,
+	// so the refresh scheduler always has a concrete expiry to schedule against.
+	defaultTokenLifetimeSeconds = 3600
 	// httpClientTimeout bounds credential-acquisition HTTP calls (device/token/refresh).
 	httpClientTimeout = 30 * time.Second
 	// MaxPollDuration is the upper bound for waiting on user authorization.

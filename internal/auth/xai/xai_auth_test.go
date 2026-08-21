@@ -205,14 +205,157 @@ func TestPollForTokenSlowDownContinuesPolling(t *testing.T) {
 	}
 }
 
-func TestBuildTokenDataOmitsExpireWhenExpiresInZero(t *testing.T) {
+// Given a token response that omits expires_in, When token data is built, Then the
+// senpi default lifetime (DEFAULT_TOKEN_LIFETIME_SECONDS = 3600) is applied so the
+// refresh scheduler has a real expiry to schedule against.
+func TestBuildTokenDataDefaultsExpiresInToOneHour(t *testing.T) {
 	tokenData := buildTokenData("access", "refresh", "", "Bearer", 0, "user@x.ai", "sub-1")
-	if tokenData.Expire != "" {
-		t.Fatalf("Expire = %q, want empty", tokenData.Expire)
+	if tokenData.ExpiresIn != defaultTokenLifetimeSeconds {
+		t.Fatalf("ExpiresIn = %d, want %d", tokenData.ExpiresIn, defaultTokenLifetimeSeconds)
 	}
+	expire, err := time.Parse(time.RFC3339, tokenData.Expire)
+	if err != nil {
+		t.Fatalf("Expire = %q, want RFC3339 timestamp: %v", tokenData.Expire, err)
+	}
+	if delta := time.Until(expire); delta < 55*time.Minute || delta > time.Hour+time.Minute {
+		t.Fatalf("Expire is %v away, want ~1h", delta)
+	}
+
 	tokenData = buildTokenData("access", "refresh", "", "Bearer", 60, "user@x.ai", "sub-1")
+	if tokenData.ExpiresIn != 60 {
+		t.Fatalf("ExpiresIn = %d, want 60 preserved", tokenData.ExpiresIn)
+	}
 	if tokenData.Expire == "" {
 		t.Fatal("Expire empty, want RFC3339 timestamp")
+	}
+}
+
+// Given a device response whose verification URI is not https, When the device code is
+// requested, Then it is rejected before any caller can hand it to a browser.
+func TestRequestDeviceCodeRejectsUntrustedVerificationURI(t *testing.T) {
+	cases := []struct {
+		name                    string
+		verificationURI         string
+		verificationURIComplete string
+	}{
+		{name: "non-https verification_uri", verificationURI: "http://accounts.x.ai/oauth2/device"},
+		{name: "javascript verification_uri", verificationURI: "javascript:alert(1)"},
+		{name: "malformed verification_uri", verificationURI: "://not a url"},
+		{
+			name:                    "non-https verification_uri_complete",
+			verificationURI:         "https://accounts.x.ai/oauth2/device",
+			verificationURIComplete: "http://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"device_code":               "device-abc",
+					"user_code":                 "ABCD-1234",
+					"verification_uri":          tc.verificationURI,
+					"verification_uri_complete": tc.verificationURIComplete,
+					"expires_in":                1800,
+					"interval":                  5,
+				})
+			}))
+			defer server.Close()
+
+			auth := NewXAIAuth(nil)
+			_, err := auth.RequestDeviceCode(context.Background(), server.URL, "https://auth.x.ai/oauth2/token")
+			if err == nil {
+				t.Fatal("expected untrusted verification URI to be rejected")
+			}
+			if !strings.Contains(err.Error(), "verification") {
+				t.Fatalf("error = %v, want an untrusted-verification-URI error", err)
+			}
+		})
+	}
+}
+
+// Given a device authorization denied under either xAI error code, When polling, Then
+// both normalize to the same denial error senpi surfaces.
+func TestPollForTokenNormalizesAuthorizationDenied(t *testing.T) {
+	for _, errorCode := range []string{"access_denied", "authorization_denied"} {
+		t.Run(errorCode, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error":             errorCode,
+					"error_description": "The user rejected the request",
+				})
+			}))
+			defer server.Close()
+
+			auth := NewXAIAuth(nil)
+			_, err := auth.PollForToken(context.Background(), &DeviceCodeResponse{
+				DeviceCode:    "device-abc",
+				UserCode:      "ABCD-1234",
+				ExpiresIn:     60,
+				Interval:      1,
+				TokenEndpoint: server.URL,
+			})
+			if err == nil || !strings.Contains(err.Error(), "authorization denied") {
+				t.Fatalf("PollForToken() error = %v, want authorization denied", err)
+			}
+		})
+	}
+}
+
+// Given a slow_down response carrying an explicit interval, When polling backs off, Then
+// the server-reported interval is honored verbatim instead of a fixed local increment.
+func TestExchangeDeviceCodeHonorsServerSlowDownInterval(t *testing.T) {
+	cases := []struct {
+		name         string
+		body         map[string]any
+		current      time.Duration
+		wantInterval time.Duration
+	}{
+		{
+			name:         "server interval wins over fixed increment",
+			body:         map[string]any{"error": "slow_down", "interval": 12},
+			current:      5 * time.Second,
+			wantInterval: 12 * time.Second,
+		},
+		{
+			name:         "server interval shorter than current is still honored",
+			body:         map[string]any{"error": "slow_down", "interval": 2},
+			current:      9 * time.Second,
+			wantInterval: 2 * time.Second,
+		},
+		{
+			name:         "missing interval falls back to RFC 8628 increment",
+			body:         map[string]any{"error": "slow_down"},
+			current:      5 * time.Second,
+			wantInterval: 10 * time.Second,
+		},
+		{
+			name:         "non-positive interval falls back to RFC 8628 increment",
+			body:         map[string]any{"error": "slow_down", "interval": 0},
+			current:      5 * time.Second,
+			wantInterval: 10 * time.Second,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(tc.body)
+			}))
+			defer server.Close()
+
+			auth := NewXAIAuth(nil)
+			token, pollErr, nextInterval, shouldContinue := auth.exchangeDeviceCode(context.Background(), server.URL, "device-abc", tc.current)
+			if token != nil || pollErr != nil || !shouldContinue {
+				t.Fatalf("exchangeDeviceCode() = (%v, %v, _, %v), want polling to continue", token, pollErr, shouldContinue)
+			}
+			if nextInterval != tc.wantInterval {
+				t.Fatalf("nextInterval = %v, want %v", nextInterval, tc.wantInterval)
+			}
+		})
 	}
 }
 
