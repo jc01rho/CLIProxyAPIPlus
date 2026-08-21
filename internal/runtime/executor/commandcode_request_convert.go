@@ -87,8 +87,11 @@ func commandCodeAssistantMessage(msg commandCodeOpenAIMessage) (commandCodeWireM
 		}
 	}
 	for _, call := range msg.ToolCalls {
-		if call.ID == "" || call.Function.Name == "" {
+		if call.ID == "" {
 			return commandCodeWireMessage{}, fmt.Errorf("commandcode: invalid tool call: id=%q name=%q", call.ID, call.Function.Name)
+		}
+		if call.Function.Name == "" {
+			continue
 		}
 		input, err := commandCodeToolCallInput(call)
 		if err != nil {
