@@ -46,6 +46,7 @@ const (
 	CSS_TurnsOld               = 2  // repeated bytes (deprecated)
 	CSS_Todos                  = 3  // repeated bytes
 	CSS_PendingToolCalls       = 4  // repeated string
+	CSS_TokenDetails           = 5  // ConversationTokenDetails
 	CSS_Turns                  = 8  // repeated bytes (CURRENT field for turns)
 	CSS_PreviousWorkspaceUris  = 9  // repeated string
 	CSS_SelfSummaryCount       = 17 // uint32

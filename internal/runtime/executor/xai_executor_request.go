@@ -294,6 +294,12 @@ func applyXAIDefaultHeaders(r *http.Request, token string, stream bool, sessionI
 	r.Header.Set("Connection", "Keep-Alive")
 	if sessionID != "" {
 		r.Header.Set("x-grok-conv-id", sessionID)
+		// Session affinity headers for the OpenAI Responses shape. Upstream xAI
+		// clients send session_id and x-client-request-id alongside the body's
+		// prompt_cache_key so retried/multi-turn requests land on the same cache
+		// shard; x-grok-conv-id alone does not carry that signal.
+		r.Header.Set("session_id", sessionID)
+		r.Header.Set("x-client-request-id", sessionID)
 	}
 }
 

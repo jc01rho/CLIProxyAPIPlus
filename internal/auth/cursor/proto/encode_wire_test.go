@@ -241,7 +241,10 @@ func TestResolveRequestedModel(t *testing.T) {
 		{"gpt-5.2-xhigh", "gpt-5.2-xhigh", nil},
 		{"gpt-5.2", "gpt-5.2-xhigh", nil},
 		{"grok-4.5", "cursor-grok-4.5-high", nil},
-		{"grok-4.5-fast", "grok-4.5", []ModelParameter{{ID: "effort", Value: "high"}, {ID: "fast", Value: "true"}}},
+		// senpi's catalog serves the fast grok identities as suffix variants with
+		// `-fast` last and zero parameters; a bare `grok-4.5` + {effort,fast}
+		// parameter pair is not an id Cursor's catalog serves.
+		{"grok-4.5-fast", "cursor-grok-4.5-high-fast", nil},
 		{"some-custom-model", "some-custom-model", nil},
 	}
 	for _, c := range cases {
@@ -268,7 +271,7 @@ func TestResolveRequestedModelReasoningEffort(t *testing.T) {
 	}{
 		{"claude-4.6-opus", "high", "claude-4.6-opus-high", nil},
 		{"grok-4.5", "low", "cursor-grok-4.5-low", nil},
-		{"grok-4.5-fast", "medium", "grok-4.5", []ModelParameter{{ID: "effort", Value: "medium"}, {ID: "fast", Value: "true"}}},
+		{"grok-4.5-fast", "medium", "cursor-grok-4.5-medium-fast", nil},
 		{"composer-2.5", "high", "composer-2.5", nil},
 	}
 	for _, c := range cases {
@@ -285,6 +288,68 @@ func TestResolveRequestedModelReasoningEffort(t *testing.T) {
 				t.Errorf("ResolveRequestedModel(%q, %q) params[%d] = %v, want %v", c.in, c.effort, i, gotParams[i], c.params[i])
 			}
 		}
+	}
+}
+
+// TestResolveRequestedModelGrokFastUsesServedSuffixVariant pins the senpi wire
+// contract for the fast grok identities. senpi resolves a Cursor model through
+// resolveCursorSelectionDescriptor (packages/ai/src/cursor/selection-descriptor.ts),
+// which returns a catalog-served suffix-variant id with EMPTY parameters, and its
+// buildParameters never emits `fast:"true"` (the `fast` parameter is hardcoded to
+// "false"). The fast grok ids senpi's catalog actually serves
+// (cursor-variant-aliases.json, 2026-08-18 GetUsableModels capture) place `-fast`
+// last after the effort suffix, and carry the `cursor-` capability prefix.
+//
+// Cursor Run rejects a model id its catalog does not serve with Connect
+// `not_found`, so emitting a bare `grok-4.5` + {effort, fast} parameter pair is
+// wire-incompatible, not merely a cosmetic difference.
+//
+// Given: a fast grok model id, with and without an explicit reasoning effort.
+// When:  the requested_model descriptor is resolved.
+// Then:  the id is the catalog-served `cursor-grok-<ver>-<effort>-fast` variant,
+// and no ModelParameter is emitted.
+func TestResolveRequestedModelGrokFastUsesServedSuffixVariant(t *testing.T) {
+	cases := []struct {
+		in, effort, wantID string
+	}{
+		{"grok-4.5-fast", "low", "cursor-grok-4.5-low-fast"},
+		{"grok-4.5-fast", "medium", "cursor-grok-4.5-medium-fast"},
+		{"grok-4.5-fast", "high", "cursor-grok-4.5-high-fast"},
+		{"grok-4.6-fast", "low", "cursor-grok-4.6-low-fast"},
+		{"grok-4.6-fast", "xhigh", "cursor-grok-4.6-xhigh-fast"},
+		// The effort suffix may also arrive already spelled on the client id.
+		{"grok-4.6-fast-low", "", "cursor-grok-4.6-low-fast"},
+		{"cursor-grok-4.5-low-fast", "", "cursor-grok-4.5-low-fast"},
+		// The `grok-fast` alias resolves to the 4.5 fast family.
+		{"grok-fast", "low", "cursor-grok-4.5-low-fast"},
+	}
+	for _, c := range cases {
+		gotID, gotParams := ResolveRequestedModel(c.in, c.effort)
+		if gotID != c.wantID {
+			t.Errorf("ResolveRequestedModel(%q, %q) id = %q, want %q", c.in, c.effort, gotID, c.wantID)
+		}
+		if len(gotParams) != 0 {
+			t.Errorf("ResolveRequestedModel(%q, %q) params = %v, want none", c.in, c.effort, gotParams)
+		}
+	}
+}
+
+// TestEncodeRunRequestGrokFastCarriesNoModelParameters proves the resolved fast
+// grok id reaches the wire on both model selectors with no RequestedModel
+// parameter entries, matching senpi's buildRequestedModelFields output.
+func TestEncodeRunRequestGrokFastCarriesNoModelParameters(t *testing.T) {
+	buf := EncodeRunRequest(&RunRequestParams{ModelId: "grok-4.6-fast", ReasoningEffort: "low", UserText: "hi"})
+	arr := parseFields(t, parseFields(t, buf)[ACM_RunRequest][0].data)
+
+	requested := parseFields(t, arr[ARR_RequestedModel][0].data)
+	if got := string(requested[RM_ModelId][0].data); got != "cursor-grok-4.6-low-fast" {
+		t.Errorf("requested_model.model_id = %q, want cursor-grok-4.6-low-fast", got)
+	}
+	if params, ok := requested[RM_Parameters]; ok {
+		t.Errorf("requested_model.parameters = %v, want absent", params)
+	}
+	if got := string(parseFields(t, arr[ARR_ModelDetails][0].data)[MD_ModelId][0].data); got != "cursor-grok-4.6-low-fast" {
+		t.Errorf("model_details.model_id = %q, want cursor-grok-4.6-low-fast", got)
 	}
 }
 

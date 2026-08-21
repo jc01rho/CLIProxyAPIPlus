@@ -5062,3 +5062,223 @@ func TestXAIPatchCompletedOutput_EnsuresUsageDetails(t *testing.T) {
 		t.Fatalf("expected cached_tokens == 0, got %d", gjson.GetBytes(got, "response.usage.input_tokens_details.cached_tokens").Int())
 	}
 }
+
+// captureXAIUpstreamRequest runs one Execute against a stub xAI server and
+// returns the upstream request body and headers. Senpi builds every xAI
+// /responses request through a single buildParams()/createClient() pair, so the
+// wire-contract tests below assert against one shared capture helper.
+func captureXAIUpstreamRequest(t *testing.T, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, authAttrs map[string]string) ([]byte, http.Header) {
+	t.Helper()
+
+	var gotBody []byte
+	var gotHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var errRead error
+		gotBody, errRead = io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Errorf("read body: %v", errRead)
+			return
+		}
+		gotHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"model\":\"grok\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n"))
+	}))
+	defer server.Close()
+
+	attrs := map[string]string{"base_url": server.URL, "auth_kind": "oauth"}
+	for k, v := range authAttrs {
+		attrs[k] = v
+	}
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: attrs,
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+
+	if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	return gotBody, gotHeaders
+}
+
+func xaiIncludeValues(body []byte) []string {
+	values := make([]string, 0)
+	for _, item := range gjson.GetBytes(body, "include").Array() {
+		values = append(values, item.String())
+	}
+	return values
+}
+
+// Given a reasoning-capable xAI model and a client payload carrying no
+// "include" field, When the request is prepared, Then the upstream body
+// carries include:["reasoning.encrypted_content"], matching senpi buildParams()
+// (`if (model.provider === "xai") params.include = ["reasoning.encrypted_content"]`,
+// packages/ai/src/api/openai-responses.ts). Without this, xAI never returns
+// encrypted reasoning and multi-turn reasoning replay breaks.
+func TestXAIExecutorInjectsEncryptedReasoningInclude(t *testing.T) {
+	gotBody, _ := captureXAIUpstreamRequest(t, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	}, nil)
+
+	if got := xaiIncludeValues(gotBody); len(got) != 1 || got[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %v, want [reasoning.encrypted_content]; body=%s", got, string(gotBody))
+	}
+}
+
+// Senpi forces the include for every reasoning xAI model even when the turn
+// requests no effort ("requests encrypted reasoning without an effort override",
+// packages/ai/test/xai-responses.test.ts): the include line sits outside the
+// reasoningRequested branch, so no `reasoning` key ships but `include` still does.
+func TestXAIExecutorInjectsEncryptedReasoningIncludeWithoutEffort(t *testing.T) {
+	gotBody, _ := captureXAIUpstreamRequest(t, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hello"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAI,
+		Stream:       false,
+	}, nil)
+
+	if got := xaiIncludeValues(gotBody); len(got) != 1 || got[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %v, want [reasoning.encrypted_content]; body=%s", got, string(gotBody))
+	}
+}
+
+// Senpi assigns the include (`params.include = ["reasoning.encrypted_content"]`)
+// rather than merging, and `include` is in OPENAI_RESPONSES_RESERVED_BODY_KEYS so
+// caller extraBody cannot re-add its own value. The upstream array is therefore
+// exactly the one element even when the client asked for another include.
+func TestXAIExecutorOverwritesClientIncludeWithEncryptedReasoning(t *testing.T) {
+	gotBody, _ := captureXAIUpstreamRequest(t, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hello","include":["message.output_text.logprobs"]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	}, nil)
+
+	if got := xaiIncludeValues(gotBody); len(got) != 1 || got[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %v, want [reasoning.encrypted_content]; body=%s", got, string(gotBody))
+	}
+}
+
+// An include that already carries the value is left byte-identical: no
+// duplicate entry is appended.
+func TestXAIExecutorDoesNotDuplicateEncryptedReasoningInclude(t *testing.T) {
+	gotBody, _ := captureXAIUpstreamRequest(t, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hello","include":["reasoning.encrypted_content"]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	}, nil)
+
+	if got := xaiIncludeValues(gotBody); len(got) != 1 || got[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %v, want [reasoning.encrypted_content]; body=%s", got, string(gotBody))
+	}
+}
+
+// Senpi sets `store: false` unconditionally in buildParams() for every
+// Responses-family request. CPA strips previous_response_id on the HTTP chat
+// path, so upstream-side storage is never read back; forcing false keeps the
+// turn stateless exactly as senpi does.
+func TestXAIExecutorForcesStoreFalse(t *testing.T) {
+	t.Run("absent from client payload", func(t *testing.T) {
+		gotBody, _ := captureXAIUpstreamRequest(t, cliproxyexecutor.Request{
+			Model:   "grok-4.5",
+			Payload: []byte(`{"model":"grok-4.5","input":"hello"}`),
+		}, cliproxyexecutor.Options{
+			SourceFormat: sdktranslator.FormatOpenAIResponse,
+			Stream:       false,
+		}, nil)
+
+		if !gjson.GetBytes(gotBody, "store").Exists() {
+			t.Fatalf("store missing from upstream body: %s", string(gotBody))
+		}
+		if gjson.GetBytes(gotBody, "store").Bool() {
+			t.Fatalf("store = true, want false; body=%s", string(gotBody))
+		}
+	})
+
+	t.Run("overrides client store true", func(t *testing.T) {
+		gotBody, _ := captureXAIUpstreamRequest(t, cliproxyexecutor.Request{
+			Model:   "grok-4.5",
+			Payload: []byte(`{"model":"grok-4.5","input":"hello","store":true}`),
+		}, cliproxyexecutor.Options{
+			SourceFormat: sdktranslator.FormatOpenAIResponse,
+			Stream:       false,
+		}, nil)
+
+		if gjson.GetBytes(gotBody, "store").Bool() {
+			t.Fatalf("store = true, want false even when the client asked to store; body=%s", string(gotBody))
+		}
+	})
+}
+
+// Senpi's createClient() sets both session_id and x-client-request-id for the
+// "openai" sessionAffinityFormat (the xAI default) alongside the body's
+// prompt_cache_key. CPA previously sent only x-grok-conv-id.
+func TestXAIExecutorSetsOpenAISessionAffinityHeaders(t *testing.T) {
+	_, gotHeaders := captureXAIUpstreamRequest(t, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "conv-xai-affinity",
+		},
+	}, nil)
+
+	for header, want := range map[string]string{
+		"session_id":          "conv-xai-affinity",
+		"x-client-request-id": "conv-xai-affinity",
+		"x-grok-conv-id":      "conv-xai-affinity",
+	} {
+		if got := gotHeaders.Get(header); got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+// Given no resolved session, When the request is sent, Then no empty
+// affinity header is emitted (senpi only sets them under `if (sessionId)`).
+func TestXAIApplyDefaultHeadersOmitsEmptySessionAffinity(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "https://example.invalid/responses", nil)
+	applyXAIDefaultHeaders(req, "xai-token", true, "")
+
+	for _, header := range []string{"session_id", "x-client-request-id", "x-grok-conv-id"} {
+		if got := req.Header.Get(header); got != "" {
+			t.Fatalf("%s = %q, want empty when no session is resolved", header, got)
+		}
+	}
+}
+
+// Senpi maps xhigh through grok-4.6's thinkingLevelMap and ships
+// reasoning:{effort:"xhigh"} with the include ("uses /responses for Grok 4.6
+// with xhigh effort and encrypted reasoning", xai-responses.test.ts). CPA's
+// registry lists xhigh for grok-4.6 only, so this locks the effort passthrough
+// against the same wire shape.
+func TestXAIExecutorKeepsXhighEffortForGrok46(t *testing.T) {
+	gotBody, _ := captureXAIUpstreamRequest(t, cliproxyexecutor.Request{
+		Model:   "grok-4.6",
+		Payload: []byte(`{"model":"grok-4.6","input":"hello","reasoning":{"effort":"xhigh"}}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	}, nil)
+
+	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "xhigh" {
+		t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, string(gotBody))
+	}
+	if got := xaiIncludeValues(gotBody); len(got) != 1 || got[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %v, want [reasoning.encrypted_content]; body=%s", got, string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "store").Bool() {
+		t.Fatalf("store = true, want false; body=%s", string(gotBody))
+	}
+}

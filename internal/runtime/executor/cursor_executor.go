@@ -343,10 +343,11 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		if streamErr == nil {
 			break
 		}
-		if attempt == 0 && !usage.sawTokenEvidence() && isCursorResourceExhausted(streamErr) {
+		if attempt == 0 && isCursorZeroTokenResourceExhausted(streamErr, usage) {
 			if rotated, ok := e.rotateCursorConversation(baseConversationId, conversationId, ""); ok {
 				conversationId = rotated
 				params.ConversationId = rotated
+				usage.resetLiveWindow()
 				fullText.Reset()
 				continue
 			}
@@ -751,7 +752,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 
 		streamErr := processAttempt()
-		if streamErr != nil && !usage.sawTokenEvidence() && isCursorResourceExhausted(streamErr) {
+		if isCursorZeroTokenResourceExhausted(streamErr, usage) {
 			if rotated, ok := e.rotateCursorConversation(baseConversationId, conversationId, authID); ok {
 				log.Infof("cursor: rotating resource-exhausted conversation %s to %s and retrying Run once", conversationId, rotated)
 				stream.Close()
@@ -759,6 +760,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				sessionKey = authID + ":" + rotated
 				checkpointKey = rotated
 				params.ConversationId = rotated
+				usage.resetLiveWindow()
 				requestBytes = cursorproto.EncodeRunRequest(params)
 				retryStream, retryErr := openCursorH2Stream(accessToken)
 				if retryErr == nil {
@@ -947,7 +949,8 @@ type cursorTokenUsage struct {
 	inputTokens    int64 // billed input (cache-INCLUSIVE remainder backed out)
 	cacheRead      int64
 	cacheWrite     int64
-	inputTokensEst int64 // fallback only when Cursor emits no token_delta/turnEnded
+	inputTokensEst int64 // fallback only when Cursor emits no token_delta/turnEnded/checkpoint
+	liveUsedTokens int64 // last checkpoint's tokenDetails.usedTokens (the server's live window)
 	sawDelta       bool
 	sawTurnEnded   bool
 }
@@ -978,6 +981,21 @@ func (u *cursorTokenUsage) applyBilledTurnEndedUsage(input, output, cacheRead, c
 	if output != nil {
 		u.outputTokens = *output
 	}
+	// Cursor sometimes reports dashboard-cumulative cache_read (millions) while the
+	// checkpoint's usedTokens stays at the real window (~150k). Folding that into the
+	// total forces a useless compact and then a 0-token resource_exhausted, so the
+	// billed cache figures are discarded in favour of the live window.
+	if u.liveUsedTokens > 0 && u.cacheRead > u.liveUsedTokens*3 {
+		u.cacheRead = 0
+		if u.cacheWrite > u.liveUsedTokens {
+			u.cacheWrite = 0
+		}
+		u.inputTokens = u.liveUsedTokens - u.outputTokens - u.cacheWrite
+		if u.inputTokens < 0 {
+			u.inputTokens = 0
+		}
+		return
+	}
 	if input != nil {
 		// input_tokens is cache-INCLUSIVE on api2.cursor.sh; back out cache for CPA exclusive input
 		u.inputTokens = *input - u.cacheRead - u.cacheWrite
@@ -1000,7 +1018,7 @@ func (u *cursorTokenUsage) setInputEstimate(payloadBytes int) {
 func (u *cursorTokenUsage) get() (input, output int64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.sawTurnEnded || u.sawDelta {
+	if u.sawTurnEnded || u.sawDelta || u.liveUsedTokens > 0 {
 		return u.inputTokens, u.outputTokens
 	}
 	return u.inputTokensEst, 0
@@ -1012,19 +1030,21 @@ func (u *cursorTokenUsage) sawTokenDelta() bool {
 	return u.sawDelta
 }
 
-// sawTokenEvidence reports whether the stream produced or billed any tokens.
-// A resource_exhausted end-stream WITH evidence is a mid-flight context
-// overflow; WITHOUT it, the conversation is poisoned/rate-limited and must stay
-// on the rotation path.
-func (u *cursorTokenUsage) sawTokenEvidence() bool {
+// resetLiveWindow drops the checkpoint-derived live window so a rotated
+// conversation's billed split is never sanity-checked against the window the
+// abandoned conversation reported. senpi gets this for free by building a fresh
+// UsageState per attempt (cursor-agent.ts:542, inside the retry loop) while the
+// accumulated usage numbers live on the longer-lived output message.
+func (u *cursorTokenUsage) resetLiveWindow() {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.sawDelta || u.sawTurnEnded || u.outputTokens > 0 || u.inputTokens > 0 || u.cacheRead > 0 || u.cacheWrite > 0
+	u.liveUsedTokens = 0
 }
 
 // applyCheckpointTokenDetails feeds a checkpoint's tokenDetails.usedTokens (the
 // server's live conversation size, sent mid-turn) into the in-flight usage. It
-// never overrides the billed turnEnded split once that arrived.
+// never overrides the billed turnEnded split once that arrived, but the live
+// window it reports is retained for applyBilledTurnEndedUsage's cache sanity check.
 func (u *cursorTokenUsage) applyCheckpointTokenDetails(usedTokens int64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -1034,6 +1054,7 @@ func (u *cursorTokenUsage) applyCheckpointTokenDetails(usedTokens int64) {
 	if usedTokens <= 0 {
 		return
 	}
+	u.liveUsedTokens = usedTokens
 	input := usedTokens - u.outputTokens - u.cacheRead - u.cacheWrite
 	if input < 0 {
 		input = 0

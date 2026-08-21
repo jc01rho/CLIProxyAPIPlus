@@ -132,7 +132,8 @@ func DecodeAgentServerMessage(data []byte) (*DecodedServerMessage, error) {
 			case ASM_ConversationCheckpoint:
 				msg.Type = ServerMsgCheckpoint
 				msg.CheckpointData = append([]byte(nil), val...) // copy raw bytes
-				log.Debugf("DecodeAgentServerMessage: captured checkpoint %d bytes", len(val))
+				msg.CheckpointUsedTokens = decodeCheckpointUsedTokens(val)
+				log.Debugf("DecodeAgentServerMessage: captured checkpoint %d bytes, used_tokens=%d", len(val), msg.CheckpointUsedTokens)
 			}
 
 		case protowire.VarintType:
@@ -705,7 +706,7 @@ func decodeCheckpointUsedTokens(checkpointData []byte) int64 {
 			return 0
 		}
 		checkpointData = checkpointData[n:]
-		if num == 5 && typ == protowire.BytesType { // field 5 is ConversationStateStructure.tokenDetails
+		if num == CSS_TokenDetails && typ == protowire.BytesType {
 			inner, m := protowire.ConsumeBytes(checkpointData)
 			if m < 0 {
 				return 0

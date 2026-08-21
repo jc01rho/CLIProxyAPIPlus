@@ -96,31 +96,38 @@ func normalizeCursorModelID(modelID string) string {
 	return id
 }
 
+// splitCursorFastSuffix separates a trailing "-fast" marker from a model id.
+// Cursor spells the fast identities with `-fast` last (`cursor-grok-4.5-low-fast`),
+// but clients also send it mid-id (`grok-4.5-fast-low`), so the marker is stripped
+// wherever it lands rather than only at the end of the raw input.
+func splitCursorFastSuffix(id string) (string, bool) {
+	if trimmed := strings.TrimSuffix(id, "-fast"); trimmed != id {
+		return trimmed, true
+	}
+	return id, false
+}
+
 func parseCursorRequestedModel(id string) (base, effort string, fast bool) {
 	id = strings.TrimPrefix(id, "cursor-")
-	if strings.HasSuffix(id, "-fast") {
-		fast = true
-		id = strings.TrimSuffix(id, "-fast")
-	}
+	id, fast = splitCursorFastSuffix(id)
 	for _, suffix := range cursorEffortSuffixesLongestFirst {
 		marker := "-" + suffix
 		if !strings.HasSuffix(id, marker) {
 			continue
 		}
-		candidate := strings.TrimSuffix(id, marker)
+		candidate, candidateFast := splitCursorFastSuffix(strings.TrimSuffix(id, marker))
+		fast = fast || candidateFast
 		if aliased, ok := cursorModelAliases[strings.ToLower(candidate)]; ok {
-			candidate = aliased
+			candidate, _ = splitCursorFastSuffix(aliased)
 		}
-		lookup := candidate
-		if fast {
-			lookup = candidate + "-fast"
-		}
-		if cursorModelHasEffortTiers(lookup) || cursorModelHasEffortTiers(candidate) {
+		if cursorModelHasEffortTiers(candidate+"-fast") || cursorModelHasEffortTiers(candidate) {
 			return candidate, suffix, fast
 		}
 	}
 	if aliased, ok := cursorModelAliases[strings.ToLower(id)]; ok {
-		id = aliased
+		var aliasFast bool
+		id, aliasFast = splitCursorFastSuffix(aliased)
+		fast = fast || aliasFast
 	}
 	return id, "", fast
 }
@@ -167,24 +174,32 @@ func mapReasoningToCursorTier(reasoning string, tiers []string) string {
 	}
 }
 
+// cursorGrokCapabilityBases are the grok families whose cursor catalog identity
+// carries the `cursor-` capability prefix (`cursor-grok-4.5`, `cursor-grok-4.6`).
+var cursorGrokCapabilityBases = map[string]bool{"grok-4.5": true, "grok-4.6": true}
+
+// composeCursorWireModel renders the resolved base + effort + fast triple as the
+// suffix-variant id cursor's catalog serves. senpi resolves the same triple
+// through resolveCursorSelectionDescriptor, which returns a served suffix-variant
+// id with EMPTY parameters; its buildParameters never emits `fast:"true"`. The
+// grok fast identities are served as `cursor-grok-<ver>-<effort>-fast`, so the
+// `-fast` marker trails the effort suffix.
 func composeCursorWireModel(base, effort string, fast bool) (string, []ModelParameter) {
-	if fast && (base == "grok-4.5" || base == "grok-4.6") {
-		params := make([]ModelParameter, 0, 2)
+	if cursorGrokCapabilityBases[base] {
+		wire := "cursor-" + base
 		if effort != "" {
-			params = append(params, ModelParameter{ID: "effort", Value: effort})
+			wire += "-" + effort
 		}
-		params = append(params, ModelParameter{ID: "fast", Value: "true"})
-		return base, params
+		if fast {
+			wire += "-fast"
+		}
+		return wire, nil
 	}
 	if fast && strings.HasPrefix(base, "composer-") {
 		return base + "-fast", nil
 	}
 	if effort != "" {
-		wire := base + "-" + effort
-		if base == "grok-4.5" || base == "grok-4.6" {
-			wire = "cursor-" + wire
-		}
-		return wire, nil
+		return base + "-" + effort, nil
 	}
 	return base, nil
 }

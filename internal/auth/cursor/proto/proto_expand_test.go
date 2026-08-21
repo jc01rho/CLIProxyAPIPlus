@@ -397,3 +397,52 @@ func TestDecodeTurnEndedUpdate(t *testing.T) {
 		t.Fatalf("Type = %v, want ServerMsgTurnEnded", msg.Type)
 	}
 }
+
+// TestDecodeConversationCheckpointCarriesUsedTokens pins senpi's
+// applyCheckpointTokenDetails contract (cursor-agent.ts:3492): the mid-turn
+// ConversationStateStructure checkpoint carries the server's live conversation
+// size at token_details.used_tokens (CSS field 5 -> CTD field 1), and decoding a
+// checkpoint must surface it. Fails while the decoder captures only the raw
+// checkpoint bytes, which leaves the live-usage signal at zero.
+//
+// Given: an AgentServerMessage carrying a conversation checkpoint whose
+// token_details.used_tokens is 148256 (senpi's cursor-usage.test.ts figure).
+// When:  the frame is decoded.
+// Then:  the decoded message reports that used-tokens value.
+func TestDecodeConversationCheckpointCarriesUsedTokens(t *testing.T) {
+	const usedTokens = 148256
+	tokenDetails := pwVarint(nil, CTD_UsedTokens, usedTokens)
+	tokenDetails = pwVarint(tokenDetails, CTD_MaxTokens, 200000)
+	checkpoint := pwBytes(nil, CSS_RootPromptMessagesJson, []byte(`{"role":"system"}`))
+	checkpoint = pwBytes(checkpoint, CSS_TokenDetails, tokenDetails)
+	frame := pwBytes(nil, ASM_ConversationCheckpoint, checkpoint)
+
+	msg, err := DecodeAgentServerMessage(frame)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if msg.Type != ServerMsgCheckpoint {
+		t.Fatalf("Type = %v, want ServerMsgCheckpoint", msg.Type)
+	}
+	if msg.CheckpointUsedTokens != usedTokens {
+		t.Errorf("CheckpointUsedTokens = %d, want %d", msg.CheckpointUsedTokens, usedTokens)
+	}
+	if !bytes.Equal(msg.CheckpointData, checkpoint) {
+		t.Errorf("CheckpointData = %x, want the raw checkpoint %x", msg.CheckpointData, checkpoint)
+	}
+}
+
+// TestDecodeConversationCheckpointWithoutTokenDetails covers the fresh-conversation
+// shape: senpi reads `checkpoint.tokenDetails?.usedTokens` optionally, so a
+// checkpoint with no token_details must decode to zero rather than a stale value.
+func TestDecodeConversationCheckpointWithoutTokenDetails(t *testing.T) {
+	checkpoint := pwBytes(nil, CSS_RootPromptMessagesJson, []byte(`{"role":"system"}`))
+
+	msg, err := DecodeAgentServerMessage(pwBytes(nil, ASM_ConversationCheckpoint, checkpoint))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if msg.CheckpointUsedTokens != 0 {
+		t.Errorf("CheckpointUsedTokens = %d, want 0", msg.CheckpointUsedTokens)
+	}
+}
