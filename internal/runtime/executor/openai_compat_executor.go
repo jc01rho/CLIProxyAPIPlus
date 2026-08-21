@@ -1439,6 +1439,10 @@ func sanitizeSensenovaToolCalls(body []byte) []byte {
 	if !messages.IsArray() {
 		return body
 	}
+
+	// Pass 1: drop tool calls with an empty/whitespace function name and
+	// remember their ids so the orphaned tool result messages can be removed.
+	droppedIDs := map[string]bool{}
 	out := body
 	for msgIdx, msg := range messages.Array() {
 		toolCalls := msg.Get("tool_calls")
@@ -1450,6 +1454,9 @@ func sanitizeSensenovaToolCalls(body []byte) []byte {
 		changed := false
 		for _, call := range calls {
 			if strings.TrimSpace(call.Get("function.name").String()) == "" {
+				if id := call.Get("id").String(); id != "" {
+					droppedIDs[id] = true
+				}
 				changed = true
 				continue
 			}
@@ -1479,6 +1486,37 @@ func sanitizeSensenovaToolCalls(body []byte) []byte {
 			return body
 		}
 		out = next
+	}
+
+	// Pass 2: drop tool result messages whose tool_call_id references a dropped
+	// tool call. Otherwise the upstream rejects the orphaned output with
+	// "No function call found for function call output with call_id ...".
+	if len(droppedIDs) == 0 {
+		return out
+	}
+	updated := gjson.GetBytes(out, "messages")
+	if !updated.IsArray() {
+		return out
+	}
+	msgs := updated.Array()
+	removed := false
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		if !strings.EqualFold(msg.Get("role").String(), "tool") {
+			continue
+		}
+		if !droppedIDs[msg.Get("tool_call_id").String()] {
+			continue
+		}
+		var err error
+		out, err = sjson.DeleteBytes(out, fmt.Sprintf("messages.%d", i))
+		if err != nil {
+			return body
+		}
+		removed = true
+	}
+	if !removed {
+		return out
 	}
 	return out
 }
