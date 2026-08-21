@@ -201,6 +201,12 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 			if err != nil {
 				return nil, err
 			}
+			// A malformed assistant message can end up with no content blocks
+			// (e.g. every tool call had an empty name and no text) — skip it
+			// rather than sending an empty-content message upstream.
+			if len(wire.Content) == 0 {
+				continue
+			}
 			messages = append(messages, wire)
 		case "tool":
 			if skippedToolCallIDs[msg.ToolCallID] {

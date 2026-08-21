@@ -50,6 +50,53 @@ func collectCommandCodeWireBlocks(t *testing.T, out []byte) (toolCalls []string,
 	return toolCalls, toolResults
 }
 
+// TestCommandCodeSkipsFullyEmptyAssistantMessage verifies that an assistant
+// message whose only tool calls all have empty names (and no text content) is
+// dropped entirely instead of being sent upstream as an empty-content message.
+func TestCommandCodeSkipsFullyEmptyAssistantMessage(t *testing.T) {
+	emptyID := "tool_773451ce-636e-4397-9c2d-a3a297c5300"
+
+	payload := []byte(`{
+		"model": "higher-coding",
+		"messages": [
+			{"role":"user","content":"hi"},
+			{"role":"assistant","content":null,"tool_calls":[
+				{"id":"` + emptyID + `","type":"function","function":{"name":"","arguments":"{}"}}
+			]},
+			{"role":"tool","tool_call_id":"` + emptyID + `","content":"orphan result"},
+			{"role":"assistant","content":"final answer"}
+		]
+	}`)
+
+	out, err := buildCommandCodePayload(payload, "higher-coding", false)
+	if err != nil {
+		t.Fatalf("buildCommandCodePayload returned error: %v", err)
+	}
+
+	var env commandCodeGenericEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		t.Fatalf("failed to unmarshal wire envelope: %v", err)
+	}
+
+	var roles []string
+	for _, m := range env.Params.Messages {
+		roles = append(roles, m.Role)
+		if len(m.Content) == 0 && m.Role == "assistant" {
+			t.Errorf("assistant message with empty content reached the wire payload")
+		}
+	}
+
+	want := []string{"user", "assistant"}
+	if len(roles) != len(want) {
+		t.Fatalf("wire message roles = %v, want %v", roles, want)
+	}
+	for i := range want {
+		if roles[i] != want[i] {
+			t.Errorf("wire message roles[%d] = %q, want %q", i, roles[i], want[i])
+		}
+	}
+}
+
 // TestCommandCodeSkipsEmptyNameToolCallAndOrphanResult verifies that an
 // assistant tool call with an empty function name is dropped, and its matching
 // tool-result message is dropped too so the upstream never sees an orphaned
