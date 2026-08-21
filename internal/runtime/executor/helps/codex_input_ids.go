@@ -18,6 +18,7 @@ const (
 	codexFunctionCallItemIDPrefix         = "fc"
 	codexCustomToolCallItemIDPrefix       = "ctc"
 	codexCustomToolCallOutputItemIDPrefix = "ctco"
+	codexFallbackInputItemName            = "unknown"
 
 	codexInputItemIDOccupied  uint8 = 1 << 0
 	codexInputItemIDPreserved uint8 = 1 << 1
@@ -27,9 +28,9 @@ const (
 var codexRejectedInputItemFields = []string{"status", "phase", "namespace"}
 
 // SanitizeCodexInputItemIDs normalizes supported input item IDs for Codex, removes encrypted
-// reasoning items whose IDs exceed the Codex limit, strips item fields the ChatGPT Codex
-// backend rejects (status, phase, namespace), and deterministically shortens other overlong
-// input item IDs.
+// reasoning items whose IDs exceed the Codex limit, fills missing tool-call names, strips
+// item fields the ChatGPT Codex backend rejects (status, phase, namespace), and
+// deterministically shortens other overlong input item IDs.
 func SanitizeCodexInputItemIDs(body []byte) []byte {
 	input := util.GetGJSONBytesNoCopy(body, "input")
 	if !input.IsArray() {
@@ -75,6 +76,16 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 		if strippedOK {
 			raw = stripped
 			changed = true
+		}
+		switch item.Get("type").String() {
+		case "function_call", "custom_tool_call":
+			if strings.TrimSpace(item.Get("name").String()) == "" {
+				next, errSet := sjson.SetBytes([]byte(raw), "name", codexFallbackInputItemName)
+				if errSet == nil {
+					raw = string(next)
+					changed = true
+				}
+			}
 		}
 		itemID := item.Get("id")
 		if itemID.Type == gjson.String {
