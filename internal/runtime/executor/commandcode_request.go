@@ -159,12 +159,22 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 
 	// Build the tool call ID -> tool name map before converting messages so
 	// tool-result blocks can resolve their tool name ("" when unknown, matching npm).
+	// Tool calls with an empty function name are dropped from the assistant wire
+	// message; their IDs are tracked so the matching tool-result messages are
+	// dropped too — otherwise upstream rejects the orphaned result with
+	// "No function call found for function call output with call_id ...".
 	toolNames := make(map[string]string)
+	skippedToolCallIDs := make(map[string]bool)
 	for _, msg := range request.Messages {
 		for _, call := range msg.ToolCalls {
-			if call.ID != "" && call.Function.Name != "" {
-				toolNames[call.ID] = call.Function.Name
+			if call.ID == "" {
+				continue
 			}
+			if call.Function.Name == "" {
+				skippedToolCallIDs[call.ID] = true
+				continue
+			}
+			toolNames[call.ID] = call.Function.Name
 		}
 	}
 
@@ -193,6 +203,9 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 			}
 			messages = append(messages, wire)
 		case "tool":
+			if skippedToolCallIDs[msg.ToolCallID] {
+				continue
+			}
 			wire, err := commandCodeToolMessage(msg, toolNames)
 			if err != nil {
 				return nil, err
