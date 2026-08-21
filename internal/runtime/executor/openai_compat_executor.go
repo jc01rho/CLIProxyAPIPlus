@@ -165,6 +165,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if isNVIDIACompatProvider(compatCfg) {
 		translated = applyNVIDIAMaxTokensReduction(translated)
 	}
+	if isSensenovaCompatProvider(compatCfg) {
+		translated = applySensenovaMaxTokensClamp(translated)
+		translated = sanitizeSensenovaToolCalls(translated)
+	}
 	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compatCfg, translated)
 	if opts.Alt != "responses/compact" {
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
@@ -451,6 +455,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	}
 	if isNVIDIACompatProvider(compatCfg) {
 		translated = applyNVIDIAMaxTokensReduction(translated)
+	}
+	if isSensenovaCompatProvider(compatCfg) {
+		translated = applySensenovaMaxTokensClamp(translated)
+		translated = sanitizeSensenovaToolCalls(translated)
 	}
 	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compatCfg, translated)
 	if opts.Alt != "responses/compact" {
@@ -1376,6 +1384,103 @@ func applyNVIDIAMaxTokensReduction(body []byte) []byte {
 		return body
 	}
 	return next
+}
+
+// SenseNova rejects the whole request with 400 when max_tokens falls outside this range.
+const (
+	sensenovaMinMaxTokens int64 = 1
+	sensenovaMaxMaxTokens int64 = 65536
+)
+
+// isSensenovaCompatProvider reports whether the provider is a SenseNova endpoint.
+func isSensenovaCompatProvider(compat *config.OpenAICompatibility) bool {
+	if compat == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(compat.Name), "sensenova")
+}
+
+// applySensenovaMaxTokensClamp clamps max_tokens into the range SenseNova accepts.
+// A non-numeric or absent max_tokens is left untouched so the upstream default applies.
+func applySensenovaMaxTokensClamp(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	mt := gjson.GetBytes(body, "max_tokens")
+	if mt.Type != gjson.Number {
+		return body
+	}
+	requested := mt.Int()
+	clamped := requested
+	if clamped < sensenovaMinMaxTokens {
+		clamped = sensenovaMinMaxTokens
+	}
+	if clamped > sensenovaMaxMaxTokens {
+		clamped = sensenovaMaxMaxTokens
+	}
+	if clamped == requested {
+		return body
+	}
+	next, err := sjson.SetBytes(body, "max_tokens", clamped)
+	if err != nil {
+		return body
+	}
+	return next
+}
+
+// sanitizeSensenovaToolCalls repairs the tool_calls SenseNova rejects with 400: an entry
+// without a function name is dropped, and empty or missing arguments become "{}". A message
+// left without any tool call loses the field entirely. Every other field is preserved.
+func sanitizeSensenovaToolCalls(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+	out := body
+	for msgIdx, msg := range messages.Array() {
+		toolCalls := msg.Get("tool_calls")
+		if !toolCalls.IsArray() {
+			continue
+		}
+		calls := toolCalls.Array()
+		kept := make([]string, 0, len(calls))
+		changed := false
+		for _, call := range calls {
+			if strings.TrimSpace(call.Get("function.name").String()) == "" {
+				changed = true
+				continue
+			}
+			raw := call.Raw
+			if args := call.Get("function.arguments"); !args.Exists() || strings.TrimSpace(args.String()) == "" {
+				repaired, errSet := sjson.Set(raw, "function.arguments", "{}")
+				if errSet != nil {
+					return body
+				}
+				raw = repaired
+				changed = true
+			}
+			kept = append(kept, raw)
+		}
+		if !changed {
+			continue
+		}
+		path := fmt.Sprintf("messages.%d.tool_calls", msgIdx)
+		var next []byte
+		var err error
+		if len(kept) == 0 {
+			next, err = sjson.DeleteBytes(out, path)
+		} else {
+			next, err = sjson.SetRawBytes(out, path, []byte("["+strings.Join(kept, ",")+"]"))
+		}
+		if err != nil {
+			return body
+		}
+		out = next
+	}
+	return out
 }
 
 // applyMiMoReasoningBackfill ensures reasoning_content is preserved or backfilled
