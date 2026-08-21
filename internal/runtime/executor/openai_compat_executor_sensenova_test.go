@@ -150,6 +150,14 @@ func TestSanitizeSensenovaToolCalls(t *testing.T) {
 			want: `{"messages":[{"role":"assistant","content":"hi"}]}`,
 		},
 		{
+			name: "orphaned tool result for dropped call is removed",
+			body: `{"messages":[` +
+				`{"role":"assistant","tool_calls":[{"id":"a","type":"function","function":{"name":"","arguments":"{}"}}]},` +
+				`{"role":"tool","tool_call_id":"a","content":"orphan"}]}`,
+			want: `{"messages":[` +
+				`{"role":"assistant"}]}`,
+		},
+		{
 			name: "valid tool calls and sibling fields are preserved",
 			body: `{"model":"m","messages":[` +
 				`{"role":"user","content":"hi"},` +
