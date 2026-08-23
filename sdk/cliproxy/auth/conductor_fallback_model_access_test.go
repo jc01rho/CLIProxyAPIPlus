@@ -112,6 +112,8 @@ func TestExecuteWithRouteFallback_DoesNotReachModelBlockedForAPIKey(t *testing.T
 		req cliproxyexecutor.Request,
 		opts cliproxyexecutor.Options,
 		maxRetryCredentials int,
+		retryRound int,
+		defaultRequestRetry int,
 	) (cliproxyexecutor.Response, error) {
 		attempted = append(attempted, req.Model)
 		if req.Model == "gpt-5.5" {
@@ -162,6 +164,9 @@ func TestExecuteStreamWithRouteFallback_DoesNotReachModelBlockedForAPIKey(t *tes
 		req cliproxyexecutor.Request,
 		opts cliproxyexecutor.Options,
 		maxRetryCredentials int,
+		homeRetryLimit *int,
+		retryRound int,
+		defaultRequestRetry int,
 	) (*cliproxyexecutor.StreamResult, error) {
 		attempted = append(attempted, req.Model)
 		return nil, upstreamErr

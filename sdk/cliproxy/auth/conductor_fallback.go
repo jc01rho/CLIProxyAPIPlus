@@ -372,12 +372,12 @@ func (m *Manager) executeWithRouteFallback(
 	providers []string,
 	req cliproxyexecutor.Request,
 	opts cliproxyexecutor.Options,
-	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int) (cliproxyexecutor.Response, error),
+	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int, int, int) (cliproxyexecutor.Response, error),
 ) (cliproxyexecutor.Response, error) {
-	_, maxRetryCredentials, maxWait := m.retrySettings()
+	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 	originalModel := req.Model
 	attempted := map[string]struct{}{originalModel: {}}
-	resp, lastErr := m.executeWithRetry(ctx, providers, req, opts, maxRetryCredentials, maxWait, execOnce)
+	resp, lastErr := m.executeWithRetry(ctx, providers, req, opts, maxRetryCredentials, defaultRequestRetry, maxWait, execOnce)
 	if lastErr == nil {
 		return resp, nil
 	}
@@ -409,7 +409,7 @@ func (m *Manager) executeWithRouteFallback(
 		if len(fallbackProviders) == 0 {
 			fallbackProviders = providers
 		}
-		resp, errFallback := m.executeWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, maxWait, execOnce)
+			resp, errFallback := m.executeWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, defaultRequestRetry, maxWait, execOnce)
 		if errFallback == nil {
 			logRouteModelFallbackResult(ctx, originalModel, fallbackModel, source, lastErr, nil, startedAt)
 			return resp, nil
@@ -428,12 +428,12 @@ func (m *Manager) executeStreamWithRouteFallback(
 	providers []string,
 	req cliproxyexecutor.Request,
 	opts cliproxyexecutor.Options,
-	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int) (*cliproxyexecutor.StreamResult, error),
+	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int, *int, int, int) (*cliproxyexecutor.StreamResult, error),
 ) (*cliproxyexecutor.StreamResult, error) {
-	_, maxRetryCredentials, maxWait := m.retrySettings()
+	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 	originalModel := req.Model
 	attempted := map[string]struct{}{originalModel: {}}
-	result, lastErr := m.executeStreamWithRetry(ctx, providers, req, opts, maxRetryCredentials, maxWait, execOnce)
+	result, lastErr := m.executeStreamWithRetry(ctx, providers, req, opts, maxRetryCredentials, defaultRequestRetry, maxWait, execOnce)
 	if lastErr == nil {
 		return result, nil
 	}
@@ -457,7 +457,7 @@ func (m *Manager) executeStreamWithRouteFallback(
 		if len(fallbackProviders) == 0 {
 			fallbackProviders = providers
 		}
-		result, errFallback := m.executeStreamWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, maxWait, execOnce)
+			result, errFallback := m.executeStreamWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, defaultRequestRetry, maxWait, execOnce)
 		if errFallback == nil {
 			logRouteModelFallbackResult(ctx, originalModel, fallbackModel, source, lastErr, nil, startedAt)
 			return result, nil
@@ -495,20 +495,22 @@ func (m *Manager) executeWithRetry(
 	req cliproxyexecutor.Request,
 	opts cliproxyexecutor.Options,
 	maxRetryCredentials int,
+	defaultRequestRetry int,
 	maxWait time.Duration,
-	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int) (cliproxyexecutor.Response, error),
+	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int, int, int) (cliproxyexecutor.Response, error),
 ) (cliproxyexecutor.Response, error) {
 	var lastErr error
+	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	for attempt := 0; ; attempt++ {
-		resp, errExec := execOnce(ctx, providers, req, opts, maxRetryCredentials)
+		resp, errExec := execOnce(ctx, providers, req, opts, maxRetryCredentials, attempt, defaultRequestRetry)
 		if errExec == nil {
 			return resp, nil
 		}
-		if isRequestTerminatedError(errExec) {
-			return cliproxyexecutor.Response{}, errExec
+		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
+			return cliproxyexecutor.Response{}, unwrapRequestStopError(errExec)
 		}
 		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, providers, req.Model, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterErrorWithHomeRetryLimit(ctx, opts, errExec, attempt, providers, retryModel, maxWait, -1, defaultRequestRetry)
 		if !shouldRetry {
 			break
 		}
@@ -525,26 +527,49 @@ func (m *Manager) executeStreamWithRetry(
 	req cliproxyexecutor.Request,
 	opts cliproxyexecutor.Options,
 	maxRetryCredentials int,
+	defaultRequestRetry int,
 	maxWait time.Duration,
-	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int) (*cliproxyexecutor.StreamResult, error),
+	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int, *int, int, int) (*cliproxyexecutor.StreamResult, error),
 ) (*cliproxyexecutor.StreamResult, error) {
 	var lastErr error
-	for attempt := 0; ; attempt++ {
-		result, errStream := execOnce(ctx, providers, req, opts, maxRetryCredentials)
+	homeRetryLimit := -1
+	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	attempt := 0
+	retryRoundPending := false
+	retryRoundWaited := false
+	for {
+		result, errStream := execOnce(ctx, providers, req, opts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
 		if errStream == nil {
 			return result, nil
 		}
-		if isRequestTerminatedError(errStream) {
-			return nil, errStream
+		if m.HomeEnabled() && retryRoundPending {
+			if wait, okWait := pendingHomeRetryRoundDelay(errStream, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(attempt-1, homeRetryLimit) {
+				if retryRoundWaited {
+					return nil, errStream
+				}
+				if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
+					return nil, errWait
+				}
+				retryRoundWaited = true
+				continue
+			}
+		}
+		retryRoundPending = false
+		retryRoundWaited = false
+		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
+			return nil, unwrapRequestStopError(errStream)
 		}
 		lastErr = errStream
-		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, providers, req.Model, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterErrorWithHomeRetryLimit(ctx, opts, errStream, attempt, providers, retryModel, maxWait, homeRetryLimit, defaultRequestRetry)
 		if !shouldRetry {
 			break
 		}
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return nil, errWait
 		}
+		attempt++
+		retryRoundPending = m.HomeEnabled()
+		retryRoundWaited = false
 	}
 	return nil, lastErr
 }

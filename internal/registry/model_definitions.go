@@ -468,6 +468,7 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - claude
 //   - gemini
 //   - gemini-cli
+//   - gemini-interactions
 //   - vertex
 //   - aistudio
 //   - codex
@@ -488,6 +489,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetGeminiModels()
 	case "gemini-cli":
 		return GetGeminiCLIModels()
+	case "gemini-interactions":
+		return GetGeminiModels()
 	case "vertex":
 		return GetGeminiVertexModels()
 	case "aistudio":
