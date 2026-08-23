@@ -13,7 +13,13 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const cursorExecHeartbeatInterval = 3 * time.Second
+const (
+	cursorExecHeartbeatInterval = 3 * time.Second
+	// cursorStreamStallThreshold mirrors senpi's
+	// CURSOR_STREAM_HEALTH_FAIL_THRESHOLD_MS = 30_000 (cursor-agent.ts:258):
+	// maximum inbound silence before an attempt without turnEnded is failed.
+	cursorStreamStallThreshold = 30 * time.Second
+)
 
 type cursorToolCallUpdateKind int
 
@@ -48,12 +54,68 @@ type cursorStreamedToolState struct {
 	args       string
 }
 
+// cursorStreamConn is the transport surface the server-frame dispatcher needs;
+// *cursorproto.H2Stream satisfies it. Tests substitute an in-memory fake.
+type cursorStreamConn interface {
+	ID() string
+	Data() <-chan []byte
+	Err() error
+	Write(data []byte) error
+}
+
+// cursorStallWatchdog is the inbound-frame deadline for one stream attempt:
+// fired becomes receivable when no inbound frame has arrived within the
+// threshold of the last kick. Any server frame on Data() — including
+// heartbeats — counts as liveness and re-arms the deadline, matching senpi's
+// armStreamHealthTimer (cursor-agent.ts:630-660). The zero value is a disabled
+// watchdog; tests substitute manual channels to drive the deadline without
+// wall-clock sleeps.
+type cursorStallWatchdog struct {
+	fired <-chan time.Time
+	kick  func()
+	stop  func()
+}
+
+// newCursorStallWatchdog arms a timer-backed watchdog. A non-positive timeout
+// takes the 30s senpi default.
+func newCursorStallWatchdog(timeout time.Duration) cursorStallWatchdog {
+	if timeout <= 0 {
+		timeout = cursorStreamStallThreshold
+	}
+	timer := time.NewTimer(timeout)
+	return cursorStallWatchdog{
+		fired: timer.C,
+		kick:  func() { timer.Reset(timeout) },
+		stop:  func() { timer.Stop() },
+	}
+}
+
+// kickInboundFrame re-arms the deadline after any inbound frame. It is a no-op
+// once the watchdog is disabled or disarmed.
+func (w *cursorStallWatchdog) kickInboundFrame() {
+	if w.kick != nil {
+		w.kick()
+	}
+}
+
+// disarm permanently stops the deadline once turnEnded has been seen — senpi
+// stops the health timer at the same point, so the client-driven MCP result
+// wait is never bounded by the watchdog. A fire already buffered in the
+// channel is neutralized by the turnEndedSeen guard in the receive select.
+func (w *cursorStallWatchdog) disarm() {
+	if w.stop != nil {
+		w.stop()
+		w.stop = nil
+	}
+	w.kick = nil
+}
+
 // processH2SessionFrames mirrors Senpi's server-frame dispatcher. It keeps the
 // Connect stream active while MCP work is outstanding, but all other exec
 // variants are answered immediately with a typed result and stream_close.
 func processH2SessionFrames(
 	ctx context.Context,
-	stream *cursorproto.H2Stream,
+	stream cursorStreamConn,
 	blobStore map[string][]byte,
 	mcpTools []cursorproto.McpToolDef,
 	onText func(text string, isThinking bool),
@@ -62,10 +124,11 @@ func processH2SessionFrames(
 	toolResultCh <-chan []toolResultInfo,
 	tokenUsage *cursorTokenUsage,
 	onCheckpoint func(data []byte),
+	stall cursorStallWatchdog,
 ) error {
 	var buf bytes.Buffer
 	var pendingMcp *cursorPendingMcp
-	turnEnded := false
+	turnEndedSeen := false
 	streamedTools := make(map[string]*cursorStreamedToolState)
 
 	stopPendingHeartbeat := func() {
@@ -74,6 +137,7 @@ func processH2SessionFrames(
 		}
 	}
 	defer stopPendingHeartbeat()
+	defer stall.disarm()
 
 	log.Debugf("cursor: processH2SessionFrames started for streamID=%s, waiting for data...", stream.ID())
 	for {
@@ -85,6 +149,18 @@ func processH2SessionFrames(
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
+		case <-stall.fired:
+			// turnEnded already seen: a fire buffered before the disarm is
+			// stale, mirroring senpi's sawTurnEnded guard inside the health
+			// timer callback (cursor-agent.ts:641-644).
+			if turnEndedSeen {
+				continue
+			}
+			return &cursorRetryableStreamError{
+				msg:   "Cursor stream ended before turnEnded: inbound stream stalled",
+				cause: cursorStreamRetryCauseStall,
+			}
 
 		case toolResults, ok := <-resultsCh:
 			if !ok {
@@ -113,14 +189,21 @@ func processH2SessionFrames(
 				return err
 			}
 			pendingMcp = nil
-			if turnEnded {
+			if turnEndedSeen {
 				return nil
 			}
 
 		case data, ok := <-stream.Data():
+			// The transport's readLoop closes Data when it exits, so channel
+			// closure is the single end-of-stream signal (Done() would only
+			// preempt frames still buffered in Data).
 			if !ok {
-				return stream.Err()
+				return cursorStreamEndResult(turnEndedSeen, stream.Err())
 			}
+			// Any inbound frame — heartbeat included — is liveness: re-arm the
+			// stall deadline before parsing (senpi resets lastInboundFrameAt on
+			// every h2 data chunk, cursor-agent.ts:714).
+			stall.kickInboundFrame()
 			buf.Write(data)
 
 			for {
@@ -181,12 +264,19 @@ func processH2SessionFrames(
 						return err
 					}
 				case cursorproto.ServerMsgTurnEnded:
-					if pendingMcp == nil {
-						return nil
-					}
-					turnEnded = true
+					turnEndedSeen = true
+					// The inbound stall deadline ends with the turn: the MCP result
+					// wait is client-driven, not watchdog-bounded (senpi disarms the
+					// health timer once turnEnded arrives).
+					stall.disarm()
+					// The billed split (input/output/cacheRead/cacheWrite) applies on
+					// EVERY turnEnded — including the normal no-MCP path — mirroring
+					// senpi cursor-agent.ts:3591-3594.
 					if tokenUsage != nil {
 						tokenUsage.applyBilledTurnEndedUsage(msg.TurnEndedInput, msg.TurnEndedOutput, msg.TurnEndedCacheRead, msg.TurnEndedCacheWrite)
+					}
+					if pendingMcp == nil {
+						return nil
 					}
 				default:
 					req, ok := cursorExecRequestFromPayload(payload)
@@ -240,11 +330,25 @@ func processH2SessionFrames(
 					}
 				}
 			}
-
-		case <-stream.Done():
-			return stream.Err()
 		}
 	}
+}
+
+// cursorStreamEndResult converts the transport's end condition into senpi's
+// typed outcome (cursor-agent.ts:770-774): a clean close before turnEnded is
+// the retryable clean-end failure, never a bogus success. A transport error
+// (RST_STREAM/GOAWAY) passes through unchanged.
+func cursorStreamEndResult(turnEndedSeen bool, err error) error {
+	if err != nil {
+		return err
+	}
+	if !turnEndedSeen {
+		return &cursorRetryableStreamError{
+			msg:   "Cursor stream ended before turnEnded",
+			cause: cursorStreamRetryCauseCleanEnd,
+		}
+	}
+	return nil
 }
 
 func handleCursorToolCallUpdate(
@@ -382,7 +486,7 @@ func cursorMcpToolNameFromServerPayload(payload []byte, messageType cursorproto.
 
 func dispatchCursorExec(
 	ctx context.Context,
-	stream *cursorproto.H2Stream,
+	stream cursorStreamConn,
 	msg *cursorproto.DecodedServerMessage,
 	req cursorExecRequest,
 	mcpTools []cursorproto.McpToolDef,
@@ -487,7 +591,7 @@ func dispatchCursorExec(
 	return cursorWriteClientMessage(stream, cursorproto.EncodeExecControlStreamClose(msg.ExecMsgId))
 }
 
-func startCursorExecHeartbeat(ctx context.Context, stream *cursorproto.H2Stream, execMsgID uint32) func() {
+func startCursorExecHeartbeat(ctx context.Context, stream cursorStreamConn, execMsgID uint32) func() {
 	heartbeatCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -513,7 +617,7 @@ func startCursorExecHeartbeat(ctx context.Context, stream *cursorproto.H2Stream,
 	}
 }
 
-func cursorWriteClientMessage(stream *cursorproto.H2Stream, payload []byte) error {
+func cursorWriteClientMessage(stream cursorStreamConn, payload []byte) error {
 	if err := stream.Write(cursorproto.FrameConnectMessage(payload, 0)); err != nil {
 		return fmt.Errorf("cursor: failed to write server-frame response: %w", err)
 	}
@@ -674,27 +778,79 @@ func isCursorZeroTokenResourceExhausted(err error, usage *cursorTokenUsage) bool
 	return usage == nil || !usage.sawTokenDelta()
 }
 
+// effectiveCursorConversation returns the wire conversation id for a base
+// conversation id. A poisoned record (skip) remints a fresh wire id with reset
+// counters here — the remint point of senpi's getWireId
+// (cursor-conversation-rotation.ts:60-76) — so a poisoned conversation never
+// wedges the base id for the process lifetime.
 func (e *CursorExecutor) effectiveCursorConversation(baseConversationID string) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if rotated := e.rotations[baseConversationID]; rotated != "" {
-		return rotated
+	rec := e.rotations[baseConversationID]
+	if rec == nil {
+		return baseConversationID
 	}
-	return baseConversationID
+	if !rec.skip {
+		return rec.wireID
+	}
+	rec.wireID = uuid.New().String()
+	rec.skip = false
+	rec.poisonCount = 0
+	// A reminted id is a fresh conversation: it earns its own surface-first
+	// pass so compaction runs again before rotation resumes.
+	rec.surfaced = false
+	return rec.wireID
 }
 
-// rotateCursorConversation records the one allowed rotation and migrates the
-// cached checkpoint plus any retained MCP session to the replacement key. The
-// active Run reuses its existing blob-store map directly.
-func (e *CursorExecutor) rotateCursorConversation(baseConversationID, currentConversationID, authID string) (string, bool) {
+type cursorRotationOutcome int
+
+const (
+	// cursorRotationSurface returns the classified error to the client
+	// UN-ROTATED: the first zero-token resource_exhausted for a base
+	// conversation may be an oversized payload only the client can shrink.
+	cursorRotationSurface cursorRotationOutcome = iota
+	// cursorRotationRotated retries the Run once on the returned fresh wire id.
+	cursorRotationRotated
+	// cursorRotationPoisoned surfaces the poisoned-conversation error.
+	cursorRotationPoisoned
+)
+
+// rotateOnCursorZeroTokenRE mirrors senpi's zero-token resource_exhausted
+// catch-block policy (cursor-agent.ts:893-910, cursor-conversation-rotation.ts):
+// the first 0-token RE is surfaced un-rotated (surface-first), subsequent ones
+// rotate up to cursorMaxConversationRotations, and past the cap the base
+// conversation is poisoned (skip) until the next effectiveCursorConversation
+// use remints it.
+func (e *CursorExecutor) rotateOnCursorZeroTokenRE(baseConversationID, currentConversationID, authID string) (string, cursorRotationOutcome) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.rotations[baseConversationID] != "" {
-		return "", false
+	rec := e.rotations[baseConversationID]
+	if rec == nil {
+		rec = &cursorConversationRotation{wireID: currentConversationID}
+		e.rotations[baseConversationID] = rec
 	}
-
+	if rec.skip || rec.poisonCount >= cursorMaxConversationRotations {
+		rec.skip = true
+		rec.wireID = currentConversationID
+		return "", cursorRotationPoisoned
+	}
+	if !rec.surfaced {
+		// First 0-token RE for this conversation: surface it so the session
+		// layer can compact. If the payload really was oversized, the compacted
+		// retry succeeds and no rotation is ever spent.
+		rec.surfaced = true
+		return "", cursorRotationSurface
+	}
 	rotated := uuid.New().String()
-	e.rotations[baseConversationID] = rotated
+	rec.wireID = rotated
+	rec.poisonCount++
+	e.migrateCursorConversationStateLocked(currentConversationID, rotated, authID)
+	return rotated, cursorRotationRotated
+}
+
+// migrateCursorConversationStateLocked moves the cached checkpoint plus any
+// retained MCP session to the replacement wire id. Caller must hold e.mu.
+func (e *CursorExecutor) migrateCursorConversationStateLocked(currentConversationID, rotated, authID string) {
 	if checkpoint := e.checkpoints[currentConversationID]; checkpoint != nil {
 		e.checkpoints[rotated] = checkpoint
 		delete(e.checkpoints, currentConversationID)
@@ -709,5 +865,4 @@ func (e *CursorExecutor) rotateCursorConversation(baseConversationID, currentCon
 		e.sessions[prefix+":"+rotated] = session
 		delete(e.sessions, key)
 	}
-	return rotated, true
 }

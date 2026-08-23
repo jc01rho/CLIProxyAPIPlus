@@ -3,6 +3,7 @@ package executor
 import (
 	"testing"
 
+	"github.com/tidwall/gjson"
 	"google.golang.org/protobuf/encoding/protowire"
 
 	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
@@ -164,6 +165,82 @@ func TestCursorUsageAppliesCheckpointUsedTokensInFlight(t *testing.T) {
 	}
 	if output != 5 {
 		t.Fatalf("output = %d, want 5", output)
+	}
+}
+
+// Given accumulated token usage,
+// When the OpenAI usage JSON shared by the non-stream chat.completion response
+// and the stream stop chunk is rendered,
+// Then it carries the real accumulated prompt/completion/total numbers and the
+// billed cacheRead as prompt_tokens_details.cached_tokens.
+//
+// Ports gap-matrix rows 7-8: the non-stream response previously hardcoded
+// zeros, and neither surface carried cached_tokens.
+func TestCursorOpenAIUsageJSONCarriesBilledUsageAndCachedTokens(t *testing.T) {
+	tests := []struct {
+		name           string
+		apply          func(usage *cursorTokenUsage)
+		wantPrompt     int64
+		wantCompletion int64
+		wantTotal      int64
+		wantCached     int64
+	}{
+		{
+			name: "billed turnEnded split with cache read",
+			apply: func(usage *cursorTokenUsage) {
+				applyDecodedFrame(t, usage, billedTurnEndedFrame(map[int]int64{
+					cursorproto.TEU_InputTokens:      17_989,
+					cursorproto.TEU_OutputTokens:     5,
+					cursorproto.TEU_CacheReadTokens:  17_575,
+					cursorproto.TEU_CacheWriteTokens: 411,
+				}))
+			},
+			wantPrompt:     3,
+			wantCompletion: 5,
+			wantTotal:      8,
+			wantCached:     17_575,
+		},
+		{
+			name: "token delta without billed split keeps streamed output",
+			apply: func(usage *cursorTokenUsage) {
+				usage.addOutput(42)
+				usage.setInputEstimate(4000)
+			},
+			wantPrompt:     0, // sawDelta short-circuits the estimate fallback
+			wantCompletion: 42,
+			wantTotal:      42,
+			wantCached:     0,
+		},
+		{
+			name: "no frames at all falls back to the payload estimate",
+			apply: func(usage *cursorTokenUsage) {
+				usage.setInputEstimate(4000)
+			},
+			wantPrompt:     1000,
+			wantCompletion: 0,
+			wantTotal:      1000,
+			wantCached:     0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usage := &cursorTokenUsage{}
+			tt.apply(usage)
+
+			payload := cursorOpenAIUsageJSON(usage)
+			if got := gjson.Get(payload, "prompt_tokens").Int(); got != tt.wantPrompt {
+				t.Fatalf("prompt_tokens = %d, want %d (json: %s)", got, tt.wantPrompt, payload)
+			}
+			if got := gjson.Get(payload, "completion_tokens").Int(); got != tt.wantCompletion {
+				t.Fatalf("completion_tokens = %d, want %d (json: %s)", got, tt.wantCompletion, payload)
+			}
+			if got := gjson.Get(payload, "total_tokens").Int(); got != tt.wantTotal {
+				t.Fatalf("total_tokens = %d, want %d (json: %s)", got, tt.wantTotal, payload)
+			}
+			if got := gjson.Get(payload, "prompt_tokens_details.cached_tokens").Int(); got != tt.wantCached {
+				t.Fatalf("prompt_tokens_details.cached_tokens = %d, want %d (json: %s)", got, tt.wantCached, payload)
+			}
+		})
 	}
 }
 
