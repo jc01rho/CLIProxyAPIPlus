@@ -21,6 +21,9 @@ func TestManagerExecuteStreamWithRouteFallback_returnsCancellationWithoutTryingF
 		req cliproxyexecutor.Request,
 		opts cliproxyexecutor.Options,
 		maxRetryCredentials int,
+		homeRetryLimit *int,
+		retryRound int,
+		defaultRequestRetry int,
 	) (*cliproxyexecutor.StreamResult, error) {
 		attemptedModels = append(attemptedModels, req.Model)
 		return nil, context.Canceled
@@ -58,6 +61,8 @@ func TestManagerExecuteWithRouteFallback_AllowsConsoleUpstreamRequestFailed(t *t
 		req cliproxyexecutor.Request,
 		opts cliproxyexecutor.Options,
 		maxRetryCredentials int,
+		retryRound int,
+		defaultRequestRetry int,
 	) (cliproxyexecutor.Response, error) {
 		attemptedModels = append(attemptedModels, req.Model)
 		if req.Model == "deepseek-v4-flash-free" {
