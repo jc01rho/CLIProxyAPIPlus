@@ -1996,13 +1996,14 @@ func isMissingModelPhrase(value string) bool {
 
 // isRequestInvalidError returns true if the error represents a client request
 // error that should not be retried. Specifically, it treats request-scoped 404
-// item misses caused by `store=false`, and all 422 responses as request-shape
-// failures, where switching auths or pooled upstream models will not help.
+// item misses caused by `store=false` as request-shape failures, where
+// switching auths or pooled upstream models will not help.
 // Model-support errors are excluded so routing can fall through to another auth
-// or upstream. 400 errors are allowed to trigger fallback chains (local fork).
-// For all other statuses it delegates to clienterror.IsRequestFault so upstream
-// fault-body classification (cyber_policy, context_length_exceeded, conflict,
-// message_too_big, ...) still stops rotation without penalizing the pool.
+// or upstream. 400 and 422 errors are allowed to trigger fallback chains and
+// credential cooldown (local fork). For all other statuses it delegates to
+// clienterror.IsRequestFault so upstream fault-body classification
+// (cyber_policy, context_length_exceeded, conflict, message_too_big, ...)
+// still stops rotation without penalizing the pool.
 func isRequestInvalidError(err error) bool {
 	if err == nil {
 		return false
@@ -2019,8 +2020,10 @@ func isRequestInvalidError(err error) bool {
 	if isModelSupportError(err) {
 		return false
 	}
-	// Local: 400 fall through to credential/model fallback chains (e0a8e394).
-	// 404/422/500-shape errors are still treated as request-scoped.
+	// Local: 400 and 422 fall through to credential/model fallback chains
+	// (e0a8e394, 422-cooldown-and-fallback). Both statuses now rotate
+	// credentials and cool down the failing auth/upstream model like 5xx.
+	// 404/500-shape errors are still treated as request-scoped.
 	status := statusCodeFromError(err)
 	switch status {
 	case http.StatusBadRequest:
@@ -2028,7 +2031,7 @@ func isRequestInvalidError(err error) bool {
 	case http.StatusNotFound:
 		return isRequestScopedNotFoundMessage(err.Error())
 	case http.StatusUnprocessableEntity:
-		return true
+		return false
 	default:
 		if clienterror.IsRequestFault(status, err) {
 			return true
