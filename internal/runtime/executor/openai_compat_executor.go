@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1712,6 +1713,30 @@ func openAICompatErrorEvent(eventName string) bool {
 	return strings.EqualFold(eventName, "error") || strings.EqualFold(eventName, "response.error") || strings.EqualFold(eventName, "response.failed")
 }
 
+var openAICompatBracketedStatusRe = regexp.MustCompile(`\[(4[0-9]{2}|5[0-9]{2})\]`)
+
+// openAICompatEmbeddedStatusFromMessage recovers an upstream status embedded in the
+// error message text (e.g. "Streaming response failed: [504] Upstream idle timeout
+// exceeded"). Gateways that surface upstream failures as in-stream error events often
+// omit a machine-readable status field; without this recovery the conductor only sees
+// the 502 fallback guess and consumes the retry budget instead of retrying same-model
+// credentials first for budget-preserving statuses (429/503/504).
+func openAICompatEmbeddedStatusFromMessage(payload []byte) int {
+	for _, path := range []string{"error.message", "response.error.message", "message"} {
+		message := gjson.GetBytes(payload, path).String()
+		if message == "" {
+			continue
+		}
+		for _, match := range openAICompatBracketedStatusRe.FindAllString(message, -1) {
+			status, errConv := strconv.Atoi(strings.Trim(match, "[]"))
+			if errConv == nil && status >= http.StatusBadRequest && status <= 599 {
+				return status
+			}
+		}
+	}
+	return 0
+}
+
 func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, bool) {
 	if len(payload) == 0 || !json.Valid(payload) {
 		return statusErr{}, false
@@ -1737,6 +1762,9 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
 		if status >= http.StatusBadRequest && status <= 599 {
 			break
 		}
+	}
+	if status < http.StatusBadRequest || status > 599 {
+		status = openAICompatEmbeddedStatusFromMessage(payload)
 	}
 	if status < http.StatusBadRequest || status > 599 {
 		status = http.StatusBadGateway
