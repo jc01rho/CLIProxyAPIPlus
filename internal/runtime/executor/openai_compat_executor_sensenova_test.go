@@ -338,3 +338,45 @@ func TestOpenAICompatExecutor_NonSensenovaLeavesRequestUnchanged(t *testing.T) {
 		t.Fatalf("max_tokens = %d, want 70000; body=%s", got, gotBody)
 	}
 }
+func TestOpenAICompatStreamDataErrorRecoversEmbeddedUpstreamStatus(t *testing.T) {
+	// Real opencode-free payload: upstream 504 wrapped as in-stream server_error
+	// without a machine-readable status field.
+	payload := []byte(`{"error":{"type":"server_error","message":"Streaming response failed: [504] Upstream idle timeout exceeded"}}`)
+	streamErr, ok := openAICompatStreamDataError(payload, "")
+	if !ok {
+		t.Fatal("openAICompatStreamDataError() ok = false, want error detection")
+	}
+	if streamErr.code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504 recovered from message text", streamErr.code)
+	}
+
+	// Structured status field still wins over the embedded token.
+	payloadStructured := []byte(`{"error":{"type":"server_error","status":429,"message":"rate limited [504]"}}`)
+	streamErrStructured, okStructured := openAICompatStreamDataError(payloadStructured, "")
+	if !okStructured {
+		t.Fatal("structured payload not detected as error")
+	}
+	if streamErrStructured.code != http.StatusTooManyRequests {
+		t.Fatalf("structured status = %d, want 429 to win over embedded [504]", streamErrStructured.code)
+	}
+
+	// No status anywhere falls back to 502.
+	payloadPlain := []byte(`{"error":{"type":"server_error","message":"internal error"}}`)
+	streamErrPlain, okPlain := openAICompatStreamDataError(payloadPlain, "")
+	if !okPlain {
+		t.Fatal("plain payload not detected as error")
+	}
+	if streamErrPlain.code != http.StatusBadGateway {
+		t.Fatalf("fallback status = %d, want 502", streamErrPlain.code)
+	}
+
+	// Non-error-status brackets are ignored.
+	payloadIgnored := []byte(`{"error":{"type":"server_error","message":"see docs [301] and [200]"}}`)
+	streamErrIgnored, okIgnored := openAICompatStreamDataError(payloadIgnored, "")
+	if !okIgnored {
+		t.Fatal("ignored-brackets payload not detected as error")
+	}
+	if streamErrIgnored.code != http.StatusBadGateway {
+		t.Fatalf("status with only non-error brackets = %d, want 502 fallback", streamErrIgnored.code)
+	}
+}
