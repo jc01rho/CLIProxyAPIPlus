@@ -479,7 +479,9 @@ func (m *Manager) shouldAllowRouteModelFallback(err error) bool {
 	case http.StatusBadRequest:
 		return true
 	case http.StatusUnprocessableEntity:
-		return isModelSupportError(err)
+		// Local: 422 activates route/model fallback and cools the failing auth
+		// instead of stopping as a request-shape fault.
+		return true
 	case http.StatusNotFound:
 		return isModelSupportErrorMessage(err.Error())
 	default:

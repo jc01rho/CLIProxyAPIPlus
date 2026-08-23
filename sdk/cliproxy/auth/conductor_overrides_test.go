@@ -2045,8 +2045,8 @@ func TestManager_RequestScopedErrorStopsCredentialFallbackWithoutSuspendingAuth(
 		HTTPStatus: http.StatusNotFound,
 		Message:    requestScopedNotFoundMessage,
 	}
-	// Local: 400 invalid/bad_request fall through credential fallback instead of request-scoped stop.
-	// Upstream: every other request-fault shape (409/413/422/500-masked/cyber_policy/conflict/
+	// Local: 400 and 422 invalid/bad_request fall through credential fallback instead of request-scoped stop.
+	// Upstream: every other request-fault shape (409/413/500-masked/cyber_policy/conflict/
 	// message_too_big/context_length/item-not-persisted/...) still stops rotation as a
 	// request-scoped error via clienterror.IsRequestFault. Both field sets coexist in the
 	// table so a single test pass covers the integrated fork behavior.
