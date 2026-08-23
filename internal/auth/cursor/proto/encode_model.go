@@ -82,6 +82,15 @@ func ResolveRequestedModel(modelID, reasoningEffort string) (string, []ModelPara
 			return "default", []ModelParameter{{ID: "optimization", Value: level}}
 		}
 	}
+	// Probe the live-catalog legacy-variant alias table ahead of the static
+	// tier tables (senpi's suffixAliasId, cursor/selection-descriptor.ts:29-44),
+	// trying both thinking-infix spellings. A hit always carries zero
+	// ModelParameters, matching senpi's legacy-variant encoding.
+	for _, candidate := range cursorThinkingInfixCandidates(strings.ToLower(normalized)) {
+		if wireID, ok := resolveCursorVariantAlias(candidate); ok {
+			return wireID, nil
+		}
+	}
 	base, existing, fast := parseCursorRequestedModel(normalized)
 	effort := resolveCursorEffort(base, existing, reasoningEffort, fast)
 	return composeCursorWireModel(base, effort, fast)
@@ -94,6 +103,59 @@ func normalizeCursorModelID(modelID string) string {
 		return alias
 	}
 	return id
+}
+
+// resolveCursorVariantAlias probes the live-catalog legacy-variant alias table
+// (cursorVariantAliases, ported from senpi's cursor-variant-aliases.json) for an
+// exact hit on the normalized id. senpi's suffixAliasId (cursor/selection-descriptor.ts)
+// tries the thinking-infixed id in both orders (`<cap>-thinking-<sfx>` then
+// `<cap>-<sfx>-thinking`) before falling back to the non-thinking suffix form, and on
+// a hit returns the alias's legacyVariantId (== the alias table key itself) as the
+// wire id -- NOT targetId, which is the bare capability id without the level suffix.
+// Every entry resolves with zero ModelParameters, matching senpi's legacy-variant
+// encoding.
+//
+// Bare ids (no level suffix) that are also present in the static effort-tier
+// table are left to the static path: senpi's catalog lists those bases as
+// self-referential passthrough aliases (targetId == key, no level), which carry
+// no tier information, while the static table's bare-id behavior is to promote
+// to the highest tier (mirroring senpi's own "no explicit selection" default of
+// the representative variant). Only ids the static table has no opinion on, or
+// aliases that actually carry a level/suffix, are resolved here.
+func resolveCursorVariantAlias(id string) (string, bool) {
+	alias, ok := cursorVariantAliases[strings.ToLower(id)]
+	if !ok {
+		return "", false
+	}
+	if alias.level == "" && cursorModelHasEffortTiers(id) {
+		return "", false
+	}
+	return id, true
+}
+
+// cursorThinkingInfixCandidates returns the dual thinking-infix spellings senpi's
+// suffixAliasId tries for a thinking-capable base id: `<cap>-thinking-<sfx>` and
+// `<cap>-<sfx>-thinking`. Only returns a second candidate when id matches one of
+// the two forms, so a plain (non-thinking) id passes through unchanged.
+func cursorThinkingInfixCandidates(id string) []string {
+	const thinkingMarker = "-thinking"
+	// <head>-<sfx>-thinking -> also try <head>-thinking-<sfx>
+	for _, suffix := range cursorEffortSuffixesLongestFirst {
+		marker := "-" + suffix + thinkingMarker
+		if strings.HasSuffix(id, marker) {
+			head := strings.TrimSuffix(id, marker)
+			return []string{id, head + thinkingMarker + "-" + suffix}
+		}
+	}
+	// <head>-thinking-<sfx> -> also try <head>-<sfx>-thinking
+	if idx := strings.Index(id, thinkingMarker+"-"); idx >= 0 {
+		head := id[:idx]
+		suffix := id[idx+len(thinkingMarker)+1:]
+		if suffix != "" {
+			return []string{id, head + "-" + suffix + thinkingMarker}
+		}
+	}
+	return []string{id}
 }
 
 // splitCursorFastSuffix separates a trailing "-fast" marker from a model id.

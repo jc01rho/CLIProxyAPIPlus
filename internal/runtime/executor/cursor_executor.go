@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"math/rand"
 	"net/http"
 	"strings"
 	"sync"
@@ -47,9 +49,30 @@ type CursorExecutor struct {
 	cfg         *config.Config
 	mu          sync.Mutex
 	sessions    map[string]*cursorSession
-	checkpoints map[string]*savedCheckpoint // keyed by conversationId
-	rotations   map[string]string           // base conversationId -> one rotated wire conversationId
+	checkpoints map[string]*savedCheckpoint            // keyed by conversationId
+	rotations   map[string]*cursorConversationRotation // base conversationId -> rotation state
+	// streamStallTimeout overrides the inbound stall deadline (30s senpi
+	// default). Zero means default; tests set a tiny value to drive the
+	// watchdog deterministically.
+	streamStallTimeout time.Duration
 }
+
+// cursorConversationRotation mirrors senpi's ConversationRotationRecord
+// (cursor-conversation-rotation.ts): the per-base-conversation wire-id state
+// implementing surface-first poisoning, a 3-rotation cap, and remint-after-skip.
+type cursorConversationRotation struct {
+	wireID      string
+	poisonCount int
+	skip        bool
+	surfaced    bool
+}
+
+const (
+	// cursorMaxConversationRotations mirrors MAX_CURSOR_CONVERSATION_ROTATIONS.
+	cursorMaxConversationRotations = 3
+	// cursorConversationPoisonedMessage mirrors CURSOR_CONVERSATION_POISONED_MESSAGE.
+	cursorConversationPoisonedMessage = "Cursor conversation is poisoned for this session; use another provider"
+)
 
 // savedCheckpoint stores the server's conversation_checkpoint_update for reuse.
 type savedCheckpoint struct {
@@ -86,7 +109,7 @@ func NewCursorExecutor(cfg *config.Config) *CursorExecutor {
 		cfg:         cfg,
 		sessions:    make(map[string]*cursorSession),
 		checkpoints: make(map[string]*savedCheckpoint),
-		rotations:   make(map[string]string),
+		rotations:   make(map[string]*cursorConversationRotation),
 	}
 	go e.cleanupLoop()
 	return e
@@ -143,6 +166,183 @@ func (e *CursorExecutor) findSessionByConversationLocked(convId string) string {
 		}
 	}
 	return ""
+}
+
+// cursorStreamRetryCause identifies why a stream attempt may be safely
+// retried before turnEnded, mirroring senpi's CursorStreamRetryCause
+// (stream-retry.ts: "stall" | "transport" | "clean-end").
+type cursorStreamRetryCause string
+
+const (
+	cursorStreamRetryCauseStall     cursorStreamRetryCause = "stall"
+	cursorStreamRetryCauseTransport cursorStreamRetryCause = "transport"
+	cursorStreamRetryCauseCleanEnd  cursorStreamRetryCause = "clean-end"
+)
+
+// cursorRetryableStreamError mirrors senpi's CursorRetryableStreamError: a
+// stream failure whose cause makes the attempt safe to re-run before
+// turnEnded (stream-retry.ts). Row 4's retry loop keys on the cause.
+type cursorRetryableStreamError struct {
+	msg   string
+	cause cursorStreamRetryCause
+}
+
+func (e *cursorRetryableStreamError) Error() string      { return e.msg }
+func (e *cursorRetryableStreamError) RetryCause() string { return string(e.cause) }
+
+// cursorMaxStreamRetries mirrors senpi's streamStallMaxRetries ?? 10
+// (cursor-agent.ts:831): the pre-turnEnded retry budget — the initial attempt
+// plus at most this many retries.
+const cursorMaxStreamRetries = 10
+
+// isCursorRetryableStreamFailure reports whether a failed attempt may be
+// re-run before turnEnded: the typed stall/clean-end errors from rows 2-3,
+// plus raw transport failures — RST_STREAM/GOAWAY frame errors and h2 dial or
+// write failures — which senpi types as cause "transport"
+// (cursor-agent.ts:567-588). Connect-level errors are server responses, not
+// transport flaps: zero-token resource_exhausted flows into the
+// conversation-rotation path instead of this loop, and other codes surface to
+// the conductor. Cancellation is never retried.
+func isCursorRetryableStreamFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var retry *cursorRetryableStreamError
+	if errors.As(err, &retry) {
+		return true
+	}
+	var connectErr *cursorproto.ConnectError
+	if errors.As(err, &connectErr) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "rst_stream") || strings.Contains(msg, "goaway") || strings.Contains(msg, "h2:")
+}
+
+// cursorStreamRetryDelay mirrors senpi's cursorStreamRetryDelayMs
+// (stream-retry.ts:17-30): 1s * 2^retry capped at 60s, plus jitter of up to 20%
+// of the backoff. random is injectable so tests pin exact delays.
+func cursorStreamRetryDelay(retry int, random func() float64) time.Duration {
+	if random == nil {
+		random = rand.Float64
+	}
+	backoff := 1000 * math.Pow(2, float64(retry))
+	if backoff > 60_000 {
+		backoff = 60_000
+	}
+	jitter := backoff * 0.2 * random()
+	return time.Duration((backoff + jitter) * float64(time.Millisecond))
+}
+
+// waitCursorStreamRetry sleeps for delay, returning early when ctx is done —
+// the abort-aware backoff of waitForCursorStreamRetry (stream-retry.ts:32-40).
+func waitCursorStreamRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 || ctx.Err() != nil {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// cursorStreamRetryPolicy is the pre-turnEnded retry configuration. The zero
+// value plus cursorDefaultStreamRetryPolicy() yields senpi's constants; tests
+// inject zero-delay Delay and Wait hooks for deterministic runs.
+type cursorStreamRetryPolicy struct {
+	MaxRetries int
+	DelayFor   func(retry int) time.Duration
+	Wait       func(ctx context.Context, delay time.Duration) error
+}
+
+func cursorDefaultStreamRetryPolicy() cursorStreamRetryPolicy {
+	return cursorStreamRetryPolicy{
+		MaxRetries: cursorMaxStreamRetries,
+		DelayFor:   func(retry int) time.Duration { return cursorStreamRetryDelay(retry, nil) },
+		Wait:       waitCursorStreamRetry,
+	}
+}
+
+func (p cursorStreamRetryPolicy) maxRetries() int {
+	if p.MaxRetries > 0 {
+		return p.MaxRetries
+	}
+	return cursorMaxStreamRetries
+}
+
+func (p cursorStreamRetryPolicy) delay(retry int) time.Duration {
+	if p.DelayFor != nil {
+		return p.DelayFor(retry)
+	}
+	return cursorStreamRetryDelay(retry, nil)
+}
+
+func (p cursorStreamRetryPolicy) wait(ctx context.Context, d time.Duration) error {
+	if p.Wait != nil {
+		return p.Wait(ctx, d)
+	}
+	return waitCursorStreamRetry(ctx, d)
+}
+
+// runCursorStreamAttempts drives one Cursor turn through the bounded
+// pre-turnEnded retry loop (gap-matrix row 4, senpi cursor-agent.ts:495-860
+// + stream-retry.ts):
+//   - stall/clean-end/transport failures retry, up to MaxRetries (10) with
+//     1s*2^n (cap 60s, +20% jitter) abort-aware backoff;
+//   - a retry following an attempt that saved a checkpoint sends a Resume
+//     action instead of re-sending the user message (forceResumeAction ||=
+//     attemptSawCheckpoint, cursor-agent.ts:846);
+//   - a non-retryable failure is offered to onNonRetryable (conversation
+//     rotation for zero-token resource_exhausted), which may request another
+//     attempt — rotation and stall retries share this loop and its budget,
+//     exactly as senpi's single do-while shares streamRetries.
+//
+// ctx cancellation stops the loop immediately: the failed attempt's error is
+// surfaced without further retries.
+func runCursorStreamAttempts(
+	ctx context.Context,
+	policy cursorStreamRetryPolicy,
+	attempt func(forceResume bool) error,
+	sawCheckpoint func() bool,
+	onNonRetryable func(err error) bool,
+) error {
+	if sawCheckpoint == nil {
+		sawCheckpoint = func() bool { return false }
+	}
+	retries := 0
+	forceResume := false
+	for {
+		err := attempt(forceResume)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() == nil && retries < policy.maxRetries() && isCursorRetryableStreamFailure(err) {
+			if sawCheckpoint() {
+				// The server already has this conversation at a checkpoint;
+				// re-sending the user message would duplicate the turn.
+				forceResume = true
+			}
+			retries++
+			delay := policy.delay(retries - 1)
+			log.Debugf("cursor: retrying stream attempt %d/%d after %v backoff: %v", retries, policy.maxRetries(), delay, err)
+			if waitErr := policy.wait(ctx, delay); waitErr != nil {
+				// Aborted mid-backoff — surface the attempt failure immediately.
+				return err
+			}
+			continue
+		}
+		if onNonRetryable != nil && onNonRetryable(err) {
+			continue
+		}
+		return err
+	}
 }
 
 // cursorStatusErr implements the StatusError and RetryAfter interfaces so the
@@ -306,62 +506,83 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	ccSessId := extractClaudeCodeSessionId(req.Payload)
 	baseConversationId := deriveConversationId(apiKeyFromContext(ctx), ccSessId, parsed.SystemPrompt)
 	conversationId := e.effectiveCursorConversation(baseConversationId)
-	params := buildRunRequestParams(parsed, conversationId)
+	params := buildRunRequestParams(parsed, conversationId, false)
 
-	// Collect full text from the streamed Run response. A poisoned conversation
-	// can return resource_exhausted before producing any token delta; in that
-	// specific case retry once with a fresh wire conversation id.
+	// Collect full text from the streamed Run response. The attempt loop is the
+	// bounded pre-turnEnded retry policy (gap-matrix row 4): stall/clean-end/
+	// transport failures retry with backoff, and a zero-token
+	// resource_exhausted (poisoned conversation or oversized payload) flows
+	// through the rotation store.
 	var fullText strings.Builder
 	usage := &cursorTokenUsage{}
 	usage.setInputEstimate(len(payload))
-	for attempt := 0; ; attempt++ {
-		requestBytes := cursorproto.EncodeRunRequest(params)
-		stream, openErr := openCursorH2Stream(accessToken)
-		if openErr != nil {
-			return resp, openErr
-		}
-		if writeErr := stream.Write(cursorproto.FrameConnectMessage(requestBytes, 0)); writeErr != nil {
+	poisoned := false
+	streamErr := runCursorStreamAttempts(ctx, cursorDefaultStreamRetryPolicy(),
+		func(forceResume bool) error {
+			if forceResume && !params.Resume {
+				params.Resume = true
+			}
+			requestBytes := cursorproto.EncodeRunRequest(params)
+			stream, openErr := openCursorH2Stream(accessToken)
+			if openErr != nil {
+				return openErr
+			}
+			if writeErr := stream.Write(cursorproto.FrameConnectMessage(requestBytes, 0)); writeErr != nil {
+				stream.Close()
+				return fmt.Errorf("cursor: failed to send request: %w", writeErr)
+			}
+
+			attemptCtx, attemptCancel := context.WithCancel(ctx)
+			go cursorH2Heartbeat(attemptCtx, stream)
+			err := processH2SessionFrames(attemptCtx, stream, params.BlobStore, nil,
+				func(text string, isThinking bool) {
+					fullText.WriteString(text)
+				},
+				nil,
+				nil,
+				nil,
+				usage,
+				nil, // non-streaming requests do not persist checkpoints
+				newCursorStallWatchdog(e.streamStallTimeout),
+			)
+			attemptCancel()
 			stream.Close()
-			return resp, fmt.Errorf("cursor: failed to send request: %w", writeErr)
-		}
-
-		attemptCtx, attemptCancel := context.WithCancel(ctx)
-		go cursorH2Heartbeat(attemptCtx, stream)
-		streamErr := processH2SessionFrames(attemptCtx, stream, params.BlobStore, nil,
-			func(text string, isThinking bool) {
-				fullText.WriteString(text)
-			},
-			nil,
-			nil,
-			nil,
-			usage,
-			nil, // non-streaming requests do not persist checkpoints
-		)
-		attemptCancel()
-		stream.Close()
-
-		if streamErr == nil {
-			break
-		}
-		if attempt == 0 && isCursorZeroTokenResourceExhausted(streamErr, usage) {
-			if rotated, ok := e.rotateCursorConversation(baseConversationId, conversationId, ""); ok {
+			return err
+		},
+		nil, // no checkpoints are saved on the non-stream path, so retries re-send the user message
+		func(err error) bool {
+			if !isCursorZeroTokenResourceExhausted(err, usage) {
+				return false
+			}
+			rotated, outcome := e.rotateOnCursorZeroTokenRE(baseConversationId, conversationId, "")
+			switch outcome {
+			case cursorRotationRotated:
 				conversationId = rotated
 				params.ConversationId = rotated
 				usage.resetLiveWindow()
 				fullText.Reset()
-				continue
+				return true
+			case cursorRotationPoisoned:
+				if fullText.Len() == 0 {
+					poisoned = true
+				}
 			}
-		}
-		if fullText.Len() > 0 {
-			break
-		}
+			// cursorRotationSurface: the first zero-token resource_exhausted for
+			// this conversation is surfaced un-rotated so the client can shrink an
+			// oversized payload; rotation cannot fix that.
+			return false
+		})
+	if poisoned {
+		return resp, classifyCursorError(fmt.Errorf("cursor: %s", cursorConversationPoisonedMessage))
+	}
+	if streamErr != nil && fullText.Len() == 0 {
 		return resp, classifyCursorError(fmt.Errorf("cursor: stream error: %w", streamErr))
 	}
 
 	id := "chatcmpl-" + uuid.New().String()[:28]
 	created := time.Now().Unix()
-	openaiResp := fmt.Sprintf(`{"id":"%s","object":"chat.completion","created":%d,"model":"%s","choices":[{"index":0,"message":{"role":"assistant","content":%s},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`,
-		id, created, parsed.Model, jsonString(fullText.String()))
+	openaiResp := fmt.Sprintf(`{"id":"%s","object":"chat.completion","created":%d,"model":"%s","choices":[{"index":0,"message":{"role":"assistant","content":%s},"finish_reason":"stop"}],"usage":%s}`,
+		id, created, parsed.Model, jsonString(fullText.String()), cursorOpenAIUsageJSON(usage))
 
 	// Translate response back to source format if needed
 	result := []byte(openaiResp)
@@ -486,7 +707,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	saved, hasCheckpoint := e.checkpoints[checkpointKey]
 	e.mu.Unlock()
 
-	params := buildRunRequestParams(parsed, conversationId)
+	params := buildRunRequestParams(parsed, conversationId, false)
 
 	if hasCheckpoint && saved.data != nil && saved.authID == authID {
 		// Preserve server-managed checkpoint state, but replace its history with
@@ -616,6 +837,13 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 		streamedToolCalls := make(map[string]*streamedToolCall)
 
+		// attemptSawCheckpoint flips when the running attempt persisted a
+		// server checkpoint - the retry loop then forces a Resume action so the
+		// retried Run continues from the checkpoint instead of re-sending the
+		// user message (senpi attemptSawCheckpoint/forceResumeAction,
+		// cursor-agent.ts:632-635, :846).
+		attemptSawCheckpoint := false
+
 		processAttempt := func() error {
 			attemptCtx, attemptCancel := context.WithCancel(sessionCtx)
 			go cursorH2Heartbeat(attemptCtx, stream)
@@ -737,6 +965,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				toolResultCh,
 				usage,
 				func(cpData []byte) {
+					attemptSawCheckpoint = true
 					// Save checkpoint keyed by conversationId, tagged with authID for migration detection
 					e.mu.Lock()
 					e.checkpoints[checkpointKey] = &savedCheckpoint{
@@ -748,34 +977,95 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					e.mu.Unlock()
 					log.Debugf("cursor: saved checkpoint (%d bytes) for conv=%s auth=%s", len(cpData), checkpointKey, authID)
 				},
+				newCursorStallWatchdog(e.streamStallTimeout),
 			)
 		}
 
-		streamErr := processAttempt()
-		if isCursorZeroTokenResourceExhausted(streamErr, usage) {
-			if rotated, ok := e.rotateCursorConversation(baseConversationId, conversationId, authID); ok {
-				log.Infof("cursor: rotating resource-exhausted conversation %s to %s and retrying Run once", conversationId, rotated)
-				stream.Close()
-				conversationId = rotated
-				sessionKey = authID + ":" + rotated
-				checkpointKey = rotated
-				params.ConversationId = rotated
-				usage.resetLiveWindow()
-				requestBytes = cursorproto.EncodeRunRequest(params)
-				retryStream, retryErr := openCursorH2Stream(accessToken)
-				if retryErr == nil {
-					retryErr = retryStream.Write(cursorproto.FrameConnectMessage(requestBytes, 0))
+		// reopenAttempt replaces the transport for a retry: the spent stream is
+		// closed and the request rebuilt from the current params - which carry
+		// the forced Resume action or the rotated conversation id - is re-sent.
+		reopenAttempt := func() error {
+			stream.Close()
+			requestBytes = cursorproto.EncodeRunRequest(params)
+			retryStream, retryErr := openCursorH2Stream(accessToken)
+			if retryErr == nil {
+				retryErr = retryStream.Write(cursorproto.FrameConnectMessage(requestBytes, 0))
+			}
+			if retryErr != nil {
+				if retryStream != nil {
+					retryStream.Close()
 				}
-				if retryErr == nil {
-					stream = retryStream
-					streamErr = processAttempt()
-				} else {
-					if retryStream != nil {
-						retryStream.Close()
-					}
-					streamErr = fmt.Errorf("cursor: failed to retry rotated conversation: %w", retryErr)
+				return retryErr
+			}
+			stream = retryStream
+			return nil
+		}
+
+		// attemptOpen tracks whether the transport ExecuteStream opened before
+		// the goroutine is still live; retries replace it via reopenAttempt.
+		attemptOpen := true
+		attempt := func(forceResume bool) error {
+			if !attemptOpen {
+				if thinkingActive {
+					// senpi closes any open thinking block before a retry
+					// (endCurrentThinkingBlock, cursor-agent.ts:838-842).
+					thinkingActive = false
+					sendChunkSwitchable(`{"content":"</think>"}`, "")
+				}
+				if forceResume && !params.Resume {
+					params.Resume = true
+				}
+				if err := reopenAttempt(); err != nil {
+					return fmt.Errorf("cursor: failed to reopen stream for retry: %w", err)
 				}
 			}
+			attemptOpen = false
+			attemptSawCheckpoint = false
+			return processAttempt()
+		}
+
+		// The bounded pre-turnEnded retry loop (gap-matrix row 4): typed
+		// stall/clean-end failures and raw transport flaps retry with backoff;
+		// zero-token resource_exhausted flows through the rotation store.
+		// Stall retries and rotations share one loop and one retry budget, like
+		// senpi's single do-while shares streamRetries.
+		var overrideErr error
+		streamErr := runCursorStreamAttempts(ctx, cursorDefaultStreamRetryPolicy(), attempt,
+			func() bool { return attemptSawCheckpoint },
+			func(err error) bool {
+				if !isCursorZeroTokenResourceExhausted(err, usage) {
+					return false
+				}
+				rotated, outcome := e.rotateOnCursorZeroTokenRE(baseConversationId, conversationId, authID)
+				switch outcome {
+				case cursorRotationRotated:
+					log.Infof("cursor: rotating resource-exhausted conversation %s to %s and retrying Run", conversationId, rotated)
+					conversationId = rotated
+					sessionKey = authID + ":" + rotated
+					checkpointKey = rotated
+					params.ConversationId = rotated
+					usage.resetLiveWindow()
+					if reopenErr := reopenAttempt(); reopenErr != nil {
+						overrideErr = fmt.Errorf("cursor: failed to retry rotated conversation: %w", reopenErr)
+						return false
+					}
+					attemptOpen = false // transport already reopened for the rotated attempt
+					return true
+				case cursorRotationPoisoned:
+					// The base conversation burned its rotation cap; another wire id
+					// will not help, so surface the poisoned-conversation error.
+					log.Infof("cursor: conversation %s exhausted its rotation cap; surfacing poisoned-conversation error", baseConversationId)
+					overrideErr = fmt.Errorf("cursor: %s", cursorConversationPoisonedMessage)
+				case cursorRotationSurface:
+					// First zero-token RE for this conversation: surface it so the
+					// client can compact; if the payload really was oversized, the
+					// compacted retry succeeds and no rotation is ever spent.
+					log.Infof("cursor: surfacing first zero-token resource_exhausted un-rotated for conversation %s", baseConversationId)
+				}
+				return false
+			})
+		if overrideErr != nil {
+			streamErr = overrideErr
 		}
 
 		// processH2SessionFrames returned — stream is done.
@@ -806,13 +1096,9 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			sendChunkSwitchable(`{"content":"</think>"}`, "")
 		}
 		// Include token usage in the final stop chunk
-		inputTok, outputTok := usage.get()
-		stopDelta := fmt.Sprintf(`{},"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}`,
-			inputTok, outputTok, inputTok+outputTok)
-		// Build the stop chunk with usage embedded in the choices array level
 		fr := `"stop"`
-		openaiJSON := fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"model":"%s","choices":[{"index":0,"delta":{},"finish_reason":%s}],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`,
-			chatId, created, parsed.Model, fr, inputTok, outputTok, inputTok+outputTok)
+		openaiJSON := fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"model":"%s","choices":[{"index":0,"delta":{},"finish_reason":%s}],"usage":%s}`,
+			chatId, created, parsed.Model, fr, cursorOpenAIUsageJSON(usage))
 		sseLine := []byte("data: " + openaiJSON + "\n")
 		if needsTranslate {
 			translated := sdktranslator.TranslateStream(ctx, to, from, req.Model, originalPayload, payload, sseLine, &streamParam)
@@ -823,7 +1109,6 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			emitToOut(cliproxyexecutor.StreamChunk{Payload: []byte(openaiJSON)})
 		}
 		sendDoneSwitchable()
-		_ = stopDelta // unused
 
 		// Close whatever output channel is still active
 		outMu.Lock()
@@ -1028,6 +1313,24 @@ func (u *cursorTokenUsage) sawTokenDelta() bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.sawDelta
+}
+
+// cacheReadTokens returns the billed cache-read figure for OpenAI
+// prompt_tokens_details.cached_tokens reporting.
+func (u *cursorTokenUsage) cacheReadTokens() int64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.cacheRead
+}
+
+// cursorOpenAIUsageJSON renders the OpenAI usage object shared by the
+// non-stream chat.completion response and the stream stop chunk: real
+// accumulated prompt/completion/total plus prompt_tokens_details.cached_tokens
+// carrying the billed cacheRead split.
+func cursorOpenAIUsageJSON(usage *cursorTokenUsage) string {
+	input, output := usage.get()
+	return fmt.Sprintf(`{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"prompt_tokens_details":{"cached_tokens":%d}}`,
+		input, output, input+output, usage.cacheReadTokens())
 }
 
 // resetLiveWindow drops the checkpoint-derived live window so a rotated
@@ -1345,17 +1648,20 @@ func decodeCursorBase64(encoded string) ([]byte, bool) {
 	return data, err == nil
 }
 
-func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string) *cursorproto.RunRequestParams {
+func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string, forceResume bool) *cursorproto.RunRequestParams {
 	params := &cursorproto.RunRequestParams{
-		ModelId:            parsed.Model,
-		ReasoningEffort:    parsed.ReasoningEffort,
-		DisplayModelId:     parsed.Model,
-		DisplayName:        parsed.Model,
-		SystemPrompt:       parsed.SystemPrompt,
-		UserText:           parsed.UserText,
-		MessageId:          uuid.New().String(),
-		ConversationId:     conversationId,
-		Resume:             parsed.ActiveUserIndex < 0 || (parsed.UserText == "" && len(parsed.Images) == 0),
+		ModelId:         parsed.Model,
+		ReasoningEffort: parsed.ReasoningEffort,
+		DisplayModelId:  parsed.Model,
+		DisplayName:     parsed.Model,
+		SystemPrompt:    parsed.SystemPrompt,
+		UserText:        parsed.UserText,
+		MessageId:       uuid.New().String(),
+		ConversationId:  conversationId,
+		// forceResume makes a pre-turnEnded retry continue from the server's
+		// checkpoint instead of re-sending the user message (senpi
+		// forceResumeAction ||= attemptSawCheckpoint, cursor-agent.ts:846).
+		Resume:             forceResume || parsed.ActiveUserIndex < 0 || (parsed.UserText == "" && len(parsed.Images) == 0),
 		Images:             parsed.Images,
 		Turns:              parsed.Turns,
 		RootPromptMessages: buildCursorRootPromptMessages(parsed),
@@ -1688,15 +1994,18 @@ func extractClaudeCodeSessionId(payload []byte) string {
 
 // deriveConversationId generates a deterministic conversation_id.
 // Priority: session_id (stable across resume) > system prompt hash (fallback).
-func deriveConversationId(apiKey, sessionId, _ string) string {
+func deriveConversationId(apiKey, sessionId, systemPrompt string) string {
 	if sessionId == "" {
 		return uuid.New().String()
 	}
 
-	// Keep a stable UUID-shaped identity for Claude Code sessions while
-	// avoiding collisions between unrelated OpenAI clients that share a proxy
-	// API key and default system prompt.
-	input := "cursor-conv:" + apiKey + ":" + sessionId
+	// The system prompt is hashed into the identity (gap-matrix row 9): senpi
+	// invalidates cached conversation state whenever the system-prompt blob
+	// prefix no longer matches (cursor-agent.ts:4241-4263), so a changed prompt
+	// must yield a different base conversation id — no stale checkpoint todos,
+	// fileStates, or summaries may survive a prompt change within a session.
+	promptHash := sha256.Sum256([]byte(systemPrompt))
+	input := "cursor-conv:" + apiKey + ":" + sessionId + ":" + hex.EncodeToString(promptHash[:16])
 	h := sha256.Sum256([]byte(input))
 	s := hex.EncodeToString(h[:16])
 	return fmt.Sprintf("%s-%s-%s-%s-%s", s[:8], s[8:12], s[12:16], s[16:20], s[20:32])

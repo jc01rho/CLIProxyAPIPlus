@@ -30,6 +30,26 @@ func TestClassifyCursorErrorMapsWrappedUnauthenticatedText(t *testing.T) {
 	}
 }
 
+// Given the typed clean-end stream error (a stream that ended cleanly before
+// turnEnded),
+// When it flows through classifyCursorError toward the client,
+// Then it passes through unchanged so the retryable cause stays visible to
+// the caller — senpi treats clean-end as a stream-retry cause, not a final
+// provider status (stream-retry.ts).
+func TestClassifyCursorErrorPassesThroughCleanEndStreamError(t *testing.T) {
+	err := classifyCursorError(&cursorRetryableStreamError{
+		msg:   "Cursor stream ended before turnEnded",
+		cause: cursorStreamRetryCauseCleanEnd,
+	})
+	var retry *cursorRetryableStreamError
+	if !errors.As(err, &retry) {
+		t.Fatalf("classifyCursorError() = %T (%v), want the typed retryable error passthrough", err, err)
+	}
+	if retry.RetryCause() != "clean-end" {
+		t.Fatalf("retry cause = %q, want clean-end", retry.RetryCause())
+	}
+}
+
 func TestCursorAgentHostMatchesSenpi(t *testing.T) {
 	if cursorAgentHost != "api2.cursor.sh" {
 		t.Fatalf("cursorAgentHost = %q, want api2.cursor.sh", cursorAgentHost)

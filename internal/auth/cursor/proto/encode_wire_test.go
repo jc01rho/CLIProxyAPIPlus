@@ -353,6 +353,73 @@ func TestEncodeRunRequestGrokFastCarriesNoModelParameters(t *testing.T) {
 	}
 }
 
+// TestResolveRequestedModelVariantAliasThinkingInfix pins row 10 of the cursor
+// gap matrix: thinking-infixed ids resolve through the ported live-catalog alias
+// table (cursor_variant_aliases.go) ahead of the static tier tables, trying both
+// infix orders senpi's suffixAliasId tries (cursor/selection-descriptor.ts:29-44).
+// claude-4.5-opus-high-thinking is the catalog-served spelling; the reverse infix
+// (claude-4.5-opus-thinking-high) is not itself a catalog key but must resolve to
+// the same wire id, proving both orders are probed.
+func TestResolveRequestedModelVariantAliasThinkingInfix(t *testing.T) {
+	cases := []struct {
+		in     string
+		wantID string
+	}{
+		{"claude-4.5-opus-high-thinking", "claude-4.5-opus-high-thinking"},
+		{"claude-4.5-opus-thinking-high", "claude-4.5-opus-high-thinking"},
+		{"claude-fable-5-thinking-high", "claude-fable-5-thinking-high"},
+		{"claude-fable-5-high-thinking", "claude-fable-5-thinking-high"},
+	}
+	for _, c := range cases {
+		gotID, gotParams := ResolveRequestedModel(c.in, "")
+		if gotID != c.wantID {
+			t.Errorf("ResolveRequestedModel(%q) id = %q, want %q", c.in, gotID, c.wantID)
+		}
+		if len(gotParams) != 0 {
+			t.Errorf("ResolveRequestedModel(%q) params = %v, want none", c.in, gotParams)
+		}
+	}
+}
+
+// TestResolveRequestedModelVariantAliasFileEntries covers alias-table entries
+// that have no representation at all in the static cursorModelAliases /
+// cursorModelEffortTiers tables (encode_model.go:7-33), proving the row 10 probe
+// step -- not the static fallback -- is what resolves them. Both ids pass
+// through the wire unresolved (identity mapping to the not_found path) before
+// this change.
+func TestResolveRequestedModelVariantAliasFileEntries(t *testing.T) {
+	cases := []struct {
+		in     string
+		wantID string
+	}{
+		{"kimi-k2.7-code", "kimi-k2.7-code"},
+		{"claude-4-sonnet-thinking", "claude-4-sonnet-thinking"},
+	}
+	for _, c := range cases {
+		gotID, gotParams := ResolveRequestedModel(c.in, "")
+		if gotID != c.wantID {
+			t.Errorf("ResolveRequestedModel(%q) id = %q, want %q", c.in, gotID, c.wantID)
+		}
+		if len(gotParams) != 0 {
+			t.Errorf("ResolveRequestedModel(%q) params = %v, want none", c.in, gotParams)
+		}
+	}
+}
+
+// TestResolveRequestedModelStaticTiersStillPromoteBareIds guards the row 10
+// non-regression requirement: bare ids that are self-referential passthrough
+// entries in the alias table (no level) must still fall through to the static
+// tier promotion, not be short-circuited by the alias probe.
+func TestResolveRequestedModelStaticTiersStillPromoteBareIds(t *testing.T) {
+	gotID, gotParams := ResolveRequestedModel("gpt-5.2", "")
+	if gotID != "gpt-5.2-xhigh" {
+		t.Errorf("ResolveRequestedModel(%q) id = %q, want gpt-5.2-xhigh", "gpt-5.2", gotID)
+	}
+	if len(gotParams) != 0 {
+		t.Errorf("ResolveRequestedModel(%q) params = %v, want none", "gpt-5.2", gotParams)
+	}
+}
+
 func TestEncodeRunRequestIncludesBothModelSelectors(t *testing.T) {
 	plain := parseFields(t, EncodeRunRequest(&RunRequestParams{ModelId: "composer-2.5", UserText: "hi"}))
 	param := parseFields(t, EncodeRunRequest(&RunRequestParams{ModelId: "composer-2.5-fast", UserText: "hi"}))
