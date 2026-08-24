@@ -3,7 +3,6 @@
 package chat_completions
 
 import (
-	"regexp"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -17,19 +16,6 @@ import (
 )
 
 const antigravityFunctionThoughtSignature = "skip_thought_signature_validator"
-
-var antigravityOpenAIResponseNameInvalidChars = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
-
-func antigravityOpenAIResponseFunctionName(name, fallback string) string {
-	name = util.SanitizeFunctionName(name)
-	if strings.TrimSpace(name) == "" {
-		name = antigravityOpenAIResponseNameInvalidChars.ReplaceAllString(strings.TrimSpace(fallback), "_")
-	}
-	if strings.TrimSpace(name) == "" {
-		return "unknown"
-	}
-	return util.SanitizeFunctionName(name)
-}
 
 // ConvertOpenAIRequestToAntigravity converts an OpenAI Chat Completions request (raw JSON)
 // into a complete Antigravity request JSON. All JSON construction uses sjson and lookups use gjson.
@@ -174,8 +160,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			if role == "tool" {
 				toolCallID := m.Get("tool_call_id").String()
 				if toolCallID != "" {
-					c := m.Get("content")
-					toolResponses[toolCallID] = c.Raw
+					toolResponses[toolCallID] = m.Get("content").String()
 				}
 			}
 		}
@@ -284,10 +269,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						functionID := tc.Get("id").String()
 						functionName := util.MapSanitizedFunctionName(functionNameMap, tc.Get("function.name").String())
 						if functionName == "" {
-							if functionID == "" {
-								continue
-							}
-							functionName = antigravityOpenAIResponseFunctionName("", functionID)
+							continue
 						}
 						functionArgs := tc.Get("function.arguments").String()
 						part := []byte(`{"functionCall":{"id":"","name":""}}`)
@@ -310,26 +292,19 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 					responseParts := make([][]byte, 0, len(functionIDs))
 					for _, functionID := range functionIDs {
-						name := util.MapSanitizedFunctionName(functionNameMap, tcID2Name[functionID])
-						if name == "" {
-							name = antigravityOpenAIResponseFunctionName("", functionID)
-						}
-						part := []byte(`{"functionResponse":{"id":"","name":""}}`)
-						part, _ = sjson.SetBytes(part, "functionResponse.id", functionID)
-						part, _ = sjson.SetBytes(part, "functionResponse.name", name)
-						response := toolResponses[functionID]
-						if response == "" {
-							response = "{}"
-						}
-						if response != "null" {
-							parsed := gjson.Parse(response)
-							if parsed.Type == gjson.JSON {
-								part, _ = sjson.SetRawBytes(part, "functionResponse.response.result", []byte(parsed.Raw))
-							} else {
-								part, _ = sjson.SetBytes(part, "functionResponse.response.result", response)
+						if name, ok := tcID2Name[functionID]; ok {
+							part := []byte(`{"functionResponse":{"id":"","name":""}}`)
+							part, _ = sjson.SetBytes(part, "functionResponse.id", functionID)
+							part, _ = sjson.SetBytes(part, "functionResponse.name", util.MapSanitizedFunctionName(functionNameMap, name))
+							response := toolResponses[functionID]
+							if response == "" {
+								response = "{}"
 							}
+							// Keep it as a string instead of parsing it into JSON.
+							// Parsing it as JSON, similar to reading a JSON file with readFile, may trigger an upstream 400 error.
+							part, _ = sjson.SetBytes(part, "functionResponse.response.result", response)
+							responseParts = append(responseParts, part)
 						}
-						responseParts = append(responseParts, part)
 					}
 					if len(responseParts) > 0 {
 						contentItems = append(contentItems, antigravityOpenAIContent("user", responseParts))
