@@ -78,6 +78,65 @@ func TestFetchKiloGatewayModelsUsesOptionalAuth(t *testing.T) {
 	}
 }
 
+func TestFetchKiloGatewayModelsFiltersAnonymousCatalog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Anonymous gateway calls send no Authorization; credentialed calls send
+		// the real token. Both hit the same catalog.
+		if got := r.Header.Get("Authorization"); got != "" && got != "Bearer real-token" {
+			t.Errorf("Authorization = %q, want empty or Bearer real-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": [
+				{"id": "kilo-auto/frontier", "name": "Auto Frontier"},
+				{"id": "kilo-auto/free", "name": "Auto Free"},
+				{"id": "deepseek/deepseek-v4-pro", "name": "DeepSeek V4 Pro"},
+				{"id": "qwen/qwen3-coder:free", "name": "Qwen3 Coder (free)"}
+			]
+		}`))
+	}))
+	t.Cleanup(server.Close)
+
+	anonymous := NewKiloGatewayAnonymousAuth()
+	models := fetchKiloGatewayModels(context.Background(), anonymous, &config.Config{}, server.URL)
+	for _, model := range models {
+		if model.ID == "kilo-auto/frontier" || model.ID == "deepseek/deepseek-v4-pro" {
+			t.Errorf("anonymous gateway catalog contains paid model %q", model.ID)
+		}
+	}
+	hasFree := false
+	for _, model := range models {
+		if model.ID == "qwen/qwen3-coder:free" {
+			hasFree = true
+		}
+	}
+	if !hasFree {
+		t.Fatalf("anonymous gateway catalog missing free model qwen/qwen3-coder:free")
+	}
+	if !KiloGatewayAuthIsAnonymous(anonymous) {
+		t.Fatalf("KiloGatewayAuthIsAnonymous(synthesized) = false, want true")
+	}
+
+	credentialed := &cliproxyauth.Auth{
+		ID:       "kilo-gateway-real",
+		Provider: "kilo-gateway",
+		Metadata: map[string]any{"kilocodeToken": "real-token"},
+	}
+	if KiloGatewayAuthIsAnonymous(credentialed) {
+		t.Fatalf("KiloGatewayAuthIsAnonymous(credentialed) = true, want false")
+	}
+	full := fetchKiloGatewayModels(context.Background(), credentialed, &config.Config{}, server.URL)
+	hasPaid := false
+	for _, model := range full {
+		if model.ID == "kilo-auto/frontier" {
+			hasPaid = true
+		}
+	}
+	if !hasPaid {
+		t.Fatalf("credentialed gateway catalog missing paid model kilo-auto/frontier")
+	}
+}
+
 func TestFetchKiloModelsFallsBackToStaticOnError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
