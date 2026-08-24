@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -35,11 +34,16 @@ const (
 	clineModelsEndpoint     = "/ai/cline/models"
 	clineChatEndpoint       = "/chat/completions"
 	clineModelsFetchTimeout = 5 * time.Second
-)
 
-// clineVersion is resolved at runtime to mirror 9Router's APP_VERSION. It
-// cannot be a const because it depends on the process environment.
-var clineVersion = clineClientVersion()
+	// Client-identification versions pinned to the official Cline CLI (npm
+	// `cline`), extracted from its binary's header builder: X-CLIENT-VERSION
+	// carries the CLI release and X-CORE-VERSION the bundled @cline/core
+	// release. Cline's API answers unknown or stale client versions with the
+	// misleading 401 "Please make sure you're using the latest version of
+	// Cline", so these must track a real published CLI release.
+	clineClientVersionPinned = "3.0.57" // npm `cline`
+	clineCoreVersion         = "0.0.78" // npm `@cline/core` bundled with it
+)
 
 // clineRefreshLocks enforces a per-auth single-flight around refresh-before-
 // expiry so concurrent requests against the same auth cannot both spend the
@@ -169,40 +173,9 @@ func (e *ClineExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 
 	url := clineBaseURL + endpoint
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
+
+	httpResp, err := e.sendClineChat(ctx, auth, url, translated, false)
 	if err != nil {
-		return resp, err
-	}
-	applyClineHeaders(httpReq, accessToken, false)
-
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      translated,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		recordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
 	}
 	defer httpResp.Body.Close()
@@ -266,40 +239,9 @@ func (e *ClineExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	url := clineBaseURL + endpoint
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
+
+	httpResp, err := e.sendClineChat(ctx, auth, url, translated, true)
 	if err != nil {
-		return nil, err
-	}
-	applyClineHeaders(httpReq, accessToken, true)
-
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      translated,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		recordAPIResponseError(ctx, e.cfg, err)
 		return nil, err
 	}
 
@@ -379,10 +321,12 @@ func (e *ClineExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 
 // prepareAuth ensures the token stored in auth.Metadata carries the workos:
 // prefix required by the Cline API. It also triggers an expiry-aware refresh
-// whenever the token is near expiry or refresh is disabled.
+// whenever the token is near (or past) expiry; Cline access tokens are
+// short-lived, and sending an expired one yields the generic 401
+// "Please make sure you're using the latest version of Cline".
 func (e *ClineExecutor) prepareAuth(ctx context.Context, auth *cliproxyauth.Auth) error {
-	if e.authToken(auth) == "" && e.shouldRefresh(auth) {
-		if err := e.refreshBeforeExpiry(ctx, auth); err != nil {
+	if e.shouldRefresh(auth) {
+		if err := e.refreshBeforeExpiry(ctx, auth, false); err != nil {
 			log.Warnf("cline: pre-request expiry-aware refresh failed: %v", err)
 		}
 	}
@@ -408,8 +352,10 @@ func (e *ClineExecutor) shouldRefresh(auth *cliproxyauth.Auth) bool {
 // refresh token twice. After a successful rotation the new tokens are
 // persisted through the active token store so they survive a restart. The
 // auth metadata is the single source of truth so reload-from-disk flows
-// (where auth.Storage is nil) still find the refresh token.
-func (e *ClineExecutor) refreshBeforeExpiry(ctx context.Context, auth *cliproxyauth.Auth) error {
+// (where auth.Storage is nil) still find the refresh token. When force is
+// set (upstream rejected a token we still consider fresh) the freshness
+// re-check is skipped.
+func (e *ClineExecutor) refreshBeforeExpiry(ctx context.Context, auth *cliproxyauth.Auth, force bool) error {
 	if e.cfg == nil || auth == nil {
 		return nil
 	}
@@ -422,7 +368,9 @@ func (e *ClineExecutor) refreshBeforeExpiry(ctx context.Context, auth *cliproxya
 	defer lock.Unlock()
 
 	// Re-check after acquiring; another goroutine may have already rotated.
-	if e.authToken(auth) != "" && !clineauth.ShouldRefresh(effectiveExpiry(auth)) {
+	// A forced rotation (401 from upstream) bypasses this: the server has
+	// rejected a token our local expiry state still considers valid.
+	if !force && e.authToken(auth) != "" && !clineauth.ShouldRefresh(effectiveExpiry(auth)) {
 		return nil
 	}
 
@@ -537,23 +485,107 @@ func seedClineExpiryMetadata(auth *cliproxyauth.Auth) {
 	auth.Metadata["expiresAt"] = storage.ExpiresAt
 }
 
-// applyClineHeaders sets the standard Cline headers aligned with the 9Router
-// `clineHeaders` hook. Both `X-CLIENT-TYPE` and `User-Agent` differentiate
-// 9Router from the upstream Cline desktop client so the API can distinguish
-// traffic sources.
+// sendClineChat POSTs the translated chat payload to the Cline API. When the
+// upstream rejects the access token with 401 — Cline's generic response for
+// expired or rotated tokens, phrased "Please make sure you're using the
+// latest version of Cline" — it force-rotates the token through the refresh
+// endpoint (single-flight per auth) and replays the request once, mirroring
+// 9Router's chatCore 401 refresh-and-retry path. Every response, including a
+// non-2xx after the retry, is returned for the caller's status handling.
+func (e *ClineExecutor) sendClineChat(ctx context.Context, auth *cliproxyauth.Auth, url string, payload []byte, stream bool) (*http.Response, error) {
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+
+	send := func() (*http.Response, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		applyClineHeaders(httpReq, e.authToken(auth), stream)
+		util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+		recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
+			URL:       url,
+			Method:    http.MethodPost,
+			Headers:   httpReq.Header.Clone(),
+			Body:      payload,
+			Provider:  e.Identifier(),
+			AuthID:    authID,
+			AuthLabel: authLabel,
+			AuthType:  authType,
+			AuthValue: authValue,
+		})
+		resp, err := httpClient.Do(httpReq)
+		if err != nil {
+			recordAPIResponseError(ctx, e.cfg, err)
+		}
+		return resp, err
+	}
+
+	resp, err := send()
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return resp, nil
+	}
+
+	rejected, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	appendAPIResponseChunk(ctx, e.cfg, rejected)
+	recordAPIResponseMetadata(ctx, e.cfg, resp.StatusCode, resp.Header.Clone())
+
+	if rotateErr := e.refreshBeforeExpiry(ctx, auth, true); rotateErr != nil {
+		log.Warnf("cline: access token rejected with 401 and rotation failed: %v", rotateErr)
+		return nil, statusErr{
+			code: http.StatusUnauthorized,
+			msg:  fmt.Sprintf("cline: access token rejected (401 %s); token refresh failed: %v. Re-authenticate this Cline account (server --cline-login or management UI) to restore access", clineRejectedMessage(rejected), rotateErr),
+		}
+	}
+	log.Info("cline: access token rejected with 401; token rotated, retrying once")
+	return send()
+}
+
+// clineRejectedMessage extracts the upstream error text from a rejected 401
+// body, bounded in length for error propagation.
+func clineRejectedMessage(body []byte) string {
+	msg := strings.TrimSpace(gjson.GetBytes(body, "error").String())
+	if msg == "" {
+		msg = strings.TrimSpace(string(body))
+	}
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
+}
+
+// applyClineHeaders sets the client-identification headers the Cline API
+// expects, mirroring the official CLI's header builder (extracted from the
+// npm `cline` binary): User-Agent `Cline/<cli version>`, X-CLIENT-VERSION
+// `<cli version>`, X-CORE-VERSION `<@cline/core version>`, X-CLIENT-TYPE
+// `cline-<source>`. X-Task-ID is omitted when no session id is tracked, matching
+// the official client, which only sends it bound to a session.
 func applyClineHeaders(r *http.Request, token string, stream bool) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", clineauth.GetBearerHeaderValue(token))
 	r.Header.Set("HTTP-Referer", "https://cline.bot")
 	r.Header.Set("X-Title", "Cline")
-	r.Header.Set("X-Task-ID", "")
-	r.Header.Set("X-CLIENT-TYPE", "9router")
-	r.Header.Set("X-CORE-VERSION", clineVersion)
+	r.Header.Set("X-CLIENT-TYPE", "cline-cli")
+	r.Header.Set("X-CORE-VERSION", clineCoreVersion)
 	r.Header.Set("X-IS-MULTIROOT", "false")
-	r.Header.Set("X-CLIENT-VERSION", clineVersion)
+	r.Header.Set("X-CLIENT-VERSION", clineClientVersionPinned)
 	r.Header.Set("X-PLATFORM", runtime.GOOS)
-	r.Header.Set("X-PLATFORM-VERSION", runtime.Version())
-	r.Header.Set("User-Agent", "9Router/"+clineVersion)
+	r.Header.Set("X-PLATFORM-VERSION", clineClientVersionPinned)
+	r.Header.Set("User-Agent", "Cline/"+clineClientVersionPinned)
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
 		r.Header.Set("Cache-Control", "no-cache")
@@ -653,15 +685,15 @@ func fetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		return nil
 	}
 
-	req.Header.Set("User-Agent", "9Router/"+clineVersion)
+	req.Header.Set("User-Agent", "Cline/"+clineClientVersionPinned)
 	req.Header.Set("HTTP-Referer", "https://cline.bot")
 	req.Header.Set("X-Title", "Cline")
-	req.Header.Set("X-CLIENT-TYPE", "9router")
-	req.Header.Set("X-CORE-VERSION", clineVersion)
+	req.Header.Set("X-CLIENT-TYPE", "cline-cli")
+	req.Header.Set("X-CORE-VERSION", clineCoreVersion)
 	req.Header.Set("X-IS-MULTIROOT", "false")
-	req.Header.Set("X-CLIENT-VERSION", clineVersion)
+	req.Header.Set("X-CLIENT-VERSION", clineClientVersionPinned)
 	req.Header.Set("X-PLATFORM", runtime.GOOS)
-	req.Header.Set("X-PLATFORM-VERSION", runtime.Version())
+	req.Header.Set("X-PLATFORM-VERSION", clineClientVersionPinned)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -792,14 +824,3 @@ func GetBearerHeaderValue(token string) string { return clineauth.GetBearerHeade
 
 // NormalizeAccessToken exposes token normalization for testability.
 func NormalizeAccessToken(token string) string { return clineauth.NormalizeAccessToken(token) }
-
-// clineClientVersion returns the version string used in `X-CLIENT-VERSION` and
-// `X-CORE-VERSION` headers. It mirrors 9Router's `APP_VERSION` by preferring
-// the `VERSION` env var, falling back to a conservative build-time default.
-func clineClientVersion() string {
-	v := strings.TrimSpace(os.Getenv("VERSION"))
-	if v == "" {
-		return "0.0.0"
-	}
-	return v
-}

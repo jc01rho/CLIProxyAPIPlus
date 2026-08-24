@@ -16,8 +16,16 @@ func TestFetchClineModelsUsesLiveCatalog(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("method = %s, want GET", r.Method)
 		}
-		if got := r.Header.Get("X-CLIENT-TYPE"); got != "9router" {
-			t.Errorf("X-CLIENT-TYPE = %q, want 9router", got)
+		if got := r.Header.Get("X-CLIENT-TYPE"); got != "cline-cli" {
+			t.Errorf("X-CLIENT-TYPE = %q, want cline-cli", got)
+		}
+		// The client-identification headers must mirror the official CLI so the
+		// API's version gate does not reject the catalog probe.
+		if got := r.Header.Get("X-CLIENT-VERSION"); got != clineClientVersionPinned {
+			t.Errorf("X-CLIENT-VERSION = %q, want %q", got, clineClientVersionPinned)
+		}
+		if got := r.Header.Get("X-CORE-VERSION"); got != clineCoreVersion {
+			t.Errorf("X-CORE-VERSION = %q, want %q", got, clineCoreVersion)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
