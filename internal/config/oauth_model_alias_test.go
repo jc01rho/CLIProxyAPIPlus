@@ -259,3 +259,29 @@ func TestSanitizeOAuthModelAlias_InjectsDefaultKiroWhenEmpty(t *testing.T) {
 		t.Fatal("expected default kiro aliases to be injected when OAuthModelAlias is nil")
 	}
 }
+
+func TestSanitizeOAuthModelAlias_PreservesDuplicateAliases(t *testing.T) {
+	// Duplicate aliases within one channel are allowed (parity with the
+	// management UI list editor); runtime resolution is first-entry-wins.
+	cfg := &Config{
+		OAuthModelAlias: map[string][]OAuthModelAlias{
+			"codex": {
+				{Name: "gpt-5.2", Alias: "gpt-5", Fork: true},
+				{Name: "gpt-5.5", Alias: "gpt-5"},
+			},
+		},
+	}
+
+	cfg.SanitizeOAuthModelAlias()
+
+	aliases := cfg.OAuthModelAlias["codex"]
+	if len(aliases) != 2 {
+		t.Fatalf("expected duplicate alias entries to be preserved, got %d: %+v", len(aliases), aliases)
+	}
+	if aliases[0].Name != "gpt-5.2" || !aliases[0].Fork {
+		t.Fatalf("unexpected first alias: %+v", aliases[0])
+	}
+	if aliases[1].Name != "gpt-5.5" || aliases[1].Fork {
+		t.Fatalf("unexpected second alias: %+v", aliases[1])
+	}
+}
