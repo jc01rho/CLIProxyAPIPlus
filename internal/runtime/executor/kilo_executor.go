@@ -437,9 +437,34 @@ func FetchKiloModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 }
 
 // FetchKiloGatewayModels fetches the live kilo-gateway catalog. Auth is
-// optional: the gateway answers without an Authorization header.
+// optional: the gateway answers without an Authorization header. Anonymous
+// (no-credential) callers can only reach the gateway free tier, so their
+// advertised catalog is filtered to free models; credentialed auths keep the
+// full list.
 func FetchKiloGatewayModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
-	return fetchKiloModels(ctx, auth, cfg, "https://api.kilo.ai/api/gateway/models", "kilo-gateway", registry.GetKiloGatewayModels())
+	return fetchKiloGatewayModels(ctx, auth, cfg, "https://api.kilo.ai/api/gateway/models")
+}
+
+func fetchKiloGatewayModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, modelsURL string) []*registry.ModelInfo {
+	models := fetchKiloModels(ctx, auth, cfg, modelsURL, "kilo-gateway", registry.GetKiloGatewayModels())
+	if KiloGatewayAuthIsAnonymous(auth) {
+		return FilterKiloModels(models)
+	}
+	return models
+}
+
+// KiloGatewayAuthIsAnonymous reports whether the gateway auth carries no real
+// credential. Synthesized anonymous entries and token-less auths can only use
+// the gateway free tier, so the models they advertise must be free-only.
+func KiloGatewayAuthIsAnonymous(auth *cliproxyauth.Auth) bool {
+	if auth == nil {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(auth.Attributes["kilo_anonymous"]), "true") {
+		return true
+	}
+	token, _ := kiloCredentials(auth)
+	return token == "" || token == KiloAnonymousAPIKey
 }
 
 func fetchKiloModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, modelsURL, ownedBy string, fallback []*registry.ModelInfo) []*registry.ModelInfo {

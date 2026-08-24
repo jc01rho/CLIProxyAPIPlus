@@ -162,6 +162,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = executor.FetchKiloGatewayModels(ctx, a, s.cfg)
 		if len(models) == 0 {
 			models = registry.GetKiloGatewayModels()
+			if executor.KiloGatewayAuthIsAnonymous(a) {
+				models = executor.FilterKiloModels(models)
+			}
 		}
 		models = applyExcludedModels(models, excluded)
 	case "kiro":
