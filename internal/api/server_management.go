@@ -360,5 +360,9 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
+	// Always revalidate the control panel so a browser never keeps serving a
+	// stale SPA build after the binary (and its embedded panel) is upgraded.
+	// 304 responses still apply when Last-Modified is unchanged.
+	c.Header("Cache-Control", "no-cache")
 	c.File(filePath)
 }
