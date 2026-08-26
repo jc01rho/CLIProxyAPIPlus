@@ -52,7 +52,6 @@ You can access the following providers locally and with multiple CLI accounts th
 </table>
 
 
-
 ## Overview
 
 - OpenAI/Gemini/Claude/Grok compatible API endpoints for CLI models
