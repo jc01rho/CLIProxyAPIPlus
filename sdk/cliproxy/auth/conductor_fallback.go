@@ -377,9 +377,20 @@ func (m *Manager) executeWithRouteFallback(
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 	originalModel := req.Model
 	attempted := map[string]struct{}{originalModel: {}}
-	resp, lastErr := m.executeWithRetry(ctx, providers, req, opts, maxRetryCredentials, defaultRequestRetry, maxWait, execOnce)
+	fallbackAllowed := m.fallbackRetryAllowedForModel(originalModel)
+	// The requested model's allowlist state gates the retry loop itself (via
+	// fallbackAllowed passed into executeWithRetry below), not
+	// maxRetryCredentials: request-level retry rounds are controlled by
+	// defaultRequestRetry independently of the per-round credential limit, so
+	// zeroing maxRetryCredentials alone cannot stop a denied model from
+	// retrying when request-retry is configured. The initial attempt always
+	// runs with the real configured maxRetryCredentials.
+	resp, lastErr := m.executeWithRetry(ctx, providers, req, opts, maxRetryCredentials, defaultRequestRetry, maxWait, fallbackAllowed, execOnce)
 	if lastErr == nil {
 		return resp, nil
+	}
+	if !fallbackAllowed {
+		return cliproxyexecutor.Response{}, lastErr
 	}
 	if !m.shouldAllowRouteModelFallback(lastErr) {
 		return cliproxyexecutor.Response{}, lastErr
@@ -409,7 +420,7 @@ func (m *Manager) executeWithRouteFallback(
 		if len(fallbackProviders) == 0 {
 			fallbackProviders = providers
 		}
-			resp, errFallback := m.executeWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, defaultRequestRetry, maxWait, execOnce)
+		resp, errFallback := m.executeWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, defaultRequestRetry, maxWait, true, execOnce)
 		if errFallback == nil {
 			logRouteModelFallbackResult(ctx, originalModel, fallbackModel, source, lastErr, nil, startedAt)
 			return resp, nil
@@ -433,9 +444,17 @@ func (m *Manager) executeStreamWithRouteFallback(
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 	originalModel := req.Model
 	attempted := map[string]struct{}{originalModel: {}}
-	result, lastErr := m.executeStreamWithRetry(ctx, providers, req, opts, maxRetryCredentials, defaultRequestRetry, maxWait, execOnce)
+	fallbackAllowed := m.fallbackRetryAllowedForModel(originalModel)
+	// See the equivalent comment in executeWithRouteFallback: the allowlist
+	// state gates the retry loop itself (fallbackAllowed passed into
+	// executeStreamWithRetry below), not maxRetryCredentials, since request-
+	// level retry rounds run independently of the per-round credential limit.
+	result, lastErr := m.executeStreamWithRetry(ctx, providers, req, opts, maxRetryCredentials, defaultRequestRetry, maxWait, fallbackAllowed, execOnce)
 	if lastErr == nil {
 		return result, nil
+	}
+	if !fallbackAllowed {
+		return nil, lastErr
 	}
 	if !m.shouldAllowRouteModelFallback(lastErr) {
 		return nil, lastErr
@@ -457,7 +476,7 @@ func (m *Manager) executeStreamWithRouteFallback(
 		if len(fallbackProviders) == 0 {
 			fallbackProviders = providers
 		}
-			result, errFallback := m.executeStreamWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, defaultRequestRetry, maxWait, execOnce)
+		result, errFallback := m.executeStreamWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, defaultRequestRetry, maxWait, true, execOnce)
 		if errFallback == nil {
 			logRouteModelFallbackResult(ctx, originalModel, fallbackModel, source, lastErr, nil, startedAt)
 			return result, nil
@@ -497,6 +516,7 @@ func (m *Manager) executeWithRetry(
 	maxRetryCredentials int,
 	defaultRequestRetry int,
 	maxWait time.Duration,
+	fallbackAllowed bool,
 	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int, int, int) (cliproxyexecutor.Response, error),
 ) (cliproxyexecutor.Response, error) {
 	var lastErr error
@@ -510,6 +530,13 @@ func (m *Manager) executeWithRetry(
 			return cliproxyexecutor.Response{}, unwrapRequestStopError(errExec)
 		}
 		lastErr = errExec
+		if !fallbackAllowed {
+			// The requested model is not on the fallback allowlist: the initial
+			// attempt above already ran, but no post-error retry round may
+			// follow it, regardless of request-retry or credential-retry
+			// configuration.
+			break
+		}
 		wait, shouldRetry := m.shouldRetryAfterErrorWithHomeRetryLimit(ctx, opts, errExec, attempt, providers, retryModel, maxWait, -1, defaultRequestRetry)
 		if !shouldRetry {
 			break
@@ -529,6 +556,7 @@ func (m *Manager) executeStreamWithRetry(
 	maxRetryCredentials int,
 	defaultRequestRetry int,
 	maxWait time.Duration,
+	fallbackAllowed bool,
 	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int, *int, int, int) (*cliproxyexecutor.StreamResult, error),
 ) (*cliproxyexecutor.StreamResult, error) {
 	var lastErr error
@@ -541,6 +569,16 @@ func (m *Manager) executeStreamWithRetry(
 		result, errStream := execOnce(ctx, providers, req, opts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
 		if errStream == nil {
 			return result, nil
+		}
+		if !fallbackAllowed {
+			// The requested model is not on the fallback allowlist: the initial
+			// attempt above already ran, but no post-error retry round may
+			// follow it, regardless of home-retry, request-retry, or
+			// credential-retry configuration.
+			if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
+				return nil, unwrapRequestStopError(errStream)
+			}
+			return nil, errStream
 		}
 		if m.HomeEnabled() && retryRoundPending {
 			if wait, okWait := pendingHomeRetryRoundDelay(errStream, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(attempt-1, homeRetryLimit) {
