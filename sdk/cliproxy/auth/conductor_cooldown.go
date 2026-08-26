@@ -92,6 +92,14 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 		m.homeSessionAliases.clear()
 	}
 	m.runtimeConfig.Store(cfg)
+	// Install routing fallback state here so both the initial builder config and
+	// hot-reload config activate it immediately. Management Handler.SetConfig /
+	// Handler.SetAuthManager also install these for the management-reload path,
+	// but this is the seam the startup builder path actually reaches via
+	// Manager.SetConfig, so it must be the single source of truth.
+	m.SetFallbackModels(cfg.Routing.FallbackModels)
+	m.SetFallbackChain(cfg.Routing.FallbackChain, cfg.Routing.FallbackMaxDepth)
+	m.SetFallbackAllowedModels(cfg.Routing.FallbackAllowedModels)
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
 	if clearedCooldowns && oldCooldownStore != nil {
 		m.mu.Lock()

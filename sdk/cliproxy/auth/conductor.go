@@ -151,6 +151,11 @@ type Manager struct {
 	fallbackChain       atomic.Value
 	fallbackMaxDepth    atomic.Int32
 
+	// fallbackAllowedModels restricts post-error credential retry and
+	// route-model fallback-chain/model mapping to explicitly configured
+	// requested models or aliases. Nil or empty preserves existing behavior.
+	fallbackAllowedModels atomic.Value
+
 	// oauthModelAlias stores global OAuth model alias mappings (alias -> upstream name) keyed by channel.
 	oauthModelAlias atomic.Value
 

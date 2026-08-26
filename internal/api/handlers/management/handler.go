@@ -142,15 +142,18 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 		var fallbackModels map[string]string
 		var fallbackChain []string
 		var fallbackMaxDepth int
+		var fallbackAllowedModels []string
 		if cfg != nil {
 			aliases = cfg.OAuthModelAlias
 			fallbackModels = cfg.Routing.FallbackModels
 			fallbackChain = cfg.Routing.FallbackChain
 			fallbackMaxDepth = cfg.Routing.FallbackMaxDepth
+			fallbackAllowedModels = cfg.Routing.FallbackAllowedModels
 		}
 		manager.SetOAuthModelAlias(aliases)
 		manager.SetFallbackModels(fallbackModels)
 		manager.SetFallbackChain(fallbackChain, fallbackMaxDepth)
+		manager.SetFallbackAllowedModels(fallbackAllowedModels)
 	}
 }
 
@@ -168,15 +171,18 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 		var fallbackModels map[string]string
 		var fallbackChain []string
 		var fallbackMaxDepth int
+		var fallbackAllowedModels []string
 		if cfg != nil {
 			aliases = cfg.OAuthModelAlias
 			fallbackModels = cfg.Routing.FallbackModels
 			fallbackChain = cfg.Routing.FallbackChain
 			fallbackMaxDepth = cfg.Routing.FallbackMaxDepth
+			fallbackAllowedModels = cfg.Routing.FallbackAllowedModels
 		}
 		manager.SetOAuthModelAlias(aliases)
 		manager.SetFallbackModels(fallbackModels)
 		manager.SetFallbackChain(fallbackChain, fallbackMaxDepth)
+		manager.SetFallbackAllowedModels(fallbackAllowedModels)
 	}
 }
 

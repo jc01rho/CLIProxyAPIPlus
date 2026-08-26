@@ -241,6 +241,15 @@ type RoutingConfig struct {
 	FallbackChain    []string          `yaml:"fallback-chain,omitempty" json:"fallback-chain,omitempty"`
 	FallbackMaxDepth int               `yaml:"fallback-max-depth,omitempty" json:"fallback-max-depth,omitempty"`
 
+	// FallbackAllowedModels restricts post-error credential retry and route-model
+	// fallback-chain/model mapping to explicitly configured requested models or
+	// aliases. Empty or nil preserves all existing retry and chain behavior. A
+	// nonempty allowlist enables fallback only when the requested model (or its
+	// registry-resolved actual model) matches an allowlist entry directly or by
+	// the entry's registry-resolved actual model, compared case-insensitively
+	// after trimming.
+	FallbackAllowedModels []string `yaml:"fallback-allowed-models,omitempty" json:"fallback-allowed-models,omitempty"`
+
 	// SessionAffinity enables universal session-sticky routing for all clients.
 	// Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,
 	// followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,
