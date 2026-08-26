@@ -149,22 +149,20 @@ func restoreReadyViewCursors(view *readyView, state readyViewCursorState) {
 	if len(view.flat) > 0 {
 		view.cursor = normalizeCursor(state.cursor, len(view.flat))
 	}
-	if len(view.parentOrder) > 0 && len(view.children) > 0 {
-		view.parentCursor = normalizeCursor(state.parentCursor, len(view.parentOrder))
-		for parent, child := range view.children {
-			if child == nil || len(child.items) == 0 {
-				continue
-			}
-			if cursor, ok := state.childCursors[parent]; ok {
-				child.cursor = normalizeCursor(cursor, len(child.items))
+	weights := scheduledWeightVector(view.flat)
+	if len(state.weightedState.current) == 0 || weightsConfigChanged(state.weightedState.weights, weights) {
+		return
+	}
+	current := make(map[string]int64, len(view.flat))
+	for _, entry := range view.flat {
+		if entry != nil && entry.auth != nil {
+			if val, ok := state.weightedState.current[entry.auth.ID]; ok {
+				current[entry.auth.ID] = val
 			}
 		}
 	}
-	weights := scheduledWeightVector(view.flat)
-	if len(state.weightedState.current) > 0 && weightVectorsEqual(state.weightedState.weights, weights) {
-		view.weightedState.current = state.weightedState.current
-		view.weightedState.weights = weights
-	}
+	view.weightedState.current = current
+	view.weightedState.weights = weights
 }
 
 func normalizeCursor(cursor, size int) int {
@@ -1165,22 +1163,6 @@ func scheduledWeightVectorMatching(entries []*scheduledAuth, predicate func(*sch
 }
 
 func pickSmoothWeightedScheduled(entries []*scheduledAuth, current map[string]int64, predicate func(*scheduledAuth) bool) *scheduledAuth {
-	active := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		if entry == nil || entry.auth == nil || entry.meta == nil || entry.meta.weight <= 0 {
-			continue
-		}
-		if predicate != nil && !predicate(entry) {
-			continue
-		}
-		active[entry.auth.ID] = struct{}{}
-	}
-	for authID := range current {
-		if _, ok := active[authID]; !ok {
-			delete(current, authID)
-		}
-	}
-
 	var picked *scheduledAuth
 	var pickedCurrent int64
 	var totalWeight int64
