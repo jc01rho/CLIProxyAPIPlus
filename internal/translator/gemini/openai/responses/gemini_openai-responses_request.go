@@ -859,10 +859,12 @@ func buildOpenAIResponsesFunctionResponseParts(item gjson.Result, functionNamesB
 	callID := item.Get("call_id").String()
 	functionName := "unknown"
 	if matchedName, ok := functionNamesByCallID[callID]; ok {
-		functionName = matchedName
+		if sanitized := util.SanitizeFunctionName(matchedName); sanitized != "" {
+			functionName = sanitized
+		}
 	}
 	functionResponse := []byte(`{"functionResponse":{"name":"","response":{}}}`)
-	functionResponse, _ = sjson.SetBytes(functionResponse, "functionResponse.name", util.SanitizeFunctionName(functionName))
+	functionResponse, _ = sjson.SetBytes(functionResponse, "functionResponse.name", functionName)
 	functionResponse, _ = sjson.SetBytes(functionResponse, "functionResponse.id", callID)
 
 	outputResult := item.Get("output")

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -1035,7 +1036,13 @@ func appendInteractionsFunctionCall(items *[][]byte, item gjson.Result) {
 
 func appendInteractionsFunctionResult(items *[][]byte, item gjson.Result) {
 	part := []byte(`{"functionResponse":{"name":"","response":{}}}`)
-	part, _ = sjson.SetBytes(part, "functionResponse.name", item.Get("name").String())
+	functionName := "unknown"
+	if name := item.Get("name").String(); name != "" {
+		if sanitized := util.SanitizeFunctionName(name); sanitized != "" {
+			functionName = sanitized
+		}
+	}
+	part, _ = sjson.SetBytes(part, "functionResponse.name", functionName)
 	if callID := item.Get("call_id"); callID.Exists() {
 		part, _ = sjson.SetBytes(part, "functionResponse.id", callID.String())
 	} else if id := item.Get("id"); id.Exists() {
