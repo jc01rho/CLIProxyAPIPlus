@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	log "github.com/sirupsen/logrus"
+
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -200,7 +202,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			msg, _ = sjson.SetBytes(msg, "role", pendingRole)
 			if len(parts) == 1 {
 				part := gjson.ParseBytes(parts[0])
-				if part.Get("type").String() == "text" && !part.Get("cache_control").Exists() {
+				if part.Get("type").String() == "text" && !part.Get("cache_control").Exists() && !part.Get("citations").Exists() {
 					msg, _ = sjson.SetBytes(msg, "content", part.Get("text").String())
 				} else {
 					msg, _ = sjson.SetRawBytes(msg, "content", common.JoinRawArray(parts))
@@ -278,6 +280,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 								txt := t.String()
 								contentPart := []byte(`{"type":"text","text":""}`)
 								contentPart, _ = sjson.SetBytes(contentPart, "text", txt)
+								contentPart = attachClaudeCitations(contentPart, part.Get("annotations"))
 								contentPart = common.AttachCacheControl(contentPart, part)
 								partsJSON = append(partsJSON, contentPart)
 							}
@@ -286,6 +289,15 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 							} else {
 								role = "assistant"
 							}
+						case "refusal":
+							// Claude has no refusal block; the text keeps the turn intact.
+							if t := part.Get("refusal"); t.Exists() && t.String() != "" {
+								contentPart := []byte(`{"type":"text","text":""}`)
+								contentPart, _ = sjson.SetBytes(contentPart, "text", t.String())
+								contentPart = common.AttachCacheControl(contentPart, part)
+								partsJSON = append(partsJSON, contentPart)
+							}
+							role = "assistant"
 						case "input_image":
 							url := part.Get("image_url").String()
 							if url == "" {
@@ -371,6 +383,13 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 						partsJSON[lastIdx] = common.AttachCacheControl(partsJSON[lastIdx], item)
 					}
 					appendParts(role, partsJSON...)
+				}
+
+			case "web_search_call":
+				// Rebuild the Claude server-side search pair so the replayed turn
+				// still shows the search and its hits.
+				if blocks := convertResponsesWebSearchCallToClaudeBlocks(item); len(blocks) > 0 {
+					appendParts("assistant", blocks...)
 				}
 
 			case "reasoning":
@@ -462,6 +481,15 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				}
 
 				appendParts("user", toolResult)
+
+			default:
+				// Reachability guard: Claude only ever receives the item types this
+				// switch handles. A new one means the client gained a capability
+				// whose Claude counterpart still has to be decided, so make the gap
+				// visible instead of dropping the turn content in silence.
+				if typ := item.Get("type").String(); typ != "" {
+					log.Debugf("responses->claude: unmapped input item type %q", typ)
+				}
 			}
 			return true
 		})
