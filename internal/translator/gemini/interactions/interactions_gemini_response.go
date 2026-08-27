@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -218,7 +219,13 @@ func interactionsFunctionCallStepToGeminiPart(step gjson.Result) []byte {
 
 func interactionsFunctionResponseStepToGeminiPart(step gjson.Result) []byte {
 	part := []byte(`{"functionResponse":{"name":"","response":{}}}`)
-	part, _ = sjson.SetBytes(part, "functionResponse.name", step.Get("name").String())
+	functionName := "unknown"
+	if name := step.Get("name").String(); name != "" {
+		if sanitized := util.SanitizeFunctionName(name); sanitized != "" {
+			functionName = sanitized
+		}
+	}
+	part, _ = sjson.SetBytes(part, "functionResponse.name", functionName)
 	if id := firstNonEmptyInteractionString(step.Get("call_id").String(), step.Get("id").String()); id != "" {
 		part, _ = sjson.SetBytes(part, "functionResponse.id", id)
 	}

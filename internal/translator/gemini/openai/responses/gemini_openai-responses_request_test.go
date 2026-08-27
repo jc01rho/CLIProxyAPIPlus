@@ -1557,3 +1557,64 @@ func TestConvertOpenAIResponsesRequestToGemini_TwoTurnCustomToolRoundtripWithRea
 		t.Fatalf("expected functionResponse result '/workspace', got: %s", userRespParts[0].Raw)
 	}
 }
+
+func TestBuildOpenAIResponsesFunctionResponseParts_EmptyAndWhitespaceFunctionNames(t *testing.T) {
+	t.Run("empty name should become unknown", func(t *testing.T) {
+		// Create a function_call_output item with no output
+		item := gjson.Parse(`{"call_id":"call-1","type":"function_call_output","output":"ok"}`)
+
+		// Create a map with empty name (the critical bug case)
+		functionNamesByCallID := map[string]string{
+			"call-1": "",
+		}
+
+		// Call the function that should ensure name is never empty
+		results := buildOpenAIResponsesFunctionResponseParts(item, functionNamesByCallID)
+
+		if len(results) == 0 {
+			t.Fatalf("buildOpenAIResponsesFunctionResponseParts returned empty results")
+		}
+
+		// Parse the first result
+		functionResponse := gjson.ParseBytes(results[0])
+		gotName := functionResponse.Get("functionResponse.name").String()
+
+		if gotName == "" {
+			t.Errorf("functionResponse.name = %q, want 'unknown' (not empty); %s", gotName, string(results[0]))
+		}
+		if gotName != "unknown" {
+			t.Errorf("functionResponse.name = %q, want 'unknown' for empty input; %s", gotName, string(results[0]))
+		}
+	})
+
+	t.Run("whitespace names should produce non-empty result", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			input string
+		}{
+			{"whitespace only", "   "},
+			{"tab", "\t"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				item := gjson.Parse(`{"call_id":"call-1","type":"function_call_output","output":"ok"}`)
+				functionNamesByCallID := map[string]string{
+					"call-1": tt.input,
+				}
+
+				results := buildOpenAIResponsesFunctionResponseParts(item, functionNamesByCallID)
+				if len(results) == 0 {
+					t.Fatalf("buildOpenAIResponsesFunctionResponseParts returned empty results")
+				}
+
+				functionResponse := gjson.ParseBytes(results[0])
+				gotName := functionResponse.Get("functionResponse.name").String()
+
+				if gotName == "" {
+					t.Errorf("functionResponse.name = %q, want non-empty; %s", gotName, string(results[0]))
+				}
+			})
+		}
+	})
+}
