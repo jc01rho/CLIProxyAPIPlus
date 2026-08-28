@@ -192,6 +192,9 @@ func openAICompatRejectsDeveloperRole(statusCode int, responseBody []byte) bool 
 	message := firstOpenAICompatErrorString(root, "error.message", "message", "error")
 	code := firstOpenAICompatErrorString(root, "error.code", "code")
 	typeName := firstOpenAICompatErrorString(root, "error.type", "type")
+	if strings.TrimSpace(code) == "1214" && strings.EqualFold(strings.TrimSpace(message), "Incorrect role information") {
+		return true
+	}
 	combined := strings.ToLower(strings.Join([]string{message, code, typeName}, " "))
 	if !strings.Contains(combined, "developer") {
 		return false
