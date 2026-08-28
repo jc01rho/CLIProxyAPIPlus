@@ -745,17 +745,22 @@ func processMessages(messages gjson.Result, modelID, origin string) ([]KiroHisto
 		if h.UserInputMessage != nil && h.UserInputMessage.UserInputMessageContext != nil {
 			ctx := h.UserInputMessage.UserInputMessageContext
 			if len(ctx.ToolResults) > 0 {
-				filtered := make([]KiroToolResult, 0, len(ctx.ToolResults))
+				var filtered []KiroToolResult
+				var orphanTexts []string
 				for _, tr := range ctx.ToolResults {
 					if validToolUseIDs[tr.ToolUseID] {
 						filtered = append(filtered, tr)
 					} else {
-						log.Debugf("kiro: dropping orphaned tool_result in history[%d]: toolUseId=%s (no matching tool_use)", i, tr.ToolUseID)
+						orphanTexts = append(orphanTexts, kiroToolResultToText(tr))
+						log.Debugf("kiro: preserving orphaned tool_result in history[%d] as text: toolUseId=%s (no matching tool_use)", i, tr.ToolUseID)
 					}
 				}
 				ctx.ToolResults = filtered
 				if len(ctx.ToolResults) == 0 && len(ctx.Tools) == 0 {
 					h.UserInputMessage.UserInputMessageContext = nil
+				}
+				if len(orphanTexts) > 0 {
+					h.UserInputMessage.Content = appendTextWithSep(h.UserInputMessage.Content, strings.Join(orphanTexts, "\n\n"))
 				}
 			}
 		}
@@ -763,16 +768,21 @@ func processMessages(messages gjson.Result, modelID, origin string) ([]KiroHisto
 
 	// Filter orphaned tool results from current message
 	if len(currentToolResults) > 0 {
-		filtered := make([]KiroToolResult, 0, len(currentToolResults))
+		var filtered []KiroToolResult
+		var orphanTexts []string
 		for _, tr := range currentToolResults {
 			if validToolUseIDs[tr.ToolUseID] {
 				filtered = append(filtered, tr)
 			} else {
-				log.Debugf("kiro: dropping orphaned tool_result in currentMessage: toolUseId=%s (no matching tool_use)", tr.ToolUseID)
+				orphanTexts = append(orphanTexts, kiroToolResultToText(tr))
+				log.Debugf("kiro: preserving orphaned tool_result in currentMessage as text: toolUseId=%s (no matching tool_use)", tr.ToolUseID)
 			}
 		}
+		if len(orphanTexts) > 0 && currentUserMsg != nil {
+			currentUserMsg.Content = appendTextWithSep(currentUserMsg.Content, strings.Join(orphanTexts, "\n\n"))
+		}
 		if len(filtered) != len(currentToolResults) {
-			log.Infof("kiro: dropped %d orphaned tool_result(s) from currentMessage (compaction artifact)", len(currentToolResults)-len(filtered))
+			log.Infof("kiro: preserved %d orphaned tool_result(s) from currentMessage as text (compaction artifact)", len(currentToolResults)-len(filtered))
 		}
 		currentToolResults = filtered
 	}
@@ -825,6 +835,34 @@ func ensureAlternatingHistory(history []KiroHistoryMessage) []KiroHistoryMessage
 		out = append(out, h)
 	}
 	return out
+}
+
+// kiroToolResultToText renders a KiroToolResult as a human-readable text
+// marker, mirroring kiro-lb tool_results_to_text.
+func kiroToolResultToText(tr KiroToolResult) string {
+	text := ""
+	for _, c := range tr.Content {
+		text += c.Text
+	}
+	if text == "" {
+		text = "(empty result)"
+	}
+	if tr.ToolUseID != "" {
+		return "[Tool Result (" + tr.ToolUseID + ")]\n" + text
+	}
+	return "[Tool Result]\n" + text
+}
+
+// appendTextWithSep joins new text to existing content with a double newline
+// separator when both are non-empty.
+func appendTextWithSep(existing, addition string) string {
+	if strings.TrimSpace(existing) == "" {
+		return addition
+	}
+	if addition == "" {
+		return existing
+	}
+	return existing + "\n\n" + addition
 }
 
 // buildFinalContent builds the final content with system prompt
