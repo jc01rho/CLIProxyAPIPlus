@@ -173,6 +173,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = executor.FilterKiroModels(registry.GetKiroModels())
 		}
 		models = applyExcludedModels(models, excluded)
+	case "zcode":
+		models = registry.GetZcodeModels()
+		models = applyExcludedModels(models, excluded)
 	case "amazonq":
 		models = registry.GetAmazonQModels()
 		models = applyExcludedModels(models, excluded)

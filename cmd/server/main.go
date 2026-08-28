@@ -104,6 +104,7 @@ func main() {
 	var xaiLogin bool
 	var cursorLogin bool
 	var kiroLogin bool
+	var zcodeLogin bool
 	var kiroGoogleLogin bool
 	var kiroAWSLogin bool
 	var kiroAWSAuthCode bool
@@ -147,6 +148,7 @@ func main() {
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
 	flag.BoolVar(&cursorLogin, "cursor-login", false, "Login to Cursor using OAuth")
 	flag.BoolVar(&kiroLogin, "kiro-login", false, "Login to Kiro using Google OAuth")
+	flag.BoolVar(&zcodeLogin, "zcode-login", false, "Login to GLM ZCode (UNOFFICIAL, opt-in; at your own risk)")
 	flag.BoolVar(&kiroGoogleLogin, "kiro-google-login", false, "Login to Kiro using Google OAuth (same as --kiro-login)")
 	flag.BoolVar(&kiroAWSLogin, "kiro-aws-login", false, "Login to Kiro using AWS Builder ID (device code flow)")
 	flag.BoolVar(&kiroAWSAuthCode, "kiro-aws-authcode", false, "Login to Kiro using AWS Builder ID (authorization code flow, better UX)")
@@ -752,6 +754,8 @@ func main() {
 		setKiroIncognitoMode(cfg, useIncognito, noIncognito)
 		kiro.InitFingerprintConfig(cfg)
 		cmd.DoKiroLogin(cfg, options)
+	} else if zcodeLogin {
+		cmd.DoZcodeLogin(cfg, options)
 	} else if kiroGoogleLogin {
 		// For Kiro auth, default to incognito mode for multi-account support
 		// Users can explicitly override with --no-incognito
