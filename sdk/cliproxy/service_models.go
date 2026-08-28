@@ -174,7 +174,10 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		}
 		models = applyExcludedModels(models, excluded)
 	case "zcode":
-		models = registry.GetZcodeModels()
+		models = executor.FetchZcodeModels(ctx, a, s.cfg)
+		if len(models) == 0 {
+			models = registry.GetZcodeModels()
+		}
 		models = applyExcludedModels(models, excluded)
 	case "amazonq":
 		models = registry.GetAmazonQModels()
