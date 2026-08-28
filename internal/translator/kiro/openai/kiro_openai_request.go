@@ -385,7 +385,10 @@ func extractMetadataFromMessages(messages gjson.Result, key string) string {
 	return ""
 }
 
-// extractSystemPromptFromOpenAI extracts system prompt from OpenAI messages
+// extractSystemPromptFromOpenAI extracts system prompt from OpenAI messages.
+// Both "system" and "developer" roles are folded into the system prompt,
+// matching kiro-lb convert_openai_messages_to_unified (which treats
+// (system, developer) identically as prompt fragments).
 func extractSystemPromptFromOpenAI(messages gjson.Result) string {
 	if !messages.IsArray() {
 		return ""
@@ -393,7 +396,8 @@ func extractSystemPromptFromOpenAI(messages gjson.Result) string {
 
 	var systemParts []string
 	for _, msg := range messages.Array() {
-		if msg.Get("role").String() == "system" {
+		role := msg.Get("role").String()
+		if role == "system" || role == "developer" {
 			content := msg.Get("content")
 			if content.Type == gjson.String {
 				systemParts = append(systemParts, content.String())
@@ -517,6 +521,11 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string) ([]Kir
 	// Merge adjacent messages with the same role
 	messagesArray := kirocommon.MergeAdjacentMessages(messages.Array())
 
+	// Normalize unknown roles to user (kiro-lb normalize_message_roles).
+	// Must run AFTER merging so consecutive unknown-role messages are merged
+	// first, then become consecutive users for ensureAlternatingHistory.
+	messagesArray = normalizeRoles(messagesArray)
+
 	// Track pending tool results that should be attached to the next user message
 	// This is critical for LiteLLM-translated requests where tool results appear
 	// as separate "tool" role messages between assistant and user messages
@@ -630,12 +639,88 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string) ([]Kir
 
 	// Truncate history if too long to prevent Kiro API errors
 	history = truncateHistoryIfNeeded(history)
+
+	// Ensure history alternates and starts with a user message (kiro-lb
+	// ensure_first_message_is_user + ensure_alternating_roles). Kiro rejects
+	// a history that starts with assistant or has consecutive userInputMessage
+	// entries ("Improperly formed request").
+	history = ensureFirstMessageIsUserHistory(history, modelID, origin)
+	history = ensureAlternatingHistory(history)
+
 	history, currentToolResults = filterOrphanedToolResults(history, currentToolResults)
 
 	return history, currentUserMsg, currentToolResults
 }
 
 const kiroMaxHistoryMessages = 50
+
+// normalizeRoles rewrites roles Kiro does not accept (anything other than
+// user/assistant/system/developer/tool) to "user", mirroring kiro-lb
+// normalize_message_roles. Kiro only supports user and assistant in history;
+// any other role must become user so it is never silently dropped.
+func normalizeRoles(messages []gjson.Result) []gjson.Result {
+	out := make([]gjson.Result, 0, len(messages))
+	for _, msg := range messages {
+		role := msg.Get("role").String()
+		switch role {
+		case "user", "assistant", "system", "developer", "tool":
+			out = append(out, msg)
+		default:
+			log.Debugf("kiro-openai: normalizing unknown role '%s' to user", role)
+			if m, ok := msg.Value().(map[string]interface{}); ok {
+				m["role"] = "user"
+				if b, err := json.Marshal(m); err == nil {
+					out = append(out, gjson.ParseBytes(b))
+					continue
+				}
+			}
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
+// ensureFirstMessageIsUserHistory prepends a placeholder user entry when the
+// history would otherwise start with an assistant turn. Mirrors kiro-lb
+// ensure_first_message_is_user (and the claude converter's placeholder
+// behavior): Kiro requires the history to begin with a userInputMessage.
+func ensureFirstMessageIsUserHistory(history []KiroHistoryMessage, modelID, origin string) []KiroHistoryMessage {
+	if len(history) > 0 && history[0].UserInputMessage == nil {
+		log.Debugf("kiro-openai: history started with assistant, prepending placeholder user message")
+		placeholder := KiroHistoryMessage{
+			UserInputMessage: &KiroUserInputMessage{
+				Content: ".",
+				ModelID: modelID,
+				Origin:  origin,
+			},
+		}
+		return append([]KiroHistoryMessage{placeholder}, history...)
+	}
+	return history
+}
+
+// ensureAlternatingHistory inserts a synthetic assistant entry between
+// consecutive userInputMessage entries, mirroring kiro-lb
+// ensure_alternating_roles. Kiro rejects two consecutive user messages in
+// history; the synthetic assistant carries neutral text so it is never read
+// as a real model response.
+func ensureAlternatingHistory(history []KiroHistoryMessage) []KiroHistoryMessage {
+	if len(history) < 2 {
+		return history
+	}
+	var out []KiroHistoryMessage
+	for _, h := range history {
+		if len(out) > 0 && h.UserInputMessage != nil && out[len(out)-1].UserInputMessage != nil {
+			out = append(out, KiroHistoryMessage{
+				AssistantResponseMessage: &KiroAssistantResponseMessage{
+					Content: ".",
+				},
+			})
+		}
+		out = append(out, h)
+	}
+	return out
+}
 
 func truncateHistoryIfNeeded(history []KiroHistoryMessage) []KiroHistoryMessage {
 	if len(history) <= kiroMaxHistoryMessages {
