@@ -13,6 +13,7 @@
 package zcode
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -31,6 +32,29 @@ var (
 	jwtPattern       = regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`)
 	longTokenPattern = regexp.MustCompile(`[A-Za-z0-9_-]{40,}`)
 )
+
+// FlexibleString unmarshals a JSON string or a bare number into a Go string.
+// Some Z.AI API responses encode IDs (id, organizationId, projectId) as
+// numbers. The raw number text is preserved to avoid float precision loss.
+type FlexibleString string
+
+func (s *FlexibleString) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || string(data) == "null" {
+		*s = ""
+		return nil
+	}
+	if data[0] == '"' {
+		var str string
+		if err := json.Unmarshal(data, &str); err != nil {
+			return err
+		}
+		*s = FlexibleString(str)
+		return nil
+	}
+	*s = FlexibleString(string(data))
+	return nil
+}
 
 // Endpoints / client id. Override via the matching ZCODE_OAUTH_* env vars.
 const (
@@ -332,16 +356,16 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 	// getCustomerInfo -> default org/project.
 	var customerInfo struct {
 		Data struct {
-			ID            string `json:"id"`
-			Email         string `json:"email"`
+			ID            FlexibleString `json:"id"`
+			Email         string         `json:"email"`
 			Organizations []struct {
-				OrganizationID   string `json:"organizationId"`
-				OrganizationName string `json:"organizationName"`
-				IsDefault        bool   `json:"isDefault"`
+				OrganizationID   FlexibleString `json:"organizationId"`
+				OrganizationName string         `json:"organizationName"`
+				IsDefault        bool           `json:"isDefault"`
 				Projects         []struct {
-					ProjectID   string `json:"projectId"`
-					ProjectName string `json:"projectName"`
-					IsDefault   bool   `json:"isDefault"`
+					ProjectID   FlexibleString `json:"projectId"`
+					ProjectName string         `json:"projectName"`
+					IsDefault   bool           `json:"isDefault"`
 				} `json:"projects"`
 			} `json:"organizations"`
 		} `json:"data"`
@@ -353,26 +377,26 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 	// Select the default org (by name "默认机构", then isDefault, then first).
 	var orgID string
 	for _, org := range data.Organizations {
-		if org.OrganizationID == "" {
+		if string(org.OrganizationID) == "" {
 			continue
 		}
 		if strings.Contains(org.OrganizationName, "默认机构") || org.IsDefault || orgID == "" {
-			orgID = org.OrganizationID
+			orgID = string(org.OrganizationID)
 		}
 	}
 	// Select the default project within the selected org (by name "默认项目",
 	// then isDefault, then first).
 	var projectID string
 	for _, org := range data.Organizations {
-		if org.OrganizationID != orgID {
+		if string(org.OrganizationID) != orgID {
 			continue
 		}
 		for _, proj := range org.Projects {
-			if proj.ProjectID == "" {
+			if string(proj.ProjectID) == "" {
 				continue
 			}
 			if strings.Contains(proj.ProjectName, "默认项目") || proj.IsDefault || projectID == "" {
-				projectID = proj.ProjectID
+				projectID = string(proj.ProjectID)
 			}
 		}
 	}
@@ -384,9 +408,9 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 	// List keys; find or create "zcode-api-key".
 	var listResp struct {
 		Data []struct {
-			APIKey string `json:"apiKey"`
-			ID     string `json:"id"`
-			Name   string `json:"name"`
+			APIKey string         `json:"apiKey"`
+			ID     FlexibleString `json:"id"`
+			Name   string         `json:"name"`
 		} `json:"data"`
 	}
 	if err := o.getJSON(ctx, keysURL, businessToken, "api_keys.list", &listResp); err != nil {
@@ -397,7 +421,7 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 		if k.Name == apiKeyName {
 			apiKeyID = strings.TrimSpace(k.APIKey)
 			if apiKeyID == "" {
-				apiKeyID = strings.TrimSpace(k.ID)
+				apiKeyID = strings.TrimSpace(string(k.ID))
 			}
 			break
 		}
@@ -405,8 +429,8 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 	if apiKeyID == "" {
 		var createResp struct {
 			Data struct {
-				APIKey string `json:"apiKey"`
-				ID     string `json:"id"`
+				APIKey string         `json:"apiKey"`
+				ID     FlexibleString `json:"id"`
 			} `json:"data"`
 		}
 		if err := o.postJSON(ctx, keysURL, map[string]string{"name": apiKeyName}, "api_keys.create", &createResp); err != nil {
@@ -414,7 +438,7 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 		}
 		apiKeyID = strings.TrimSpace(createResp.Data.APIKey)
 		if apiKeyID == "" {
-			apiKeyID = strings.TrimSpace(createResp.Data.ID)
+			apiKeyID = strings.TrimSpace(string(createResp.Data.ID))
 		}
 	}
 	if apiKeyID == "" {
@@ -439,8 +463,8 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 	if data.Email != "" {
 		ident.Email = strings.ToLower(data.Email)
 	}
-	if data.ID != "" {
-		ident.AccountID = data.ID
+	if string(data.ID) != "" {
+		ident.AccountID = string(data.ID)
 	}
 	return apiKeyID + "." + secretKey, ident, nil
 }
@@ -454,9 +478,9 @@ func (o *OAuth) resolveIdentity(ctx context.Context, upstreamZaiAccess string, f
 	// userinfo.
 	var userinfo struct {
 		Data struct {
-			Email string `json:"email"`
-			ID    string `json:"id"`
-			Sub   string `json:"sub"`
+			Email string         `json:"email"`
+			ID    FlexibleString `json:"id"`
+			Sub   string         `json:"sub"`
 		} `json:"data"`
 	}
 	if err := o.getJSON(ctx, o.userinfoURL, upstreamZaiAccess, "userinfo", &userinfo); err == nil {
@@ -464,8 +488,8 @@ func (o *OAuth) resolveIdentity(ctx context.Context, upstreamZaiAccess string, f
 		if userinfo.Data.Email != "" {
 			ident.Email = strings.ToLower(userinfo.Data.Email)
 		}
-		if userinfo.Data.ID != "" {
-			ident.AccountID = userinfo.Data.ID
+		if string(userinfo.Data.ID) != "" {
+			ident.AccountID = string(userinfo.Data.ID)
 		} else if userinfo.Data.Sub != "" {
 			ident.AccountID = userinfo.Data.Sub
 		}
