@@ -113,8 +113,21 @@ type KiroInputSchema struct {
 
 // KiroAssistantResponseMessage represents an assistant message
 type KiroAssistantResponseMessage struct {
-	Content  string        `json:"content"`
-	ToolUses []KiroToolUse `json:"toolUses,omitempty"`
+	Content          string                `json:"content"`
+	ToolUses         []KiroToolUse         `json:"toolUses,omitempty"`
+	ReasoningContent *KiroReasoningContent `json:"reasoningContent,omitempty"`
+}
+
+// KiroReasoningContent is the nested reasoning envelope Kiro accepts for
+// signed prior-turn thinking. Mirrors kiro-lb build_kiro_history.
+type KiroReasoningContent struct {
+	ReasoningText KiroReasoningText `json:"reasoningText"`
+}
+
+// KiroReasoningText carries the reasoning prose and its required signature.
+type KiroReasoningText struct {
+	Text      string `json:"text"`
+	Signature string `json:"signature"`
 }
 
 // KiroToolUse represents a tool invocation by the assistant
@@ -919,9 +932,29 @@ func buildAssistantMessageFromOpenAI(msg gjson.Result) KiroAssistantResponseMess
 		log.Debugf("kiro-openai: assistant content was empty, using default: %s", finalContent)
 	}
 
+	// Forward signed prior-turn reasoning through the nested reasoningContent
+	// field (kiro-lb build_kiro_history). Kiro enforces the signature
+	// (THINKING_SIGNATURE_INVALID on empty/fabricated values), so only a
+	// client-supplied signature is forwarded; unsigned reasoning is dropped.
+	reasoningText := msg.Get("reasoning_content").String()
+	if reasoningText == "" {
+		reasoningText = msg.Get("reasoning").String()
+	}
+	reasoningSignature := msg.Get("reasoning_signature").String()
+	var reasoningContent *KiroReasoningContent
+	if reasoningText != "" && reasoningSignature != "" {
+		reasoningContent = &KiroReasoningContent{
+			ReasoningText: KiroReasoningText{
+				Text:      reasoningText,
+				Signature: reasoningSignature,
+			},
+		}
+	}
+
 	return KiroAssistantResponseMessage{
-		Content:  finalContent,
-		ToolUses: toolUses,
+		Content:          finalContent,
+		ToolUses:         toolUses,
+		ReasoningContent: reasoningContent,
 	}
 }
 
