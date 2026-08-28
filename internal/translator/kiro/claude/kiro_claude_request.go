@@ -115,8 +115,21 @@ type KiroInputSchema struct {
 
 // KiroAssistantResponseMessage represents an assistant message
 type KiroAssistantResponseMessage struct {
-	Content  string        `json:"content"`
-	ToolUses []KiroToolUse `json:"toolUses,omitempty"`
+	Content          string                `json:"content"`
+	ToolUses         []KiroToolUse         `json:"toolUses,omitempty"`
+	ReasoningContent *KiroReasoningContent `json:"reasoningContent,omitempty"`
+}
+
+// KiroReasoningContent is the nested reasoning envelope Kiro accepts for
+// signed prior-turn thinking. Mirrors kiro-lb build_kiro_history.
+type KiroReasoningContent struct {
+	ReasoningText KiroReasoningText `json:"reasoningText"`
+}
+
+// KiroReasoningText carries the reasoning prose and its required signature.
+type KiroReasoningText struct {
+	Text      string `json:"text"`
+	Signature string `json:"signature"`
 }
 
 // KiroToolUse represents a tool invocation by the assistant
@@ -643,6 +656,9 @@ func processMessages(messages gjson.Result, modelID, origin string) ([]KiroHisto
 	// Merge adjacent messages with the same role
 	messagesArray := kirocommon.MergeAdjacentMessages(messages.Array())
 
+	// Normalize unknown roles to user (kiro-lb normalize_message_roles).
+	messagesArray = normalizeRoles(messagesArray)
+
 	// FIX: Kiro API requires history to start with a user message.
 	// Some clients (e.g., OpenClaw) send conversations starting with an assistant message,
 	// which is valid for the Claude API but causes "Improperly formed request" on Kiro.
@@ -705,6 +721,11 @@ func processMessages(messages gjson.Result, modelID, origin string) ([]KiroHisto
 		}
 	}
 
+	// Ensure history alternates user/assistant (kiro-lb
+	// ensure_alternating_roles). Kiro rejects consecutive userInputMessage
+	// entries; normalizeRoles above can create them from unknown roles.
+	history = ensureAlternatingHistory(history)
+
 	// POST-PROCESSING: Remove orphaned tool_results that have no matching tool_use
 	// in any assistant message. This happens when Claude Code compaction truncates
 	// the conversation and removes the assistant message containing the tool_use,
@@ -757,6 +778,53 @@ func processMessages(messages gjson.Result, modelID, origin string) ([]KiroHisto
 	}
 
 	return history, currentUserMsg, currentToolResults
+}
+
+// normalizeRoles rewrites roles Kiro does not accept (anything other than
+// user/assistant/system/developer/tool) to "user", mirroring kiro-lb
+// normalize_message_roles. Kiro only supports user and assistant in history.
+func normalizeRoles(messages []gjson.Result) []gjson.Result {
+	out := make([]gjson.Result, 0, len(messages))
+	for _, msg := range messages {
+		role := msg.Get("role").String()
+		switch role {
+		case "user", "assistant", "system", "developer", "tool":
+			out = append(out, msg)
+		default:
+			log.Debugf("kiro: normalizing unknown role '%s' to user", role)
+			if m, ok := msg.Value().(map[string]interface{}); ok {
+				m["role"] = "user"
+				if b, err := json.Marshal(m); err == nil {
+					out = append(out, gjson.ParseBytes(b))
+					continue
+				}
+			}
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
+// ensureAlternatingHistory inserts a synthetic assistant entry between
+// consecutive userInputMessage entries, mirroring kiro-lb
+// ensure_alternating_roles. Kiro rejects two consecutive user messages in
+// history; the synthetic assistant carries neutral text.
+func ensureAlternatingHistory(history []KiroHistoryMessage) []KiroHistoryMessage {
+	if len(history) < 2 {
+		return history
+	}
+	var out []KiroHistoryMessage
+	for _, h := range history {
+		if len(out) > 0 && h.UserInputMessage != nil && out[len(out)-1].UserInputMessage != nil {
+			out = append(out, KiroHistoryMessage{
+				AssistantResponseMessage: &KiroAssistantResponseMessage{
+					Content: ".",
+				},
+			})
+		}
+		out = append(out, h)
+	}
+	return out
 }
 
 // buildFinalContent builds the final content with system prompt
@@ -930,6 +998,8 @@ func BuildAssistantMessageStruct(msg gjson.Result) KiroAssistantResponseMessage 
 	content := msg.Get("content")
 	var contentBuilder strings.Builder
 	var toolUses []KiroToolUse
+	var reasoningText string
+	var reasoningSignature string
 
 	if content.IsArray() {
 		for _, part := range content.Array() {
@@ -937,6 +1007,15 @@ func BuildAssistantMessageStruct(msg gjson.Result) KiroAssistantResponseMessage 
 			switch partType {
 			case "text":
 				contentBuilder.WriteString(part.Get("text").String())
+			case "thinking":
+				// Collect thinking text and signature for signed-reasoning
+				// forwarding (kiro-lb extract_reasoning_from_anthropic_content).
+				if t := part.Get("thinking").String(); t != "" {
+					reasoningText = t
+				}
+				if s := part.Get("signature").String(); s != "" {
+					reasoningSignature = s
+				}
 			case "tool_use":
 				toolUseID := part.Get("id").String()
 				toolName := part.Get("name").String()
@@ -980,8 +1059,22 @@ func BuildAssistantMessageStruct(msg gjson.Result) KiroAssistantResponseMessage 
 		log.Debugf("kiro: assistant content was empty, using default: %s", finalContent)
 	}
 
+	// Forward signed prior-turn reasoning through the nested reasoningContent
+	// field (kiro-lb build_kiro_history). Kiro enforces the signature, so only
+	// a client-supplied signature is forwarded; unsigned thinking is dropped.
+	var reasoningContent *KiroReasoningContent
+	if reasoningText != "" && reasoningSignature != "" {
+		reasoningContent = &KiroReasoningContent{
+			ReasoningText: KiroReasoningText{
+				Text:      reasoningText,
+				Signature: reasoningSignature,
+			},
+		}
+	}
+
 	return KiroAssistantResponseMessage{
-		Content:  finalContent,
-		ToolUses: toolUses,
+		Content:          finalContent,
+		ToolUses:         toolUses,
+		ReasoningContent: reasoningContent,
 	}
 }
