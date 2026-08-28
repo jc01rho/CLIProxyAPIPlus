@@ -254,7 +254,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		translated = retryPayload
 		retriedDeveloperRole = true
 		retryReq := cloneOpenAICompatRequestWithBody(httpReq, translated)
-		helps.LogWithRequestID(ctx).Warnf("openai compat provider %s rejected role developer; retrying with normalized leading instructions", strings.TrimPrefix(e.provider, "openai-compatible-"))
+		helps.LogWithRequestID(ctx).Debugf("openai compat provider %s rejected role developer; retrying with normalized leading instructions", strings.TrimPrefix(e.provider, "openai-compatible-"))
 		helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 			URL: url, Method: http.MethodPost, Headers: retryReq.Header.Clone(), Body: translated,
 			Provider: e.Identifier(), AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue,
