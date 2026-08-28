@@ -1380,7 +1380,7 @@ func (h *Handler) RequestZcodeToken(c *gin.Context) {
 				}
 				creds, errExchange := oauth.ProvisionFromUpstream(ctx, result.ZaiAccessToken, result.ZcodeToken)
 				if errExchange != nil {
-					SetOAuthSessionError(state, "Failed to provision Z.AI API key")
+					SetOAuthSessionError(state, oauthSessionErrorWithCause("Failed to provision Z.AI API key", errExchange))
 					log.WithFields(log.Fields{"provider": "zcode", "stage": "provision"}).WithError(errExchange).Error("Failed to provision ZCode API key")
 					return
 				}
