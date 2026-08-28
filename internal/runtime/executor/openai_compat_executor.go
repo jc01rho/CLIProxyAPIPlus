@@ -288,6 +288,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.EnsurePublished(ctx)
+	// MiniMax-M3 embeds reasoning in content tags instead of reasoning_content.
+	// Extract it before reverse translation so downstream clients receive the
+	// reasoning and answer separately.
+	if isMiniMaxThinkingTagModel(baseModel) {
+		body = normalizeMiniMaxThinkingBody(body)
+	}
 	// Translate response back to source format when needed
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, body, &param)
@@ -670,6 +676,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		var streamAborted bool
 		var upstreamEvent string
 		var frameData [][]byte
+		var miniMaxStreamState *minimaxThinkingStreamState
+		if isMiniMaxThinkingTagModel(baseModel) {
+			miniMaxStreamState = &minimaxThinkingStreamState{}
+		}
 		defer streamUsage.Publish(ctx, reporter)
 
 		publishStreamError := func(streamErr statusErr, containsPayload bool) {
@@ -736,6 +746,26 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				if streamErr, isError := openAICompatStreamDataError(dataPayload, eventName); isError {
 					publishStreamError(streamErr, true)
 					return true
+				}
+			}
+
+			// MiniMax-M3 embeds reasoning tags in delta content. Split them into
+			// reasoning_content before reverse translation.
+			if miniMaxStreamState != nil {
+				dataPayload = normalizeMiniMaxThinkingStream(miniMaxStreamState, dataPayload)
+				if isDone {
+					if reasoning, content := miniMaxStreamState.flush(); reasoning != "" || content != "" {
+						flushFrame := buildMiniMaxThinkingFlushFrame(dataPayload, reasoning, content)
+						flushChunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, append([]byte("data: "), flushFrame...), &param, claudeInputTokens)
+						for i := range flushChunks {
+							select {
+							case out <- cliproxyexecutor.StreamChunk{Payload: flushChunks[i]}:
+							case <-ctx.Done():
+								streamAborted = true
+								return true
+							}
+						}
+					}
 				}
 			}
 
