@@ -14,6 +14,7 @@ func TestToolResultsAttachedToCurrentMessage(t *testing.T) {
 	// The last user message should have the tool results attached
 	input := []byte(`{
 		"model": "kiro-claude-sonnet-4-5-agentic",
+		"tools": [{"type":"function","function":{"name":"Read","parameters":{"type":"object","properties":{}}}}],
 		"messages": [
 			{"role": "user", "content": "Hello, can you read a file for me?"},
 			{
@@ -79,6 +80,7 @@ func TestToolResultsInHistoryUserMessage(t *testing.T) {
 	// The first user after tool should have tool results in history
 	input := []byte(`{
 		"model": "kiro-claude-sonnet-4-5-agentic",
+		"tools": [{"type":"function","function":{"name":"Read","parameters":{"type":"object","properties":{}}}}],
 		"messages": [
 			{"role": "user", "content": "Hello"},
 			{
@@ -147,6 +149,7 @@ func TestToolResultsInHistoryUserMessage(t *testing.T) {
 func TestToolResultsWithMultipleToolCalls(t *testing.T) {
 	input := []byte(`{
 		"model": "kiro-claude-sonnet-4-5-agentic",
+		"tools": [{"type":"function","function":{"name":"Read","parameters":{"type":"object","properties":{}}}}],
 		"messages": [
 			{"role": "user", "content": "Read two files for me"},
 			{
@@ -223,6 +226,7 @@ func TestToolResultsWithMultipleToolCalls(t *testing.T) {
 func TestToolResultsAtEndOfConversation(t *testing.T) {
 	input := []byte(`{
 		"model": "kiro-claude-sonnet-4-5-agentic",
+		"tools": [{"type":"function","function":{"name":"Read","parameters":{"type":"object","properties":{}}}}],
 		"messages": [
 			{"role": "user", "content": "Read a file"},
 			{
@@ -281,6 +285,7 @@ func TestToolResultsFollowedByAssistant(t *testing.T) {
 	//   user: "What did they say?"
 	input := []byte(`{
 		"model": "kiro-claude-sonnet-4-5-agentic",
+		"tools": [{"type":"function","function":{"name":"Read","parameters":{"type":"object","properties":{}}}}],
 		"messages": [
 			{"role": "user", "content": "Read two files for me"},
 			{
