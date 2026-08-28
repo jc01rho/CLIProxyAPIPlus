@@ -267,6 +267,11 @@ func (o *OAuth) ExchangeCode(ctx context.Context, code, state, redirectURI strin
 	if redirectURI == "" {
 		redirectURI = o.redirectURI
 	}
+	// The custom-protocol redirect cannot be caught, so the caller may paste the
+	// full redirect URL, a bare query string, or the raw code.
+	if parsedCode, _ := ParseCallbackInput(code); parsedCode != "" {
+		code = parsedCode
+	}
 	// Broker exchange.
 	brokerBody := map[string]string{
 		"provider":     "zai",
@@ -354,50 +359,42 @@ type identity struct {
 // "zcode-api-key" using the business token. Returns "{apiKeyId}.{secretKey}".
 func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (string, identity, error) {
 	// getCustomerInfo -> default org/project.
-	var customerInfo struct {
-		Data struct {
-			ID            FlexibleString `json:"id"`
-			Email         string         `json:"email"`
-			Organizations []struct {
-				OrganizationID   FlexibleString `json:"organizationId"`
-				OrganizationName string         `json:"organizationName"`
-				IsDefault        bool           `json:"isDefault"`
-				Projects         []struct {
-					ProjectID   FlexibleString `json:"projectId"`
-					ProjectName string         `json:"projectName"`
-					IsDefault   bool           `json:"isDefault"`
-				} `json:"projects"`
-			} `json:"organizations"`
-		} `json:"data"`
+	var data struct {
+		ID            FlexibleString `json:"id"`
+		Email         string         `json:"email"`
+		Organizations []struct {
+			OrganizationID FlexibleString `json:"organizationId"`
+			IsDefault      bool           `json:"isDefault"`
+			Projects       []struct {
+				ProjectID FlexibleString `json:"projectId"`
+				IsDefault bool           `json:"isDefault"`
+			} `json:"projects"`
+		} `json:"organizations"`
 	}
-	if err := o.getJSON(ctx, o.zaiAPIBase+"/api/biz/customer/getCustomerInfo", businessToken, "getCustomerInfo", &customerInfo); err != nil {
+	if err := o.getJSONUnwrapped(ctx, o.zaiAPIBase+"/api/biz/customer/getCustomerInfo", businessToken, "getCustomerInfo", &data); err != nil {
 		return "", identity{}, err
 	}
-	data := customerInfo.Data
-	// Select the default org (by name "默认机构", then isDefault, then first).
-	var orgID string
-	for _, org := range data.Organizations {
-		if string(org.OrganizationID) == "" {
-			continue
-		}
-		if strings.Contains(org.OrganizationName, "默认机构") || org.IsDefault || orgID == "" {
-			orgID = string(org.OrganizationID)
-		}
-	}
-	// Select the default project within the selected org (by name "默认项目",
-	// then isDefault, then first).
-	var projectID string
-	for _, org := range data.Organizations {
-		if string(org.OrganizationID) != orgID {
-			continue
-		}
-		for _, proj := range org.Projects {
-			if string(proj.ProjectID) == "" {
-				continue
+	// Select the FIRST organization flagged isDefault, falling back to the first
+	// entry, then the same for its projects. No name-based matching.
+	var orgID, projectID string
+	if len(data.Organizations) > 0 {
+		org := data.Organizations[0]
+		for i := range data.Organizations {
+			if data.Organizations[i].IsDefault {
+				org = data.Organizations[i]
+				break
 			}
-			if strings.Contains(proj.ProjectName, "默认项目") || proj.IsDefault || projectID == "" {
-				projectID = string(proj.ProjectID)
+		}
+		orgID = strings.TrimSpace(string(org.OrganizationID))
+		if len(org.Projects) > 0 {
+			proj := org.Projects[0]
+			for i := range org.Projects {
+				if org.Projects[i].IsDefault {
+					proj = org.Projects[i]
+					break
+				}
 			}
+			projectID = strings.TrimSpace(string(proj.ProjectID))
 		}
 	}
 	if orgID == "" || projectID == "" {
@@ -427,18 +424,16 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 		}
 	}
 	if apiKeyID == "" {
-		var createResp struct {
-			Data struct {
-				APIKey string         `json:"apiKey"`
-				ID     FlexibleString `json:"id"`
-			} `json:"data"`
+		var created struct {
+			APIKey string         `json:"apiKey"`
+			ID     FlexibleString `json:"id"`
 		}
-		if err := o.postJSON(ctx, keysURL, map[string]string{"name": apiKeyName}, "api_keys.create", &createResp); err != nil {
+		if err := o.postJSONUnwrapped(ctx, keysURL, businessToken, map[string]string{"name": apiKeyName}, "api_keys.create", &created); err != nil {
 			return "", identity{}, err
 		}
-		apiKeyID = strings.TrimSpace(createResp.Data.APIKey)
+		apiKeyID = strings.TrimSpace(created.APIKey)
 		if apiKeyID == "" {
-			apiKeyID = strings.TrimSpace(string(createResp.Data.ID))
+			apiKeyID = strings.TrimSpace(string(created.ID))
 		}
 	}
 	if apiKeyID == "" {
@@ -447,14 +442,12 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 
 	// Copy the secret key.
 	var copyResp struct {
-		Data struct {
-			SecretKey string `json:"secretKey"`
-		} `json:"data"`
+		SecretKey string `json:"secretKey"`
 	}
-	if err := o.getJSON(ctx, keysURL+"/copy/"+url.PathEscape(apiKeyID), businessToken, "api_keys.copy", &copyResp); err != nil {
+	if err := o.getJSONUnwrapped(ctx, keysURL+"/copy/"+url.PathEscape(apiKeyID), businessToken, "api_keys.copy", &copyResp); err != nil {
 		return "", identity{}, err
 	}
-	secretKey := strings.TrimSpace(copyResp.Data.SecretKey)
+	secretKey := strings.TrimSpace(copyResp.SecretKey)
 	if secretKey == "" {
 		return "", identity{}, fmt.Errorf("zcode api_keys copy response missing secretKey")
 	}
@@ -477,21 +470,19 @@ func (o *OAuth) resolveIdentity(ctx context.Context, upstreamZaiAccess string, f
 	}
 	// userinfo.
 	var userinfo struct {
-		Data struct {
-			Email string         `json:"email"`
-			ID    FlexibleString `json:"id"`
-			Sub   string         `json:"sub"`
-		} `json:"data"`
+		Email string         `json:"email"`
+		ID    FlexibleString `json:"id"`
+		Sub   string         `json:"sub"`
 	}
-	if err := o.getJSON(ctx, o.userinfoURL, upstreamZaiAccess, "userinfo", &userinfo); err == nil {
+	if err := o.getJSONUnwrapped(ctx, o.userinfoURL, upstreamZaiAccess, "userinfo", &userinfo); err == nil {
 		ident := identity{}
-		if userinfo.Data.Email != "" {
-			ident.Email = strings.ToLower(userinfo.Data.Email)
+		if userinfo.Email != "" {
+			ident.Email = strings.ToLower(userinfo.Email)
 		}
-		if string(userinfo.Data.ID) != "" {
-			ident.AccountID = string(userinfo.Data.ID)
-		} else if userinfo.Data.Sub != "" {
-			ident.AccountID = userinfo.Data.Sub
+		if string(userinfo.ID) != "" {
+			ident.AccountID = string(userinfo.ID)
+		} else if userinfo.Sub != "" {
+			ident.AccountID = userinfo.Sub
 		}
 		if ident.Email != "" || ident.AccountID != "" {
 			return ident
@@ -618,4 +609,79 @@ func randomHex(n int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// ParseCallbackInput extracts the authorization code and state from whatever the
+// user pasted: a full redirect URL ("zcode://oauth/callback?code=...&state=..."),
+// a bare query string ("?code=...&state=..."), or the raw code optionally
+// followed by "#<state>".
+func ParseCallbackInput(input string) (code string, state string) {
+	value := strings.TrimSpace(input)
+	if value == "" {
+		return "", ""
+	}
+	// Absolute URL. A scheme is required, mirroring JS new URL() which throws
+	// without one; Go's url.Parse would otherwise accept a bare code as a path.
+	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" {
+		q := parsed.Query()
+		return q.Get("code"), q.Get("state")
+	}
+	// Bare query string.
+	if strings.Contains(value, "code=") {
+		trimmed := value
+		if trimmed[0] == '?' || trimmed[0] == '#' {
+			trimmed = trimmed[1:]
+		}
+		if q, err := url.ParseQuery(trimmed); err == nil {
+			return q.Get("code"), q.Get("state")
+		}
+	}
+	// Raw code, optionally with the state after "#".
+	if idx := strings.Index(value, "#"); idx >= 0 {
+		return value[:idx], value[idx+1:]
+	}
+	return value, ""
+}
+
+// unwrapDataEnvelope returns the JSON value to decode from a Z.AI response: the
+// "data" member when present, otherwise the whole payload. Some endpoints answer
+// with the object at the top level instead of wrapping it.
+func unwrapDataEnvelope(raw json.RawMessage) json.RawMessage {
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return raw
+	}
+	trimmed := bytes.TrimSpace(envelope.Data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return raw
+	}
+	return trimmed
+}
+
+// getJSONUnwrapped performs a GET and decodes the response's "data" member when
+// present, falling back to the whole payload.
+func (o *OAuth) getJSONUnwrapped(ctx context.Context, url, bearer, label string, out interface{}) error {
+	var raw json.RawMessage
+	if err := o.getJSON(ctx, url, bearer, label, &raw); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(unwrapDataEnvelope(raw), out); err != nil {
+		return fmt.Errorf("zcode %s: decode response: %w", label, err)
+	}
+	return nil
+}
+
+// postJSONUnwrapped performs a POST with a bearer token and decodes the
+// response's "data" member when present, falling back to the whole payload.
+func (o *OAuth) postJSONUnwrapped(ctx context.Context, url, bearer string, body interface{}, label string, out interface{}) error {
+	var raw json.RawMessage
+	if err := o.postJSONWithBearer(ctx, url, bearer, body, label, &raw); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(unwrapDataEnvelope(raw), out); err != nil {
+		return fmt.Errorf("zcode %s: decode response: %w", label, err)
+	}
+	return nil
 }
