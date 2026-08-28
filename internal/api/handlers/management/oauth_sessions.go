@@ -382,6 +382,8 @@ func NormalizeOAuthProvider(provider string) (string, error) {
 		return "xai", nil
 	case "kiro":
 		return "kiro", nil
+	case "zcode":
+		return "zcode", nil
 	case "github":
 		return "github", nil
 	case "cline":

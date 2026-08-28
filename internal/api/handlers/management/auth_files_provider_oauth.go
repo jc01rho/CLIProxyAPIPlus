@@ -25,6 +25,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	kiro "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/zcode"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -1319,6 +1320,133 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 	}
 	response["expires_in"] = expiresIn
 	c.JSON(http.StatusOK, response)
+}
+
+// RequestZcodeToken starts the GLM ZCode OAuth flow (UNOFFICIAL, opt-in).
+// The user completes Z.AI login in the browser and pastes the redirect URL or
+// authorization code (the CLI cannot catch the zcode:// redirect). The flow
+// provisions a real Z.AI API key used against api.z.ai.
+func (h *Handler) RequestZcodeToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		log.Errorf("Failed to generate state parameter: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return
+	}
+
+	oauth := zcode.NewOAuth()
+	authURL := oauth.GenerateAuthURL(state, "")
+	RegisterOAuthSession(state, "zcode")
+
+	go func() {
+		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-zcode-%s.oauth", state))
+		deadline := time.Now().Add(5 * time.Minute)
+		var code string
+		var resultErr string
+		for {
+			if !IsOAuthSessionPending(state, "zcode") {
+				return
+			}
+			if time.Now().After(deadline) {
+				SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
+				log.Error("Timeout waiting for ZCode OAuth callback")
+				return
+			}
+			if data, errR := os.ReadFile(waitFile); errR == nil {
+				var m map[string]string
+				_ = json.Unmarshal(data, &m)
+				_ = os.Remove(waitFile)
+				resultErr = m["error"]
+				if resultErr == "" {
+					code = m["code"]
+				}
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if resultErr != "" {
+			SetOAuthSessionError(state, resultErr)
+			log.WithFields(log.Fields{"provider": "zcode", "stage": "callback"}).Error("ZCode OAuth callback returned error")
+			return
+		}
+		if strings.TrimSpace(code) == "" {
+			SetOAuthSessionError(state, "Missing authorization code")
+			log.WithField("provider", "zcode").Error("ZCode OAuth callback missing authorization code")
+			return
+		}
+
+		creds, errExchange := oauth.ExchangeCode(ctx, code, state, "")
+		if errExchange != nil {
+			SetOAuthSessionError(state, "Failed to exchange authorization code for tokens")
+			log.WithFields(log.Fields{"provider": "zcode", "stage": "exchange"}).WithError(errExchange).Error("Failed to exchange ZCode authorization code")
+			return
+		}
+
+		now := time.Now()
+		seq := now.UnixNano() % 100000
+		idPart := "zcode"
+		if creds.Email != "" {
+			idPart = sanitizeZcodeIdentifier(creds.Email)
+		}
+		fileName := fmt.Sprintf("zcode-%s-%05d.json", idPart, seq)
+
+		record := &coreauth.Auth{
+			ID:        fileName,
+			Provider:  "zcode",
+			FileName:  fileName,
+			Label:     "zcode",
+			Status:    coreauth.StatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Metadata: map[string]any{
+				"type":          "zcode",
+				"access_token":  creds.AccessToken,
+				"refresh_token": creds.RefreshToken,
+				"expires_at":    creds.ExpiresAt.Format(time.RFC3339),
+				"email":         creds.Email,
+				"account_id":    creds.AccountID,
+			},
+			Attributes: map[string]string{
+				"api_key":  creds.AccessToken,
+				"base_url": zcode.DefaultAnthropicBase,
+				"email":    creds.Email,
+				"source":   "zcode-oauth",
+			},
+			NextRefreshAfter: creds.ExpiresAt.Add(-24 * time.Hour),
+		}
+
+		if errGuard := guardOAuthSessionPendingForSave(state, "zcode"); errGuard != nil {
+			return
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.WithField("provider", "zcode").WithError(errSave).Error("Failed to save ZCode authentication tokens")
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+		log.WithFields(log.Fields{"provider": "zcode", "email": creds.Email, "path": savedPath}).Info("ZCode authentication successful")
+		CompleteOAuthSession(state)
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+// sanitizeZcodeIdentifier sanitizes an email for use in a filename.
+func sanitizeZcodeIdentifier(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	return b.String()
 }
 
 // watchOAuthSessionCancel cancels pollCtx once the OAuth session is no longer pending.
