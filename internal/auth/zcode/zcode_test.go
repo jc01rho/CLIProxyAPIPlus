@@ -202,3 +202,84 @@ func TestRedactSecrets(t *testing.T) {
 		t.Errorf("long token not redacted: %q", got)
 	}
 }
+
+// TestProvisionFromUpstreamNumericIDs verifies provisioning works when the
+// Z.AI API encodes IDs as JSON numbers and z/login returns a camelCase token,
+// mirroring the reported "cannot unmarshal number into ... data.id" failure.
+func TestProvisionFromUpstreamNumericIDs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/zlogin", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{"accessToken": "biz-token"}, // camelCase
+		})
+	})
+	mux.HandleFunc("/api/biz/customer/getCustomerInfo", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer biz-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"id":    123456, // numeric id
+				"email": "User@Example.com",
+				"organizations": []map[string]interface{}{
+					{
+						"organizationId":   12345, // numeric organizationId
+						"organizationName": "我的默认机构",
+						"projects": []map[string]interface{}{
+							{"projectId": 67890, "projectName": "默认项目"}, // numeric projectId
+						},
+					},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/api/biz/v1/organization/12345/projects/67890/api_keys", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer biz-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					{"apiKey": "key-1", "name": "zcode-api-key"},
+				},
+			})
+		case http.MethodPost:
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{"apiKey": "key-created"},
+			})
+		}
+	})
+	mux.HandleFunc("/api/biz/v1/organization/12345/projects/67890/api_keys/copy/key-1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer biz-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{"secretKey": "secret-abc"},
+		})
+	})
+	svc := httptest.NewServer(mux)
+	defer svc.Close()
+
+	o := NewOAuthWithConfig(Config{
+		ZaiLoginURL: svc.URL + "/zlogin",
+		ZaiAPIBase:  svc.URL,
+	})
+
+	creds, err := o.ProvisionFromUpstream(context.Background(), "upstream-zai-token", "zcode-jwt")
+	if err != nil {
+		t.Fatalf("ProvisionFromUpstream: %v", err)
+	}
+	if creds.AccessToken != "key-1.secret-abc" {
+		t.Errorf("AccessToken = %q, want key-1.secret-abc", creds.AccessToken)
+	}
+	if creds.Email != "user@example.com" {
+		t.Errorf("Email = %q, want user@example.com", creds.Email)
+	}
+	if creds.AccountID != "123456" {
+		t.Errorf("AccountID = %q, want 123456", creds.AccountID)
+	}
+}
