@@ -279,6 +279,14 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 	}
 
 	// Process messages and build history
+	// If no tools are defined, convert tool content to text so no toolResults
+	// are sent without tool definitions (kiro-lb strip_all_tool_content). Kiro
+	// rejects toolResults that reference no tool definitions.
+	if len(kiroTools) == 0 {
+		if stripped := stripAllToolContent(messages.Array()); stripped != nil {
+			messages = gjson.ParseBytes(stripped)
+		}
+	}
 	history, currentUserMsg, currentToolResults := processOpenAIMessages(messages, modelID, origin)
 
 	// Build content with system prompt
@@ -797,6 +805,127 @@ func filterOrphanedToolResults(history []KiroHistoryMessage, currentToolResults 
 	}
 
 	return history, currentToolResults
+}
+
+// stripAllToolContent converts tool_calls and tool results into plain text
+// when no tools are defined in the request, mirroring kiro-lb
+// strip_all_tool_content. Kiro rejects toolResults that reference no tool
+// definitions, so preserving the conversation as text keeps context without
+// triggering that rejection. Tool messages are dropped (their text is
+// buffered and attached to the following message); assistant tool_calls are
+// appended to the assistant content.
+func stripAllToolContent(messages []gjson.Result) []byte {
+	if len(messages) == 0 {
+		return nil
+	}
+	var out []map[string]interface{}
+	var pendingResults []string
+	for _, msg := range messages {
+		m, ok := msg.Value().(map[string]interface{})
+		if !ok {
+			out = append(out, map[string]interface{}{
+				"role":    msg.Get("role").String(),
+				"content": msg.Get("content").String(),
+			})
+			continue
+		}
+		role := msg.Get("role").String()
+		switch role {
+		case "tool":
+			text := msg.Get("content").String()
+			id := msg.Get("tool_call_id").String()
+			if text != "" || id != "" {
+				label := "Tool Result"
+				if id != "" {
+					label = "Tool Result (" + id + ")"
+				}
+				pendingResults = append(pendingResults, "["+label+"]\n"+text)
+			}
+			// Tool message is dropped; its text rides the next message.
+			continue
+		case "assistant":
+			var toolTexts []string
+			if tc := msg.Get("tool_calls"); tc.IsArray() {
+				for _, call := range tc.Array() {
+					name := call.Get("function.name").String()
+					args := call.Get("function.arguments").String()
+					id := call.Get("id").String()
+					if name == "" {
+						name = "unknown"
+					}
+					label := "Tool: " + name
+					if id != "" {
+						label += " (" + id + ")"
+					}
+					toolTexts = append(toolTexts, "["+label+"]\n"+args)
+				}
+			}
+			contentText := contentTextFromValue(m["content"])
+			if len(toolTexts) > 0 {
+				if contentText != "" {
+					m["content"] = contentText + "\n\n" + strings.Join(toolTexts, "\n\n")
+				} else {
+					m["content"] = strings.Join(toolTexts, "\n\n")
+				}
+				delete(m, "tool_calls")
+			}
+			attachPendingResults(m, &pendingResults)
+			out = append(out, m)
+		default:
+			attachPendingResults(m, &pendingResults)
+			out = append(out, m)
+		}
+	}
+	// Trailing tool results with no following message become a user message.
+	if len(pendingResults) > 0 {
+		out = append(out, map[string]interface{}{
+			"role":    "user",
+			"content": strings.Join(pendingResults, "\n\n"),
+		})
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// attachPendingResults appends buffered tool-result text to a message's
+// content and clears the buffer.
+func attachPendingResults(m map[string]interface{}, pending *[]string) {
+	if len(*pending) == 0 {
+		return
+	}
+	appendText := strings.Join(*pending, "\n\n")
+	contentText := contentTextFromValue(m["content"])
+	if contentText != "" {
+		m["content"] = contentText + "\n\n" + appendText
+	} else {
+		m["content"] = appendText
+	}
+	*pending = nil
+}
+
+// contentTextFromValue extracts text from a message content value, handling
+// both plain strings and arrays of content blocks.
+func contentTextFromValue(v interface{}) string {
+	switch c := v.(type) {
+	case string:
+		return c
+	case []interface{}:
+		var sb strings.Builder
+		for _, block := range c {
+			if bm, ok := block.(map[string]interface{}); ok {
+				if bm["type"] == "text" {
+					if s, ok := bm["text"].(string); ok {
+						sb.WriteString(s)
+					}
+				}
+			}
+		}
+		return sb.String()
+	}
+	return ""
 }
 
 // buildUserMessageFromOpenAI builds a user message from OpenAI format and extracts tool results
