@@ -91,6 +91,30 @@ func (s *oauthSessionStore) Register(state, provider string) {
 	}
 }
 
+// RegisterWithMetadata registers a builtin OAuth session with metadata (e.g.
+// provider-specific flow state such as a broker flow id / poll token).
+func (s *oauthSessionStore) RegisterWithMetadata(state, provider string, metadata map[string]any) {
+	state = strings.TrimSpace(state)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if state == "" || provider == "" {
+		return
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.purgeExpiredLocked(now)
+	s.sessions[state] = oauthSession{
+		Provider:  provider,
+		Status:    "",
+		Source:    oauthSessionSourceBuiltin,
+		Metadata:  cloneOAuthSessionMetadata(metadata),
+		CreatedAt: now,
+		ExpiresAt: now.Add(s.ttl),
+	}
+}
+
 func (s *oauthSessionStore) RegisterPlugin(state, provider string, metadata map[string]any) error {
 	state = strings.TrimSpace(state)
 	provider = strings.ToLower(strings.TrimSpace(provider))
@@ -270,6 +294,12 @@ func cloneOAuthSessionMetadata(in map[string]any) map[string]any {
 var oauthSessions = newOAuthSessionStore(oauthSessionTTL)
 
 func RegisterOAuthSession(state, provider string) { oauthSessions.Register(state, provider) }
+
+// RegisterOAuthSessionWithMetadata registers a builtin OAuth session with
+// provider-specific metadata (e.g. a broker flow id / poll token).
+func RegisterOAuthSessionWithMetadata(state, provider string, metadata map[string]any) {
+	oauthSessions.RegisterWithMetadata(state, provider, metadata)
+}
 
 func RegisterPluginOAuthSession(state, provider string, metadata map[string]any) error {
 	return oauthSessions.RegisterPlugin(state, provider, metadata)
