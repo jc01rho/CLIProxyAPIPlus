@@ -1509,3 +1509,80 @@ func TestConvertOpenAIResponsesRequestToClaude_DifferentUserContentWithSameSyste
 		t.Fatalf("different user questions with same system prompt produced identical metadata.user_id: %q", idA)
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToClaude_FableStripsTrailingAssistantPrefill(t *testing.T) {
+	raw := []byte(`{
+		"model": "claude-fable-5",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "progress update"}]}
+		]
+	}`)
+	out := ConvertOpenAIResponsesRequestToClaude("claude-fable-5", raw, false)
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message after stripping trailing assistant prefill, got %d: %s", len(messages), string(out))
+	}
+	if got := messages[0].Get("role").String(); got != "user" {
+		t.Fatalf("expected final message role = %q, got %q", "user", got)
+	}
+	if got := messages[0].Get("content").String(); got != "hello" {
+		t.Fatalf("expected content = %q, got %q", "hello", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_FableOnlyAssistantMessageYieldsFallbackUser(t *testing.T) {
+	raw := []byte(`{
+		"model": "claude-fable-5",
+		"input": [
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "orphan progress"}]}
+		]
+	}`)
+	out := ConvertOpenAIResponsesRequestToClaude("claude-fable-5", raw, false)
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 fallback user message, got %d: %s", len(messages), string(out))
+	}
+	if got := messages[0].Get("role").String(); got != "user" {
+		t.Fatalf("expected role = user, got %q", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_NonFablePreservesAssistantPrefill(t *testing.T) {
+	raw := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "prefill text"}]}
+		]
+	}`)
+	out := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", raw, false)
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages preserving assistant prefill, got %d: %s", len(messages), string(out))
+	}
+	if got := messages[1].Get("role").String(); got != "assistant" {
+		t.Fatalf("expected second message role = assistant, got %q", got)
+	}
+	if got := messages[1].Get("content").String(); got != "prefill text" {
+		t.Fatalf("expected content = %q, got %q", "prefill text", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaudeWithCompat_FablePreservesAssistantPrefill(t *testing.T) {
+	raw := []byte(`{
+		"model": "claude-fable-5",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "prefill text"}]}
+		]
+	}`)
+	out := ConvertOpenAIResponsesRequestToClaudeWithCompat("claude-fable-5", raw, false)
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages in compat mode, got %d: %s", len(messages), string(out))
+	}
+	if got := messages[1].Get("role").String(); got != "assistant" {
+		t.Fatalf("expected second message role = assistant, got %q", got)
+	}
+}

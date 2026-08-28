@@ -494,7 +494,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			return true
 		})
 	}
-	flushPendingReasoning()
+	flushPendingMessage()
 	// Synthesize an error tool_result for any tool_use that never received a
 	// matching function_call_output. The tool_use itself is already in
 	// messageBlocks via appendToolUse; only the missing user result is added.
@@ -513,9 +513,13 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		usr, _ = sjson.SetRawBytes(usr, "content.-1", toolResult)
 		appendMessage(usr)
 	}
-	// Upstream: preserve a minimal conversational turn for system-only inputs so
-	// downstream validation still sees a Claude-shaped request.
-	if len(messageBlocks) == 0 && len(systemBlocks) > 0 {
+	hadMessages := len(messageBlocks) > 0
+	if !preserveEmptyThinkingBlocks {
+		messageBlocks = dropUnsupportedFableAssistantPrefill(modelName, messageBlocks)
+	}
+	// Preserve a minimal conversational turn for system-only inputs or when messages became empty
+	// so downstream validation still sees a Claude-shaped request.
+	if len(messageBlocks) == 0 && (len(systemBlocks) > 0 || hadMessages) {
 		messageBlocks = append(messageBlocks, []byte(`{"role":"user","content":[{"type":"text","text":""}]}`))
 	}
 	out = common.SetRawArrayItems(out, "messages", messageBlocks)
@@ -612,6 +616,20 @@ func isResponsesSystemLevelRole(role string) bool {
 	default:
 		return false
 	}
+}
+
+// dropUnsupportedFableAssistantPrefill removes a trailing assistant message for
+// Claude Fable models, which reject assistant message prefill.
+func dropUnsupportedFableAssistantPrefill(modelName string, messages [][]byte) [][]byte {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	if !strings.Contains(normalized, "fable") || len(messages) == 0 {
+		return messages
+	}
+	last := gjson.ParseBytes(messages[len(messages)-1])
+	if !strings.EqualFold(strings.TrimSpace(last.Get("role").String()), "assistant") {
+		return messages
+	}
+	return messages[:len(messages)-1]
 }
 
 // responsesSystemUnsupportedBlock represents a system-level content part that

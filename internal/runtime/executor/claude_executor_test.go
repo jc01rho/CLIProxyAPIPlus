@@ -661,7 +661,7 @@ func TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForCla
 	})
 	applyClaudeHeaders(req, auth, "key-legacy-ua-override", false, nil, nil, cfg, nil, true)
 
-	assertClaudeFingerprint(t, req.Header, "config-ua/1.0", "0.70.0", "v22.0.0", helps.MapStainlessOS(), helps.MapStainlessArch())
+	assertClaudeFingerprint(t, req.Header, "config-ua/1.0", "0.70.0", "v22.0.0", "MacOS", "arm64")
 }
 
 func TestApplyClaudeHeaders_LegacyThirdPartyUsesStableConfiguredOSArch(t *testing.T) {
@@ -831,7 +831,7 @@ func TestClaudeExecutor_NonClaudeRequestUsesPinnedCLIFingerprint(t *testing.T) {
 		t.Fatalf("system block count = %d, want 2: %s", len(system), seenBody)
 	}
 	if got := system[0].Get("text").String(); got != "x-anthropic-billing-header: cc_version=2.1.177.3bf; cc_entrypoint=cli;" {
-		t.Fatalf("billing header = %q, want 2.1.220 CLI fingerprint", got)
+		t.Fatalf("billing header = %q, want 2.1.177 CLI fingerprint", got)
 	}
 	if got := system[1].Get("text").String(); got != claudeCodeCLIIdentity {
 		t.Fatalf("system[1].text = %q, want official CLI identity", got)

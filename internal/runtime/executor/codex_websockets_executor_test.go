@@ -2306,3 +2306,97 @@ func TestCodexWebsocketsExecuteStreamObservesWebSocketResponseEvents(t *testing.
 		t.Fatalf("Payload = %s, want used_percent 75", rateLimitEvent.Payload)
 	}
 }
+
+func TestCodexWebsocketsExecuteHandshakeUsageLimitReachedSetsRetryAfter(t *testing.T) {
+	body := []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":120}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		if _, errWrite := w.Write(body); errWrite != nil {
+			t.Errorf("write handshake rejection: %v", errWrite)
+		}
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-quota-exhausted",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"base_url":   server.URL,
+			"websockets": "true",
+			"api_key":    "sk-test",
+		},
+	}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5.6-luna",
+		Payload: []byte(`{"model":"gpt-5.6-luna","input":[{"type":"message","id":"msg-1"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FromString("openai-response"),
+		ResponseFormat: sdktranslator.FromString("openai-response"),
+	}
+
+	_, errExecute := exec.Execute(context.Background(), auth, req, opts)
+	if errExecute == nil {
+		t.Fatal("Execute() error = nil, want handshake rejection")
+	}
+	statusErr, ok := errExecute.(interface{ StatusCode() int })
+	if !ok || statusErr.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("status = %#v, want 429", errExecute)
+	}
+	retryable, ok := errExecute.(interface{ RetryAfter() *time.Duration })
+	if !ok || retryable.RetryAfter() == nil {
+		t.Fatalf("expected RetryAfter for usage_limit_reached handshake error: %#v", errExecute)
+	}
+	if got := *retryable.RetryAfter(); got != 120*time.Second {
+		t.Fatalf("RetryAfter = %v, want 120s", got)
+	}
+}
+
+func TestCodexWebsocketsExecuteStreamHandshakeUsageLimitReachedSetsRetryAfter(t *testing.T) {
+	body := []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":120}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		if _, errWrite := w.Write(body); errWrite != nil {
+			t.Errorf("write handshake rejection: %v", errWrite)
+		}
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-quota-exhausted-stream",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"base_url":   server.URL,
+			"websockets": "true",
+			"api_key":    "sk-test",
+		},
+	}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5.6-luna",
+		Payload: []byte(`{"model":"gpt-5.6-luna","input":[{"type":"message","id":"msg-1"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FromString("openai-response"),
+		ResponseFormat: sdktranslator.FromString("openai-response"),
+	}
+
+	_, errExecuteStream := exec.ExecuteStream(context.Background(), auth, req, opts)
+	if errExecuteStream == nil {
+		t.Fatal("ExecuteStream() error = nil, want handshake rejection")
+	}
+	statusErr, ok := errExecuteStream.(interface{ StatusCode() int })
+	if !ok || statusErr.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("status = %#v, want 429", errExecuteStream)
+	}
+	retryable, ok := errExecuteStream.(interface{ RetryAfter() *time.Duration })
+	if !ok || retryable.RetryAfter() == nil {
+		t.Fatalf("expected RetryAfter for usage_limit_reached handshake error: %#v", errExecuteStream)
+	}
+	if got := *retryable.RetryAfter(); got != 120*time.Second {
+		t.Fatalf("RetryAfter = %v, want 120s", got)
+	}
+}

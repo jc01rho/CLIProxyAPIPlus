@@ -64,7 +64,8 @@ func (h *OpenAIAPIHandler) Models() []map[string]any {
 // and specifications in OpenAI-compatible format.
 func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	if _, ok := c.Request.URL.Query()["client_version"]; ok {
-		c.JSON(http.StatusOK, h.codexClientModelsResponse(sdkaccess.FilterModelMaps(c, h.Models())))
+		clientVersion := c.Query("client_version")
+		c.JSON(http.StatusOK, h.codexClientModelsResponse(sdkaccess.FilterModelMaps(c, h.Models()), clientVersion))
 		return
 	}
 
