@@ -288,12 +288,17 @@ func (o *OAuth) provisionFromUpstream(ctx context.Context, upstreamZaiAccess, zc
 	var loginResp struct {
 		Data struct {
 			AccessToken string `json:"access_token"`
+			// Some responses use camelCase accessToken.
+			AccessTokenCamel string `json:"accessToken"`
 		} `json:"data"`
 	}
 	if err := o.postJSON(ctx, o.zaiLoginURL, map[string]string{"token": upstreamZaiAccess}, "z/login", &loginResp); err != nil {
 		return nil, err
 	}
 	businessToken := loginResp.Data.AccessToken
+	if businessToken == "" {
+		businessToken = loginResp.Data.AccessTokenCamel
+	}
 	if businessToken == "" {
 		return nil, fmt.Errorf("zcode z/login response missing data.access_token")
 	}
@@ -330,11 +335,13 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 			ID            string `json:"id"`
 			Email         string `json:"email"`
 			Organizations []struct {
-				OrganizationID string `json:"organizationId"`
-				IsDefault      bool   `json:"isDefault"`
-				Projects       []struct {
-					ProjectID string `json:"projectId"`
-					IsDefault bool   `json:"isDefault"`
+				OrganizationID   string `json:"organizationId"`
+				OrganizationName string `json:"organizationName"`
+				IsDefault        bool   `json:"isDefault"`
+				Projects         []struct {
+					ProjectID   string `json:"projectId"`
+					ProjectName string `json:"projectName"`
+					IsDefault   bool   `json:"isDefault"`
 				} `json:"projects"`
 			} `json:"organizations"`
 		} `json:"data"`
@@ -343,19 +350,28 @@ func (o *OAuth) provisionZaiAPIKey(ctx context.Context, businessToken string) (s
 		return "", identity{}, err
 	}
 	data := customerInfo.Data
-	var orgID, projectID string
+	// Select the default org (by name "默认机构", then isDefault, then first).
+	var orgID string
 	for _, org := range data.Organizations {
 		if org.OrganizationID == "" {
 			continue
 		}
-		if org.IsDefault || orgID == "" {
+		if strings.Contains(org.OrganizationName, "默认机构") || org.IsDefault || orgID == "" {
 			orgID = org.OrganizationID
+		}
+	}
+	// Select the default project within the selected org (by name "默认项目",
+	// then isDefault, then first).
+	var projectID string
+	for _, org := range data.Organizations {
+		if org.OrganizationID != orgID {
+			continue
 		}
 		for _, proj := range org.Projects {
 			if proj.ProjectID == "" {
 				continue
 			}
-			if proj.IsDefault || projectID == "" {
+			if strings.Contains(proj.ProjectName, "默认项目") || proj.IsDefault || projectID == "" {
 				projectID = proj.ProjectID
 			}
 		}
