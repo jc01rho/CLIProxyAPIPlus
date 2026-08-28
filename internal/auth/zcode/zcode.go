@@ -14,7 +14,9 @@ package zcode
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,6 +42,12 @@ const (
 	DefaultUserinfoURL    = "https://chat.z.ai/api/oauth/userinfo"
 	DefaultZaiAPIBase     = "https://api.z.ai"
 	DefaultAnthropicBase  = "https://api.z.ai/api/anthropic"
+
+	// Broker CLI OAuth flow endpoints. The broker issues a web-based
+	// authorize_url (redirect handled by the broker), so no custom protocol
+	// (zcode://) is required — the caller polls PollCLIFlow for completion.
+	DefaultBrokerCLIInitURL = "https://zcode.z.ai/api/v1/oauth/cli/init"
+	DefaultBrokerCLIPollURL = "https://zcode.z.ai/api/v1/oauth/cli/poll"
 
 	// Provisioned API keys are long-lived; pin expiry far out so the auth
 	// store never force-refreshes.
@@ -71,6 +79,8 @@ type OAuth struct {
 	zaiLoginURL    string
 	userinfoURL    string
 	zaiAPIBase     string
+	brokerCLIInitURL string
+	brokerCLIPollURL string
 }
 
 // NewOAuth creates a zcode OAuth handler with default endpoints.
@@ -84,6 +94,8 @@ func NewOAuth() *OAuth {
 		zaiLoginURL:    DefaultZaiLoginURL,
 		userinfoURL:    DefaultUserinfoURL,
 		zaiAPIBase:     DefaultZaiAPIBase,
+		brokerCLIInitURL: DefaultBrokerCLIInitURL,
+		brokerCLIPollURL: DefaultBrokerCLIPollURL,
 	}
 }
 
@@ -97,6 +109,8 @@ type Config struct {
 	ZaiLoginURL    string
 	UserinfoURL    string
 	ZaiAPIBase     string
+	BrokerCLIInitURL string
+	BrokerCLIPollURL string
 	HTTPClient     *http.Client
 }
 
@@ -124,6 +138,12 @@ func NewOAuthWithConfig(cfg Config) *OAuth {
 	if cfg.ZaiAPIBase != "" {
 		o.zaiAPIBase = cfg.ZaiAPIBase
 	}
+	if cfg.BrokerCLIInitURL != "" {
+		o.brokerCLIInitURL = cfg.BrokerCLIInitURL
+	}
+	if cfg.BrokerCLIPollURL != "" {
+		o.brokerCLIPollURL = cfg.BrokerCLIPollURL
+	}
 	if cfg.HTTPClient != nil {
 		o.httpClient = cfg.HTTPClient
 	}
@@ -141,6 +161,80 @@ func (o *OAuth) GenerateAuthURL(state, redirectURI string) string {
 	params.Set("client_id", o.clientID)
 	params.Set("state", state)
 	return o.authorizeURL + "?" + params.Encode()
+}
+
+// CLIFlow holds a broker CLI OAuth flow started via StartCLIFlow.
+type CLIFlow struct {
+	FlowID          string
+	AuthorizeURL    string
+	PollToken       string
+	ExpiresAt       time.Time
+	PollIntervalSec int
+}
+
+// StartCLIFlow starts a broker CLI OAuth flow. The returned AuthorizeURL uses a
+// web redirect handled by the broker, so no custom protocol (zcode://) is
+// required. The caller polls PollCLIFlow until the user completes authorization.
+func (o *OAuth) StartCLIFlow(ctx context.Context) (*CLIFlow, error) {
+	pollToken, err := randomHex(32)
+	if err != nil {
+		return nil, fmt.Errorf("zcode broker cli init: generate poll token: %w", err)
+	}
+	var resp struct {
+		Data struct {
+			FlowID          string `json:"flow_id"`
+			PollToken       string `json:"poll_token"`
+			AuthorizeURL    string `json:"authorize_url"`
+			ExpiresAt       int64  `json:"expires_at"`
+			PollIntervalSec int    `json:"poll_interval_sec"`
+		} `json:"data"`
+	}
+	if err := o.postJSONWithBearer(ctx, o.brokerCLIInitURL, pollToken, map[string]string{"provider": "zai"}, "broker.cli.init", &resp); err != nil {
+		return nil, err
+	}
+	d := resp.Data
+	if d.FlowID == "" || d.AuthorizeURL == "" || d.PollToken == "" {
+		return nil, fmt.Errorf("zcode broker cli init response missing flow_id/authorize_url/poll_token")
+	}
+	flow := &CLIFlow{
+		FlowID:          d.FlowID,
+		AuthorizeURL:    d.AuthorizeURL,
+		PollToken:       d.PollToken,
+		PollIntervalSec: d.PollIntervalSec,
+	}
+	if d.ExpiresAt > 0 {
+		flow.ExpiresAt = time.Unix(d.ExpiresAt, 0)
+	}
+	return flow, nil
+}
+
+// CLIPollResult is the result of polling a broker CLI OAuth flow.
+type CLIPollResult struct {
+	Status         string // "pending", "ready", "failed"
+	ZaiAccessToken string // upstream Z.AI OAuth access token (status=ready)
+	ZcodeToken     string // broker zcode JWT (status=ready)
+}
+
+// PollCLIFlow polls a broker CLI OAuth flow for completion.
+func (o *OAuth) PollCLIFlow(ctx context.Context, flowID, pollToken string) (*CLIPollResult, error) {
+	url := strings.TrimSuffix(o.brokerCLIPollURL, "/") + "/" + url.PathEscape(flowID)
+	var resp struct {
+		Data struct {
+			Status string `json:"status"`
+			Token  string `json:"token"`
+			Zai    struct {
+				AccessToken string `json:"access_token"`
+			} `json:"zai"`
+		} `json:"data"`
+	}
+	if err := o.getJSON(ctx, url, pollToken, "broker.cli.poll", &resp); err != nil {
+		return nil, err
+	}
+	return &CLIPollResult{
+		Status:         resp.Data.Status,
+		ZaiAccessToken: resp.Data.Zai.AccessToken,
+		ZcodeToken:     resp.Data.Token,
+	}, nil
 }
 
 // ExchangeCode exchanges an authorization code for credentials by running the
@@ -180,6 +274,12 @@ func (o *OAuth) Refresh(ctx context.Context, creds *Credentials) (*Credentials, 
 		return nil, fmt.Errorf("zcode credentials require re-login; no stored upstream Z.AI token")
 	}
 	return o.provisionFromUpstream(ctx, creds.RefreshToken, "")
+}
+
+// ProvisionFromUpstream provisions a Z.AI API key from an upstream Z.AI OAuth
+// access token (e.g. obtained via the broker CLI OAuth poll result).
+func (o *OAuth) ProvisionFromUpstream(ctx context.Context, upstreamZaiAccess, zcodeToken string) (*Credentials, error) {
+	return o.provisionFromUpstream(ctx, upstreamZaiAccess, zcodeToken)
 }
 
 // provisionFromUpstream runs z/login -> provision API key -> resolve identity.
@@ -401,6 +501,12 @@ func base64URLDecode(s string) ([]byte, error) {
 
 // postJSON performs a POST with a JSON body and decodes the JSON response.
 func (o *OAuth) postJSON(ctx context.Context, url string, body interface{}, label string, out interface{}) error {
+	return o.postJSONWithBearer(ctx, url, "", body, label, out)
+}
+
+// postJSONWithBearer performs a POST with a JSON body and an optional bearer
+// token, decoding the JSON response.
+func (o *OAuth) postJSONWithBearer(ctx context.Context, url, bearer string, body interface{}, label string, out interface{}) error {
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("zcode %s: marshal body: %w", label, err)
@@ -411,6 +517,9 @@ func (o *OAuth) postJSON(ctx context.Context, url string, body interface{}, labe
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("zcode %s request failed: %w", label, err)
@@ -460,4 +569,13 @@ func redactSecrets(text string) string {
 	// Long base64-ish runs.
 	text = longTokenPattern.ReplaceAllString(text, "[redacted]")
 	return text
+}
+
+// randomHex returns n random bytes encoded as lowercase hex.
+func randomHex(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
