@@ -273,6 +273,15 @@ func BuildKiroPayload(claudeBody []byte, modelID, profileArn, origin string, isA
 	}
 
 	// Process messages and build history
+	// If no tools are defined, convert tool_use/tool_result content blocks to
+	// text so no toolResults are sent without tool definitions (kiro-lb
+	// strip_all_tool_content). Kiro rejects toolResults that reference no tool
+	// definitions.
+	if len(kiroTools) == 0 {
+		if stripped := stripAllToolContent(messages.Array()); stripped != nil {
+			messages = gjson.ParseBytes(stripped)
+		}
+	}
 	history, currentUserMsg, currentToolResults := processMessages(messages, modelID, origin)
 
 	// Build content with system prompt.
@@ -788,6 +797,97 @@ func processMessages(messages gjson.Result, modelID, origin string) ([]KiroHisto
 	}
 
 	return history, currentUserMsg, currentToolResults
+}
+
+// stripAllToolContent converts tool_use/tool_result content blocks to plain
+// text when no tools are defined, mirroring kiro-lb strip_all_tool_content.
+// Kiro rejects toolResults that reference no tool definitions, so the
+// conversation is preserved as text instead of sending structured tool blocks.
+// Messages without tool blocks (e.g. thinking + text) are left untouched so
+// reasoning forwarding still works.
+func stripAllToolContent(messages []gjson.Result) []byte {
+	if len(messages) == 0 {
+		return nil
+	}
+	var out []map[string]interface{}
+	for _, msg := range messages {
+		m, ok := msg.Value().(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content := msg.Get("content")
+		if !content.IsArray() || !hasToolBlocks(content) {
+			out = append(out, m)
+			continue
+		}
+		var textParts []string
+		for _, block := range content.Array() {
+			switch block.Get("type").String() {
+			case "text":
+				if t := block.Get("text").String(); t != "" {
+					textParts = append(textParts, t)
+				}
+			case "tool_use":
+				name := block.Get("name").String()
+				id := block.Get("id").String()
+				if name == "" {
+					name = "unknown"
+				}
+				label := "Tool: " + name
+				if id != "" {
+					label += " (" + id + ")"
+				}
+				input := block.Get("input").Raw
+				textParts = append(textParts, "["+label+"]\n"+input)
+			case "tool_result":
+				tid := block.Get("tool_use_id").String()
+				rctext := toolResultContentText(block.Get("content"))
+				if rctext == "" {
+					rctext = "(empty result)"
+				}
+				label := "Tool Result"
+				if tid != "" {
+					label = "Tool Result (" + tid + ")"
+				}
+				textParts = append(textParts, "["+label+"]\n"+rctext)
+			}
+		}
+		m["content"] = strings.Join(textParts, "\n\n")
+		out = append(out, m)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// hasToolBlocks reports whether a content array contains any tool_use or
+// tool_result blocks.
+func hasToolBlocks(content gjson.Result) bool {
+	for _, block := range content.Array() {
+		t := block.Get("type").String()
+		if t == "tool_use" || t == "tool_result" {
+			return true
+		}
+	}
+	return false
+}
+
+// toolResultContentText extracts the text of a Claude tool_result content value.
+func toolResultContentText(content gjson.Result) string {
+	if content.IsArray() {
+		var sb strings.Builder
+		for _, item := range content.Array() {
+			if item.Get("type").String() == "text" {
+				sb.WriteString(item.Get("text").String())
+			} else if item.Type == gjson.String {
+				sb.WriteString(item.String())
+			}
+		}
+		return sb.String()
+	}
+	return content.String()
 }
 
 // normalizeRoles rewrites roles Kiro does not accept (anything other than
