@@ -423,12 +423,13 @@ func TestFilterOrphanedToolResults_RemovesHistoryAndCurrentOrphans(t *testing.T)
 		},
 	}
 
+	currentUserMsg := &KiroUserInputMessage{Content: "current"}
 	currentToolResults := []KiroToolResult{
 		{ToolUseID: "keep-1", Status: "success", Content: []KiroTextContent{{Text: "ok"}}},
 		{ToolUseID: "orphan-3", Status: "success", Content: []KiroTextContent{{Text: "bad"}}},
 	}
 
-	filteredHistory, filteredCurrent := filterOrphanedToolResults(history, currentToolResults)
+	filteredHistory, _, filteredCurrent := filterOrphanedToolResults(history, currentUserMsg, currentToolResults)
 
 	ctx1 := filteredHistory[1].UserInputMessage.UserInputMessageContext
 	if ctx1 == nil || len(ctx1.ToolResults) != 1 || ctx1.ToolResults[0].ToolUseID != "keep-1" {
