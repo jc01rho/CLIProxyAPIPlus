@@ -113,9 +113,26 @@ func mergeHeaders(base, extra http.Header) http.Header {
 }
 
 // zcodeCreds returns the provisioned Z.AI API key from the auth record.
+//
+// Attributes["api_key"] is populated in-memory right after OAuth, but zcode auth
+// files persist as the flat TokenStorage form and carry no "attributes" object,
+// so a record reloaded from disk has a nil Attributes map. Metadata["access_token"]
+// holds the same provisioned Z.AI API key "{id}.{secret}" (see
+// internal/auth/zcode/zcode.go Credentials.AccessToken), so it is the correct
+// fallback: without it the key is silently lost on every restart or config reload.
 func zcodeCreds(auth *cliproxyauth.Auth) string {
-	if auth == nil || auth.Attributes == nil {
+	if auth == nil {
 		return ""
 	}
-	return strings.TrimSpace(auth.Attributes["api_key"])
+	if auth.Attributes != nil {
+		if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
+			return key
+		}
+	}
+	if auth.Metadata != nil {
+		if token, ok := auth.Metadata["access_token"].(string); ok {
+			return strings.TrimSpace(token)
+		}
+	}
+	return ""
 }
