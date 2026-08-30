@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -332,7 +334,38 @@ func executionErrorMessage(err error) *interfaces.ErrorMessage {
 			Headers:        terminated.ResponseHeaders(),
 		}
 	}
-	return &interfaces.ErrorMessage{StatusCode: errorMessageStatus(err), Error: err, Addon: headersFromError(err)}
+	status := http.StatusInternalServerError
+	if code := clienterror.HTTPStatusFromError(err); code > 0 {
+		status = code
+	}
+	type directResponseError interface {
+		DirectResponse() bool
+		ResponseBody() []byte
+	}
+	var direct directResponseError
+	if errors.As(err, &direct) && direct != nil && direct.DirectResponse() {
+		body := direct.ResponseBody()
+		var headers http.Header
+		if len(body) > 0 {
+			contentType := http.DetectContentType(body)
+			if json.Valid(body) {
+				contentType = "application/json"
+			}
+			headers = http.Header{"Content-Type": []string{contentType}}
+		}
+		return &interfaces.ErrorMessage{
+			StatusCode:     status,
+			Error:          err,
+			DirectResponse: true,
+			Body:           body,
+			Headers:        headers,
+		}
+	}
+	var addon http.Header
+	if hdr := headersFromError(err); hdr != nil {
+		addon = hdr.Clone()
+	}
+	return &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
 }
 
 func (h *BaseAPIHandler) pluginExecutorHost() PluginExecutorHost {
