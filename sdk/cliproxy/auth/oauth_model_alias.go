@@ -50,8 +50,16 @@ type oauthAliasCacheKey struct {
 // represents a safe negative (miss) entry; values are never nil pointers.
 type oauthAliasCacheValue struct {
 	forceMappingHit bool
-	forceResult     OAuthModelAliasResult
-	tailResult      OAuthModelAliasResult
+	forceResult    OAuthModelAliasResult
+	tailResult     OAuthModelAliasResult
+	// tailFork reports whether the phase-2 alias hit is a fork alias. Fork
+	// aliases carry isolated per-alias state, so a registry real-model
+	// registration under the same name legitimately outranks them (local
+	// collision semantics); non-fork aliases share state with the upstream
+	// model and must keep resolving to the configured target even when the
+	// registry also lists the alias route key as a client model (upstream
+	// nofork-alias semantics).
+	tailFork bool
 }
 
 type oauthModelAliasTable struct {
@@ -169,6 +177,23 @@ func (m *Manager) applyOAuthModelAlias(auth *Auth, requestedModel string) string
 	}
 	log.Debugf("[DEBUG] applyOAuthModelAlias: provider=%s channel=%s auth_id=%s resolved %s -> %s", provider, channel, authID, requestedModel, upstreamModel)
 	return upstreamModel
+}
+
+// applyOAuthModelAliasStateKey resolves the alias with state-key semantics:
+// a configured (non-force) alias target always wins over the auth-specific
+// registry lookup's "real registered model → as-is" branch. The registry may
+// advertise the alias route key itself as a client model, and returning it
+// as-is would skip the alias→target state migration that
+// ReconcileRegistryModelStates and MarkResult rely on (upstream
+// nofork-alias semantics). Execution-model resolution keeps using
+// applyOAuthModelAlias, where the registry lookup decides same-ID
+// alias-exposed/real collisions (local real-first rule).
+func (m *Manager) applyOAuthModelAliasStateKey(auth *Auth, requestedModel string) string {
+	result := m.resolveOAuthModelAliasStateKeyWithResult(auth, requestedModel)
+	if result.UpstreamModel != "" {
+		return result.UpstreamModel
+	}
+	return requestedModel
 }
 
 // oauthAliasLogIdentity returns only the safe, non-secret identifiers of an auth
@@ -364,6 +389,19 @@ func (m *Manager) resolveOAuthModelAliasWithResult(auth *Auth, requestedModel st
 	return resolveUpstreamModelFromAliasTable(m, auth, requestedModel, channel)
 }
 
+// resolveOAuthModelAliasStateKeyWithResult applies state-key alias semantics
+// (see applyOAuthModelAliasStateKey).
+func (m *Manager) resolveOAuthModelAliasStateKeyWithResult(auth *Auth, requestedModel string) OAuthModelAliasResult {
+	channel := modelAliasChannel(auth)
+	if channel == "" {
+		return OAuthModelAliasResult{}
+	}
+	if result := resolveUpstreamModelFromAliases(OAuthModelAliasesFromAttributes(authAttributes(auth)), requestedModel); result.UpstreamModel != "" {
+		return result
+	}
+	return resolveUpstreamModelFromAliasTableStateKey(m, auth, requestedModel, channel)
+}
+
 func authAttributes(auth *Auth) map[string]string {
 	if auth == nil {
 		return nil
@@ -509,6 +547,41 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 	return cached.tailResult
 }
 
+// resolveUpstreamModelFromAliasTableStateKey is the state-key variant of
+// resolveUpstreamModelFromAliasTable: a configured (non-force) alias target
+// always outranks the auth-specific registry lookup, because state keys must
+// follow the configured alias→target mapping for Reconcile/MarkResult state
+// migration regardless of what the registry advertises under the alias name.
+func resolveUpstreamModelFromAliasTableStateKey(m *Manager, auth *Auth, requestedModel, channel string) OAuthModelAliasResult {
+	if m == nil || auth == nil {
+		return OAuthModelAliasResult{}
+	}
+	if channel == "" {
+		return OAuthModelAliasResult{}
+	}
+
+	raw := m.oauthModelAlias.Load()
+	table, _ := raw.(*oauthModelAliasTable)
+	if table == nil || table.reverse == nil {
+		return OAuthModelAliasResult{}
+	}
+
+	cached := table.resolveTableOnly(channel, requestedModel)
+	if cached.forceMappingHit {
+		return cached.forceResult
+	}
+	if cached.tailResult.UpstreamModel != "" {
+		return cached.tailResult
+	}
+
+	requestResult, candidates := modelAliasLookupCandidates(requestedModel)
+	if resolved := resolveRequestedModelForAuth(m, auth, channel, candidates, requestResult); strings.TrimSpace(resolved) != "" {
+		return OAuthModelAliasResult{UpstreamModel: resolved}
+	}
+
+	return cached.tailResult
+}
+
 // resolveTableOnly returns the memoized auth-independent alias table
 // resolution for (channel, requestedModel). The result is cached on the
 // snapshot, so config reloads (which publish a new table pointer) auto-
@@ -642,6 +715,7 @@ func (t *oauthModelAliasTable) computeTableOnly(channel, requestedModel string) 
 			originalAlias = oauthModelAliasForceMappingResponseModel(entry.configAlias)
 		}
 		return oauthAliasCacheValue{
+			tailFork: entry.fork,
 			tailResult: OAuthModelAliasResult{
 				UpstreamModel: upstreamModel,
 				ForceMapping:  entry.forceMapping,
@@ -695,9 +769,6 @@ func resolveRequestedModelForAuth(m *Manager, auth *Auth, channel string, candid
 				aliasResolved = preserveResolvedModelSuffix(execTarget, requestResult)
 				break
 			}
-			// Real registered model - return as-is.
-			log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: candidate %s is a real registered model for auth %s, returning as-is", candidate, auth.ID)
-			return preserveResolvedModelSuffix(candidate, requestResult)
 		}
 		if aliasResolved != "" {
 			log.Debugf("[DEBUG] resolveUpstreamModelFromAliasTable: candidate %s is alias-exposed by auth %s, executing upstream %s", candidate, auth.ID, aliasResolved)
