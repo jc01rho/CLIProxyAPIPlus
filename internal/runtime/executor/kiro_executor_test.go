@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -22,100 +21,17 @@ func TestKiroExecutorDoesNotLogTokenRefreshFailuresAtErrorLevel(t *testing.T) {
 	}
 }
 
-func TestBuildKiroEndpointConfigs(t *testing.T) {
-	tests := []struct {
-		name           string
-		region         string
-		expectedURL    string
-		expectedOrigin string
-		expectedName   string
-	}{
-		{
-			name:           "Empty region - defaults to us-east-1",
-			region:         "",
-			expectedURL:    "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
-			expectedOrigin: "AI_EDITOR",
-			expectedName:   "AmazonQ",
-		},
-		{
-			name:           "us-east-1",
-			region:         "us-east-1",
-			expectedURL:    "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
-			expectedOrigin: "AI_EDITOR",
-			expectedName:   "AmazonQ",
-		},
-		{
-			name:           "ap-southeast-1",
-			region:         "ap-southeast-1",
-			expectedURL:    "https://q.ap-southeast-1.amazonaws.com/generateAssistantResponse",
-			expectedOrigin: "AI_EDITOR",
-			expectedName:   "AmazonQ",
-		},
-		{
-			name:           "eu-west-1",
-			region:         "eu-west-1",
-			expectedURL:    "https://q.eu-west-1.amazonaws.com/generateAssistantResponse",
-			expectedOrigin: "AI_EDITOR",
-			expectedName:   "AmazonQ",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			configs := buildKiroEndpointConfigs(tt.region)
-
-			if len(configs) != 2 {
-				t.Fatalf("expected 2 endpoint configs, got %d", len(configs))
-			}
-
-			// Check primary endpoint (AmazonQ)
-			primary := configs[0]
-			if primary.URL != tt.expectedURL {
-				t.Errorf("primary URL = %q, want %q", primary.URL, tt.expectedURL)
-			}
-			if primary.Origin != tt.expectedOrigin {
-				t.Errorf("primary Origin = %q, want %q", primary.Origin, tt.expectedOrigin)
-			}
-			if primary.Name != tt.expectedName {
-				t.Errorf("primary Name = %q, want %q", primary.Name, tt.expectedName)
-			}
-			if primary.AmzTarget != "" {
-				t.Errorf("primary AmzTarget should be empty, got %q", primary.AmzTarget)
-			}
-
-			// Check fallback endpoint (CodeWhisperer)
-			fallback := configs[1]
-			if fallback.Name != "CodeWhisperer" {
-				t.Errorf("fallback Name = %q, want %q", fallback.Name, "CodeWhisperer")
-			}
-			// CodeWhisperer fallback uses the same region as Q endpoint
-			expectedRegion := tt.region
-			if expectedRegion == "" {
-				expectedRegion = kiroDefaultRegion
-			}
-			expectedFallbackURL := fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", expectedRegion)
-			if fallback.URL != expectedFallbackURL {
-				t.Errorf("fallback URL = %q, want %q", fallback.URL, expectedFallbackURL)
-			}
-			if fallback.AmzTarget == "" {
-				t.Error("fallback AmzTarget should NOT be empty")
-			}
-		})
-	}
-}
-
 func TestGetKiroEndpointConfigs_NilAuth(t *testing.T) {
 	configs := getKiroEndpointConfigs(nil)
 
-	if len(configs) != 2 {
-		t.Fatalf("expected 2 endpoint configs, got %d", len(configs))
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 endpoint config, got %d", len(configs))
 	}
 
-	// Should return default us-east-1 configs
-	if configs[0].Name != "AmazonQ" {
-		t.Errorf("first config Name = %q, want %q", configs[0].Name, "AmazonQ")
+	if configs[0].Name != "KiroRuntime" {
+		t.Errorf("first config Name = %q, want %q", configs[0].Name, "KiroRuntime")
 	}
-	expectedURL := "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
+	expectedURL := "https://runtime.us-east-1.kiro.dev/"
 	if configs[0].URL != expectedURL {
 		t.Errorf("first config URL = %q, want %q", configs[0].URL, expectedURL)
 	}
@@ -130,11 +46,11 @@ func TestGetKiroEndpointConfigs_WithRegionFromProfileArn(t *testing.T) {
 
 	configs := getKiroEndpointConfigs(auth)
 
-	if len(configs) != 2 {
-		t.Fatalf("expected 2 endpoint configs, got %d", len(configs))
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 endpoint config, got %d", len(configs))
 	}
 
-	expectedURL := "https://q.ap-southeast-1.amazonaws.com/generateAssistantResponse"
+	expectedURL := "https://runtime.ap-southeast-1.kiro.dev/"
 	if configs[0].URL != expectedURL {
 		t.Errorf("primary URL = %q, want %q", configs[0].URL, expectedURL)
 	}
@@ -151,7 +67,7 @@ func TestGetKiroEndpointConfigs_WithApiRegionOverride(t *testing.T) {
 	configs := getKiroEndpointConfigs(auth)
 
 	// api_region should take precedence over profile_arn
-	expectedURL := "https://q.eu-central-1.amazonaws.com/generateAssistantResponse"
+	expectedURL := "https://runtime.eu-central-1.kiro.dev/"
 	if configs[0].URL != expectedURL {
 		t.Errorf("primary URL = %q, want %q", configs[0].URL, expectedURL)
 	}
@@ -166,37 +82,37 @@ func TestGetKiroEndpointConfigs_PreferredEndpoint(t *testing.T) {
 		{
 			name:              "Prefer codewhisperer",
 			preference:        "codewhisperer",
-			expectedFirstName: "CodeWhisperer",
+			expectedFirstName: "KiroRuntime",
 		},
 		{
 			name:              "Prefer ide (alias for codewhisperer)",
 			preference:        "ide",
-			expectedFirstName: "CodeWhisperer",
+			expectedFirstName: "KiroRuntime",
 		},
 		{
 			name:              "Prefer amazonq",
 			preference:        "amazonq",
-			expectedFirstName: "AmazonQ",
+			expectedFirstName: "KiroRuntime",
 		},
 		{
 			name:              "Prefer q (alias for amazonq)",
 			preference:        "q",
-			expectedFirstName: "AmazonQ",
+			expectedFirstName: "KiroRuntime",
 		},
 		{
 			name:              "Prefer cli (alias for amazonq)",
 			preference:        "cli",
-			expectedFirstName: "AmazonQ",
+			expectedFirstName: "KiroRuntime",
 		},
 		{
 			name:              "Unknown preference - no reordering",
 			preference:        "unknown",
-			expectedFirstName: "AmazonQ",
+			expectedFirstName: "KiroRuntime",
 		},
 		{
 			name:              "Empty preference - no reordering",
 			preference:        "",
-			expectedFirstName: "AmazonQ",
+			expectedFirstName: "KiroRuntime",
 		},
 	}
 
@@ -226,8 +142,8 @@ func TestGetKiroEndpointConfigs_PreferredEndpointFromAttributes(t *testing.T) {
 
 	configs := getKiroEndpointConfigs(auth)
 
-	if configs[0].Name != "CodeWhisperer" {
-		t.Errorf("first endpoint Name = %q, want %q", configs[0].Name, "CodeWhisperer")
+	if configs[0].Name != "KiroRuntime" {
+		t.Errorf("first endpoint Name = %q, want %q", configs[0].Name, "KiroRuntime")
 	}
 }
 
@@ -239,9 +155,8 @@ func TestGetKiroEndpointConfigs_MetadataTakesPrecedenceOverAttributes(t *testing
 
 	configs := getKiroEndpointConfigs(auth)
 
-	// Metadata should take precedence
-	if configs[0].Name != "AmazonQ" {
-		t.Errorf("first endpoint Name = %q, want %q", configs[0].Name, "AmazonQ")
+	if configs[0].Name != "KiroRuntime" {
+		t.Errorf("first endpoint Name = %q, want %q", configs[0].Name, "KiroRuntime")
 	}
 }
 
@@ -409,29 +324,5 @@ func TestGetAccountKey(t *testing.T) {
 			result := getAccountKey(tt.auth)
 			tt.checkFn(t, result)
 		})
-	}
-}
-
-func TestEndpointAliases(t *testing.T) {
-	// Verify all expected aliases are defined
-	expectedAliases := map[string]string{
-		"codewhisperer": "codewhisperer",
-		"ide":           "codewhisperer",
-		"amazonq":       "amazonq",
-		"q":             "amazonq",
-		"cli":           "amazonq",
-	}
-
-	for alias, target := range expectedAliases {
-		if actual, ok := endpointAliases[alias]; !ok {
-			t.Errorf("missing alias %q", alias)
-		} else if actual != target {
-			t.Errorf("alias %q = %q, want %q", alias, actual, target)
-		}
-	}
-
-	// Verify no unexpected aliases
-	if len(endpointAliases) != len(expectedAliases) {
-		t.Errorf("unexpected number of aliases: got %d, want %d", len(endpointAliases), len(expectedAliases))
 	}
 }

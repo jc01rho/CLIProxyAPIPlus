@@ -6360,6 +6360,8 @@ func TestXAIExecutorKeepsXhighEffortForGrok46(t *testing.T) {
 	}
 	if gjson.GetBytes(gotBody, "store").Bool() {
 		t.Fatalf("store = true, want false; body=%s", string(gotBody))
+	}
+}
 
 func TestXAIExecutorExecuteImagesOAuthBaseURLResolution(t *testing.T) {
 	tests := []struct {

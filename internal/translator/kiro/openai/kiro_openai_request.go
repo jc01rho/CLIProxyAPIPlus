@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	kiroclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/claude"
@@ -56,16 +55,8 @@ type KiroHistoryMessage struct {
 	AssistantResponseMessage *KiroAssistantResponseMessage `json:"assistantResponseMessage,omitempty"`
 }
 
-// KiroImage represents an image in Kiro API format
-type KiroImage struct {
-	Format string          `json:"format"`
-	Source KiroImageSource `json:"source"`
-}
-
-// KiroImageSource contains the image data
-type KiroImageSource struct {
-	Bytes string `json:"bytes"` // base64 encoded image data
-}
+type KiroImage = kirocommon.KiroImage
+type KiroImageSource = kirocommon.KiroImageSource
 
 // KiroUserInputMessage represents a user message
 type KiroUserInputMessage struct {
@@ -244,7 +235,13 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 	thinkingEnabled := checkThinkingModeFromOpenAIWithHeaders(openaiBody, headers)
 
 	// Convert OpenAI tools to Kiro format
-	kiroTools := convertOpenAIToolsToKiro(tools)
+	kiroTools, toolDocumentation := convertOpenAIToolsToKiro(tools, modelID)
+	if toolDocumentation != "" {
+		if systemPrompt != "" {
+			systemPrompt += "\n\n"
+		}
+		systemPrompt += toolDocumentation
+	}
 
 	// Thinking mode: prompt tags stay available for existing models; the
 	// additionalModelRequestFields envelope is gated to OmniRoute's
@@ -287,7 +284,9 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 			messages = gjson.ParseBytes(stripped)
 		}
 	}
-	history, currentUserMsg, currentToolResults := processOpenAIMessages(messages, modelID, origin)
+	// Tool content is already stripped above when no tools are defined, so
+	// structured tool blocks stay allowed here.
+	history, currentUserMsg, currentToolResults := processOpenAIMessages(messages, modelID, origin, true)
 
 	// Build content with system prompt
 	if currentUserMsg != nil {
@@ -440,22 +439,7 @@ func extractSystemPromptFromOpenAI(messages gjson.Result) string {
 // MCP tools often have long names like "mcp__server-name__tool-name".
 // This preserves the "mcp__" prefix and last segment when possible.
 func shortenToolNameIfNeeded(name string) string {
-	const limit = 64
-	if len(name) <= limit {
-		return name
-	}
-	// For MCP tools, try to preserve prefix and last segment
-	if strings.HasPrefix(name, "mcp__") {
-		idx := strings.LastIndex(name, "__")
-		if idx > 0 {
-			cand := "mcp__" + name[idx+2:]
-			if len(cand) > limit {
-				return cand[:limit]
-			}
-			return cand
-		}
-	}
-	return name[:limit]
+	return kirocommon.NormalizeKiroToolName(name)
 }
 
 func ensureKiroInputSchema(parameters interface{}) interface{} {
@@ -469,13 +453,18 @@ func ensureKiroInputSchema(parameters interface{}) interface{} {
 }
 
 // convertOpenAIToolsToKiro converts OpenAI tools to Kiro format
-func convertOpenAIToolsToKiro(tools gjson.Result) []KiroToolWrapper {
+func convertOpenAIToolsToKiro(tools gjson.Result, modelID string) ([]KiroToolWrapper, string) {
 	var kiroTools []KiroToolWrapper
+	var toolDocumentation []string
 	if !tools.IsArray() {
-		return kiroTools
+		return kiroTools, ""
 	}
 
+	catalogBytes := 0
 	for _, tool := range tools.Array() {
+		if len(kiroTools) >= kirocommon.KiroMaxToolCount {
+			break
+		}
 		// OpenAI tools have type "function" with function definition inside
 		if tool.Get("type").String() != "function" {
 			continue
@@ -494,6 +483,9 @@ func convertOpenAIToolsToKiro(tools gjson.Result) []KiroToolWrapper {
 			parameters = parametersResult.Value()
 		}
 		parameters = ensureKiroInputSchema(parameters)
+		if schema, ok := parameters.(map[string]interface{}); ok {
+			parameters = kirocommon.SanitizeKiroToolSchema(schema)
+		}
 
 		// Shorten tool name if it exceeds 64 characters (common with MCP tools)
 		originalName := name
@@ -509,28 +501,31 @@ func convertOpenAIToolsToKiro(tools gjson.Result) []KiroToolWrapper {
 		}
 
 		// Truncate long descriptions
-		if len(description) > kirocommon.KiroMaxToolDescLen {
-			truncLen := kirocommon.KiroMaxToolDescLen - 30
-			for truncLen > 0 && !utf8.RuneStart(description[truncLen]) {
-				truncLen--
-			}
-			description = description[:truncLen] + "... (description truncated)"
+		description, movedDocumentation := kirocommon.PrepareKiroToolDescription(name, description, modelID)
+		if movedDocumentation != "" {
+			toolDocumentation = append(toolDocumentation, movedDocumentation)
 		}
 
-		kiroTools = append(kiroTools, KiroToolWrapper{
+		candidate := KiroToolWrapper{
 			ToolSpecification: KiroToolSpecification{
 				Name:        name,
 				Description: description,
 				InputSchema: KiroInputSchema{JSON: parameters},
 			},
-		})
+		}
+		encoded, _ := json.Marshal(candidate)
+		if len(kiroTools) > 0 && catalogBytes+len(encoded) > kirocommon.KiroToolCatalogBudgetBytes {
+			break
+		}
+		catalogBytes += len(encoded)
+		kiroTools = append(kiroTools, candidate)
 	}
 
-	return kiroTools
+	return kiroTools, strings.Join(toolDocumentation, "\n\n")
 }
 
 // processOpenAIMessages processes OpenAI messages and builds Kiro history
-func processOpenAIMessages(messages gjson.Result, modelID, origin string) ([]KiroHistoryMessage, *KiroUserInputMessage, []KiroToolResult) {
+func processOpenAIMessages(messages gjson.Result, modelID, origin string, allowStructuredTools bool) ([]KiroHistoryMessage, *KiroUserInputMessage, []KiroToolResult) {
 	var history []KiroHistoryMessage
 	var currentUserMsg *KiroUserInputMessage
 	var currentToolResults []KiroToolResult
@@ -539,18 +534,16 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string) ([]Kir
 		return history, currentUserMsg, currentToolResults
 	}
 
-	// Merge adjacent messages with the same role
-	messagesArray := kirocommon.MergeAdjacentMessages(messages.Array())
-
-	// Normalize unknown roles to user (kiro-lb normalize_message_roles).
-	// Must run AFTER merging so consecutive unknown-role messages are merged
-	// first, then become consecutive users for ensureAlternatingHistory.
-	messagesArray = normalizeRoles(messagesArray)
+	// Roles Kiro does not understand must become user before merging, so
+	// consecutive unknown-role turns are folded into one user turn.
+	messagesArray := kirocommon.MergeAdjacentMessages(normalizeRoles(messages.Array()))
 
 	// Track pending tool results that should be attached to the next user message
 	// This is critical for LiteLLM-translated requests where tool results appear
 	// as separate "tool" role messages between assistant and user messages
 	var pendingToolResults []KiroToolResult
+	var pendingToolImages []KiroImage
+	var pendingToolText []string
 
 	for i, msg := range messagesArray {
 		role := msg.Get("role").String()
@@ -563,9 +556,16 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string) ([]Kir
 
 		case "user":
 			userMsg, toolResults := buildUserMessageFromOpenAI(msg, modelID, origin)
+			if len(pendingToolText) > 0 {
+				userMsg.Content = strings.Join(pendingToolText, "\n") + "\n" + userMsg.Content
+				pendingToolText = nil
+			}
 			// Merge any pending tool results from preceding "tool" role messages
 			toolResults = append(pendingToolResults, toolResults...)
+			userMsg.Images = append(pendingToolImages, userMsg.Images...)
+			userMsg.Images, _ = kirocommon.LimitKiroImages(userMsg.Images)
 			pendingToolResults = nil // Reset pending tool results
+			pendingToolImages = nil
 
 			if isLastMessage {
 				currentUserMsg = &userMsg
@@ -591,7 +591,7 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string) ([]Kir
 			}
 
 		case "assistant":
-			assistantMsg := buildAssistantMessageFromOpenAI(msg)
+			assistantMsg := buildAssistantMessageFromOpenAI(msg, allowStructuredTools)
 
 			// If there are pending tool results, we need to insert a synthetic user message
 			// before this assistant message to maintain proper conversation structure
@@ -603,11 +603,13 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string) ([]Kir
 					UserInputMessageContext: &KiroUserInputMessageContext{
 						ToolResults: pendingToolResults,
 					},
+					Images: pendingToolImages,
 				}
 				history = append(history, KiroHistoryMessage{
 					UserInputMessage: &syntheticUserMsg,
 				})
 				pendingToolResults = nil
+				pendingToolImages = nil
 			}
 
 			if isLastMessage {
@@ -631,11 +633,34 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string) ([]Kir
 			// These are typically followed by user or assistant messages
 			// Collect them as pending and attach to the next user message
 			toolCallID := msg.Get("tool_call_id").String()
-			content := msg.Get("content").String()
+			contentResult := msg.Get("content")
+			content := contentResult.String()
+			if contentResult.IsArray() {
+				var contentBuilder strings.Builder
+				for _, part := range contentResult.Array() {
+					switch part.Get("type").String() {
+					case "text":
+						contentBuilder.WriteString(part.Get("text").String())
+					case "image_url":
+						if image, ok := openAIImageFromDataURL(part.Get("image_url.url").String()); ok {
+							pendingToolImages = append(pendingToolImages, image)
+						}
+					}
+				}
+				content = contentBuilder.String()
+			}
+			if !allowStructuredTools {
+				pendingToolText = append(pendingToolText, fmt.Sprintf(
+					"[Tool result %s: %s]",
+					kirocommon.NormalizeKiroToolUseID(toolCallID),
+					content,
+				))
+				continue
+			}
 
 			if toolCallID != "" {
 				toolResult := KiroToolResult{
-					ToolUseID: toolCallID,
+					ToolUseID: kirocommon.NormalizeKiroToolUseID(toolCallID),
 					Content:   []KiroTextContent{{Text: content}},
 					Status:    "success",
 				}
@@ -655,6 +680,18 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string) ([]Kir
 				ModelID: modelID,
 				Origin:  origin,
 			}
+		}
+	}
+	if currentUserMsg != nil && len(pendingToolImages) > 0 {
+		currentUserMsg.Images = append(pendingToolImages, currentUserMsg.Images...)
+		currentUserMsg.Images, _ = kirocommon.LimitKiroImages(currentUserMsg.Images)
+	}
+	if len(pendingToolText) > 0 {
+		text := strings.Join(pendingToolText, "\n")
+		if currentUserMsg == nil {
+			currentUserMsg = &KiroUserInputMessage{Content: text, ModelID: modelID, Origin: origin}
+		} else {
+			currentUserMsg.Content = text + "\n" + currentUserMsg.Content
 		}
 	}
 
@@ -985,27 +1022,8 @@ func buildUserMessageFromOpenAI(msg gjson.Result, modelID, origin string) (KiroU
 			case "text":
 				contentBuilder.WriteString(part.Get("text").String())
 			case "image_url":
-				imageURL := part.Get("image_url.url").String()
-				if strings.HasPrefix(imageURL, "data:") {
-					// Parse data URL: data:image/png;base64,xxxxx
-					if idx := strings.Index(imageURL, ";base64,"); idx != -1 {
-						mediaType := imageURL[5:idx] // Skip "data:"
-						data := imageURL[idx+8:]     // Skip ";base64,"
-
-						format := ""
-						if lastSlash := strings.LastIndex(mediaType, "/"); lastSlash != -1 {
-							format = mediaType[lastSlash+1:]
-						}
-
-						if format != "" && data != "" {
-							images = append(images, KiroImage{
-								Format: format,
-								Source: KiroImageSource{
-									Bytes: data,
-								},
-							})
-						}
-					}
+				if image, ok := openAIImageFromDataURL(part.Get("image_url.url").String()); ok {
+					images = append(images, image)
 				}
 			}
 		}
@@ -1020,14 +1038,34 @@ func buildUserMessageFromOpenAI(msg gjson.Result, modelID, origin string) (KiroU
 	}
 
 	if len(images) > 0 {
-		userMsg.Images = images
+		userMsg.Images, _ = kirocommon.LimitKiroImages(images)
 	}
 
 	return userMsg, toolResults
 }
 
+func openAIImageFromDataURL(imageURL string) (KiroImage, bool) {
+	if !strings.HasPrefix(imageURL, "data:") {
+		return KiroImage{}, false
+	}
+	idx := strings.Index(imageURL, ";base64,")
+	if idx < 0 {
+		return KiroImage{}, false
+	}
+	mediaType := imageURL[5:idx]
+	data := imageURL[idx+8:]
+	lastSlash := strings.LastIndex(mediaType, "/")
+	if lastSlash < 0 || lastSlash == len(mediaType)-1 || data == "" {
+		return KiroImage{}, false
+	}
+	return KiroImage{
+		Format: mediaType[lastSlash+1:],
+		Source: KiroImageSource{Bytes: data},
+	}, true
+}
+
 // buildAssistantMessageFromOpenAI builds an assistant message from OpenAI format
-func buildAssistantMessageFromOpenAI(msg gjson.Result) KiroAssistantResponseMessage {
+func buildAssistantMessageFromOpenAI(msg gjson.Result, allowStructuredTools bool) KiroAssistantResponseMessage {
 	content := msg.Get("content")
 	var contentBuilder strings.Builder
 	var toolUses []KiroToolUse
@@ -1047,6 +1085,14 @@ func buildAssistantMessageFromOpenAI(msg gjson.Result) KiroAssistantResponseMess
 				toolUseID := part.Get("id").String()
 				toolName := part.Get("name").String()
 				inputData := part.Get("input")
+				if !allowStructuredTools {
+					contentBuilder.WriteString("\n[Tool call ")
+					contentBuilder.WriteString(toolName)
+					contentBuilder.WriteString(": ")
+					contentBuilder.WriteString(inputData.Raw)
+					contentBuilder.WriteString("]")
+					continue
+				}
 
 				inputMap := make(map[string]interface{})
 				if inputData.Exists() && inputData.IsObject() {
@@ -1057,8 +1103,8 @@ func buildAssistantMessageFromOpenAI(msg gjson.Result) KiroAssistantResponseMess
 				}
 
 				toolUses = append(toolUses, KiroToolUse{
-					ToolUseID: toolUseID,
-					Name:      toolName,
+					ToolUseID: kirocommon.NormalizeKiroToolUseID(toolUseID),
+					Name:      kirocommon.NormalizeKiroToolName(toolName),
 					Input:     inputMap,
 				})
 				log.Debugf("kiro-openai: extracted tool_use from content array: %s", toolName)
@@ -1077,6 +1123,14 @@ func buildAssistantMessageFromOpenAI(msg gjson.Result) KiroAssistantResponseMess
 			toolUseID := tc.Get("id").String()
 			toolName := tc.Get("function.name").String()
 			toolArgs := tc.Get("function.arguments").String()
+			if !allowStructuredTools {
+				contentBuilder.WriteString("\n[Tool call ")
+				contentBuilder.WriteString(toolName)
+				contentBuilder.WriteString(": ")
+				contentBuilder.WriteString(toolArgs)
+				contentBuilder.WriteString("]")
+				continue
+			}
 
 			var inputMap map[string]interface{}
 			if err := json.Unmarshal([]byte(toolArgs), &inputMap); err != nil {
@@ -1085,8 +1139,8 @@ func buildAssistantMessageFromOpenAI(msg gjson.Result) KiroAssistantResponseMess
 			}
 
 			toolUses = append(toolUses, KiroToolUse{
-				ToolUseID: toolUseID,
-				Name:      toolName,
+				ToolUseID: kirocommon.NormalizeKiroToolUseID(toolUseID),
+				Name:      kirocommon.NormalizeKiroToolName(toolName),
 				Input:     inputMap,
 			})
 		}
@@ -1130,6 +1184,15 @@ func buildAssistantMessageFromOpenAI(msg gjson.Result) KiroAssistantResponseMess
 	}
 }
 
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // buildFinalContent builds the final content with system prompt
 func buildFinalContent(content, systemPrompt string, toolResults []KiroToolResult) string {
 	var contentBuilder strings.Builder
@@ -1142,16 +1205,6 @@ func buildFinalContent(content, systemPrompt string, toolResults []KiroToolResul
 
 	contentBuilder.WriteString(content)
 	finalContent := contentBuilder.String()
-
-	// CRITICAL: Kiro API requires content to be non-empty
-	if strings.TrimSpace(finalContent) == "" {
-		if len(toolResults) > 0 {
-			finalContent = "Tool results provided."
-		} else {
-			finalContent = "Continue"
-		}
-		log.Debugf("kiro-openai: content was empty, using default: %s", finalContent)
-	}
 
 	return finalContent
 }

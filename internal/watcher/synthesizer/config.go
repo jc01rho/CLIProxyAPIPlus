@@ -740,7 +740,7 @@ func (s *ConfigSynthesizer) synthesizeKiroKeys(ctx *SynthesisContext) []*coreaut
 
 	for i := range cfg.KiroKey {
 		kk := cfg.KiroKey[i]
-		var accessToken, profileArn, refreshToken string
+		var accessToken, profileArn, refreshToken, apiRegion string
 
 		// Try to load from token file first
 		if kk.TokenFile != "" && kAuth != nil {
@@ -751,6 +751,7 @@ func (s *ConfigSynthesizer) synthesizeKiroKeys(ctx *SynthesisContext) []*coreaut
 				accessToken = tokenData.AccessToken
 				profileArn = tokenData.ProfileArn
 				refreshToken = tokenData.RefreshToken
+				apiRegion = tokenData.APIRegion
 			}
 		}
 
@@ -763,6 +764,9 @@ func (s *ConfigSynthesizer) synthesizeKiroKeys(ctx *SynthesisContext) []*coreaut
 		}
 		if kk.RefreshToken != "" {
 			refreshToken = kk.RefreshToken
+		}
+		if kk.APIRegion != "" {
+			apiRegion = kk.APIRegion
 		}
 
 		if accessToken == "" {
@@ -781,6 +785,9 @@ func (s *ConfigSynthesizer) synthesizeKiroKeys(ctx *SynthesisContext) []*coreaut
 		}
 		if kk.Region != "" {
 			attrs["region"] = kk.Region
+		}
+		if apiRegion != "" {
+			attrs["api_region"] = apiRegion
 		}
 		if kk.AgentTaskType != "" {
 			attrs["agent_task_type"] = kk.AgentTaskType

@@ -3,9 +3,32 @@ package common
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
+
+func NormalizeKiroMessageRoles(messages []gjson.Result) []gjson.Result {
+	normalized := make([]gjson.Result, 0, len(messages))
+	for _, message := range messages {
+		role := strings.ToLower(strings.TrimSpace(message.Get("role").String()))
+		switch role {
+		case "system", "developer":
+			role = "system"
+		case "user", "assistant", "tool":
+		default:
+			role = "user"
+		}
+		raw, err := sjson.Set(message.Raw, "role", role)
+		if err != nil {
+			normalized = append(normalized, message)
+			continue
+		}
+		normalized = append(normalized, gjson.Parse(raw))
+	}
+	return normalized
+}
 
 // MergeAdjacentMessages merges adjacent messages with the same role.
 // This reduces API call complexity and improves compatibility.

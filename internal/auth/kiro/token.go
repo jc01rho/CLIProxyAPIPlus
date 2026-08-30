@@ -31,6 +31,8 @@ type KiroTokenStorage struct {
 	ClientSecret string `json:"client_secret,omitempty"`
 	// Region is the OIDC region for IDC login and token refresh
 	Region string `json:"region,omitempty"`
+	// APIRegion is the Kiro runtime API region
+	APIRegion string `json:"api_region,omitempty"`
 	// StartURL is the AWS Identity Center start URL (for IDC auth)
 	StartURL string `json:"start_url,omitempty"`
 	// Email is the user's email address
@@ -83,6 +85,7 @@ func (s *KiroTokenStorage) ToTokenData() *KiroTokenData {
 		ClientID:     s.ClientID,
 		ClientSecret: s.ClientSecret,
 		Region:       s.Region,
+		APIRegion:    s.APIRegion,
 		StartURL:     s.StartURL,
 		Email:        s.Email,
 	}

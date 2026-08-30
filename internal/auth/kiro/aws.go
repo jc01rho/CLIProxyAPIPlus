@@ -52,6 +52,10 @@ type KiroTokenData struct {
 	StartURL string `json:"startUrl,omitempty"`
 	// Region is the OIDC region for IDC login and token refresh
 	Region string `json:"region,omitempty"`
+	// APIRegion is the runtime API region, independent from the OIDC refresh region.
+	APIRegion string `json:"apiRegion,omitempty"`
+	// Source records the local import source without exposing its path.
+	Source string `json:"-"`
 }
 
 // KiroAuthBundle aggregates authentication data after OAuth flow completion

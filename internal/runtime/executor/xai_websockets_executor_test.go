@@ -132,6 +132,23 @@ func TestConfigureXAIWebsocketConnRefreshesReadDeadlineOnPong(t *testing.T) {
 			t.Errorf("set read deadline: %v", errDeadline)
 			return
 		}
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+	if errDial != nil {
+		t.Fatalf("Dial returned error: %v", errDial)
+	}
+	defer func() { _ = conn.Close() }()
+
+	configureXAIWebsocketConn(&codexWebsocketSession{}, conn)
+	time.Sleep(25 * time.Millisecond)
+	if errPong := conn.WriteControl(websocket.PongMessage, []byte("keepalive"), time.Now().Add(time.Second)); errPong != nil {
+		t.Fatalf("WriteControl pong returned error: %v", errPong)
+	}
+}
 
 func TestXAIWebsocketMissingRequiredSessionDoesNotMarkUpstreamAttempt(t *testing.T) {
 	exec := NewXAIWebsocketsExecutor(&config.Config{})
@@ -175,18 +192,6 @@ func TestXAIWebsocketSuccessfulHandshakeDoesNotMarkRequestAttempt(t *testing.T) 
 		_, _, _ = conn.ReadMessage()
 	}))
 	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
-	if errDial != nil {
-		t.Fatalf("Dial returned error: %v", errDial)
-	}
-	defer func() { _ = conn.Close() }()
-
-	configureXAIWebsocketConn(&codexWebsocketSession{}, conn)
-	time.Sleep(25 * time.Millisecond)
-	if errPong := conn.WriteControl(websocket.PongMessage, []byte("keepalive"), time.Now().Add(time.Second)); errPong != nil {
-		t.Fatalf("WriteControl pong returned error: %v", errPong)
 
 	exec := NewXAIWebsocketsExecutor(&config.Config{})
 	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())

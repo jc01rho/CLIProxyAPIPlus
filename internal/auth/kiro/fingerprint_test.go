@@ -370,8 +370,6 @@ func TestSetRuntimeHeaders(t *testing.T) {
 	accessToken := "test-access-token-1234567890"
 	clientID := "test-client-id-12345"
 	accountKey := GenerateAccountKey(clientID)
-	fp := GlobalFingerprintManager().GetFingerprint(accountKey)
-	machineID := fp.KiroHash
 
 	setRuntimeHeaders(req, accessToken, accountKey)
 
@@ -385,14 +383,8 @@ func TestSetRuntimeHeaders(t *testing.T) {
 	if amzUA == "" {
 		t.Error("expected x-amz-user-agent header to be set")
 	}
-	if !strings.Contains(amzUA, "aws-sdk-js/") {
-		t.Errorf("x-amz-user-agent should contain aws-sdk-js: %s", amzUA)
-	}
-	if !strings.Contains(amzUA, "KiroIDE-") {
-		t.Errorf("x-amz-user-agent should contain KiroIDE: %s", amzUA)
-	}
-	if !strings.Contains(amzUA, machineID) {
-		t.Errorf("x-amz-user-agent should contain machineID: %s", amzUA)
+	if amzUA != KiroCLIXAmzUserAgent {
+		t.Errorf("x-amz-user-agent = %q, want %q", amzUA, KiroCLIXAmzUserAgent)
 	}
 
 	// Check User-Agent header
@@ -400,11 +392,8 @@ func TestSetRuntimeHeaders(t *testing.T) {
 	if ua == "" {
 		t.Error("expected User-Agent header to be set")
 	}
-	if !strings.Contains(ua, "api/codewhispererruntime#") {
-		t.Errorf("User-Agent should contain api/codewhispererruntime: %s", ua)
-	}
-	if !strings.Contains(ua, "m/N,E") {
-		t.Errorf("User-Agent should contain m/N,E: %s", ua)
+	if ua != KiroCLIUserAgent {
+		t.Errorf("User-Agent = %q, want %q", ua, KiroCLIUserAgent)
 	}
 
 	// Check amz-sdk-invocation-id (should be a UUID)
@@ -417,8 +406,11 @@ func TestSetRuntimeHeaders(t *testing.T) {
 	}
 
 	// Check amz-sdk-request
-	if req.Header.Get("amz-sdk-request") != "attempt=1; max=1" {
+	if req.Header.Get("amz-sdk-request") != "attempt=1; max=3" {
 		t.Errorf("unexpected amz-sdk-request header: %s", req.Header.Get("amz-sdk-request"))
+	}
+	if req.Header.Get("x-kiro-attempt") != "1;max=3" {
+		t.Errorf("unexpected x-kiro-attempt header: %s", req.Header.Get("x-kiro-attempt"))
 	}
 }
 

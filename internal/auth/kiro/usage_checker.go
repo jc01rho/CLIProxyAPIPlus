@@ -76,23 +76,10 @@ func (c *UsageChecker) CheckUsage(ctx context.Context, tokenData *KiroTokenData)
 		return nil, fmt.Errorf("access token is empty")
 	}
 
-	queryParams := map[string]string{
-		"origin":       "AI_EDITOR",
-		"profileArn":   tokenData.ProfileArn,
-		"resourceType": "AGENTIC_REQUEST",
-	}
-
-	// Use endpoint from profileArn if available
-	endpoint := GetKiroAPIEndpointFromProfileArn(tokenData.ProfileArn)
-	url := buildURL(endpoint, pathGetUsageLimits, queryParams)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := newKiroUsageLimitsRequest(ctx, tokenData, false)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
-
-	accountKey := GetAccountKey(tokenData.ClientID, tokenData.RefreshToken)
-	setRuntimeHeaders(req, tokenData.AccessToken, accountKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

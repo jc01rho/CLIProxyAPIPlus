@@ -223,6 +223,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/zcode-auth-url", s.mgmt.RequestZcodeToken)
 		mgmt.POST("/gitlab-pat", s.mgmt.RequestGitLabPATToken)
 		mgmt.GET("/copilot-quota", s.mgmt.GetCopilotQuota)
+		mgmt.GET("/zcode-quota", s.mgmt.GetZcodeQuota)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 	}

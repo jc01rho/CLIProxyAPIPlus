@@ -36,21 +36,18 @@ import (
 
 const (
 	// Kiro API common constants
-	kiroContentType  = "application/json"
+	kiroContentType  = "application/x-amz-json-1.0"
 	kiroAcceptStream = "*/*"
 
 	// Event Stream frame size constants for boundary protection
 	// AWS Event Stream binary format: prelude (12 bytes) + headers + payload + message_crc (4 bytes)
 	// Prelude consists of: total_length (4) + headers_length (4) + prelude_crc (4)
 	minEventStreamFrameSize = 16       // Minimum: 4(total_len) + 4(headers_len) + 4(prelude_crc) + 4(message_crc)
-	maxEventStreamMsgSize   = 10 << 20 // Maximum message length: 10MB
+	maxEventStreamMsgSize   = 16 << 20 // Maximum message length: 16MB
 
 	// Event Stream error type constants
 	ErrStreamFatal     = "fatal"     // Connection/authentication errors, not recoverable
 	ErrStreamMalformed = "malformed" // Format errors, data cannot be parsed
-
-	// kiroIDEAgentMode is the agent mode header value for Kiro IDE requests
-	kiroIDEAgentMode = "vibe"
 
 	// Socket retry configuration constants
 	// Maximum number of retry attempts for socket/network errors
@@ -63,6 +60,10 @@ const (
 	kiroFirstTokenTimeout = 15 * time.Second
 	// Streaming read timeout (how long to wait between chunks)
 	kiroStreamingReadTimeout = 300 * time.Second
+
+	kiroBuilderIDProfileARN = kiroauth.BuilderIDRequestProfileARN
+	kiroCLIUserAgent        = kiroauth.KiroCLIUserAgent
+	kiroCLIAmzUserAgent     = kiroauth.KiroCLIXAmzUserAgent
 )
 
 // retryableHTTPStatusCodes defines HTTP status codes that are considered retryable.
@@ -79,15 +80,6 @@ var (
 	usageUpdateCharThreshold = 5000             // Send usage update every 5000 characters
 	usageUpdateTimeInterval  = 15 * time.Second // Or every 15 seconds, whichever comes first
 )
-
-// endpointAliases maps user preference values to canonical endpoint names.
-var endpointAliases = map[string]string{
-	"codewhisperer": "codewhisperer",
-	"ide":           "codewhisperer",
-	"amazonq":       "amazonq",
-	"q":             "amazonq",
-	"cli":           "amazonq",
-}
 
 // retryConfig holds configuration for socket retry logic.
 // Based on kiro2Api Python implementation patterns.
@@ -215,6 +207,67 @@ func calculateRetryDelay(attempt int, cfg retryConfig) time.Duration {
 	return kiroauth.ExponentialBackoffWithJitter(attempt, cfg.BaseDelay, cfg.MaxDelay)
 }
 
+func sleepKiroRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func shouldFallbackKiroRuntime(statusCode int, body []byte) bool {
+	switch statusCode {
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		return true
+	case http.StatusBadRequest, http.StatusForbidden:
+		message := strings.ToLower(string(body))
+		return strings.Contains(message, "unknownoperation") ||
+			strings.Contains(message, "unknown operation") ||
+			strings.Contains(message, "validationexception")
+	default:
+		return false
+	}
+}
+
+func normalizeKiroStopReason(reason string, hasText, hasToolUse bool) (string, error) {
+	normalized := strings.ToUpper(strings.TrimSpace(reason))
+	switch normalized {
+	case "", "END_TURN", "COMPLETE":
+		if normalized == "END_TURN" && !hasText && !hasToolUse {
+			return "", fmt.Errorf("kiro: END_TURN received without text or tool use")
+		}
+		return "end_turn", nil
+	case "STOP_SEQUENCE":
+		if !hasText && !hasToolUse {
+			return "", fmt.Errorf("kiro: STOP_SEQUENCE received without text or tool use")
+		}
+		return "stop_sequence", nil
+	case "TOOL_USE":
+		if !hasToolUse {
+			return "", fmt.Errorf("kiro: TOOL_USE received without a completed tool call")
+		}
+		return "tool_use", nil
+	case "MAX_TOKENS", "MAX_TOKEN", "LENGTH_LIMIT", "LENGTH":
+		return "max_tokens", nil
+	case "MODEL_CONTEXT_WINDOW_EXCEEDED":
+		return "", statusErr{code: http.StatusBadRequest, msg: "kiro model context window exceeded"}
+	case "CONTENT_FILTERED", "CONTENT_FILTER", "GUARDRAIL_INTERVENED":
+		return "refusal", nil
+	case "MALFORMED_TOOL_USE", "MALFORMED_MODEL_OUTPUT":
+		return "", fmt.Errorf("kiro: malformed model output (%s)", strings.ToLower(normalized))
+	default:
+		switch strings.ToLower(strings.TrimSpace(reason)) {
+		case "end_turn", "stop_sequence", "tool_use", "max_tokens", "refusal":
+			return strings.ToLower(strings.TrimSpace(reason)), nil
+		default:
+			return "", fmt.Errorf("kiro: unsupported stop reason %q", reason)
+		}
+	}
+}
+
 // logRetryAttempt logs a retry attempt with relevant context.
 func logRetryAttempt(attempt, maxRetries int, reason string, delay time.Duration, endpoint string) {
 	log.Warnf("kiro: retry attempt %d/%d for %s, waiting %v before next attempt (endpoint: %s)",
@@ -340,74 +393,65 @@ func extractRegionFromProfileARN(profileArn string) string {
 	return ""
 }
 
-// buildKiroEndpointConfigs creates endpoint configurations for the specified region.
-// This enables dynamic region support for Enterprise/IdC users in non-us-east-1 regions.
-//
-// Uses Q endpoint (q.{region}.amazonaws.com) as primary for ALL auth types:
-// - Works universally across all AWS regions (CodeWhisperer endpoint only exists in us-east-1)
-// - Uses /generateAssistantResponse path with AI_EDITOR origin
-// - Does NOT require X-Amz-Target header
-//
-// The AmzTarget field is kept for backward compatibility but should be empty
-// to indicate that the header should NOT be set.
-func buildKiroEndpointConfigs(region string) []kiroEndpointConfig {
-	if region == "" {
-		region = kiroDefaultRegion
-	}
-	return []kiroEndpointConfig{
-		{
-			// Primary: Q endpoint - works for all regions and auth types
-			URL:       fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", region),
-			Origin:    "AI_EDITOR",
-			AmzTarget: "", // Empty = don't set X-Amz-Target header
-			Name:      "AmazonQ",
-		},
-		{
-			// Fallback: CodeWhisperer endpoint (legacy, only works in us-east-1)
-			URL:       fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", region),
-			Origin:    "AI_EDITOR",
-			AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
-			Name:      "CodeWhisperer",
-		},
-	}
+// buildKiroEndpointConfigsForAuth builds the Kiro CLI 2.19.1 generation route.
+// All credential kinds use the regional runtime root; Q remains a model-list
+// concern only and must not be used as a generation fallback.
+func buildKiroEndpointConfigsForAuth(auth *cliproxyauth.Auth) []kiroEndpointConfig {
+	region := resolveKiroAPIRegion(auth)
+	return []kiroEndpointConfig{{
+		URL:       fmt.Sprintf("https://runtime.%s.kiro.dev/", region),
+		Origin:    "AI_EDITOR",
+		AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+		Name:      "KiroRuntime",
+	}}
 }
 
 // resolveKiroAPIRegion determines the AWS region for Kiro API calls.
 // Region priority:
 // 1. auth.Metadata["api_region"] - explicit API region override
 // 2. ProfileARN region - extracted from arn:aws:service:REGION:account:resource
-// 3. kiroDefaultRegion (us-east-1) - fallback
-// Note: OIDC "region" is NOT used - it's for token refresh, not API calls
+// 3. runtime credential region / KIRO_REGION
+// 4. kiroDefaultRegion (us-east-1) - fallback
 func resolveKiroAPIRegion(auth *cliproxyauth.Auth) string {
+	if region := kiroauth.NormalizeKiroRegion(os.Getenv("KIRO_API_REGION")); region != "" {
+		log.Debugf("kiro: using region %s (source: KIRO_API_REGION)", region)
+		return region
+	}
 	if auth == nil || auth.Metadata == nil {
 		return kiroDefaultRegion
 	}
 	// Priority 1: Explicit api_region override
-	if r, ok := auth.Metadata["api_region"].(string); ok && r != "" {
-		log.Debugf("kiro: using region %s (source: api_region)", r)
-		return r
+	if r, ok := auth.Metadata["api_region"].(string); ok {
+		if region := kiroauth.NormalizeKiroRegion(r); region != "" {
+			log.Debugf("kiro: using region %s (source: api_region)", region)
+			return region
+		}
 	}
 	// Priority 2: Extract from ProfileARN
 	if profileArn, ok := auth.Metadata["profile_arn"].(string); ok && profileArn != "" {
-		if arnRegion := extractRegionFromProfileARN(profileArn); arnRegion != "" {
+		if arnRegion := kiroauth.NormalizeKiroRegion(extractRegionFromProfileARN(profileArn)); arnRegion != "" {
 			log.Debugf("kiro: using region %s (source: profile_arn)", arnRegion)
 			return arnRegion
 		}
 	}
-	// Note: OIDC "region" field is NOT used for API endpoint
-	// Kiro API only exists in us-east-1, while OIDC region can vary (e.g., ap-northeast-2)
-	// Using OIDC region for API calls causes DNS failures
+	if isKiroRuntimeEndpoint(auth) {
+		if region := kiroauth.NormalizeKiroRegion(getAuthValue(auth, "region")); region != "" {
+			log.Debugf("kiro: using region %s (source: runtime credential region)", region)
+			return region
+		}
+		if region := kiroauth.NormalizeKiroRegion(os.Getenv("KIRO_REGION")); region != "" {
+			log.Debugf("kiro: using region %s (source: KIRO_REGION runtime fallback)", region)
+			return region
+		}
+	}
+	// Keep authentication and runtime regions separate unless this runtime
+	// credential explicitly carries no API-specific region.
 	log.Debugf("kiro: using region %s (source: default)", kiroDefaultRegion)
 	return kiroDefaultRegion
 }
 
-// kiroEndpointConfigs is kept for backward compatibility with default us-east-1 region.
-// Prefer using buildKiroEndpointConfigs(region) for dynamic region support.
-var kiroEndpointConfigs = buildKiroEndpointConfigs(kiroDefaultRegion)
-
-// getKiroEndpointConfigs returns the list of Kiro API endpoint configurations to try in order.
-// Supports dynamic region based on auth metadata "api_region", "profile_arn", or "region" field.
-// Supports reordering based on "preferred_endpoint" in auth metadata/attributes.
+// getKiroEndpointConfigs returns the Kiro CLI 2.19.1 generation endpoint.
+// Generation always targets the regional runtime root.
 //
 // Region priority:
 // 1. auth.Metadata["api_region"] - explicit API region override
@@ -416,37 +460,13 @@ var kiroEndpointConfigs = buildKiroEndpointConfigs(kiroDefaultRegion)
 // Note: OIDC "region" is NOT used - it's for token refresh, not API calls
 func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	if auth == nil {
-		return kiroEndpointConfigs
+		return buildKiroEndpointConfigsForAuth(nil)
 	}
 
 	region := resolveKiroAPIRegion(auth)
 	log.Debugf("kiro: using region %s", region)
 
-	configs := buildKiroEndpointConfigs(region)
-
-	preference := getAuthValue(auth, "preferred_endpoint")
-	if preference == "" {
-		return configs
-	}
-
-	targetName, ok := endpointAliases[preference]
-	if !ok {
-		return configs
-	}
-
-	var preferred, others []kiroEndpointConfig
-	for _, cfg := range configs {
-		if strings.ToLower(cfg.Name) == targetName {
-			preferred = append(preferred, cfg)
-		} else {
-			others = append(others, cfg)
-		}
-	}
-
-	if len(preferred) == 0 {
-		return configs
-	}
-	return append(preferred, others...)
+	return buildKiroEndpointConfigsForAuth(auth)
 }
 
 // KiroExecutor handles requests to AWS CodeWhisperer (Kiro) API.
@@ -462,20 +482,38 @@ type KiroExecutor struct {
 // - Claude: tools[].name, tools[].description
 // headers parameter allows checking Anthropic-Beta header for thinking mode detection.
 // Returns the serialized JSON payload and a boolean indicating whether thinking mode was injected.
-func buildKiroPayloadForFormat(body []byte, modelID, profileArn, origin string, isAgentic, isChatOnly bool, sourceFormat sdktranslator.Format, headers http.Header) ([]byte, bool) {
+func buildKiroPayloadForFormat(body []byte, modelID, profileArn, origin string, isAgentic, isChatOnly bool, sourceFormat sdktranslator.Format, headers http.Header) ([]byte, bool, error) {
+	var payload []byte
+	var thinkingEnabled bool
 	switch sourceFormat.String() {
 	case "openai":
 		log.Debugf("kiro: using OpenAI payload builder for source format: %s", sourceFormat.String())
-		return kiroopenai.BuildKiroPayloadFromOpenAI(body, modelID, profileArn, origin, isAgentic, isChatOnly, headers, nil)
+		payload, thinkingEnabled = kiroopenai.BuildKiroPayloadFromOpenAI(body, modelID, profileArn, origin, isAgentic, isChatOnly, headers, nil)
 	case "kiro":
 		// Body is already in Kiro format — pass through directly
 		log.Debugf("kiro: body already in Kiro format, passing through directly")
-		return body, false
+		payload = body
 	default:
 		// Default to Claude format
 		log.Debugf("kiro: using Claude payload builder for source format: %s", sourceFormat.String())
-		return kiroclaude.BuildKiroPayload(body, modelID, profileArn, origin, isAgentic, isChatOnly, headers, nil)
+		payload, thinkingEnabled = kiroclaude.BuildKiroPayload(body, modelID, profileArn, origin, isAgentic, isChatOnly, headers, nil)
 	}
+	guarded, stats, err := kirocommon.GuardKiroPayload(payload, modelID)
+	if err != nil {
+		return nil, thinkingEnabled, err
+	}
+	if stats.Trimmed {
+		log.Warnf(
+			"kiro: auto-trimmed payload history from %d to %d entries (%d to %d tokens, %d to %d bytes)",
+			stats.OriginalHistoryEntries,
+			stats.FinalHistoryEntries,
+			stats.OriginalTokens,
+			stats.FinalTokens,
+			stats.OriginalBytes,
+			stats.FinalBytes,
+		)
+	}
+	return guarded, thinkingEnabled, nil
 }
 
 // NewKiroExecutor creates a new Kiro executor instance.
@@ -486,22 +524,14 @@ func NewKiroExecutor(cfg *config.Config) *KiroExecutor {
 // Identifier returns the unique identifier for this executor.
 func (e *KiroExecutor) Identifier() string { return "kiro" }
 
-// applyDynamicFingerprint applies account-specific fingerprint headers to the request.
+// applyDynamicFingerprint applies the fixed Kiro CLI 2.19.1 generation contract.
 func applyDynamicFingerprint(req *http.Request, auth *cliproxyauth.Auth) {
-	accountKey := getAccountKey(auth)
-	fp := kiroauth.GlobalFingerprintManager().GetFingerprint(accountKey)
-
-	req.Header.Set("User-Agent", fp.BuildUserAgent())
-	req.Header.Set("X-Amz-User-Agent", fp.BuildAmzUserAgent())
-	req.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentMode)
+	_ = auth
+	req.Header.Set("User-Agent", kiroCLIUserAgent)
+	req.Header.Set("X-Amz-User-Agent", kiroCLIAmzUserAgent)
 	req.Header.Set("x-amzn-codewhisperer-optout", "true")
-
-	keyPrefix := accountKey
-	if len(keyPrefix) > 8 {
-		keyPrefix = keyPrefix[:8]
-	}
-	log.Debugf("kiro: using dynamic fingerprint for account %s (SDK:%s, OS:%s/%s, Kiro:%s)",
-		keyPrefix+"...", fp.StreamingSDKVersion, fp.OSType, fp.OSVersion, fp.KiroVersion)
+	req.Header.Set("x-kiro-attempt", "1;max=3")
+	req.Header.Del("x-amzn-kiro-agent-mode")
 }
 
 // PrepareRequest prepares the HTTP request before execution.
@@ -704,7 +734,11 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 
 		// Rebuild payload with the correct origin for this endpoint
 		// Each endpoint requires its matching Origin value in the request body
-		kiroPayload, _ = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+		var payloadErr error
+		kiroPayload, _, payloadErr = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+		if payloadErr != nil {
+			return resp, statusErr{code: http.StatusBadRequest, msg: payloadErr.Error()}
+		}
 
 		log.Debugf("kiro: trying endpoint %d/%d: %s (Name: %s, Origin: %s)",
 			endpointIdx+1, len(endpointConfigs), url, endpointConfig.Name, currentOrigin)
@@ -727,11 +761,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			if endpointConfig.AmzTarget != "" {
 				httpReq.Header.Set("X-Amz-Target", endpointConfig.AmzTarget)
 			}
-			// Kiro-specific headers
-			httpReq.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentMode)
-			httpReq.Header.Set("x-amzn-codewhisperer-optout", "true")
-
-			// Apply dynamic fingerprint-based headers
+			// Apply the Kiro CLI generation headers.
 			applyDynamicFingerprint(httpReq, auth)
 
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
@@ -788,13 +818,32 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				if isRetryableError(err) && attempt < retryCfg.MaxRetries {
 					delay := calculateRetryDelay(attempt, retryCfg)
 					logRetryAttempt(attempt, retryCfg.MaxRetries, fmt.Sprintf("socket error: %v", err), delay, endpointConfig.Name)
-					time.Sleep(delay)
+					if sleepErr := sleepKiroRetry(ctx, delay); sleepErr != nil {
+						return resp, sleepErr
+					}
 					continue
+				}
+				if endpointConfig.Name == "KiroRuntime" && isRetryableError(err) {
+					log.Warnf("kiro: runtime endpoint unavailable, trying Q fallback: %v", err)
+					break
 				}
 
 				return resp, err
 			}
 			recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+
+			if endpointConfig.Name == "KiroRuntime" &&
+				(httpResp.StatusCode == http.StatusBadRequest || httpResp.StatusCode == http.StatusForbidden ||
+					httpResp.StatusCode == http.StatusNotFound || httpResp.StatusCode == http.StatusMethodNotAllowed) {
+				respBody, _ := io.ReadAll(httpResp.Body)
+				_ = httpResp.Body.Close()
+				if shouldFallbackKiroRuntime(httpResp.StatusCode, respBody) {
+					appendAPIResponseChunk(ctx, e.cfg, respBody)
+					log.Warnf("kiro: runtime endpoint rejected the operation, trying Q fallback: status=%d", httpResp.StatusCode)
+					break
+				}
+				httpResp.Body = io.NopCloser(bytes.NewReader(respBody))
+			}
 
 			// Handle 429 errors (quota exhausted) - try next endpoint
 			// Each endpoint has its own quota pool, so we can try different endpoints
@@ -811,6 +860,9 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 
 				// Preserve last 429 so callers can correctly backoff when all endpoints are exhausted
 				last429Err = statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+				if endpointConfig.Name == "KiroRuntime" {
+					return resp, last429Err
+				}
 
 				log.Warnf("kiro: %s endpoint quota exhausted (429), will try next endpoint, body: %s",
 					endpointConfig.Name, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
@@ -831,7 +883,9 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				if isRetryableHTTPStatus(httpResp.StatusCode) && attempt < retryCfg.MaxRetries {
 					delay := calculateRetryDelay(attempt, retryCfg)
 					logRetryAttempt(attempt, retryCfg.MaxRetries, fmt.Sprintf("HTTP %d", httpResp.StatusCode), delay, endpointConfig.Name)
-					time.Sleep(delay)
+					if sleepErr := sleepKiroRetry(ctx, delay); sleepErr != nil {
+						return resp, sleepErr
+					}
 					continue
 				} else if attempt < maxRetries {
 					// Fallback for other 5xx errors (500, 501, etc.)
@@ -840,7 +894,9 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 						backoff = 30 * time.Second
 					}
 					log.Warnf("kiro: server error %d, retrying in %v (attempt %d/%d)", httpResp.StatusCode, backoff, attempt+1, maxRetries)
-					time.Sleep(backoff)
+					if sleepErr := sleepKiroRetry(ctx, backoff); sleepErr != nil {
+						return resp, sleepErr
+					}
 					continue
 				}
 				log.Errorf("kiro: server error %d after %d retries", httpResp.StatusCode, maxRetries)
@@ -869,7 +925,10 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 					}
 					accessToken, profileArn = kiroCredentials(auth)
 					// Rebuild payload with new profile ARN if changed
-					kiroPayload, _ = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+					kiroPayload, _, payloadErr = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+					if payloadErr != nil {
+						return resp, statusErr{code: http.StatusBadRequest, msg: payloadErr.Error()}
+					}
 					if attempt < maxRetries {
 						log.Infof("kiro: token refreshed successfully, retrying request (attempt %d/%d)", attempt+1, maxRetries+1)
 						continue
@@ -914,14 +973,8 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 					return resp, statusErr{code: httpResp.StatusCode, msg: "account suspended: " + string(respBody)}
 				}
 
-				// Check if this looks like a token-related 403 (some APIs return 403 for expired tokens)
-				isTokenRelated := strings.Contains(respBodyStr, "token") ||
-					strings.Contains(respBodyStr, "expired") ||
-					strings.Contains(respBodyStr, "invalid") ||
-					strings.Contains(respBodyStr, "unauthorized")
-
-				if isTokenRelated && attempt < maxRetries {
-					log.Warnf("kiro: 403 appears token-related, attempting token refresh")
+				if shouldRefreshKiroForbidden(respBody) && attempt < maxRetries {
+					log.Warnf("kiro: non-suspension 403, attempting token refresh")
 					refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 					if refreshErr != nil {
 						// Token refresh failed - return error immediately
@@ -935,7 +988,10 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 							// Continue anyway - the token is valid for this request
 						}
 						accessToken, profileArn = kiroCredentials(auth)
-						kiroPayload, _ = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+						kiroPayload, _, payloadErr = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+						if payloadErr != nil {
+							return resp, statusErr{code: http.StatusBadRequest, msg: payloadErr.Error()}
+						}
 						log.Infof("kiro: token refreshed for 403, retrying request")
 						continue
 					}
@@ -964,7 +1020,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				}
 			}()
 
-			content, toolUses, usageInfo, stopReason, err := e.parseEventStream(httpResp.Body)
+			content, toolUses, usageInfo, stopReason, err := e.parseEventStream(httpResp.Body, kiroModelID)
 			if err != nil {
 				recordAPIResponseError(ctx, e.cfg, err)
 				return resp, err
@@ -1147,7 +1203,10 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 
 		// Rebuild payload with the correct origin for this endpoint
 		// Each endpoint requires its matching Origin value in the request body
-		kiroPayload, thinkingEnabled := buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+		kiroPayload, thinkingEnabled, payloadErr := buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+		if payloadErr != nil {
+			return nil, statusErr{code: http.StatusBadRequest, msg: payloadErr.Error()}
+		}
 
 		log.Debugf("kiro: stream trying endpoint %d/%d: %s (Name: %s, Origin: %s)",
 			endpointIdx+1, len(endpointConfigs), url, endpointConfig.Name, currentOrigin)
@@ -1171,12 +1230,9 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 			if endpointConfig.AmzTarget != "" {
 				httpReq.Header.Set("X-Amz-Target", endpointConfig.AmzTarget)
 			}
-			// Kiro-specific headers
-			httpReq.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentMode)
-			httpReq.Header.Set("x-amzn-codewhisperer-optout", "true")
-
-			// Apply dynamic fingerprint-based headers
+			// Apply the Kiro CLI generation headers.
 			applyDynamicFingerprint(httpReq, auth)
+			httpReq.Header.Set("Connection", "close")
 
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 			httpReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
@@ -1218,13 +1274,32 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				if isRetryableError(err) && attempt < retryCfg.MaxRetries {
 					delay := calculateRetryDelay(attempt, retryCfg)
 					logRetryAttempt(attempt, retryCfg.MaxRetries, fmt.Sprintf("stream socket error: %v", err), delay, endpointConfig.Name)
-					time.Sleep(delay)
+					if sleepErr := sleepKiroRetry(ctx, delay); sleepErr != nil {
+						return nil, sleepErr
+					}
 					continue
+				}
+				if endpointConfig.Name == "KiroRuntime" && isRetryableError(err) {
+					log.Warnf("kiro: runtime stream endpoint unavailable, trying Q fallback: %v", err)
+					break
 				}
 
 				return nil, err
 			}
 			recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+
+			if endpointConfig.Name == "KiroRuntime" &&
+				(httpResp.StatusCode == http.StatusBadRequest || httpResp.StatusCode == http.StatusForbidden ||
+					httpResp.StatusCode == http.StatusNotFound || httpResp.StatusCode == http.StatusMethodNotAllowed) {
+				respBody, _ := io.ReadAll(httpResp.Body)
+				_ = httpResp.Body.Close()
+				if shouldFallbackKiroRuntime(httpResp.StatusCode, respBody) {
+					appendAPIResponseChunk(ctx, e.cfg, respBody)
+					log.Warnf("kiro: runtime stream endpoint rejected the operation, trying Q fallback: status=%d", httpResp.StatusCode)
+					break
+				}
+				httpResp.Body = io.NopCloser(bytes.NewReader(respBody))
+			}
 
 			// Handle 429 errors (quota exhausted) - try next endpoint
 			// Each endpoint has its own quota pool, so we can try different endpoints
@@ -1241,6 +1316,9 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 
 				// Preserve last 429 so callers can correctly backoff when all endpoints are exhausted
 				last429Err = statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+				if endpointConfig.Name == "KiroRuntime" {
+					return nil, last429Err
+				}
 
 				log.Warnf("kiro: stream %s endpoint quota exhausted (429), will try next endpoint, body: %s",
 					endpointConfig.Name, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
@@ -1261,7 +1339,9 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				if isRetryableHTTPStatus(httpResp.StatusCode) && attempt < retryCfg.MaxRetries {
 					delay := calculateRetryDelay(attempt, retryCfg)
 					logRetryAttempt(attempt, retryCfg.MaxRetries, fmt.Sprintf("stream HTTP %d", httpResp.StatusCode), delay, endpointConfig.Name)
-					time.Sleep(delay)
+					if sleepErr := sleepKiroRetry(ctx, delay); sleepErr != nil {
+						return nil, sleepErr
+					}
 					continue
 				} else if attempt < maxRetries {
 					// Fallback for other 5xx errors (500, 501, etc.)
@@ -1270,7 +1350,9 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 						backoff = 30 * time.Second
 					}
 					log.Warnf("kiro: stream server error %d, retrying in %v (attempt %d/%d)", httpResp.StatusCode, backoff, attempt+1, maxRetries)
-					time.Sleep(backoff)
+					if sleepErr := sleepKiroRetry(ctx, backoff); sleepErr != nil {
+						return nil, sleepErr
+					}
 					continue
 				}
 				log.Errorf("kiro: stream server error %d after %d retries", httpResp.StatusCode, maxRetries)
@@ -1312,7 +1394,10 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 					}
 					accessToken, profileArn = kiroCredentials(auth)
 					// Rebuild payload with new profile ARN if changed
-					kiroPayload, _ = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+					kiroPayload, _, payloadErr = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+					if payloadErr != nil {
+						return nil, statusErr{code: http.StatusBadRequest, msg: payloadErr.Error()}
+					}
 					if attempt < maxRetries {
 						log.Infof("kiro: token refreshed successfully, retrying stream request (attempt %d/%d)", attempt+1, maxRetries+1)
 						continue
@@ -1357,14 +1442,8 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 					return nil, statusErr{code: httpResp.StatusCode, msg: "account suspended: " + string(respBody)}
 				}
 
-				// Check if this looks like a token-related 403 (some APIs return 403 for expired tokens)
-				isTokenRelated := strings.Contains(respBodyStr, "token") ||
-					strings.Contains(respBodyStr, "expired") ||
-					strings.Contains(respBodyStr, "invalid") ||
-					strings.Contains(respBodyStr, "unauthorized")
-
-				if isTokenRelated && attempt < maxRetries {
-					log.Warnf("kiro: 403 appears token-related, attempting token refresh")
+				if shouldRefreshKiroForbidden(respBody) && attempt < maxRetries {
+					log.Warnf("kiro: non-suspension 403, attempting token refresh")
 					refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 					if refreshErr != nil {
 						// Token refresh failed - return error immediately
@@ -1378,7 +1457,10 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 							// Continue anyway - the token is valid for this request
 						}
 						accessToken, profileArn = kiroCredentials(auth)
-						kiroPayload, _ = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+						kiroPayload, _, payloadErr = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
+						if payloadErr != nil {
+							return nil, statusErr{code: http.StatusBadRequest, msg: payloadErr.Error()}
+						}
 						log.Infof("kiro: token refreshed for 403, retrying stream request")
 						continue
 					}
@@ -1398,6 +1480,25 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 					log.Errorf("response body close error: %v", errClose)
 				}
 				return nil, statusErr{code: httpResp.StatusCode, msg: string(b)}
+			}
+
+			prefetchedBody, firstTokenErr := readKiroFirstStreamByte(ctx, httpResp.Body, defaultRetryConfig().FirstTokenTmout)
+			if firstTokenErr != nil {
+				if attempt < maxRetries {
+					delay := calculateRetryDelay(attempt, defaultRetryConfig())
+					logRetryAttempt(attempt, maxRetries, firstTokenErr.Error(), delay, endpointConfig.Name)
+					if sleepErr := sleepKiroRetry(ctx, delay); sleepErr != nil {
+						return nil, sleepErr
+					}
+					continue
+				}
+				return nil, statusErr{code: http.StatusGatewayTimeout, msg: firstTokenErr.Error()}
+			}
+			httpResp.Body = prefetchedBody
+			httpResp.Body = &kiroTimedReadCloser{
+				body:    httpResp.Body,
+				ctx:     ctx,
+				timeout: defaultRetryConfig().StreamReadTmout,
 			}
 
 			out := make(chan cliproxyexecutor.StreamChunk)
@@ -1638,187 +1739,106 @@ func determineAgenticMode(model string) (isAgentic, isChatOnly bool) {
 // For all other auth methods (e.g. social auth), profileArn is returned as-is,
 // with a warning logged if it is empty.
 func getEffectiveProfileArnWithWarning(auth *cliproxyauth.Auth, profileArn string) string {
-	if auth != nil && auth.Metadata != nil {
-		// Check 1: auth_method field, skip for builder-id only
-		if authMethod, ok := auth.Metadata["auth_method"].(string); ok && authMethod == "builder-id" {
-			return ""
-		}
-		// Check 2: auth_type field (from kiro-cli tokens)
-		if authType, ok := auth.Metadata["auth_type"].(string); ok && authType == "aws_sso_oidc" {
-			return "" // AWS SSO OIDC - don't include profileArn
-		}
+	if strings.TrimSpace(profileArn) != "" {
+		return profileArn
 	}
-	// For social auth and IDC, profileArn is required
-	if profileArn == "" {
-		log.Warnf("kiro: profile ARN not found in auth, API calls may fail")
+	if isKiroBuilderIDAuth(auth) {
+		return kiroBuilderIDProfileARN
 	}
-	return profileArn
+	return ""
+}
+
+func shouldRefreshKiroForbidden(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return !strings.Contains(lower, "suspended") &&
+		!strings.Contains(lower, "temporarily_suspended")
+}
+
+type kiroPrefetchedBody struct {
+	io.Reader
+	io.Closer
+}
+
+type kiroTimedReadCloser struct {
+	body    io.ReadCloser
+	ctx     context.Context
+	timeout time.Duration
+}
+
+func (r *kiroTimedReadCloser) Read(p []byte) (int, error) {
+	type readResult struct {
+		n    int
+		data []byte
+		err  error
+	}
+	resultCh := make(chan readResult, 1)
+	go func() {
+		data := make([]byte, len(p))
+		n, err := r.body.Read(data)
+		resultCh <- readResult{n: n, data: data, err: err}
+	}()
+
+	timer := time.NewTimer(r.timeout)
+	defer timer.Stop()
+	select {
+	case <-r.ctx.Done():
+		_ = r.body.Close()
+		return 0, r.ctx.Err()
+	case <-timer.C:
+		_ = r.body.Close()
+		return 0, fmt.Errorf("kiro stream read timeout after %s", r.timeout)
+	case result := <-resultCh:
+		copy(p, result.data[:result.n])
+		return result.n, result.err
+	}
+}
+
+func (r *kiroTimedReadCloser) Close() error {
+	return r.body.Close()
+}
+
+func readKiroFirstStreamByte(ctx context.Context, body io.ReadCloser, timeout time.Duration) (io.ReadCloser, error) {
+	type readResult struct {
+		n   int
+		buf [1]byte
+		err error
+	}
+	resultCh := make(chan readResult, 1)
+	go func() {
+		var result readResult
+		result.n, result.err = body.Read(result.buf[:])
+		resultCh <- result
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		_ = body.Close()
+		return nil, ctx.Err()
+	case <-timer.C:
+		_ = body.Close()
+		return nil, fmt.Errorf("kiro first token timeout after %s", timeout)
+	case result := <-resultCh:
+		if result.n == 0 {
+			_ = body.Close()
+			if result.err == nil {
+				result.err = io.EOF
+			}
+			return nil, fmt.Errorf("kiro upstream stream ended before any events were received: %w", result.err)
+		}
+		return &kiroPrefetchedBody{
+			Reader: io.MultiReader(bytes.NewReader(result.buf[:result.n]), body),
+			Closer: body,
+		}, nil
+	}
 }
 
 // mapModelToKiro maps external model names to Kiro model IDs.
 // Supports both Kiro and Amazon Q prefixes since they use the same API.
 // Agentic variants (-agentic suffix) map to the same backend model IDs.
 func (e *KiroExecutor) mapModelToKiro(model string) string {
-	if idx := strings.Index(strings.ToLower(model), kirocommon.KiroUnsupportedContext1MSuffix); idx >= 0 {
-		model = model[:idx]
-	}
-	modelMap := map[string]string{
-		// Amazon Q format (amazonq- prefix) - same API as Kiro
-		"amazonq-claude-opus-4-7":            "claude-opus-4.7",
-		"amazonq-claude-opus-4-8":            "claude-opus-4.8",
-		"amazonq-claude-opus-5":              "claude-opus-5",
-		"amazonq-claude-sonnet-5":            "claude-sonnet-5",
-		"amazonq-auto":                       "auto",
-		"amazonq-claude-opus-4-6":            "claude-opus-4.6",
-		"amazonq-claude-sonnet-4-6":          "claude-sonnet-4.6",
-		"amazonq-claude-opus-4-5":            "claude-opus-4.5",
-		"amazonq-claude-sonnet-4-5":          "claude-sonnet-4.5",
-		"amazonq-claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
-		"amazonq-claude-sonnet-4":            "claude-sonnet-4",
-		"amazonq-claude-sonnet-4-20250514":   "claude-sonnet-4",
-		"amazonq-claude-haiku-4-5":           "claude-haiku-4.5",
-		// Kiro format (kiro- prefix) - valid model names that should be preserved
-		"kiro-claude-opus-4-6":            "claude-opus-4.6",
-		"kiro-claude-opus-4-7":            "claude-opus-4.7",
-		"kiro-claude-opus-4-8":            "claude-opus-4.8",
-		"kiro-claude-opus-5":              "claude-opus-5",
-		"kiro-claude-sonnet-4-6":          "claude-sonnet-4.6",
-		"kiro-claude-opus-4-5":            "claude-opus-4.5",
-		"kiro-claude-sonnet-4-5":          "claude-sonnet-4.5",
-		"kiro-claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
-		"kiro-claude-sonnet-4":            "claude-sonnet-4",
-		"kiro-claude-sonnet-4-20250514":   "claude-sonnet-4",
-		"kiro-claude-haiku-4-5":           "claude-haiku-4.5",
-		"kiro-claude-sonnet-5":            "claude-sonnet-5",
-		"kiro-claude-sonnet-5-thinking":   "claude-sonnet-5",
-		"kiro-minimax-m2-5":               "minimax-m2.5",
-		"kiro-glm-5":                      "glm-5",
-		"kiro-gpt-5-6-sol":                "gpt-5.6-sol",
-		"kiro-gpt-5-6-terra":              "gpt-5.6-terra",
-		"kiro-gpt-5-6-luna":               "gpt-5.6-luna",
-		"kiro-auto":                       "auto",
-		"auto-kiro":                       "auto",
-		"claude-opus-4-6":                 "claude-opus-4.6",
-		"claude-opus-4.6":                 "claude-opus-4.6",
-		"claude-opus-4-7":                 "claude-opus-4.7",
-		"claude-opus-4.7":                 "claude-opus-4.7",
-		"claude-opus-4-8":                 "claude-opus-4.8",
-		"claude-opus-4.8":                 "claude-opus-4.8",
-		"claude-opus-5":                   "claude-opus-5",
-		"claude-sonnet-4-6":               "claude-sonnet-4.6",
-		"claude-sonnet-4.6":               "claude-sonnet-4.6",
-		"claude-opus-4-5":                 "claude-opus-4.5",
-		"claude-opus-4.5":                 "claude-opus-4.5",
-		"claude-haiku-4-5":                "claude-haiku-4.5",
-		"claude-haiku-4.5":                "claude-haiku-4.5",
-		"claude-sonnet-4-5":               "claude-sonnet-4.5",
-		"claude-sonnet-4-5-20250929":      "claude-sonnet-4.5",
-		"claude-sonnet-4.5":               "claude-sonnet-4.5",
-		"claude-sonnet-4":                 "claude-sonnet-4",
-		"claude-sonnet-4-20250514":        "claude-sonnet-4",
-		"auto":                            "auto",
-		"claude-sonnet-5":                 "claude-sonnet-5",
-		"minimax-m2.5":                    "minimax-m2.5",
-		"minimax-m2-5":                    "minimax-m2.5",
-		"glm-5":                           "glm-5",
-		"gpt-5.6-sol":                     "gpt-5.6-sol",
-		"gpt-5.6-terra":                   "gpt-5.6-terra",
-		"gpt-5.6-luna":                    "gpt-5.6-luna",
-		"gpt-5-6-sol":                     "gpt-5.6-sol",
-		"gpt-5-6-terra":                   "gpt-5.6-terra",
-		"gpt-5-6-luna":                    "gpt-5.6-luna",
-		// Agentic variants (same backend model IDs, but with special system prompt)
-		"claude-opus-4.6-agentic":        "claude-opus-4.6",
-		"claude-sonnet-4.6-agentic":      "claude-sonnet-4.6",
-		"claude-opus-4.5-agentic":        "claude-opus-4.5",
-		"claude-sonnet-4.5-agentic":      "claude-sonnet-4.5",
-		"claude-sonnet-4-agentic":        "claude-sonnet-4",
-		"claude-haiku-4.5-agentic":       "claude-haiku-4.5",
-		"kiro-claude-opus-4-6-agentic":   "claude-opus-4.6",
-		"kiro-claude-sonnet-4-6-agentic": "claude-sonnet-4.6",
-		"kiro-claude-opus-4-5-agentic":   "claude-opus-4.5",
-		"kiro-claude-sonnet-4-5-agentic": "claude-sonnet-4.5",
-		"kiro-claude-sonnet-4-agentic":   "claude-sonnet-4",
-		"kiro-claude-haiku-4-5-agentic":  "claude-haiku-4.5",
-		"kiro-claude-sonnet-5-agentic":   "claude-sonnet-5",
-		"claude-sonnet-5-agentic":        "claude-sonnet-5",
-		"kiro-minimax-m2-5-agentic":      "minimax-m2.5",
-		"kiro-glm-5-agentic":             "glm-5",
-	}
-	if kiroID, ok := modelMap[model]; ok {
-		return kiroID
-	}
-
-	// Smart fallback: try to infer model type from name patterns
-	modelLower := strings.ToLower(model)
-
-	// Check for Haiku variants
-	if strings.Contains(modelLower, "haiku") {
-		log.Debugf("kiro: unknown Haiku model '%s', mapping to claude-haiku-4.5", model)
-		return "claude-haiku-4.5"
-	}
-
-	// Check for Sonnet variants
-	if strings.Contains(modelLower, "sonnet") {
-		// Check for specific version patterns
-		if strings.Contains(modelLower, "3-7") || strings.Contains(modelLower, "3.7") {
-			log.Debugf("kiro: unknown Sonnet 3.7 model '%s', mapping to claude-3-7-sonnet-20250219", model)
-			return "claude-3-7-sonnet-20250219"
-		}
-		if strings.Contains(modelLower, "sonnet-5") || strings.Contains(modelLower, "sonnet-5-") {
-			log.Debugf("kiro: unknown Sonnet 5 model '%s', mapping to claude-sonnet-5", model)
-			return "claude-sonnet-5"
-		}
-		if strings.Contains(modelLower, "4-6") || strings.Contains(modelLower, "4.6") {
-			log.Debugf("kiro: unknown Sonnet 4.6 model '%s', mapping to claude-sonnet-4.6", model)
-			return "claude-sonnet-4.6"
-		}
-		if strings.Contains(modelLower, "4-5") || strings.Contains(modelLower, "4.5") {
-			log.Debugf("kiro: unknown Sonnet 4.5 model '%s', mapping to claude-sonnet-4.5", model)
-			return "claude-sonnet-4.5"
-		}
-		// Default to Sonnet 4
-		log.Debugf("kiro: unknown Sonnet model '%s', mapping to claude-sonnet-4", model)
-		return "claude-sonnet-4"
-	}
-
-	// Check for Opus variants
-	if strings.Contains(modelLower, "opus") {
-		if strings.Contains(modelLower, "opus-5") {
-			log.Debugf("kiro: unknown Opus 5 model '%s', mapping to claude-opus-5", model)
-			return "claude-opus-5"
-		}
-		if strings.Contains(modelLower, "4-8") || strings.Contains(modelLower, "4.8") {
-			log.Debugf("kiro: unknown Opus 4.8 model '%s', mapping to claude-opus-4.8", model)
-			return "claude-opus-4.8"
-		}
-		if strings.Contains(modelLower, "4-7") || strings.Contains(modelLower, "4.7") {
-			log.Debugf("kiro: unknown Opus 4.7 model '%s', mapping to claude-opus-4.7", model)
-			return "claude-opus-4.7"
-		}
-		if strings.Contains(modelLower, "4-6") || strings.Contains(modelLower, "4.6") {
-			log.Debugf("kiro: unknown Opus 4.6 model '%s', mapping to claude-opus-4.6", model)
-			return "claude-opus-4.6"
-		}
-		log.Debugf("kiro: unknown Opus model '%s', mapping to claude-opus-4.5", model)
-		return "claude-opus-4.5"
-	}
-
-	// Qwen models (Aliyun) - map to Kiro-compatible model IDs
-	if strings.Contains(modelLower, "qwen") {
-		// Qwen 3.6-plus and similar models
-		if strings.Contains(modelLower, "3.6") || strings.Contains(modelLower, "36") {
-			log.Debugf("kiro: Qwen 3.6 model '%s', mapping to qwen3.6-plus", model)
-			return model // Return as-is for Qwen models
-		}
-		// Other Qwen models
-		log.Debugf("kiro: Qwen model '%s', mapping to qwen-plus", model)
-		return model
-	}
-
-	// Final fallback to Sonnet 4.5 (most commonly used model)
-	log.Warnf("kiro: unknown model '%s', falling back to claude-sonnet-4.5", model)
-	return "claude-sonnet-4.5"
+	return kirocommon.NormalizeKiroModelID(model)
 }
 
 // EventStreamError represents an Event Stream processing error
@@ -1848,7 +1868,7 @@ type eventStreamMessage struct {
 // Extracts text content, tool uses, and stop_reason from the response.
 // Supports embedded [Called ...] tool calls and input buffering for toolUseEvent.
 // Returns: content, toolUses, usageInfo, stopReason, error
-func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.KiroToolUse, usage.Detail, string, error) {
+func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string, []kiroclaude.KiroToolUse, usage.Detail, string, error) {
 	var content strings.Builder
 	var toolUses []kiroclaude.KiroToolUse
 	var usageInfo usage.Detail
@@ -1996,7 +2016,10 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 
 		case "toolUseEvent":
 			// Handle dedicated tool use events with input buffering
-			completedToolUses, newState := kiroclaude.ProcessToolUseEvent(event, currentToolUse, processedIDs)
+			completedToolUses, newState, toolErr := kiroclaude.ProcessToolUseEvent(event, currentToolUse, processedIDs)
+			if toolErr != nil {
+				return "", nil, usageInfo, stopReason, toolErr
+			}
 			currentToolUse = newState
 			toolUses = append(toolUses, completedToolUses...)
 
@@ -2280,6 +2303,12 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 			}
 		}
 	}
+	if currentToolUse != nil && !processedIDs[currentToolUse.ToolUseID] {
+		return "", nil, usageInfo, stopReason, fmt.Errorf(
+			"kiro: incomplete tool use %s reached EOF before stop event",
+			currentToolUse.ToolUseID,
+		)
+	}
 
 	// Parse embedded tool calls from content (e.g., [Called tool_name with args: {...}])
 	contentStr := content.String()
@@ -2295,11 +2324,22 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		if len(toolUses) > 0 {
 			stopReason = "tool_use"
 			log.Debugf("kiro: parseEventStream using fallback stop_reason: tool_use (detected %d tool uses)", len(toolUses))
+		} else if strings.TrimSpace(cleanedContent) != "" &&
+			usageInfo.InputTokens == 0 &&
+			usageInfo.OutputTokens == 0 &&
+			upstreamContextPercentage == 0 {
+			stopReason = "max_tokens"
+			log.Warnf("kiro: parseEventStream inferred truncation because content ended without stop or usage signals")
 		} else {
 			stopReason = "end_turn"
 			log.Debugf("kiro: parseEventStream using fallback stop_reason: end_turn")
 		}
 	}
+	normalizedStopReason, stopErr := normalizeKiroStopReason(stopReason, strings.TrimSpace(cleanedContent) != "", len(toolUses) > 0)
+	if stopErr != nil {
+		return "", nil, usageInfo, "", stopErr
+	}
+	stopReason = normalizedStopReason
 
 	// Log warning if response was truncated due to max_tokens
 	if stopReason == "max_tokens" {
@@ -2308,9 +2348,11 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 
 	// Use contextUsagePercentage to calculate more accurate input tokens
 	// Kiro model has 200k max context, contextUsagePercentage represents the percentage used
-	// Formula: input_tokens = contextUsagePercentage * 200000 / 100
-	if upstreamContextPercentage > 0 {
-		calculatedInputTokens := int64(upstreamContextPercentage * 200000 / 100)
+	if contextWindow := kirocommon.KiroModelContextWindow(modelID); upstreamContextPercentage > 0 && contextWindow > 0 {
+		calculatedInputTokens := int64(upstreamContextPercentage*float64(contextWindow)/100) - usageInfo.OutputTokens
+		if calculatedInputTokens < 0 {
+			calculatedInputTokens = 0
+		}
 		if calculatedInputTokens > 0 {
 			localEstimate := usageInfo.InputTokens
 			usageInfo.InputTokens = calculatedInputTokens
@@ -2626,44 +2668,12 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 		}
 		if msg == nil {
 			// Normal end of stream (EOF)
-			// Flush any incomplete tool use before ending stream
 			if currentToolUse != nil && !processedIDs[currentToolUse.ToolUseID] {
-				log.Warnf("kiro: flushing incomplete tool use at EOF: %s (ID: %s)", currentToolUse.Name, currentToolUse.ToolUseID)
-				fullInput := currentToolUse.InputBuffer.String()
-				repairedJSON := kiroclaude.RepairJSON(fullInput)
-				var finalInput map[string]interface{}
-				if err := json.Unmarshal([]byte(repairedJSON), &finalInput); err != nil {
-					log.Warnf("kiro: failed to parse incomplete tool input at EOF: %v", err)
-					finalInput = make(map[string]interface{})
-				}
-
-				processedIDs[currentToolUse.ToolUseID] = true
-				contentBlockIndex++
-
-				// Send tool_use content block
-				blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", currentToolUse.ToolUseID, currentToolUse.Name)
-				sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStart, &translatorParam)
-				for _, chunk := range sseData {
-					enqueueTranslatedSSE(out, chunk)
-				}
-
-				// Send tool input as delta
-				inputBytes, _ := json.Marshal(finalInput)
-				inputDelta := kiroclaude.BuildClaudeInputJsonDeltaEvent(string(inputBytes), contentBlockIndex)
-				sseData = sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, inputDelta, &translatorParam)
-				for _, chunk := range sseData {
-					enqueueTranslatedSSE(out, chunk)
-				}
-
-				// Close block
-				blockStop := kiroclaude.BuildClaudeContentBlockStopEvent(contentBlockIndex)
-				sseData = sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStop, &translatorParam)
-				for _, chunk := range sseData {
-					enqueueTranslatedSSE(out, chunk)
-				}
-
-				hasToolUses = true
-				currentToolUse = nil
+				sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: fmt.Errorf(
+					"kiro: incomplete tool use %s reached EOF before stop event",
+					currentToolUse.ToolUseID,
+				)})
+				return
 			}
 
 			// DISABLED: Tag-based pending character flushing
@@ -3301,7 +3311,11 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 		case "toolUseEvent":
 			// Handle dedicated tool use events with input buffering
-			completedToolUses, newState := kiroclaude.ProcessToolUseEvent(event, currentToolUse, processedIDs)
+			completedToolUses, newState, toolErr := kiroclaude.ProcessToolUseEvent(event, currentToolUse, processedIDs)
+			if toolErr != nil {
+				sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: toolErr})
+				return
+			}
 			currentToolUse = newState
 
 			// Emit completed tool uses
@@ -3573,12 +3587,12 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 	// Use contextUsagePercentage to calculate more accurate input tokens
 	// Kiro model has 200k max context, contextUsagePercentage represents the percentage used
-	// Formula: input_tokens = contextUsagePercentage * 200000 / 100
-	// Note: The effective input context is ~170k (200k - 30k reserved for output)
-	if upstreamContextPercentage > 0 {
+	if contextWindow := kirocommon.KiroModelContextWindow(model); upstreamContextPercentage > 0 && contextWindow > 0 {
 		// Calculate input tokens from context percentage
-		// Using 200k as the base since that's what Kiro reports against
-		calculatedInputTokens := int64(upstreamContextPercentage * 200000 / 100)
+		calculatedInputTokens := int64(upstreamContextPercentage*float64(contextWindow)/100) - totalUsage.OutputTokens
+		if calculatedInputTokens < 0 {
+			calculatedInputTokens = 0
+		}
 
 		// Only use calculated value if it's significantly different from local estimate
 		// This provides more accurate token counts based on upstream data
@@ -3605,10 +3619,18 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 		if hasToolUses {
 			stopReason = "tool_use"
 			log.Debugf("kiro: streamToChannel using fallback stop_reason: tool_use")
+		} else if strings.TrimSpace(accumulatedContent.String()) != "" && !hasUpstreamUsage {
+			stopReason = "max_tokens"
+			log.Warnf("kiro: streamToChannel inferred truncation because content ended without stop or usage signals")
 		} else {
 			stopReason = "end_turn"
 			log.Debugf("kiro: streamToChannel using fallback stop_reason: end_turn")
 		}
+	}
+	stopReason, stopErr := normalizeKiroStopReason(stopReason, strings.TrimSpace(accumulatedContent.String()) != "", hasToolUses)
+	if stopErr != nil {
+		sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: stopErr})
+		return
 	}
 
 	// Log warning if response was truncated due to max_tokens
@@ -4236,21 +4258,17 @@ func (h *webSearchHandler) setMcpHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "*/*")
 
-	// 2. Kiro-specific headers (aligned with GAR)
-	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
-	req.Header.Set("x-amzn-codewhisperer-optout", "true")
-
-	// 3. User-Agent: Reuse applyDynamicFingerprint for consistency
+	// 2. Kiro CLI generation headers.
 	applyDynamicFingerprint(req, h.auth)
 
-	// 4. AWS SDK identifiers
+	// 3. AWS SDK identifiers
 	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
-	// 5. Authentication
+	// 4. Authentication
 	req.Header.Set("Authorization", "Bearer "+h.authToken)
 
-	// 6. Custom headers from auth attributes
+	// 5. Custom headers from auth attributes
 	util.ApplyCustomHeadersFromAttrs(req, h.authAttrs)
 }
 

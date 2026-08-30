@@ -94,6 +94,7 @@ type KiroKey struct {
 	RefreshToken      string `yaml:"refresh-token,omitempty" json:"refresh-token,omitempty"`
 	ProfileArn        string `yaml:"profile-arn,omitempty" json:"profile-arn,omitempty"`
 	Region            string `yaml:"region,omitempty" json:"region,omitempty"`
+	APIRegion         string `yaml:"api-region,omitempty" json:"api-region,omitempty"`
 	StartURL          string `yaml:"start-url,omitempty" json:"start-url,omitempty"`
 	ProxyURL          string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
 	AgentTaskType     string `yaml:"agent-task-type,omitempty" json:"agent-task-type,omitempty"`
