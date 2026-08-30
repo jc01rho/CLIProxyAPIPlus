@@ -2,14 +2,22 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
+
+
 
 // ZCodeAnthropicBaseURL is the pinned Anthropic-compatible base for the zcode
 // provider. glm-zcode logs in via ZCode's OAuth but auto-provisions a real
@@ -146,13 +154,82 @@ func buildZCodeSourceHeaders() http.Header {
 	h.Set("HTTP-Referer", "https://zcode.z.ai")
 	h.Set("X-Title", "Z Code@electron")
 	h.Set("X-Platform", runtime.GOOS+"-"+runtime.GOARCH)
-	h.Set("X-Client-Language", "unknown")
-	h.Set("X-Client-Timezone", "unknown")
+	h.Set("X-Client-Language", language())
+	h.Set("X-Client-Timezone", timezone())
 	h.Set("X-Os-Category", normalizeOsCategory(runtime.GOOS))
 	h.Set("X-ZCode-Agent", "glm")
 	h.Set("X-ZCode-App-Version", zcodeAppVersion)
 	h.Set("X-Release-Channel", zcodeReleaseChannel)
+	h.Set("X-Device-Mid", deviceMid())
+	h.Set("X-Os-Version", osVersion())
 	return h
+}
+
+// language returns the client language locale, falling back to "en-US".
+func language() string {
+	// Use golang.org/x/text/language for locale detection
+	// For now, try environment variables first
+	if locale := os.Getenv("LANG"); locale != "" {
+		return strings.Split(locale, ".")[0]
+	}
+	if locale := os.Getenv("LC_ALL"); locale != "" {
+		return strings.Split(locale, ".")[0]
+	}
+	if locale := os.Getenv("LANGUAGE"); locale != "" {
+		return strings.Split(locale, ":")[0]
+	}
+	return "en-US"
+}
+
+// timezone returns the client timezone, falling back to "UTC".
+func timezone() string {
+	loc, _ := time.LoadLocation(os.Getenv("TZ"))
+	if loc == nil {
+		return "UTC"
+	}
+	return fmt.Sprintf("%s", loc)
+}
+
+// deviceMid reads the ZCode device ID from the telemetry file.
+func deviceMid() string {
+	const file = "telemetry-state.json"
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(dir, "ZCode", file)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(data, &m) != nil {
+		return ""
+	}
+	v, _ := m["deviceMid"].(string)
+	return strings.TrimSpace(v)
+}
+
+// osVersion returns the OS version string.
+func osVersion() string {
+	if runtime.GOOS == "linux" {
+		if data, err := os.ReadFile("/etc/os-release"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "VERSION_ID=") {
+					return strings.Trim(strings.TrimPrefix(line, "VERSION_ID="), "\"")
+				}
+			}
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		out, _ := exec.Command("sw_vers", "-productVersion").Output()
+		return strings.TrimSpace(string(out))
+	}
+	if runtime.GOOS == "windows" {
+		out, _ := exec.Command("cmd", "/c", "ver").Output()
+		return strings.TrimSpace(string(out))
+	}
+	return ""
 }
 
 // normalizeOsCategory maps a GOOS to ZCode's OS category.

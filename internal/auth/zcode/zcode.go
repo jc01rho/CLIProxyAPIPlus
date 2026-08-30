@@ -592,8 +592,15 @@ func (o *OAuth) CheckStartPlan(ctx context.Context, zcodeJWT string) *StartPlanI
 			} `json:"plans"`
 		} `json:"data"`
 	}
+	// App fallback logic: if the broker JWT exists, the account went through ZCode
+	// OAuth and is at least a Start Plan candidate. Try to query the balance,
+	// but treat any failure as "start plan present" so the executor routes
+	// through the zcode-plan gateway first. The gateway will reject with
+	// 1005 (quota exhausted) or similar if the start plan is actually absent
+	// or exhausted, at which point the executor falls back to the provisioned
+	// api.z.ai key.
 	if err := o.getJSON(ctx, o.startPlanBalanceURL, zcodeJWT, "billing/balance", &resp); err != nil {
-		return nil
+		return &StartPlanInfo{Active: true}
 	}
 	for _, p := range resp.Data.Plans {
 		status := strings.ToLower(strings.TrimSpace(p.Status))
