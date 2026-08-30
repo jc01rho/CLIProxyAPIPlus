@@ -40,14 +40,18 @@ func TestResolveOAuthUpstreamModel_SameAuthRealModelBeatsAliasExposedCollision(t
 		reg.UnregisterClient(auth.ID)
 	})
 
+	// Same-ID duplicate registration (alias-exposed entry deduped away by
+	// preferClientModelInfo): the configured alias target resolves normally.
+	// See the note on TestResolveOAuthUpstreamModel_RealRegisteredAliasName-
+	// BeatsConfiguredForkAlias for the semantics update.
 	resolved := m.resolveOAuthUpstreamModel(auth, "gpt-5.4")
-	if resolved != "gpt-5.4" {
-		t.Fatalf("resolveOAuthUpstreamModel(collision real-first) = %q, want %q", resolved, "gpt-5.4")
+	if resolved != "gpt-5.2" {
+		t.Fatalf("resolveOAuthUpstreamModel(configured alias target for deduped collision) = %q, want %q", resolved, "gpt-5.2")
 	}
 
 	resolvedWithSuffix := m.resolveOAuthUpstreamModel(auth, "gpt-5.4(high)")
-	if resolvedWithSuffix != "gpt-5.4(high)" {
-		t.Fatalf("resolveOAuthUpstreamModel(collision real-first with suffix) = %q, want %q", resolvedWithSuffix, "gpt-5.4(high)")
+	if resolvedWithSuffix != "gpt-5.2(high)" {
+		t.Fatalf("resolveOAuthUpstreamModel(configured alias target with suffix) = %q, want %q", resolvedWithSuffix, "gpt-5.2(high)")
 	}
 }
 
@@ -84,11 +88,21 @@ func TestPrepareExecutionModels_SameAuthRealModelBeatsAliasExposedCollision(t *t
 	})
 
 	models := m.prepareExecutionModels(auth, "gpt-5.4")
-	if len(models) != 1 || models[0] != "gpt-5.4" {
-		t.Fatalf("prepareExecutionModels(collision real-first) = %v, want [%q]", models, "gpt-5.4")
+	if len(models) != 1 || models[0] != "gpt-5.2" {
+		t.Fatalf("prepareExecutionModels(configured alias target for deduped collision) = %v, want [%q]", models, "gpt-5.2")
 	}
 }
 
+// TestResolveOAuthUpstreamModel_RealRegisteredAliasNameBeatsConfiguredForkAlias
+// was updated for upstream nofork-alias semantics (12b88f3a): a configured
+// (non-force) alias always resolves to its target for both execution and
+// state keys, even when the registry also registers the alias name as a real
+// client model. The old local expectation (registry real model outranks the
+// configured alias) conflicted with ReconcileRegistryModelStates/MarkResult
+// alias→target state migration and cannot coexist with it for identical
+// inputs. The registry itself still prefers real entries over alias-exposed
+// duplicates (preferClientModelInfo), which covers the same-ID duplicate
+// registration case at the registry layer.
 func TestResolveOAuthUpstreamModel_RealRegisteredAliasNameBeatsConfiguredForkAlias(t *testing.T) {
 	t.Parallel()
 
@@ -121,17 +135,17 @@ func TestResolveOAuthUpstreamModel_RealRegisteredAliasNameBeatsConfiguredForkAli
 	})
 
 	resolved := m.resolveOAuthUpstreamModel(auth, "gpt-5.5")
-	if resolved != "gpt-5.5" {
-		t.Fatalf("resolveOAuthUpstreamModel(real model beats configured alias) = %q, want %q", resolved, "gpt-5.5")
+	if resolved != "gpt-5.4" {
+		t.Fatalf("resolveOAuthUpstreamModel(configured alias target wins over registry real model) = %q, want %q", resolved, "gpt-5.4")
 	}
 
 	resolvedWithSuffix := m.resolveOAuthUpstreamModel(auth, "gpt-5.5(high)")
-	if resolvedWithSuffix != "gpt-5.5(high)" {
-		t.Fatalf("resolveOAuthUpstreamModel(real model beats configured alias with suffix) = %q, want %q", resolvedWithSuffix, "gpt-5.5(high)")
+	if resolvedWithSuffix != "gpt-5.4(high)" {
+		t.Fatalf("resolveOAuthUpstreamModel(configured alias target with suffix) = %q, want %q", resolvedWithSuffix, "gpt-5.4(high)")
 	}
 
 	models := m.prepareExecutionModels(auth, "gpt-5.5")
-	if len(models) != 1 || models[0] != "gpt-5.5" {
-		t.Fatalf("prepareExecutionModels(real model beats configured alias) = %v, want [%q]", models, "gpt-5.5")
+	if len(models) != 1 || models[0] != "gpt-5.4" {
+		t.Fatalf("prepareExecutionModels(configured alias target) = %v, want [%q]", models, "gpt-5.4")
 	}
 }

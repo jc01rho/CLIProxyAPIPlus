@@ -263,7 +263,10 @@ func (m *Manager) selectionModelForAuth(auth *Auth, routeModel string) string {
 	if strings.TrimSpace(requestedModel) == "" {
 		requestedModel = strings.TrimSpace(routeModel)
 	}
-	resolvedModel := m.applyOAuthModelAlias(auth, requestedModel)
+	// State-key semantics: a configured (non-force) alias always maps to its
+	// target for cooldown/quota state keys, even when the registry also lists
+	// the alias route key as a client model (upstream nofork-alias migration).
+	resolvedModel := m.applyOAuthModelAliasStateKey(auth, requestedModel)
 	if strings.TrimSpace(resolvedModel) == "" {
 		resolvedModel = requestedModel
 	}

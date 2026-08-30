@@ -560,6 +560,7 @@ func (m *Manager) executeStreamWithRetry(
 	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int, *int, int, int) (*cliproxyexecutor.StreamResult, error),
 ) (*cliproxyexecutor.StreamResult, error) {
 	var lastErr error
+	var preferredUpstreamErr error
 	homeRetryLimit := -1
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	attempt := 0
@@ -569,6 +570,9 @@ func (m *Manager) executeStreamWithRetry(
 		result, errStream := execOnce(ctx, providers, req, opts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
 		if errStream == nil {
 			return result, nil
+		}
+		if hasUpstreamExecutionAttempt(errStream) {
+			preferredUpstreamErr = errStream
 		}
 		if !fallbackAllowed {
 			// The requested model is not on the fallback allowlist: the initial
@@ -608,6 +612,16 @@ func (m *Manager) executeStreamWithRetry(
 		attempt++
 		retryRoundPending = m.HomeEnabled()
 		retryRoundWaited = false
+	}
+	if lastErr == nil {
+		return nil, nil
+	}
+	// Home retry-round exhaustion swaps the pre-upstream terminal failure for
+	// the earlier upstream error as the visible cause (upstream
+	// preferredUpstreamErr semantics preserved through the route-fallback
+	// wrapper).
+	if preferredUpstreamErr != nil && (!m.HomeEnabled() || isHomeRetryRoundExhausted(lastErr)) {
+		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 	}
 	return nil, lastErr
 }
