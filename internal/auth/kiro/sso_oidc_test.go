@@ -3,7 +3,6 @@ package kiro
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +25,7 @@ func (rt *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 	}, nil
 }
 
-func TestTryListAvailableProfiles_UsesClientIDForAccountKey(t *testing.T) {
+func TestTryListAvailableProfiles_UsesCLI2191HeadersWithClientID(t *testing.T) {
 	rt := &recordingRoundTripper{}
 	client := &SSOOIDCClient{
 		httpClient: &http.Client{Transport: rt},
@@ -37,16 +36,13 @@ func TestTryListAvailableProfiles_UsesClientIDForAccountKey(t *testing.T) {
 		t.Fatal("expected profileArn, got empty result")
 	}
 
-	accountKey := GetAccountKey("client-id-123", "refresh-token-456")
-	fp := GlobalFingerprintManager().GetFingerprint(accountKey)
-	expected := fmt.Sprintf("aws-sdk-js/%s KiroIDE-%s-%s", fp.RuntimeSDKVersion, fp.KiroVersion, fp.KiroHash)
 	got := rt.lastReq.Header.Get("X-Amz-User-Agent")
-	if got != expected {
-		t.Errorf("X-Amz-User-Agent = %q, want %q", got, expected)
+	if got != KiroCLIXAmzUserAgent {
+		t.Errorf("X-Amz-User-Agent = %q, want %q", got, KiroCLIXAmzUserAgent)
 	}
 }
 
-func TestTryListAvailableProfiles_UsesRefreshTokenWhenClientIDMissing(t *testing.T) {
+func TestTryListAvailableProfiles_UsesCLI2191HeadersWithoutClientID(t *testing.T) {
 	rt := &recordingRoundTripper{}
 	client := &SSOOIDCClient{
 		httpClient: &http.Client{Transport: rt},
@@ -57,12 +53,9 @@ func TestTryListAvailableProfiles_UsesRefreshTokenWhenClientIDMissing(t *testing
 		t.Fatal("expected profileArn, got empty result")
 	}
 
-	accountKey := GetAccountKey("", "refresh-token-789")
-	fp := GlobalFingerprintManager().GetFingerprint(accountKey)
-	expected := fmt.Sprintf("aws-sdk-js/%s KiroIDE-%s-%s", fp.RuntimeSDKVersion, fp.KiroVersion, fp.KiroHash)
 	got := rt.lastReq.Header.Get("X-Amz-User-Agent")
-	if got != expected {
-		t.Errorf("X-Amz-User-Agent = %q, want %q", got, expected)
+	if got != KiroCLIXAmzUserAgent {
+		t.Errorf("X-Amz-User-Agent = %q, want %q", got, KiroCLIXAmzUserAgent)
 	}
 }
 

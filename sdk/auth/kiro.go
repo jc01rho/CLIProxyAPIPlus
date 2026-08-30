@@ -267,11 +267,16 @@ func (a *KiroAuthenticator) LoginWithGitHub(ctx context.Context, cfg *config.Con
 	return nil, fmt.Errorf("GitHub login is not available for third-party applications due to AWS Cognito restrictions.\n\nAlternatives:\n  1. Use AWS Builder ID: cliproxy kiro --builder-id\n  2. Import token from Kiro IDE: cliproxy kiro --import\n\nTo get a token from Kiro IDE:\n  1. Open Kiro IDE and login with GitHub\n  2. Find: ~/.kiro/kiro-auth-token.json\n  3. Run: cliproxy kiro --import")
 }
 
-// ImportFromKiroIDE imports token from Kiro IDE's token file.
+// ImportFromKiroIDE imports credentials from Kiro CLI, an explicit credentials
+// file, or the legacy Kiro IDE token file.
 func (a *KiroAuthenticator) ImportFromKiroIDE(ctx context.Context, cfg *config.Config) (*coreauth.Auth, error) {
-	tokenData, err := kiroauth.LoadKiroIDEToken()
+	tokenData, err := kiroauth.LoadImportedKiroCredential()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load Kiro IDE token: %w", err)
+		tokenData, err = kiroauth.LoadKiroIDEToken()
+		if err != nil {
+			return nil, fmt.Errorf("failed to load Kiro CLI or IDE token: %w", err)
+		}
+		tokenData.Source = "kiro-ide-token"
 	}
 
 	// Parse expires_at
@@ -317,26 +322,41 @@ func (a *KiroAuthenticator) ImportFromKiroIDE(ctx context.Context, cfg *config.C
 			"client_id_hash": tokenData.ClientIDHash,
 			"email":          tokenData.Email,
 			"region":         tokenData.Region,
+			"api_region":     tokenData.APIRegion,
 			"start_url":      tokenData.StartURL,
 		},
 		Attributes: map[string]string{
 			"profile_arn": tokenData.ProfileArn,
-			"source":      "kiro-ide-import",
+			"source":      firstNonEmptyKiroValue(tokenData.Source, "kiro-import"),
 			"email":       tokenData.Email,
 			"region":      tokenData.Region,
+			"api_region":  tokenData.APIRegion,
 		},
 		// NextRefreshAfter: 20 minutes before expiry
 		NextRefreshAfter: expiresAt.Add(-20 * time.Minute),
 	}
 
 	// Display the email if extracted
+	sourceLabel := tokenData.Source
+	if sourceLabel == "" {
+		sourceLabel = "kiro-ide"
+	}
 	if tokenData.Email != "" {
-		fmt.Printf("\n✓ Imported Kiro token from IDE (Provider: %s, Account: %s)\n", tokenData.Provider, tokenData.Email)
+		fmt.Printf("\n✓ Imported Kiro credentials from %s (Provider: %s, Account: %s)\n", sourceLabel, tokenData.Provider, tokenData.Email)
 	} else {
-		fmt.Printf("\n✓ Imported Kiro token from IDE (Provider: %s)\n", tokenData.Provider)
+		fmt.Printf("\n✓ Imported Kiro credentials from %s (Provider: %s)\n", sourceLabel, tokenData.Provider)
 	}
 
 	return record, nil
+}
+
+func firstNonEmptyKiroValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // Refresh refreshes an expired Kiro token using AWS SSO OIDC.

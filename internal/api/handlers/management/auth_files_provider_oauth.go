@@ -12,7 +12,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
+		"strconv"
+"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -1402,18 +1403,24 @@ func (h *Handler) RequestZcodeToken(c *gin.Context) {
 					CreatedAt: now,
 					UpdatedAt: now,
 					Metadata: map[string]any{
-						"type":          "zcode",
-						"access_token":  creds.AccessToken,
-						"refresh_token": creds.RefreshToken,
-						"expires_at":    creds.ExpiresAt.Format(time.RFC3339),
-						"email":         creds.Email,
-						"account_id":    creds.AccountID,
+						"type":             "zcode",
+						"access_token":     creds.AccessToken,
+						"refresh_token":    creds.RefreshToken,
+						"expires_at":       creds.ExpiresAt.Format(time.RFC3339),
+						"email":            creds.Email,
+						"account_id":       creds.AccountID,
+						"zcode_token":      creds.ZcodeToken,
+						"start_plan":       creds.StartPlanActive,
+						"start_plan_limit": creds.StartPlanLimit,
+						"start_plan_used":  creds.StartPlanUsed,
 					},
 					Attributes: map[string]string{
-						"api_key":  creds.AccessToken,
-						"base_url": zcode.DefaultAnthropicBase,
-						"email":    creds.Email,
-						"source":   "zcode-oauth",
+						"api_key":           creds.AccessToken,
+						"base_url":          zcode.DefaultAnthropicBase,
+						"email":             creds.Email,
+						"source":            "zcode-oauth",
+						"zcode_token":       creds.ZcodeToken,
+						"start_plan_active": strconv.FormatBool(creds.StartPlanActive),
 					},
 					NextRefreshAfter: creds.ExpiresAt.Add(-24 * time.Hour),
 				}

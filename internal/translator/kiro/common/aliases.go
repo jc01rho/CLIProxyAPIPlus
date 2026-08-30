@@ -23,35 +23,21 @@ const (
 
 // Hyphenated allowlists. Lookup always hyphenates first so
 // "gpt-5.6-sol" and "gpt-5-6-sol" match the same entry.
-// Adaptive envelope is the kiro-lb-verified set plus OmniRoute sonnet-5.
+// Adaptive envelope is the exact Kiro CLI 2.19.1 verified set.
 var kiroAdaptiveThinkingModels = map[string]struct{}{
 	"claude-opus-4-6":   {},
 	"claude-opus-4-7":   {},
 	"claude-opus-4-8":   {},
 	"claude-opus-5":     {},
 	"claude-sonnet-4-6": {},
-	"claude-sonnet-5":   {},
 }
 
-var kiroNativeReasoningModels = map[string]struct{}{
-	"gpt-5-6-sol":   {},
-	"gpt-5-6-terra": {},
-	"gpt-5-6-luna":  {},
-}
+var kiroNativeReasoningModels = map[string]struct{}{}
 
 // CanonicalKiroUpstreamID strips kiro-/amazonq- prefixes and local suffixes,
 // then hyphenates dots so allowlist lookups are stable.
 func CanonicalKiroUpstreamID(modelID string) string {
-	id := strings.ToLower(strings.TrimSpace(modelID))
-	if idx := strings.Index(id, KiroUnsupportedContext1MSuffix); idx >= 0 {
-		id = id[:idx]
-	}
-	id = strings.TrimPrefix(id, "kiro-")
-	id = strings.TrimPrefix(id, "amazonq-")
-	id = strings.TrimSuffix(id, "-thinking")
-	id = strings.TrimSuffix(id, "-agentic")
-	id = strings.TrimSuffix(id, "-chat")
-	return strings.ReplaceAll(id, ".", "-")
+	return strings.ReplaceAll(NormalizeKiroModelID(modelID), ".", "-")
 }
 
 // SupportsKiroAdaptiveThinking reports whether the model accepts Kiro's
@@ -74,21 +60,15 @@ func SupportsKiroNativeReasoning(model string) bool {
 // and strips Anthropic [1m] rather than rejecting either. -thinking on
 // non-adaptive models is rejected.
 func IsObsoleteKiroRequestAlias(modelID string) bool {
-	id := strings.ToLower(strings.TrimSpace(modelID))
-	if !strings.HasSuffix(id, "-thinking") && !strings.Contains(id, "-thinking[") {
-		return false
-	}
-	return !SupportsKiroAdaptiveThinking(id)
+	_ = modelID
+	return false
 }
 
 // RejectKiroRequestedModel returns a client-facing reason if the model must
 // not be sent upstream. Empty string means the request may proceed.
 // [1m] is stripped by CanonicalKiroUpstreamID / mapModelToKiro, not rejected.
 func RejectKiroRequestedModel(modelID string) string {
-	id := strings.ToLower(strings.TrimSpace(modelID))
-	if (strings.HasSuffix(id, "-thinking") || strings.Contains(id, "-thinking[")) && !SupportsKiroAdaptiveThinking(id) {
-		return KiroUnsupportedThinkingMessage
-	}
+	_ = modelID
 	return ""
 }
 
@@ -193,18 +173,9 @@ func PlanKiroThinking(modelID string, thinkingEnabled bool, effort string, maxTo
 			"output_config": map[string]any{"effort": plan.Effort},
 			"thinking":      map[string]any{"type": "adaptive", "display": "summarized"},
 		}
-	case plan.NativeReasoning:
-		plan.Fields = map[string]any{
-			"reasoning": map[string]any{"effort": plan.Effort},
-		}
 	default:
-		// Existing local behavior: prompt-tag thinking still works for
-		// sonnet-4.5 / haiku / etc. Do not attach additionalModelRequestFields
-		// — Kiro 400s that envelope on those models.
-		if thinkingEnabled {
-			plan.InjectPrompt = true
-			plan.ThinkingLength = 16000
-		}
+		// Unsupported models omit request-side thinking fields. The current
+		// Kiro CLI does not emulate reasoning through prompt tags.
 	}
 	return plan
 }

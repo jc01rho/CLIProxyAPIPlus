@@ -164,8 +164,9 @@ func DoKiroAWSAuthCodeLogin(cfg *config.Config, options *LoginOptions) {
 	fmt.Println("Kiro AWS authentication successful!")
 }
 
-// DoKiroImport imports Kiro token from Kiro IDE's token file.
-// This is useful for users who have already logged in via Kiro IDE
+// DoKiroImport imports Kiro credentials from the Kiro CLI SQLite store,
+// an explicit KIRO_CREDS_FILE, or the Kiro IDE token file.
+// This is useful for users who have already logged in via Kiro CLI or Kiro IDE
 // and want to use the same credentials in CLI Proxy API.
 //
 // Parameters:
@@ -183,11 +184,10 @@ func DoKiroImport(cfg *config.Config, options *LoginOptions) {
 	record, err := authenticator.ImportFromKiroIDE(context.Background(), cfg)
 	if err != nil {
 		log.Errorf("Kiro token import failed: %v", err)
-		fmt.Println("\nMake sure you have logged in to Kiro IDE first:")
-		fmt.Println("1. Open Kiro IDE")
-		fmt.Println("2. Click 'Sign in with Google' (or GitHub)")
-		fmt.Println("3. Complete the login process")
-		fmt.Println("4. Run this command again")
+		fmt.Println("\nMake sure you have logged in to Kiro CLI or Kiro IDE first:")
+		fmt.Println("1. Run `kiro-cli login` or sign in from Kiro IDE")
+		fmt.Println("2. Complete the login process")
+		fmt.Println("3. Run this command again")
 		return
 	}
 

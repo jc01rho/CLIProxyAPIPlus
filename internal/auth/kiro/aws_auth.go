@@ -3,11 +3,13 @@
 package kiro
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,8 +21,9 @@ import (
 )
 
 const (
-	pathGetUsageLimits      = "getUsageLimits"
 	pathListAvailableModels = "ListAvailableModels"
+
+	BuilderIDRequestProfileARN = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
 )
 
 // KiroAuth handles AWS CodeWhisperer authentication and API communication.
@@ -42,6 +45,51 @@ func NewKiroAuth(cfg *config.Config) *KiroAuth {
 	return &KiroAuth{
 		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{Timeout: 120 * time.Second}),
 	}
+}
+
+func newKiroUsageLimitsRequest(ctx context.Context, tokenData *KiroTokenData, requireEmail bool) (*http.Request, error) {
+	if tokenData == nil {
+		return nil, fmt.Errorf("kiro token data is required")
+	}
+	profileArn := strings.TrimSpace(tokenData.ProfileArn)
+	if profileArn == "" && strings.EqualFold(strings.TrimSpace(tokenData.AuthMethod), "builder-id") {
+		profileArn = BuilderIDRequestProfileARN
+	}
+	region := NormalizeKiroRegion(tokenData.APIRegion)
+	if region == "" {
+		region = ExtractRegionFromProfileArn(profileArn)
+	}
+	if region == "" {
+		region = NormalizeKiroRegion(tokenData.Region)
+	}
+	if region == "" {
+		region = "us-east-1"
+	}
+	params := map[string]string{
+		"origin":       "AI_EDITOR",
+		"profileArn":   profileArn,
+		"resourceType": "AGENTIC_REQUEST",
+	}
+	if requireEmail && profileArn == "" {
+		params["isEmailRequired"] = "true"
+	}
+	values := url.Values{}
+	for key, value := range params {
+		values.Set(key, value)
+	}
+	requestBody, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode usage request: %w", err)
+	}
+	requestURL := fmt.Sprintf("https://management.%s.kiro.dev/?%s", region, values.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(requestBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create usage request: %w", err)
+	}
+	setRuntimeHeaders(req, tokenData.AccessToken, GetAccountKey(tokenData.ClientID, tokenData.RefreshToken))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Amz-Target", "AmazonCodeWhispererService.GetUsageLimits")
+	return req, nil
 }
 
 // LoadTokenFromFile loads token data from a file path.
@@ -159,15 +207,21 @@ func (k *KiroAuth) makeRequest(ctx context.Context, path string, tokenData *Kiro
 //   - *KiroUsageInfo: The usage information
 //   - error: An error if the request fails
 func (k *KiroAuth) GetUsageLimits(ctx context.Context, tokenData *KiroTokenData) (*KiroUsageInfo, error) {
-	queryParams := map[string]string{
-		"origin":       "AI_EDITOR",
-		"profileArn":   tokenData.ProfileArn,
-		"resourceType": "AGENTIC_REQUEST",
-	}
-
-	body, err := k.makeRequest(ctx, pathGetUsageLimits, tokenData, queryParams)
+	req, err := newKiroUsageLimitsRequest(ctx, tokenData, false)
 	if err != nil {
 		return nil, err
+	}
+	resp, err := k.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("usage request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read usage response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("usage API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
@@ -177,6 +231,7 @@ func (k *KiroAuth) GetUsageLimits(ctx context.Context, tokenData *KiroTokenData)
 		UsageBreakdownList []struct {
 			CurrentUsageWithPrecision float64 `json:"currentUsageWithPrecision"`
 			UsageLimitWithPrecision   float64 `json:"usageLimitWithPrecision"`
+			ResourceType              string  `json:"resourceType"`
 		} `json:"usageBreakdownList"`
 		NextDateReset float64 `json:"nextDateReset"`
 	}
@@ -190,9 +245,13 @@ func (k *KiroAuth) GetUsageLimits(ctx context.Context, tokenData *KiroTokenData)
 		NextReset:         fmt.Sprintf("%v", result.NextDateReset),
 	}
 
-	if len(result.UsageBreakdownList) > 0 {
-		usage.CurrentUsage = result.UsageBreakdownList[0].CurrentUsageWithPrecision
-		usage.UsageLimit = result.UsageBreakdownList[0].UsageLimitWithPrecision
+	for _, breakdown := range result.UsageBreakdownList {
+		if breakdown.ResourceType != "" && breakdown.ResourceType != "AGENTIC_REQUEST" {
+			continue
+		}
+		usage.CurrentUsage = breakdown.CurrentUsageWithPrecision
+		usage.UsageLimit = breakdown.UsageLimitWithPrecision
+		break
 	}
 
 	return usage, nil

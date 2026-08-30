@@ -65,28 +65,16 @@ func NewCodeWhispererClient(cfg *config.Config, machineID string) *CodeWhisperer
 // GetUsageLimits fetches usage limits and user info from CodeWhisperer API.
 // This is the recommended way to get user email after login.
 func (c *CodeWhispererClient) GetUsageLimits(ctx context.Context, accessToken, clientID, refreshToken, profileArn string) (*UsageLimitsResponse, error) {
-	queryParams := map[string]string{
-		"origin":       "AI_EDITOR",
-		"resourceType": "AGENTIC_REQUEST",
-	}
-	// Determine endpoint based on profileArn region
-	endpoint := GetKiroAPIEndpointFromProfileArn(profileArn)
-	if profileArn != "" {
-		queryParams["profileArn"] = profileArn
-	} else {
-		queryParams["isEmailRequired"] = "true"
-	}
-	url := buildURL(endpoint, pathGetUsageLimits, queryParams)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := newKiroUsageLimitsRequest(ctx, &KiroTokenData{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ProfileArn:   profileArn,
+		ClientID:     clientID,
+	}, true)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
-
-	accountKey := GetAccountKey(clientID, refreshToken)
-	setRuntimeHeaders(req, accessToken, accountKey)
-
-	log.Debugf("codewhisperer: GET %s", url)
+	log.Debugf("codewhisperer: POST %s://%s%s", req.URL.Scheme, req.URL.Host, req.URL.Path)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

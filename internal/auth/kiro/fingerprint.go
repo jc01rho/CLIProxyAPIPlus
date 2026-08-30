@@ -15,6 +15,11 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	KiroCLIUserAgent     = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17975 os/linux lang/rust/1.92.0 md/appVersion-2.19.1 app/AmazonQ-For-CLI"
+	KiroCLIXAmzUserAgent = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17975 os/linux lang/rust/1.92.0 m/F app/AmazonQ-For-CLI"
+)
+
 // Fingerprint holds multi-dimensional fingerprint data for runtime request disguise.
 type Fingerprint struct {
 	OIDCSDKVersion      string // 3.7xx (AWS SDK JS)
@@ -264,15 +269,11 @@ func SetOIDCHeaders(req *http.Request) {
 }
 
 func setRuntimeHeaders(req *http.Request, accessToken string, accountKey string) {
-	fp := GlobalFingerprintManager().GetFingerprint(accountKey)
-	machineID := fp.KiroHash
+	_ = accountKey
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/%s KiroIDE-%s-%s",
-		fp.RuntimeSDKVersion, fp.KiroVersion, machineID))
-	req.Header.Set("User-Agent", fmt.Sprintf(
-		"aws-sdk-js/%s ua/2.1 os/%s#%s lang/js md/nodejs#%s api/codewhispererruntime#%s m/N,E KiroIDE-%s-%s",
-		fp.RuntimeSDKVersion, fp.OSType, fp.OSVersion, fp.NodeVersion, fp.RuntimeSDKVersion,
-		fp.KiroVersion, machineID))
+	req.Header.Set("x-amz-user-agent", KiroCLIXAmzUserAgent)
+	req.Header.Set("User-Agent", KiroCLIUserAgent)
+	req.Header.Set("x-kiro-attempt", "1;max=3")
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
-	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
+	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
 }

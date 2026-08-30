@@ -2,8 +2,30 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func TestExplicitEmptyToolsDegradesReplayedToolCallsToText(t *testing.T) {
+	input := []byte(`{
+		"model": "kiro-claude-sonnet-4-6",
+		"tools": [],
+		"messages": [
+			{"role":"user","content":"Read the file"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"/tmp/a\"}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"file contents"},
+			{"role":"user","content":"Summarize it"}
+		]
+	}`)
+
+	result, _ := BuildKiroPayloadFromOpenAI(input, "kiro-claude-sonnet-4-6", "", "CLI", false, false, nil, nil)
+	if strings.Contains(string(result), `"toolUses"`) || strings.Contains(string(result), `"toolResults"`) {
+		t.Fatalf("explicit empty tools must not emit structured tool history: %s", result)
+	}
+	if !strings.Contains(string(result), "Tool Result") {
+		t.Fatalf("degraded tool result text missing: %s", result)
+	}
+}
 
 // TestToolResultsAttachedToCurrentMessage verifies that tool results from "tool" role messages
 // are properly attached to the current user message (the last message in the conversation).
@@ -446,11 +468,11 @@ func TestFilterOrphanedToolResults_RemovesHistoryAndCurrentOrphans(t *testing.T)
 }
 func TestBuildKiroPayloadFromOpenAIAdaptiveAndNativeFields(t *testing.T) {
 	body := []byte(`{
-		"model": "claude-sonnet-5",
+		"model": "claude-sonnet-4.6",
 		"reasoning_effort": "high",
 		"messages": [{"role":"user","content":"hi"}]
 	}`)
-	result, thinking := BuildKiroPayloadFromOpenAI(body, "claude-sonnet-5", "", "AI_EDITOR", false, false, nil, nil)
+	result, thinking := BuildKiroPayloadFromOpenAI(body, "claude-sonnet-4.6", "", "AI_EDITOR", false, false, nil, nil)
 	if !thinking {
 		t.Fatal("expected thinking enabled")
 	}
@@ -459,10 +481,10 @@ func TestBuildKiroPayloadFromOpenAIAdaptiveAndNativeFields(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if payload.AdditionalModelRequestFields == nil {
-		t.Fatal("sonnet-5 missing additionalModelRequestFields")
+		t.Fatal("sonnet-4.6 missing additionalModelRequestFields")
 	}
 	if _, ok := payload.AdditionalModelRequestFields["output_config"]; !ok {
-		t.Fatalf("sonnet-5 fields = %#v", payload.AdditionalModelRequestFields)
+		t.Fatalf("sonnet-4.6 fields = %#v", payload.AdditionalModelRequestFields)
 	}
 
 	gptBody := []byte(`{
@@ -475,14 +497,8 @@ func TestBuildKiroPayloadFromOpenAIAdaptiveAndNativeFields(t *testing.T) {
 	if err := json.Unmarshal(gptResult, &gptPayload); err != nil {
 		t.Fatalf("unmarshal gpt: %v", err)
 	}
-	if gptPayload.AdditionalModelRequestFields == nil {
-		t.Fatal("gpt-5.6 missing additionalModelRequestFields")
-	}
-	if _, ok := gptPayload.AdditionalModelRequestFields["reasoning"]; !ok {
-		t.Fatalf("gpt fields = %#v", gptPayload.AdditionalModelRequestFields)
-	}
-	if _, ok := gptPayload.AdditionalModelRequestFields["output_config"]; ok {
-		t.Fatal("gpt-5.6 must not receive Claude adaptive envelope")
+	if gptPayload.AdditionalModelRequestFields != nil {
+		t.Fatalf("gpt-5.6 must omit unsupported request fields: %#v", gptPayload.AdditionalModelRequestFields)
 	}
 
 	legacy := []byte(`{
@@ -497,5 +513,27 @@ func TestBuildKiroPayloadFromOpenAIAdaptiveAndNativeFields(t *testing.T) {
 	}
 	if legacyPayload.AdditionalModelRequestFields != nil {
 		t.Fatalf("sonnet-4.5 must not attach envelope: %#v", legacyPayload.AdditionalModelRequestFields)
+	}
+}
+
+func TestBuildKiroPayloadFromOpenAIForwardsOnlySignedReasoning(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"model":"claude-sonnet-4.6",
+		"messages":[
+			{"role":"user","content":"question"},
+			{"role":"assistant","content":"answer","reasoning":"private thought","reasoning_signature":"signed"},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+	result, _ := BuildKiroPayloadFromOpenAI(body, "claude-sonnet-4.6", "", "AI_EDITOR", false, false, nil, nil)
+	var payload KiroPayload
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatal(err)
+	}
+	reasoning := payload.ConversationState.History[1].AssistantResponseMessage.ReasoningContent
+	if reasoning == nil || reasoning.ReasoningText.Text != "private thought" || reasoning.ReasoningText.Signature != "signed" {
+		t.Fatalf("reasoningContent = %#v", reasoning)
 	}
 }

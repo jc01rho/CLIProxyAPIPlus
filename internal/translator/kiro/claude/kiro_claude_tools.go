@@ -4,6 +4,7 @@ package claude
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -379,8 +380,9 @@ func escapeNewlinesInStrings(raw string) string {
 
 // ProcessToolUseEvent handles a toolUseEvent from the Kiro stream.
 // It accumulates input fragments and emits tool_use blocks when complete.
-// Returns events to emit and updated state.
-func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseState, processedIDs map[string]bool) ([]KiroToolUse, *ToolUseState) {
+// Returns events to emit, updated state, and an error when a new tool starts
+// before the current tool has received its required stop event.
+func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseState, processedIDs map[string]bool) ([]KiroToolUse, *ToolUseState, error) {
 	var toolUses []KiroToolUse
 
 	// Extract from nested toolUseEvent or direct format
@@ -391,6 +393,8 @@ func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseSt
 
 	toolUseID := kirocommon.GetString(tu, "toolUseId")
 	toolName := kirocommon.GetString(tu, "name")
+	toolUseID = kirocommon.NormalizeKiroToolUseID(toolUseID)
+	toolName = kirocommon.NormalizeKiroToolName(toolName)
 	isStop := false
 	if stop, ok := tu["stop"].(bool); ok {
 		isStop = stop
@@ -412,34 +416,17 @@ func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseSt
 	// New tool use starting
 	if toolUseID != "" && toolName != "" {
 		if currentToolUse != nil && currentToolUse.ToolUseID != toolUseID {
-			log.Warnf("kiro: interleaved tool use detected - new ID %s arrived while %s in progress, completing previous",
-				toolUseID, currentToolUse.ToolUseID)
-			if !processedIDs[currentToolUse.ToolUseID] {
-				incomplete := KiroToolUse{
-					ToolUseID: currentToolUse.ToolUseID,
-					Name:      currentToolUse.Name,
-				}
-				if currentToolUse.InputBuffer.Len() > 0 {
-					raw := currentToolUse.InputBuffer.String()
-					repaired := RepairJSON(raw)
-
-					var input map[string]interface{}
-					if err := json.Unmarshal([]byte(repaired), &input); err != nil {
-						log.Warnf("kiro: failed to parse interleaved tool input: %v, raw: %s", err, raw)
-						input = make(map[string]interface{})
-					}
-					incomplete.Input = input
-				}
-				toolUses = append(toolUses, incomplete)
-				processedIDs[currentToolUse.ToolUseID] = true
-			}
-			currentToolUse = nil
+			return nil, currentToolUse, fmt.Errorf(
+				"kiro: incomplete tool use %s interrupted by %s before stop event",
+				currentToolUse.ToolUseID,
+				toolUseID,
+			)
 		}
 
 		if currentToolUse == nil {
 			if processedIDs != nil && processedIDs[toolUseID] {
 				log.Debugf("kiro: skipping duplicate toolUseEvent: %s", toolUseID)
-				return nil, nil
+				return nil, nil, nil
 			}
 
 			currentToolUse = &ToolUseState{
@@ -508,10 +495,10 @@ func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseSt
 		}
 
 		log.Debugf("kiro: completed tool use: %s (ID: %s, truncated: %v)", currentToolUse.Name, currentToolUse.ToolUseID, truncInfo.IsTruncated)
-		return toolUses, nil
+		return toolUses, nil, nil
 	}
 
-	return toolUses, currentToolUse
+	return toolUses, currentToolUse, nil
 }
 
 // DeduplicateToolUses removes duplicate tool uses based on toolUseId and content.

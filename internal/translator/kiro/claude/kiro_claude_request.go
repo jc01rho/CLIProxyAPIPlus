@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	kirocommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/common"
@@ -58,16 +57,8 @@ type KiroHistoryMessage struct {
 	AssistantResponseMessage *KiroAssistantResponseMessage `json:"assistantResponseMessage,omitempty"`
 }
 
-// KiroImage represents an image in Kiro API format
-type KiroImage struct {
-	Format string          `json:"format"`
-	Source KiroImageSource `json:"source"`
-}
-
-// KiroImageSource contains the image data
-type KiroImageSource struct {
-	Bytes string `json:"bytes"` // base64 encoded image data
-}
+type KiroImage = kirocommon.KiroImage
+type KiroImageSource = kirocommon.KiroImageSource
 
 // KiroUserInputMessage represents a user message
 type KiroUserInputMessage struct {
@@ -238,7 +229,13 @@ func BuildKiroPayload(claudeBody []byte, modelID, profileArn, origin string, isA
 	}
 
 	// Convert Claude tools to Kiro format
-	kiroTools := convertClaudeToolsToKiro(tools)
+	kiroTools, toolDocumentation := convertClaudeToolsToKiro(tools, modelID)
+	if toolDocumentation != "" {
+		if systemPrompt != "" {
+			systemPrompt += "\n\n"
+		}
+		systemPrompt += toolDocumentation
+	}
 
 	// Thinking mode: prompt tags stay available for existing models; the
 	// additionalModelRequestFields envelope is gated to OmniRoute's
@@ -282,7 +279,9 @@ func BuildKiroPayload(claudeBody []byte, modelID, profileArn, origin string, isA
 			messages = gjson.ParseBytes(stripped)
 		}
 	}
-	history, currentUserMsg, currentToolResults := processMessages(messages, modelID, origin)
+	// Tool content is already stripped above when no tools are defined, so
+	// structured tool blocks stay allowed here.
+	history, currentUserMsg, currentToolResults := processMessages(messages, modelID, origin, true)
 
 	// Build content with system prompt.
 	// Keep thinking tags on subsequent turns so multi-turn Claude sessions
@@ -407,18 +406,28 @@ func extractMetadataFromMessages(messages gjson.Result, key string) string {
 // extractSystemPrompt extracts system prompt from Claude request
 func extractSystemPrompt(claudeBody []byte) string {
 	systemField := gjson.GetBytes(claudeBody, "system")
+	var systemParts []string
 	if systemField.IsArray() {
-		var sb strings.Builder
 		for _, block := range systemField.Array() {
 			if block.Get("type").String() == "text" {
-				sb.WriteString(block.Get("text").String())
+				systemParts = append(systemParts, block.Get("text").String())
 			} else if block.Type == gjson.String {
-				sb.WriteString(block.String())
+				systemParts = append(systemParts, block.String())
 			}
 		}
-		return sb.String()
+	} else if systemField.Type == gjson.String {
+		systemParts = append(systemParts, systemField.String())
 	}
-	return systemField.String()
+	for _, message := range gjson.GetBytes(claudeBody, "messages").Array() {
+		role := message.Get("role").String()
+		if role != "system" && role != "developer" {
+			continue
+		}
+		if content := message.Get("content"); content.Type == gjson.String {
+			systemParts = append(systemParts, content.String())
+		}
+	}
+	return strings.Join(systemParts, "\n\n")
 }
 
 // checkThinkingMode checks if thinking mode is enabled in the Claude request
@@ -565,22 +574,7 @@ func IsThinkingEnabledWithHeaders(body []byte, headers http.Header) bool {
 // MCP tools often have long names like "mcp__server-name__tool-name".
 // This preserves the "mcp__" prefix and last segment when possible.
 func shortenToolNameIfNeeded(name string) string {
-	const limit = 64
-	if len(name) <= limit {
-		return name
-	}
-	// For MCP tools, try to preserve prefix and last segment
-	if strings.HasPrefix(name, "mcp__") {
-		idx := strings.LastIndex(name, "__")
-		if idx > 0 {
-			cand := "mcp__" + name[idx+2:]
-			if len(cand) > limit {
-				return cand[:limit]
-			}
-			return cand
-		}
-	}
-	return name[:limit]
+	return kirocommon.NormalizeKiroToolName(name)
 }
 
 func ensureKiroInputSchema(parameters interface{}) interface{} {
@@ -594,13 +588,18 @@ func ensureKiroInputSchema(parameters interface{}) interface{} {
 }
 
 // convertClaudeToolsToKiro converts Claude tools to Kiro format
-func convertClaudeToolsToKiro(tools gjson.Result) []KiroToolWrapper {
+func convertClaudeToolsToKiro(tools gjson.Result, modelID string) ([]KiroToolWrapper, string) {
 	var kiroTools []KiroToolWrapper
+	var toolDocumentation []string
 	if !tools.IsArray() {
-		return kiroTools
+		return kiroTools, ""
 	}
 
+	catalogBytes := 0
 	for _, tool := range tools.Array() {
+		if len(kiroTools) >= kirocommon.KiroMaxToolCount {
+			break
+		}
 		name := tool.Get("name").String()
 		description := tool.Get("description").String()
 		inputSchemaResult := tool.Get("input_schema")
@@ -609,6 +608,9 @@ func convertClaudeToolsToKiro(tools gjson.Result) []KiroToolWrapper {
 			inputSchema = inputSchemaResult.Value()
 		}
 		inputSchema = ensureKiroInputSchema(inputSchema)
+		if schema, ok := inputSchema.(map[string]interface{}); ok {
+			inputSchema = kirocommon.SanitizeKiroToolSchema(schema)
+		}
 
 		// Shorten tool name if it exceeds 64 characters (common with MCP tools)
 		originalName := name
@@ -635,35 +637,37 @@ func convertClaudeToolsToKiro(tools gjson.Result) []KiroToolWrapper {
 			log.Debugf("kiro: renamed tool web_search → remote_web_search")
 		}
 
-		// Truncate long descriptions (individual tool limit)
-		if len(description) > kirocommon.KiroMaxToolDescLen {
-			truncLen := kirocommon.KiroMaxToolDescLen - 30
-			for truncLen > 0 && !utf8.RuneStart(description[truncLen]) {
-				truncLen--
-			}
-			description = description[:truncLen] + "... (description truncated)"
+		description, movedDocumentation := kirocommon.PrepareKiroToolDescription(name, description, modelID)
+		if movedDocumentation != "" {
+			toolDocumentation = append(toolDocumentation, movedDocumentation)
 		}
 
-		kiroTools = append(kiroTools, KiroToolWrapper{
+		candidate := KiroToolWrapper{
 			ToolSpecification: KiroToolSpecification{
 				Name:        name,
 				Description: description,
 				InputSchema: KiroInputSchema{JSON: inputSchema},
 			},
-		})
+		}
+		encoded, _ := json.Marshal(candidate)
+		if len(kiroTools) > 0 && catalogBytes+len(encoded) > kirocommon.KiroToolCatalogBudgetBytes {
+			break
+		}
+		catalogBytes += len(encoded)
+		kiroTools = append(kiroTools, candidate)
 	}
 
-	return kiroTools
+	return kiroTools, strings.Join(toolDocumentation, "\n\n")
 }
 
 // processMessages processes Claude messages and builds Kiro history
-func processMessages(messages gjson.Result, modelID, origin string) ([]KiroHistoryMessage, *KiroUserInputMessage, []KiroToolResult) {
+func processMessages(messages gjson.Result, modelID, origin string, allowStructuredTools bool) ([]KiroHistoryMessage, *KiroUserInputMessage, []KiroToolResult) {
 	var history []KiroHistoryMessage
 	var currentUserMsg *KiroUserInputMessage
 	var currentToolResults []KiroToolResult
 
 	// Merge adjacent messages with the same role
-	messagesArray := kirocommon.MergeAdjacentMessages(messages.Array())
+	messagesArray := kirocommon.MergeAdjacentMessages(kirocommon.NormalizeKiroMessageRoles(messages.Array()))
 
 	// Normalize unknown roles to user (kiro-lb normalize_message_roles).
 	messagesArray = normalizeRoles(messagesArray)
@@ -680,10 +684,13 @@ func processMessages(messages gjson.Result, modelID, origin string) ([]KiroHisto
 
 	for i, msg := range messagesArray {
 		role := msg.Get("role").String()
+		if role == "system" {
+			continue
+		}
 		isLastMessage := i == len(messagesArray)-1
 
 		if role == "user" {
-			userMsg, toolResults := BuildUserMessageStruct(msg, modelID, origin)
+			userMsg, toolResults := BuildUserMessageStruct(msg, modelID, origin, allowStructuredTools)
 			// CRITICAL: Kiro API requires content to be non-empty for ALL user messages
 			// This includes both history messages and the current message.
 			// When user message contains only tool_result (no text), content will be empty.
@@ -711,14 +718,14 @@ func processMessages(messages gjson.Result, modelID, origin string) ([]KiroHisto
 				})
 			}
 		} else if role == "assistant" {
-			assistantMsg := BuildAssistantMessageStruct(msg)
+			assistantMsg := BuildAssistantMessageStruct(msg, allowStructuredTools)
 			if isLastMessage {
 				history = append(history, KiroHistoryMessage{
 					AssistantResponseMessage: &assistantMsg,
 				})
-				// Create a "Continue" user message as currentMessage
+				// Kiro CLI sends an empty current message when the final source turn is assistant.
 				currentUserMsg = &KiroUserInputMessage{
-					Content: "Continue",
+					Content: "",
 					ModelID: modelID,
 					Origin:  origin,
 				}
@@ -821,11 +828,19 @@ func stripAllToolContent(messages []gjson.Result) []byte {
 			continue
 		}
 		var textParts []string
+		// Image blocks carry no tool semantics, so they survive the collapse and
+		// are re-attached below; dropping them would lose user-supplied images
+		// whenever a turn also contains tool content.
+		var imageBlocks []interface{}
 		for _, block := range content.Array() {
 			switch block.Get("type").String() {
 			case "text":
 				if t := block.Get("text").String(); t != "" {
 					textParts = append(textParts, t)
+				}
+			case "image":
+				if v, okBlock := block.Value().(map[string]interface{}); okBlock {
+					imageBlocks = append(imageBlocks, v)
 				}
 			case "tool_use":
 				name := block.Get("name").String()
@@ -850,9 +865,28 @@ func stripAllToolContent(messages []gjson.Result) []byte {
 					label = "Tool Result (" + tid + ")"
 				}
 				textParts = append(textParts, "["+label+"]\n"+rctext)
+				// Images nested inside a tool_result are user-visible content and
+				// must outlive the text collapse.
+				for _, item := range block.Get("content").Array() {
+					if item.Get("type").String() != "image" {
+						continue
+					}
+					if v, okItem := item.Value().(map[string]interface{}); okItem {
+						imageBlocks = append(imageBlocks, v)
+					}
+				}
 			}
 		}
-		m["content"] = strings.Join(textParts, "\n\n")
+		if len(imageBlocks) > 0 {
+			blocks := make([]interface{}, 0, len(imageBlocks)+1)
+			if text := strings.Join(textParts, "\n\n"); text != "" {
+				blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
+			}
+			blocks = append(blocks, imageBlocks...)
+			m["content"] = blocks
+		} else {
+			m["content"] = strings.Join(textParts, "\n\n")
+		}
 		out = append(out, m)
 	}
 	b, err := json.Marshal(out)
@@ -978,17 +1012,23 @@ func buildFinalContent(content, systemPrompt string, toolResults []KiroToolResul
 	contentBuilder.WriteString(content)
 	finalContent := contentBuilder.String()
 
-	// CRITICAL: Kiro API requires content to be non-empty
-	if strings.TrimSpace(finalContent) == "" {
-		if len(toolResults) > 0 {
-			finalContent = "Tool results provided."
-		} else {
-			finalContent = "Continue"
-		}
-		log.Debugf("kiro: content was empty, using default: %s", finalContent)
-	}
-
 	return finalContent
+}
+
+func kiroToolResultsToText(toolResults []KiroToolResult) string {
+	var parts []string
+	for _, result := range toolResults {
+		var textParts []string
+		for _, content := range result.Content {
+			if content.Text != "" {
+				textParts = append(textParts, content.Text)
+			}
+		}
+		if len(textParts) > 0 {
+			parts = append(parts, "[Tool Result]\n"+strings.Join(textParts, "\n"))
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // deduplicateToolResults removes duplicate tool results
@@ -1039,7 +1079,7 @@ func extractClaudeToolChoiceHint(claudeBody []byte) string {
 }
 
 // BuildUserMessageStruct builds a user message and extracts tool results
-func BuildUserMessageStruct(msg gjson.Result, modelID, origin string) (KiroUserInputMessage, []KiroToolResult) {
+func BuildUserMessageStruct(msg gjson.Result, modelID, origin string, allowStructuredTools bool) (KiroUserInputMessage, []KiroToolResult) {
 	content := msg.Get("content")
 	var contentBuilder strings.Builder
 	var toolResults []KiroToolResult
@@ -1083,6 +1123,14 @@ func BuildUserMessageStruct(msg gjson.Result, modelID, origin string) (KiroUserI
 
 				isError := part.Get("is_error").Bool()
 				resultContent := part.Get("content")
+				if !allowStructuredTools {
+					contentBuilder.WriteString("\n[Tool result ")
+					contentBuilder.WriteString(kirocommon.NormalizeKiroToolUseID(toolUseID))
+					contentBuilder.WriteString(": ")
+					contentBuilder.WriteString(resultContent.String())
+					contentBuilder.WriteString("]")
+					continue
+				}
 
 				var textContents []KiroTextContent
 
@@ -1090,6 +1138,15 @@ func BuildUserMessageStruct(msg gjson.Result, modelID, origin string) (KiroUserI
 					for _, item := range resultContent.Array() {
 						if item.Get("type").String() == "text" {
 							textContents = append(textContents, KiroTextContent{Text: item.Get("text").String()})
+						} else if item.Get("type").String() == "image" {
+							mediaType := item.Get("source.media_type").String()
+							data := item.Get("source.data").String()
+							if idx := strings.LastIndex(mediaType, "/"); idx >= 0 && data != "" {
+								images = append(images, KiroImage{
+									Format: mediaType[idx+1:],
+									Source: KiroImageSource{Bytes: data},
+								})
+							}
 						} else if item.Type == gjson.String {
 							textContents = append(textContents, KiroTextContent{Text: item.String()})
 						}
@@ -1108,7 +1165,7 @@ func BuildUserMessageStruct(msg gjson.Result, modelID, origin string) (KiroUserI
 				}
 
 				toolResults = append(toolResults, KiroToolResult{
-					ToolUseID: toolUseID,
+					ToolUseID: kirocommon.NormalizeKiroToolUseID(toolUseID),
 					Content:   textContents,
 					Status:    status,
 				})
@@ -1125,14 +1182,14 @@ func BuildUserMessageStruct(msg gjson.Result, modelID, origin string) (KiroUserI
 	}
 
 	if len(images) > 0 {
-		userMsg.Images = images
+		userMsg.Images, _ = kirocommon.LimitKiroImages(images)
 	}
 
 	return userMsg, toolResults
 }
 
 // BuildAssistantMessageStruct builds an assistant message with tool uses
-func BuildAssistantMessageStruct(msg gjson.Result) KiroAssistantResponseMessage {
+func BuildAssistantMessageStruct(msg gjson.Result, allowStructuredTools bool) KiroAssistantResponseMessage {
 	content := msg.Get("content")
 	var contentBuilder strings.Builder
 	var toolUses []KiroToolUse
@@ -1158,6 +1215,14 @@ func BuildAssistantMessageStruct(msg gjson.Result) KiroAssistantResponseMessage 
 				toolUseID := part.Get("id").String()
 				toolName := part.Get("name").String()
 				toolInput := part.Get("input")
+				if !allowStructuredTools {
+					contentBuilder.WriteString("\n[Tool call ")
+					contentBuilder.WriteString(toolName)
+					contentBuilder.WriteString(": ")
+					contentBuilder.WriteString(toolInput.Raw)
+					contentBuilder.WriteString("]")
+					continue
+				}
 
 				var inputMap map[string]interface{}
 				if toolInput.IsObject() {
@@ -1174,14 +1239,24 @@ func BuildAssistantMessageStruct(msg gjson.Result) KiroAssistantResponseMessage 
 				}
 
 				toolUses = append(toolUses, KiroToolUse{
-					ToolUseID: toolUseID,
-					Name:      toolName,
+					ToolUseID: kirocommon.NormalizeKiroToolUseID(toolUseID),
+					Name:      kirocommon.NormalizeKiroToolName(toolName),
 					Input:     inputMap,
 				})
 			}
 		}
 	} else {
 		contentBuilder.WriteString(content.String())
+	}
+	// Fall back to the flat reasoning fields when the content blocks carried no
+	// signed thinking (OpenAI-shaped assistant turns).
+	if reasoningText == "" || reasoningSignature == "" {
+		if t := msg.Get("reasoning").String(); t != "" {
+			reasoningText = t
+		}
+		if s := msg.Get("reasoning_signature").String(); s != "" {
+			reasoningSignature = s
+		}
 	}
 
 	// CRITICAL FIX: Kiro API requires non-empty content for assistant messages

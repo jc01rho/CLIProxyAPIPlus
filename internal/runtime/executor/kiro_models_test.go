@@ -162,8 +162,8 @@ func TestKiroExecutorRejectsUnsupportedAliases(t *testing.T) {
 	if reason := kirocommon.RejectKiroRequestedModel("claude-sonnet-4.5[1m]"); reason != "" {
 		t.Fatalf("[1m] must strip, not reject: %s", reason)
 	}
-	if reason := kirocommon.RejectKiroRequestedModel("claude-sonnet-4.5-thinking"); reason == "" {
-		t.Fatal("expected non-adaptive -thinking rejection")
+	if reason := kirocommon.RejectKiroRequestedModel("claude-sonnet-4.5-thinking"); reason != "" {
+		t.Fatalf("Kiro pass-through aliases must not be rejected: %s", reason)
 	}
 }
 
