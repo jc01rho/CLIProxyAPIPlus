@@ -170,6 +170,11 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		translated = applySensenovaMaxTokensClamp(translated)
 		translated = sanitizeSensenovaToolCalls(translated)
 	}
+	// Empty `tools[].function.name` is rejected with invalid_request_error by
+	// every OpenAI-compatible API (e.g. Upstage Solar). Drop the offending
+	// entries unconditionally so any openai-compat provider stays usable when
+	// upstream clients send malformed tool catalogs.
+	translated = sanitizeEmptyToolFunctionNames(translated)
 	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compatCfg, translated)
 	if opts.Alt != "responses/compact" {
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
@@ -467,6 +472,11 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		translated = applySensenovaMaxTokensClamp(translated)
 		translated = sanitizeSensenovaToolCalls(translated)
 	}
+	// Empty `tools[].function.name` is rejected with invalid_request_error by
+	// every OpenAI-compatible API (e.g. Upstage Solar). Drop the offending
+	// entries unconditionally so any openai-compat provider stays usable when
+	// upstream clients send malformed tool catalogs.
+	translated = sanitizeEmptyToolFunctionNames(translated)
 	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compatCfg, translated)
 	if opts.Alt != "responses/compact" {
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
@@ -1431,6 +1441,12 @@ func isSensenovaCompatProvider(compat *config.OpenAICompatibility) bool {
 	return strings.Contains(strings.ToLower(compat.Name), "sensenova")
 }
 
+// sanitizeEmptyToolFunctionNames drops tools[] entries whose function.name is
+// empty (or missing) and backfills missing/empty arguments with "{}". Upstage
+// Solar (and any other OpenAI-compatible endpoint enforcing the standard
+// tool-calling schema) rejects such requests with invalid_request_error, so
+// stripping the malformed entries lets well-formed siblings proceed.
+
 // applySensenovaMaxTokensClamp clamps max_tokens into the range SenseNova accepts.
 // A non-numeric or absent max_tokens is left untouched so the upstream default applies.
 func applySensenovaMaxTokensClamp(body []byte) []byte {
@@ -1453,6 +1469,56 @@ func applySensenovaMaxTokensClamp(body []byte) []byte {
 		return body
 	}
 	next, err := sjson.SetBytes(body, "max_tokens", clamped)
+	if err != nil {
+		return body
+	}
+	return next
+}
+
+// sanitizeEmptyToolFunctionNames drops `tools[]` entries whose `function.name` is empty
+// or whitespace, and backfills missing or empty `function.arguments` with "{}". Some
+// OpenAI-compatible routers (e.g. Upstage Solar via the minpeter gateway) reject the
+// request with `Invalid function name: ''` when a tool ships without a name, which
+// silently breaks otherwise valid tool calls.
+func sanitizeEmptyToolFunctionNames(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return body
+	}
+
+	out := body
+	kept := make([]string, 0, len(tools.Array()))
+	changed := false
+	for _, tool := range tools.Array() {
+		if strings.TrimSpace(tool.Get("function.name").String()) == "" {
+			changed = true
+			continue
+		}
+		raw := tool.Raw
+		if args := tool.Get("function.arguments"); !args.Exists() || strings.TrimSpace(args.String()) == "" {
+			repaired, errSet := sjson.Set(raw, "function.arguments", "{}")
+			if errSet != nil {
+				return body
+			}
+			raw = repaired
+			changed = true
+		}
+		kept = append(kept, raw)
+	}
+	if !changed {
+		return body
+	}
+	if len(kept) == 0 {
+		next, err := sjson.DeleteBytes(out, "tools")
+		if err != nil {
+			return body
+		}
+		return next
+	}
+	next, err := sjson.SetRawBytes(out, "tools", []byte("["+strings.Join(kept, ",")+"]"))
 	if err != nil {
 		return body
 	}
