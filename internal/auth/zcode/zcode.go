@@ -592,15 +592,18 @@ func (o *OAuth) CheckStartPlan(ctx context.Context, zcodeJWT string) *StartPlanI
 			} `json:"plans"`
 		} `json:"data"`
 	}
-	// App fallback logic: if the broker JWT exists, the account went through ZCode
-	// OAuth and is at least a Start Plan candidate. Try to query the balance,
-	// but treat any failure as "start plan present" so the executor routes
-	// through the zcode-plan gateway first. The gateway will reject with
-	// 1005 (quota exhausted) or similar if the start plan is actually absent
-	// or exhausted, at which point the executor falls back to the provisioned
-	// api.z.ai key.
+	// A failed probe is not evidence of entitlement. The ZCode app decides start
+	// plan availability from an explicit entitlement check and marks the provider
+	// "unavailable" (reason coding_plan_not_entitled) when it does not hold one,
+	// rather than routing optimistically and learning from a rejection
+	// (app.asar resolveCodingPlanAvailability).
+	//
+	// Assuming Active on failure pins every account to the zcode-plan gateway,
+	// and because routing swaps the credential to the broker JWT there is no
+	// second attempt with the provisioned api.z.ai key: an account without a
+	// start plan then fails every request with 401.
 	if err := o.getJSON(ctx, o.startPlanBalanceURL, zcodeJWT, "billing/balance", &resp); err != nil {
-		return &StartPlanInfo{Active: true}
+		return nil
 	}
 	for _, p := range resp.Data.Plans {
 		status := strings.ToLower(strings.TrimSpace(p.Status))

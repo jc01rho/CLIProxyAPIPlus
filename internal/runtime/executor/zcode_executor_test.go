@@ -82,9 +82,13 @@ func TestMergeHeaders(t *testing.T) {
 // TestPrepareZcodeRequestRoutesStartPlan verifies that when an active start plan
 // is recorded together with a broker JWT, the request is routed through the
 // verified zcode-plan gateway (zcode.z.ai/api/v1/zcode-plan/anthropic, from
-// app.asar buildZCodeEndpointUrls) with the JWT in both Authorization and
-// x-api-key headers (app.asar buildAnthropicConnectivityAuthHeaders), so start
+// app.asar buildZCodeEndpointUrls) authenticating with the broker JWT, so start
 // plan quota is consumed instead of the individual plan.
+//
+// The JWT travels in the credential slot, matching the app's zaiStartPlan
+// provider entry (app.asar loadPresetProviders: apiKey = the zcode JWT).
+// Carrying it as an opts.Header instead is silently discarded, because
+// ClaudeExecutor rewrites Authorization/x-api-key from claudeCreds(auth).
 func TestPrepareZcodeRequestRoutesStartPlan(t *testing.T) {
 	e := NewZcodeExecutor(nil)
 	auth := &cliproxyauth.Auth{
@@ -102,11 +106,8 @@ func TestPrepareZcodeRequestRoutesStartPlan(t *testing.T) {
 	if auth2.Attributes["base_url"] != ZCodeStartPlanBaseURL {
 		t.Errorf("base_url = %q, want %q", auth2.Attributes["base_url"], ZCodeStartPlanBaseURL)
 	}
-	if got := opts2.Headers.Get("Authorization"); got != "Bearer jwt-broker-1" {
-		t.Errorf("Authorization = %q, want %q", got, "Bearer jwt-broker-1")
-	}
-	if got := opts2.Headers.Get("x-api-key"); got != "jwt-broker-1" {
-		t.Errorf("x-api-key = %q, want jwt-broker-1", got)
+	if got := auth2.Attributes["api_key"]; got != "jwt-broker-1" {
+		t.Errorf("api_key = %q, want the broker JWT %q", got, "jwt-broker-1")
 	}
 	if opts2.Headers.Get("HTTP-Referer") != "https://zcode.z.ai" {
 		t.Errorf("HTTP-Referer not injected: %q", opts2.Headers.Get("HTTP-Referer"))
@@ -154,6 +155,9 @@ func TestPrepareZcodeRequestFallsBackWithoutStartPlan(t *testing.T) {
 			if auth2.Attributes["base_url"] != ZCodeAnthropicBaseURL {
 				t.Errorf("base_url = %q, want %q", auth2.Attributes["base_url"], ZCodeAnthropicBaseURL)
 			}
+			if got := auth2.Attributes["api_key"]; got == "jwt" {
+				t.Error("broker JWT must not authenticate the api.z.ai fallback path")
+			}
 			if opts2.Headers.Get("Authorization") != "" {
 				t.Errorf("Authorization should be empty, got %q", opts2.Headers.Get("Authorization"))
 			}
@@ -181,5 +185,89 @@ func TestZcodeUseStartPlanMetadataFallback(t *testing.T) {
 	auth2 := &cliproxyauth.Auth{Provider: "zcode", Metadata: map[string]any{"start_plan": false}}
 	if zcodeUseStartPlan(auth2) {
 		t.Error("expected no start plan when Metadata flag is false")
+	}
+}
+
+// TestPrepareZcodeRequestReplacesCredentialWithBrokerJWT verifies that
+// start-plan routing swaps the credential the Claude request path actually
+// authenticates with. Verified from the ZCode desktop app (app.asar
+// loadPresetProviders): the zaiStartPlan provider entry is built with
+// "apiKey: p" where p is loadZaiProviderConnectionZcodeJwtToken() — the broker
+// JWT occupies the API-key slot, it is not an extra header.
+//
+// ClaudeExecutor resolves credentials through claudeCreds(auth) and
+// unconditionally rewrites Authorization/x-api-key from it
+// (applyClaudeHeadersWithNativeProfile), so a broker JWT injected only into
+// opts.Headers is overwritten by the provisioned Z.AI key and the gateway
+// answers 401.
+func TestPrepareZcodeRequestReplacesCredentialWithBrokerJWT(t *testing.T) {
+	e := NewZcodeExecutor(nil)
+	auth := &cliproxyauth.Auth{
+		Provider: "zcode",
+		Attributes: map[string]string{
+			"api_key":           "key-1.secret",
+			"zcode_token":       "jwt-broker-1",
+			"start_plan_active": "true",
+		},
+	}
+
+	auth2, _ := e.prepareZcodeRequest(auth, cliproxyexecutor.Options{})
+
+	gotKey, gotBase := claudeCreds(auth2)
+	if gotBase != ZCodeStartPlanBaseURL {
+		t.Errorf("claudeCreds base_url = %q, want %q", gotBase, ZCodeStartPlanBaseURL)
+	}
+	if gotKey != "jwt-broker-1" {
+		t.Errorf("claudeCreds api_key = %q, want the broker JWT %q", gotKey, "jwt-broker-1")
+	}
+	// The provisioned Z.AI key must remain available for the non-start-plan
+	// fallback, so it may not be destroyed on the original record.
+	if auth.Attributes["api_key"] != "key-1.secret" {
+		t.Errorf("original auth mutated: api_key = %q", auth.Attributes["api_key"])
+	}
+}
+
+// TestPrepareZcodeRequestKeepsProvisionedKeyWithoutStartPlan verifies the
+// non-start-plan path still authenticates with the provisioned Z.AI API key.
+func TestPrepareZcodeRequestKeepsProvisionedKeyWithoutStartPlan(t *testing.T) {
+	e := NewZcodeExecutor(nil)
+	auth := &cliproxyauth.Auth{
+		Provider:   "zcode",
+		Attributes: map[string]string{"api_key": "key-1.secret", "zcode_token": "jwt-broker-1"},
+	}
+
+	auth2, _ := e.prepareZcodeRequest(auth, cliproxyexecutor.Options{})
+
+	gotKey, gotBase := claudeCreds(auth2)
+	if gotBase != ZCodeAnthropicBaseURL {
+		t.Errorf("claudeCreds base_url = %q, want %q", gotBase, ZCodeAnthropicBaseURL)
+	}
+	if gotKey != "key-1.secret" {
+		t.Errorf("claudeCreds api_key = %q, want key-1.secret", gotKey)
+	}
+}
+
+// TestPrepareZcodeRequestStartPlanFallsBackToMetadataKey verifies a record
+// reloaded from disk (flat TokenStorage form, nil Attributes) still routes the
+// broker JWT into the credential slot.
+func TestPrepareZcodeRequestStartPlanFallsBackToMetadataKey(t *testing.T) {
+	e := NewZcodeExecutor(nil)
+	auth := &cliproxyauth.Auth{
+		Provider: "zcode",
+		Metadata: map[string]any{
+			"access_token": "key-1.secret",
+			"zcode_token":  "jwt-meta",
+			"start_plan":   true,
+		},
+	}
+
+	auth2, _ := e.prepareZcodeRequest(auth, cliproxyexecutor.Options{})
+
+	gotKey, gotBase := claudeCreds(auth2)
+	if gotBase != ZCodeStartPlanBaseURL {
+		t.Errorf("claudeCreds base_url = %q, want %q", gotBase, ZCodeStartPlanBaseURL)
+	}
+	if gotKey != "jwt-meta" {
+		t.Errorf("claudeCreds api_key = %q, want jwt-meta", gotKey)
 	}
 }
