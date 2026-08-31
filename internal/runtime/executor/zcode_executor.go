@@ -90,16 +90,28 @@ func (e *ZcodeExecutor) prepareZcodeRequest(auth *cliproxyauth.Auth, opts clipro
 		if auth.Attributes == nil {
 			auth.Attributes = map[string]string{}
 		}
-		if zcodeUseStartPlan(auth) {
+		if tok := zcodeBrokerToken(auth); tok != "" && zcodeUseStartPlan(auth) {
 			auth.Attributes["base_url"] = ZCodeStartPlanBaseURL
-			if tok := zcodeBrokerToken(auth); tok != "" {
-				// Verified from app.asar buildAnthropicConnectivityAuthHeaders: the
-				// start-plan gateway authenticates the broker JWT via both
-				// Authorization and x-api-key headers (Anthropic-format requests).
-				opts.Headers = mergeHeaders(opts.Headers, http.Header{
-					"Authorization": []string{"Bearer " + tok},
-					"x-api-key":    []string{tok},
-				})
+			// The broker JWT is the credential, not an extra header. Verified from
+			// app.asar loadPresetProviders: the zaiStartPlan provider entry is built
+			// as {id: zaiStartPlan, endpoints:{baseURL: zcodePlanAnthropicBaseUrl},
+			// apiKey: p} where p = loadZaiProviderConnectionZcodeJwtToken().
+			//
+			// It must occupy the credential slot rather than opts.Headers, because
+			// ClaudeExecutor resolves claudeCreds(auth) and then unconditionally
+			// rewrites Authorization/x-api-key from it in
+			// applyClaudeHeadersWithNativeProfile. A JWT injected only as a header is
+			// overwritten by the provisioned Z.AI key, which the gateway rejects with
+			// 401. Metadata is overridden too: claudeCreds falls back to
+			// Metadata["access_token"] whenever Attributes carries no api_key.
+			auth.Attributes["api_key"] = tok
+			if auth.Metadata != nil {
+				metadata := make(map[string]any, len(auth.Metadata))
+				for k, v := range auth.Metadata {
+					metadata[k] = v
+				}
+				metadata["access_token"] = tok
+				auth.Metadata = metadata
 			}
 		} else {
 			auth.Attributes["base_url"] = ZCodeAnthropicBaseURL
