@@ -96,9 +96,6 @@ func (a *ZcodeAuthenticator) createAuthRecord(creds *zcode.Credentials) (*coreau
 			"email":         creds.Email,
 			"account_id":    creds.AccountID,
 			"zcode_token":   creds.ZcodeToken,
-			"start_plan":    creds.StartPlanActive,
-			"start_plan_limit": creds.StartPlanLimit,
-			"start_plan_used":  creds.StartPlanUsed,
 		},
 		Attributes: map[string]string{
 			"api_key":          creds.AccessToken,
@@ -106,7 +103,6 @@ func (a *ZcodeAuthenticator) createAuthRecord(creds *zcode.Credentials) (*coreau
 			"email":            creds.Email,
 			"source":           "zcode-oauth",
 			"zcode_token":      creds.ZcodeToken,
-			"start_plan_active": boolStr(creds.StartPlanActive),
 		},
 		NextRefreshAfter: creds.ExpiresAt.Add(-24 * time.Hour),
 	}
@@ -131,12 +127,4 @@ func sanitizeZcodeIdentifier(s string) string {
 		}
 	}
 	return b.String()
-}
-
-// boolStr formats a bool as "true"/"false" for storage in Attributes.
-func boolStr(v bool) string {
-	if v {
-		return "true"
-	}
-	return "false"
 }

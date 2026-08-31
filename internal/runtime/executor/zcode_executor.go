@@ -26,21 +26,6 @@ import (
 // it elsewhere.
 const ZCodeAnthropicBaseURL = "https://api.z.ai/api/anthropic"
 
-// ZCodeStartPlanBaseURL is the ZCode start-plan gateway, verified from the
-// ZCode desktop app (app.asar buildZCodeEndpointUrls): the start/coding-plan
-// billing routes live on the zcode.z.ai origin under /api/v1/zcode-plan. When
-// the account has an active start plan, requests are routed through this
-// gateway with the broker JWT so the start plan quota is consumed instead of
-// the individual plan that the provisioned Z.AI API key bills to. The
-// zcode-plan paths are exempt from the app's Ed25519 client signing
-// (isUnsignedModelRequestPath), so a plain Bearer JWT works.
-const ZCodeStartPlanBaseURL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
-
-// zcodeStartPlanBalanceURL is the billing/balance endpoint used by the ZCode
-// app to detect an active start plan (data.plans[] with status "active" and
-// a plan_id/name containing "start-plan").
-const zcodeStartPlanBalanceURL = "https://zcode.z.ai/api/v1/zcode-plan/billing/balance"
-
 // ZCodeAppVersion mirrors the ZCode desktop release used for source headers
 // and the balance probe. Keep it aligned with a real published release so the
 // gateway treats the client as a current ZCode build.
@@ -80,81 +65,27 @@ func (e *ZcodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 }
 
 // prepareZcodeRequest pins the base URL and injects the ZCode source headers.
-// When the account has an active start plan, the request is routed through the
-// zcode.z.ai gateway with the broker JWT so start plan quota is consumed
-// instead of the individual plan that the provisioned Z.AI API key is
-// otherwise billed to.
+//
+// Every request authenticates with the provisioned Z.AI API key against
+// api.z.ai, matching the gajae-code reference implementation
+// (packages/ai/src/utils/oauth/glm-zcode.ts).
+//
+// Routing inference through the zcode.z.ai start-plan gateway was tried and
+// removed: that origin answers model requests with {"code":3007,"msg":"captcha
+// verify failed"} because it demands the desktop app's client attestation,
+// which this proxy cannot produce. Consuming start-plan quota therefore is not
+// reachable from here, and requests bill to the individual plan the
+// provisioned key belongs to.
 func (e *ZcodeExecutor) prepareZcodeRequest(auth *cliproxyauth.Auth, opts cliproxyexecutor.Options) (*cliproxyauth.Auth, cliproxyexecutor.Options) {
 	if auth != nil {
 		auth = auth.Clone()
 		if auth.Attributes == nil {
 			auth.Attributes = map[string]string{}
 		}
-		if tok := zcodeBrokerToken(auth); tok != "" && zcodeUseStartPlan(auth) {
-			auth.Attributes["base_url"] = ZCodeStartPlanBaseURL
-			// The broker JWT is the credential, not an extra header. Verified from
-			// app.asar loadPresetProviders: the zaiStartPlan provider entry is built
-			// as {id: zaiStartPlan, endpoints:{baseURL: zcodePlanAnthropicBaseUrl},
-			// apiKey: p} where p = loadZaiProviderConnectionZcodeJwtToken().
-			//
-			// It must occupy the credential slot rather than opts.Headers, because
-			// ClaudeExecutor resolves claudeCreds(auth) and then unconditionally
-			// rewrites Authorization/x-api-key from it in
-			// applyClaudeHeadersWithNativeProfile. A JWT injected only as a header is
-			// overwritten by the provisioned Z.AI key, which the gateway rejects with
-			// 401. Metadata is overridden too: claudeCreds falls back to
-			// Metadata["access_token"] whenever Attributes carries no api_key.
-			auth.Attributes["api_key"] = tok
-			if auth.Metadata != nil {
-				metadata := make(map[string]any, len(auth.Metadata))
-				for k, v := range auth.Metadata {
-					metadata[k] = v
-				}
-				metadata["access_token"] = tok
-				auth.Metadata = metadata
-			}
-		} else {
-			auth.Attributes["base_url"] = ZCodeAnthropicBaseURL
-		}
+		auth.Attributes["base_url"] = ZCodeAnthropicBaseURL
 	}
 	opts.Headers = mergeHeaders(opts.Headers, buildZCodeSourceHeaders())
 	return auth, opts
-}
-
-// zcodeUseStartPlan reports whether the auth record has an active start plan
-// and a broker token to route through the ZCode gateway with. Falls back to
-// re-checking the quota endpoint lazily when neither signal is cached yet.
-func zcodeUseStartPlan(auth *cliproxyauth.Auth) bool {
-	if auth == nil {
-		return false
-	}
-	if v, ok := auth.Attributes["start_plan_active"]; ok && v == "true" {
-		return zcodeBrokerToken(auth) != ""
-	}
-	if v, ok := auth.Metadata["start_plan"].(bool); ok && v {
-		return zcodeBrokerToken(auth) != ""
-	}
-	return false
-}
-
-// zcodeBrokerToken returns the broker JWT stored alongside the auth record.
-// Attributes["zcode_token"] is the freshest copy (set in-memory right after
-// OAuth); Metadata["zcode_token"] survives reload from disk.
-func zcodeBrokerToken(auth *cliproxyauth.Auth) string {
-	if auth == nil {
-		return ""
-	}
-	if auth.Attributes != nil {
-		if tok := strings.TrimSpace(auth.Attributes["zcode_token"]); tok != "" {
-			return tok
-		}
-	}
-	if auth.Metadata != nil {
-		if tok, ok := auth.Metadata["zcode_token"].(string); ok {
-			return strings.TrimSpace(tok)
-		}
-	}
-	return ""
 }
 
 // buildZCodeSourceHeaders replicates ZCode's buildZCodeSourceHeaders() so

@@ -546,73 +546,10 @@ func TestOrgProjectSelectionPrefersFirstDefault(t *testing.T) {
 	}
 }
 
-// TestCheckStartPlanBalanceSchema verifies CheckStartPlan against the verified
-// ZCode app contract (app.asar hasActiveStartPlan): data.plans[] with status
-// "active" and a plan_id/name containing "start-plan", plus the empty-
-// identifiers fallback where any active plan counts.
-func TestCheckStartPlanBalanceSchema(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/balance", func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer jwt-1" {
-			t.Errorf("Authorization = %q, want Bearer jwt-1", got)
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"code": 0,
-			"data": map[string]interface{}{
-				"plans": []map[string]interface{}{
-					{"status": "expired", "plan_id": "start-plan-trial", "name": "Start Plan"},
-					{"status": "ACTIVE", "plan_id": "zai-start-plan-v1", "name": "Start Plan", "limit": "8000000", "used": "1200000"},
-				},
-			},
-		})
-	})
-	svc := httptest.NewServer(mux)
-	defer svc.Close()
-
-	o := NewOAuthWithConfig(Config{StartPlanBalanceURL: svc.URL + "/balance"})
-	spi := o.CheckStartPlan(context.Background(), "jwt-1")
-	if spi == nil {
-		t.Fatal("CheckStartPlan returned nil")
-	}
-	if !spi.Active {
-		t.Error("expected Active=true for active start-plan entry (case-insensitive status)")
-	}
-	if spi.Limit != 8000000 || spi.Used != 1200000 {
-		t.Errorf("Limit/Used = %d/%d, want 8000000/1200000", spi.Limit, spi.Used)
-	}
-}
-
-// TestCheckStartPlanNoStartPlan verifies a coding-plan-only account (active
-// pro plan, no start-plan identity) reports Active=false so the executor keeps
-// billing through the provisioned api.z.ai key.
-func TestCheckStartPlanNoStartPlan(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/balance", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"code": 0,
-			"data": map[string]interface{}{
-				"plans": []map[string]interface{}{
-					{"status": "active", "plan_id": "coding-plan-pro", "name": "GLM Coding Pro"},
-				},
-			},
-		})
-	})
-	svc := httptest.NewServer(mux)
-	defer svc.Close()
-
-	o := NewOAuthWithConfig(Config{StartPlanBalanceURL: svc.URL + "/balance"})
-	spi := o.CheckStartPlan(context.Background(), "jwt-1")
-	if spi == nil {
-		t.Fatal("CheckStartPlan returned nil")
-	}
-	if spi.Active {
-		t.Error("expected Active=false when no plan carries a start-plan identity")
-	}
-}
-
 // TestProvisionFromUpstreamPreservesZcodeToken verifies the refresh path
 // carries the stored broker JWT through re-provisioning (Refresh passes
-// creds.ZcodeToken) and that the balance probe is skipped when no JWT exists.
+// creds.ZcodeToken). The management plan-balance probe authenticates with that
+// JWT, so losing it on refresh would silently break the balance view.
 func TestProvisionFromUpstreamPreservesZcodeToken(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/biz/customer/getCustomerInfo", func(w http.ResponseWriter, r *http.Request) {
@@ -653,28 +590,12 @@ func TestProvisionFromUpstreamPreservesZcodeToken(t *testing.T) {
 			"data": map[string]interface{}{"secretKey": "secret-ok"},
 		})
 	})
-	balanceCalls := 0
-	mux.HandleFunc("/balance", func(w http.ResponseWriter, r *http.Request) {
-		balanceCalls++
-		if got := r.Header.Get("Authorization"); got != "Bearer jwt-stored" {
-			t.Errorf("balance Authorization = %q, want Bearer jwt-stored", got)
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"code": 0,
-			"data": map[string]interface{}{
-				"plans": []map[string]interface{}{
-					{"status": "active", "plan_id": "start-plan-trial"},
-				},
-			},
-		})
-	})
 	svc := httptest.NewServer(mux)
 	defer svc.Close()
 
 	cfg := Config{
-		ZaiLoginURL:         svc.URL + "/zlogin",
-		ZaiAPIBase:          svc.URL,
-		StartPlanBalanceURL: svc.URL + "/balance",
+		ZaiLoginURL: svc.URL + "/zlogin",
+		ZaiAPIBase:  svc.URL,
 	}
 	o := NewOAuthWithConfig(cfg)
 	creds, err := o.ProvisionFromUpstream(context.Background(), "upstream-token", "jwt-stored")
@@ -684,22 +605,16 @@ func TestProvisionFromUpstreamPreservesZcodeToken(t *testing.T) {
 	if creds.ZcodeToken != "jwt-stored" {
 		t.Errorf("ZcodeToken = %q, want jwt-stored (preserved through provisioning)", creds.ZcodeToken)
 	}
-	if !creds.StartPlanActive {
-		t.Error("expected StartPlanActive=true from balance probe")
-	}
-	if balanceCalls != 1 {
-		t.Errorf("balance calls = %d, want 1", balanceCalls)
+	if creds.AccessToken != "key-ok.secret-ok" {
+		t.Errorf("AccessToken = %q, want key-ok.secret-ok", creds.AccessToken)
 	}
 
-	// Refresh must preserve the JWT and re-probe the balance.
+	// Refresh must preserve the JWT.
 	creds2, err := o.Refresh(context.Background(), creds)
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 	if creds2.ZcodeToken != "jwt-stored" {
 		t.Errorf("Refresh dropped ZcodeToken: %q", creds2.ZcodeToken)
-	}
-	if balanceCalls != 2 {
-		t.Errorf("balance calls after refresh = %d, want 2", balanceCalls)
 	}
 }
