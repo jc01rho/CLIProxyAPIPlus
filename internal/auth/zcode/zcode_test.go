@@ -2,7 +2,8 @@ package zcode
 
 import (
 	"context"
-	"encoding/json"
+		"encoding/base64"
+"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -546,11 +547,16 @@ func TestOrgProjectSelectionPrefersFirstDefault(t *testing.T) {
 	}
 }
 
-// TestProvisionFromUpstreamPreservesZcodeToken verifies the refresh path
-// carries the stored broker JWT through re-provisioning (Refresh passes
-// creds.ZcodeToken). The management plan-balance probe authenticates with that
-// JWT, so losing it on refresh would silently break the balance view.
-func TestProvisionFromUpstreamPreservesZcodeToken(t *testing.T) {
+// TestProvisionFromUpstreamDoesNotPersistBrokerJWT pins the gajae-code
+// contract: the broker JWT is consumed only while resolving identity and is
+// never stored on the credentials.
+//
+// gajae-code credentialsFromApiKey (packages/ai/src/utils/oauth/glm-zcode.ts)
+// builds {access, refresh, expires, email, accountId} — its OAuthCredentials
+// type has no token field at all — and provisionFromUpstream passes the JWT in
+// only as zcodeTokenForIdentity. Persisting it here is what let the removed
+// start-plan gateway routing read a credential the reference never keeps.
+func TestProvisionFromUpstreamDoesNotPersistBrokerJWT(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/biz/customer/getCustomerInfo", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -602,19 +608,86 @@ func TestProvisionFromUpstreamPreservesZcodeToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProvisionFromUpstream: %v", err)
 	}
-	if creds.ZcodeToken != "jwt-stored" {
-		t.Errorf("ZcodeToken = %q, want jwt-stored (preserved through provisioning)", creds.ZcodeToken)
-	}
 	if creds.AccessToken != "key-ok.secret-ok" {
 		t.Errorf("AccessToken = %q, want key-ok.secret-ok", creds.AccessToken)
 	}
 
-	// Refresh must preserve the JWT.
+	// Refresh re-provisions without any stored broker JWT to carry.
 	creds2, err := o.Refresh(context.Background(), creds)
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if creds2.ZcodeToken != "jwt-stored" {
-		t.Errorf("Refresh dropped ZcodeToken: %q", creds2.ZcodeToken)
+	if creds2.AccessToken != "key-ok.secret-ok" {
+		t.Errorf("Refresh AccessToken = %q, want key-ok.secret-ok", creds2.AccessToken)
+	}
+	if creds2.RefreshToken != "upstream-token" {
+		t.Errorf("Refresh dropped upstream token: %q", creds2.RefreshToken)
+	}
+}
+
+// TestProvisionFromUpstreamResolvesIdentityFromBrokerJWT verifies the broker JWT
+// is still consumed as an identity source when the account endpoints carry
+// none, matching gajae-code resolveIdentity's
+// [zcodeTokenForIdentity, businessToken] candidate order.
+func TestProvisionFromUpstreamResolvesIdentityFromBrokerJWT(t *testing.T) {
+	mux := http.NewServeMux()
+	// No id/email here, so identity must come from a JWT candidate.
+	mux.HandleFunc("/api/biz/customer/getCustomerInfo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"organizations": []map[string]interface{}{
+					{
+						"organizationId": "org-1",
+						"isDefault":      true,
+						"projects": []map[string]interface{}{
+							{"projectId": "proj-1", "isDefault": true},
+						},
+					},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/zlogin", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{"access_token": "biz-token"},
+		})
+	})
+	mux.HandleFunc("/api/biz/v1/organization/org-1/projects/proj-1/api_keys", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{{"apiKey": "key-ok", "name": "zcode-api-key"}},
+		})
+	})
+	mux.HandleFunc("/api/biz/v1/organization/org-1/projects/proj-1/api_keys/copy/key-ok", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{"secretKey": "secret-ok"},
+		})
+	})
+	// userinfo carries nothing usable, forcing the JWT fallback.
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{}})
+	})
+	svc := httptest.NewServer(mux)
+	defer svc.Close()
+
+	o := NewOAuthWithConfig(Config{
+		ZaiLoginURL: svc.URL + "/zlogin",
+		ZaiAPIBase:  svc.URL,
+		UserinfoURL: svc.URL + "/userinfo",
+	})
+
+	// {"sub":"acct-jwt","email":"Broker@Example.com"}
+	brokerJWT := "eyJhbGciOiJIUzI1NiJ9." +
+		base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"acct-jwt","email":"Broker@Example.com"}`)) +
+		".sig"
+
+	creds, err := o.ProvisionFromUpstream(context.Background(), "upstream-token", brokerJWT)
+	if err != nil {
+		t.Fatalf("ProvisionFromUpstream: %v", err)
+	}
+	if creds.AccountID != "acct-jwt" {
+		t.Errorf("AccountID = %q, want acct-jwt (resolved from the broker JWT)", creds.AccountID)
+	}
+	if creds.Email != "broker@example.com" {
+		t.Errorf("Email = %q, want broker@example.com (lowercased from the broker JWT)", creds.Email)
 	}
 }

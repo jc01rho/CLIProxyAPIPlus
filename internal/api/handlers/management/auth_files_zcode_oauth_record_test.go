@@ -27,41 +27,54 @@ func buildZcodeOAuthRecord(creds *zcode.Credentials, fileName string, now time.T
 			"expires_at":    creds.ExpiresAt.Format(time.RFC3339),
 			"email":         creds.Email,
 			"account_id":    creds.AccountID,
-			"zcode_token":   creds.ZcodeToken,
 		},
 		Attributes: map[string]string{
-			"api_key":     creds.AccessToken,
-			"base_url":    zcode.DefaultAnthropicBase,
-			"email":       creds.Email,
-			"source":      "zcode-oauth",
-			"zcode_token": creds.ZcodeToken,
+			"api_key":  creds.AccessToken,
+			"base_url": zcode.DefaultAnthropicBase,
+			"email":    creds.Email,
+			"source":   "zcode-oauth",
 		},
 		NextRefreshAfter: creds.ExpiresAt.Add(-24 * time.Hour),
 	}
 }
 
-// The web OAuth path builds its auth record independently of the CLI
-// authenticator in sdk/auth/zcode.go, and it previously dropped the broker JWT
-// entirely. The management plan-balance probe authenticates with that JWT, so a
-// credential created from the management UI cannot report its balance without
-// it. Both paths must persist the same fields.
-func TestZcodeOAuthRecordPersistsBrokerToken(t *testing.T) {
+// The record must carry exactly what gajae-code's credentialsFromApiKey keeps:
+// the provisioned key, the upstream refresh token, expiry, and identity. Its
+// OAuthCredentials type (packages/ai/src/utils/oauth/types.ts) has no field for
+// the broker JWT, which is why nothing here may persist one.
+func TestZcodeOAuthRecordPersistsOnlyProvisionedCredential(t *testing.T) {
+	expires := time.Now().Add(24 * time.Hour)
 	creds := &zcode.Credentials{
 		AccessToken:  "key-1.secret",
 		RefreshToken: "upstream-zai-token",
-		ExpiresAt:    time.Now().Add(24 * time.Hour),
+		ExpiresAt:    expires,
 		Email:        "user@example.com",
 		AccountID:    "acct-1",
-		ZcodeToken:   "jwt-broker-1",
 	}
 
 	record := buildZcodeOAuthRecord(creds, "zcode-user-00001.json", time.Now())
 
-	if got, _ := record.Metadata["zcode_token"].(string); got != "jwt-broker-1" {
-		t.Fatalf("metadata zcode_token = %q, want jwt-broker-1", got)
+	if got, _ := record.Metadata["access_token"].(string); got != "key-1.secret" {
+		t.Errorf("metadata access_token = %q, want key-1.secret", got)
 	}
-	if got := record.Attributes["zcode_token"]; got != "jwt-broker-1" {
-		t.Fatalf("attributes zcode_token = %q, want jwt-broker-1", got)
+	if got, _ := record.Metadata["refresh_token"].(string); got != "upstream-zai-token" {
+		t.Errorf("metadata refresh_token = %q, want upstream-zai-token", got)
+	}
+	if got, _ := record.Metadata["account_id"].(string); got != "acct-1" {
+		t.Errorf("metadata account_id = %q, want acct-1", got)
+	}
+
+	// The broker JWT is identity input during provisioning only; a stored copy
+	// is what the removed start-plan gateway routing read.
+	for _, key := range []string{"zcode_token", "start_plan", "start_plan_limit", "start_plan_used"} {
+		if _, ok := record.Metadata[key]; ok {
+			t.Errorf("metadata must not persist %q", key)
+		}
+	}
+	for _, key := range []string{"zcode_token", "start_plan_active"} {
+		if _, ok := record.Attributes[key]; ok {
+			t.Errorf("attributes must not persist %q", key)
+		}
 	}
 }
 
@@ -74,7 +87,6 @@ func TestZcodeOAuthRecordPinsProvisionedKeyToAnthropicBase(t *testing.T) {
 	creds := &zcode.Credentials{
 		AccessToken: "key-1.secret",
 		ExpiresAt:   time.Now().Add(24 * time.Hour),
-		ZcodeToken:  "jwt-broker-1",
 	}
 
 	record := buildZcodeOAuthRecord(creds, "zcode-user-00001.json", time.Now())
