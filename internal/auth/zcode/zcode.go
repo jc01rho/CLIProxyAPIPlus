@@ -90,7 +90,6 @@ type Credentials struct {
 	ExpiresAt    time.Time
 	Email        string
 	AccountID    string
-	ZcodeToken   string // broker JWT, used by the management plan-balance probe
 }
 
 // OAuth is the zcode OAuth handler.
@@ -299,24 +298,30 @@ func (o *OAuth) ExchangeCode(ctx context.Context, code, state, redirectURI strin
 }
 
 // Refresh re-provisions the Z.AI API key from the stored upstream token.
-// The broker JWT is long-lived relative to the API key TTL, so the stored
-// zcodeToken is carried through and preserved (the refresh flow has no broker
-// round-trip that could re-issue it).
+//
+// The broker JWT is deliberately not stored (gajae-code credentialsFromApiKey
+// keeps only access/refresh/expires/email/accountId), so there is none to carry
+// here. Identity falls back to the business token, which provisioning fetches
+// fresh on every call.
 func (o *OAuth) Refresh(ctx context.Context, creds *Credentials) (*Credentials, error) {
 	if creds == nil || creds.RefreshToken == "" {
 		return nil, fmt.Errorf("zcode credentials require re-login; no stored upstream Z.AI token")
 	}
-	return o.provisionFromUpstream(ctx, creds.RefreshToken, creds.ZcodeToken)
+	return o.provisionFromUpstream(ctx, creds.RefreshToken, "")
 }
 
 // ProvisionFromUpstream provisions a Z.AI API key from an upstream Z.AI OAuth
 // access token (e.g. obtained via the broker CLI OAuth poll result).
-func (o *OAuth) ProvisionFromUpstream(ctx context.Context, upstreamZaiAccess, zcodeToken string) (*Credentials, error) {
-	return o.provisionFromUpstream(ctx, upstreamZaiAccess, zcodeToken)
+//
+// zcodeTokenForIdentity is the freshly issued broker JWT. It is consumed only as
+// a JWT candidate while resolving the account identity and is never stored,
+// matching gajae-code provisionFromUpstream.
+func (o *OAuth) ProvisionFromUpstream(ctx context.Context, upstreamZaiAccess, zcodeTokenForIdentity string) (*Credentials, error) {
+	return o.provisionFromUpstream(ctx, upstreamZaiAccess, zcodeTokenForIdentity)
 }
 
 // provisionFromUpstream runs z/login -> provision API key -> resolve identity.
-func (o *OAuth) provisionFromUpstream(ctx context.Context, upstreamZaiAccess, zcodeToken string) (*Credentials, error) {
+func (o *OAuth) provisionFromUpstream(ctx context.Context, upstreamZaiAccess, zcodeTokenForIdentity string) (*Credentials, error) {
 	// z/login -> business token.
 	var loginResp struct {
 		Data struct {
@@ -343,7 +348,7 @@ func (o *OAuth) provisionFromUpstream(ctx context.Context, upstreamZaiAccess, zc
 	}
 
 	// Resolve identity (userinfo, then JWT fallback).
-	identity = o.resolveIdentity(ctx, upstreamZaiAccess, identity, []string{zcodeToken, businessToken})
+	identity = o.resolveIdentity(ctx, upstreamZaiAccess, identity, []string{zcodeTokenForIdentity, businessToken})
 
 	return &Credentials{
 		AccessToken:  apiKey,
@@ -351,7 +356,6 @@ func (o *OAuth) provisionFromUpstream(ctx context.Context, upstreamZaiAccess, zc
 		ExpiresAt:    time.Now().Add(apiKeyTTL),
 		Email:        identity.Email,
 		AccountID:    identity.AccountID,
-		ZcodeToken:   zcodeToken,
 	}, nil
 }
 

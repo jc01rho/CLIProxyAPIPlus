@@ -95,14 +95,12 @@ func (a *ZcodeAuthenticator) createAuthRecord(creds *zcode.Credentials) (*coreau
 			"expires_at":    creds.ExpiresAt.Format(time.RFC3339),
 			"email":         creds.Email,
 			"account_id":    creds.AccountID,
-			"zcode_token":   creds.ZcodeToken,
 		},
 		Attributes: map[string]string{
-			"api_key":          creds.AccessToken,
-			"base_url":         zcode.DefaultAnthropicBase,
-			"email":            creds.Email,
-			"source":           "zcode-oauth",
-			"zcode_token":      creds.ZcodeToken,
+			"api_key":  creds.AccessToken,
+			"base_url": zcode.DefaultAnthropicBase,
+			"email":    creds.Email,
+			"source":   "zcode-oauth",
 		},
 		NextRefreshAfter: creds.ExpiresAt.Add(-24 * time.Hour),
 	}
