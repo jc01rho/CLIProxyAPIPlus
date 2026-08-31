@@ -12,8 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-		"strconv"
-"strings"
+		"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -1410,9 +1409,6 @@ func (h *Handler) RequestZcodeToken(c *gin.Context) {
 						"email":            creds.Email,
 						"account_id":       creds.AccountID,
 						"zcode_token":      creds.ZcodeToken,
-						"start_plan":       creds.StartPlanActive,
-						"start_plan_limit": creds.StartPlanLimit,
-						"start_plan_used":  creds.StartPlanUsed,
 					},
 					Attributes: map[string]string{
 						"api_key":           creds.AccessToken,
@@ -1420,7 +1416,6 @@ func (h *Handler) RequestZcodeToken(c *gin.Context) {
 						"email":             creds.Email,
 						"source":            "zcode-oauth",
 						"zcode_token":       creds.ZcodeToken,
-						"start_plan_active": strconv.FormatBool(creds.StartPlanActive),
 					},
 					NextRefreshAfter: creds.ExpiresAt.Add(-24 * time.Hour),
 				}
