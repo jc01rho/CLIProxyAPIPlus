@@ -118,6 +118,8 @@ func TestReconcileRegistryModelStatesPreservesActiveQuotaCooldown(t *testing.T) 
 	}
 	if blocked, _, _ := isAuthBlockedForModel(after, model, time.Now()); !blocked {
 		t.Fatal("auth became selectable while its quota cooldown was active")
+	}
+}
 
 func TestAvailableAuthsForRouteModel_AttachesUpstreamErrorWhenCandidatesCooling(t *testing.T) {
 	t.Parallel()
