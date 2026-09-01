@@ -124,3 +124,20 @@ cpa-usage-keeper/AGENTS.md
 - **Management Center v1.14.0-9**: UI updates through v1.14.0-4 (priority column, CommandCode provider integration).
 - **cpa-usage-keeper v1.8.6-1**: Usage keeper updates.
 - Previous: CommandCode synthesizer/diff/SDK/watcher integration, upstream merges (v7.1.24 TTFT, helps migration, claudeCredsForAuthLookup restoration), CommandCode management API handler, config API key, model registration. See git log for full history.
+## Code Conventions
+- Keep changes small and simple (KISS)
+- Comments in English only
+- If editing code that already contains non-English comments, translate them to English (don’t add new non-English comments)
+- For user-visible strings, keep the existing language used in that file/area
+- New Markdown docs should be in English unless the file is explicitly language-specific (e.g. `README_CN.md`)
+- As a rule, do not make standalone changes to `internal/translator/`. You may modify it only as part of broader changes elsewhere.
+- If a task requires changing only `internal/translator/`, run `gh repo view --json viewerPermission -q .viewerPermission` to confirm you have `WRITE`, `MAINTAIN`, or `ADMIN`. If you do, you may proceed; otherwise, file a GitHub issue including the goal, rationale, and the intended implementation code, then stop further work.
+- `internal/runtime/executor/` should contain executors and their unit tests only. Place any helper/supporting files under `internal/runtime/executor/helps/`.
+- Follow `gofmt`; keep imports goimports-style; wrap errors with context where helpful
+- Do not use `log.Fatal`/`log.Fatalf` (terminates the process); prefer returning errors and logging via logrus
+- Shadowed variables: use method suffix (`errStart := server.Start()`)
+- Wrap defer errors: `defer func() { if err := f.Close(); err != nil { log.Errorf(...) } }()`
+- Use logrus structured logging; avoid leaking secrets/tokens in logs
+- Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
+- Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
+- Avoid wall-clock `time.Sleep` in TTL, expiration, ordering, or cache-eviction unit tests due to platform timer granularity (e.g. Windows default timer resolution of ~15.6ms) and CI jitter under load; prefer controllable clocks (`nowFunc` / mock clock), explicit timestamp manipulation, or deterministic synchronization primitives.
