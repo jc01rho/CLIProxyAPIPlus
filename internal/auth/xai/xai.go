@@ -19,7 +19,8 @@ import (
 
 // XAIAuth performs xAI OAuth discovery, device-code login, and refresh.
 type XAIAuth struct {
-	httpClient *http.Client
+	httpClient      *http.Client
+	minPollInterval time.Duration
 }
 
 var xaiRefreshGroup singleflight.Group
@@ -239,9 +240,16 @@ func (a *XAIAuth) PollForToken(ctx context.Context, deviceCode *DeviceCodeRespon
 		tokenEndpoint = discovery.TokenEndpoint
 	}
 
+	minInterval := defaultPollInterval
+	if a != nil && a.minPollInterval > 0 {
+		minInterval = a.minPollInterval
+	}
+
 	interval := time.Duration(deviceCode.Interval) * time.Second
-	if interval < defaultPollInterval {
-		interval = defaultPollInterval
+	if a != nil && a.minPollInterval > 0 && deviceCode.Interval <= 0 {
+		interval = a.minPollInterval
+	} else if interval < minInterval {
+		interval = minInterval
 	}
 
 	deadline := time.Now().Add(MaxPollDuration)
@@ -332,8 +340,12 @@ func (a *XAIAuth) exchangeDeviceCode(ctx context.Context, tokenEndpoint, deviceC
 		case "slow_down":
 			// Honor the server-reported interval when present; trusting only a locally
 			// tracked value risks polling early forever under VM/WSL clock drift.
-			// Otherwise apply RFC 8628 section 3.5: increase by 5 seconds.
-			nextInterval := interval + defaultPollInterval
+			// Otherwise apply RFC 8628 section 3.5: increase by the configured step.
+			step := defaultPollInterval
+			if a != nil && a.minPollInterval > 0 {
+				step = a.minPollInterval
+			}
+			nextInterval := interval + step
 			if payload.Interval > 0 {
 				nextInterval = time.Duration(payload.Interval) * time.Second
 			}

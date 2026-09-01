@@ -39,6 +39,7 @@ type UsageReporter struct {
 	reasoning           string
 	serviceTier         string
 	generate            bool
+	stream              bool
 	requestedAt         time.Time
 	ttftMu              sync.RWMutex
 	ttft                time.Duration
@@ -80,6 +81,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reasoning:   usage.ReasoningEffortFromContext(ctx),
 		serviceTier: usage.ServiceTierFromContext(ctx),
 		generate:    usage.GenerateFromContext(ctx),
+		stream:      usage.StreamFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -87,6 +89,14 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 	}
 	return reporter
+}
+
+// SetStream records whether the request was executed in streaming mode.
+func (r *UsageReporter) SetStream(stream bool) {
+	if r == nil {
+		return
+	}
+	r.stream = stream
 }
 
 // UpdateAccessTokenFingerprint records the token version actually used upstream.
@@ -411,6 +421,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ServiceTier:         r.serviceTier,
 		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
 		Generate:            usage.GenerateFlag(r.generate),
+		Stream:              r.stream,
 		RequestedAt:         r.requestedAt,
 		Latency:             r.latency(),
 		TTFT:                r.ttftDuration(),
