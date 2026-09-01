@@ -1226,6 +1226,8 @@ func TestSessionAffinitySelector_PreservesCachedAuth_whenAliasedModelCandidatesP
 	}
 	if second.ID != "auth-a" {
 		t.Fatalf("second Pick() auth.ID = %q, want cached auth-a", second.ID)
+	}
+}
 
 func TestExtractSessionID_NestedRequestSubagent(t *testing.T) {
 	t.Parallel()
