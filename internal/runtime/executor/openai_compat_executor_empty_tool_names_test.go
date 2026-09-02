@@ -95,6 +95,80 @@ func TestSanitizeEmptyToolFunctionNames(t *testing.T) {
 			body: `not json`,
 			want: `not json`,
 		},
+		{
+			name: "flat tools[].name empty is dropped, valid flat sibling kept",
+			body: `{"model":"m","tools":[` +
+				`{"type":"function","name":"","parameters":{}},` +
+				`{"type":"function","name":"keep","parameters":{}}]}`,
+			want: `{"model":"m","tools":[` +
+				`{"type":"function","name":"keep","parameters":{}}]}`,
+		},
+		{
+			name: "flat tools[].name empty with sibling function object lacking name is dropped",
+			body: `{"model":"m","tools":[` +
+				`{"type":"function","name":"","function":{"description":"d"}},` +
+				`{"type":"function","name":"keep","parameters":{}}]}`,
+			want: `{"model":"m","tools":[` +
+				`{"type":"function","name":"keep","parameters":{}}]}`,
+		},
+		{
+			name: "all flat tools empty deletes the tools field without collateral damage check needed",
+			body: `{"model":"m","tools":[` +
+				`{"type":"function","name":"","parameters":{}},` +
+				`{"type":"function","name":"   ","parameters":{}}]}`,
+			want: `{"model":"m"}`,
+		},
+		{
+			name: "custom.name empty is dropped, custom.name populated is kept",
+			body: `{"model":"m","tools":[` +
+				`{"type":"custom","custom":{"name":""}},` +
+				`{"type":"custom","custom":{"name":"keep"}}]}`,
+			want: `{"model":"m","tools":[` +
+				`{"type":"custom","custom":{"name":"keep"}}]}`,
+		},
+		{
+			name: "valid flat tool does not gain a function.arguments backfill",
+			body: `{"model":"m","tools":[` +
+				`{"type":"function","name":"","parameters":{}},` +
+				`{"type":"function","name":"keep","parameters":{"x":1}}]}`,
+			want: `{"model":"m","tools":[` +
+				`{"type":"function","name":"keep","parameters":{"x":1}}]}`,
+		},
+		{
+			name: "messages[].tool_calls[].function.name empty is dropped, valid sibling call kept",
+			body: `{"model":"m","messages":[{"role":"assistant","tool_calls":[` +
+				`{"id":"a","function":{"name":"","arguments":"{}"}},` +
+				`{"id":"b","function":{"name":"keep","arguments":"{}"}}]}]}`,
+			want: `{"model":"m","messages":[{"role":"assistant","tool_calls":[` +
+				`{"id":"b","function":{"name":"keep","arguments":"{}"}}]}]}`,
+		},
+		{
+			name: "messages[].tool_calls[] entirely emptied drops the field",
+			body: `{"model":"m","messages":[{"role":"assistant","tool_calls":[` +
+				`{"id":"a","function":{"name":"","arguments":"{}"}}]}]}`,
+			want: `{"model":"m","messages":[{"role":"assistant"}]}`,
+		},
+		{
+			name: "responses input function_call with empty name is dropped, valid sibling kept",
+			body: `{"model":"m","input":[` +
+				`{"type":"function_call","call_id":"c1","name":"","arguments":"{}"},` +
+				`{"type":"function_call","call_id":"c2","name":"keep","arguments":"{}"}]}`,
+			want: `{"model":"m","input":[` +
+				`{"type":"function_call","call_id":"c2","name":"keep","arguments":"{}"}]}`,
+		},
+		{
+			name: "responses input with only an empty-name function_call deletes input",
+			body: `{"model":"m","input":[` +
+				`{"type":"function_call","call_id":"c1","name":"","arguments":"{}"}]}`,
+			want: `{"model":"m"}`,
+		},
+		{
+			name: "responses input non function_call items are left untouched",
+			body: `{"model":"m","input":[` +
+				`{"type":"message","role":"user","content":"hi"}]}`,
+			want: `{"model":"m","input":[` +
+				`{"type":"message","role":"user","content":"hi"}]}`,
+		},
 	}
 
 	for _, tc := range cases {

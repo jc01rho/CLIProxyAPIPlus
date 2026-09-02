@@ -1441,12 +1441,6 @@ func isSensenovaCompatProvider(compat *config.OpenAICompatibility) bool {
 	return strings.Contains(strings.ToLower(compat.Name), "sensenova")
 }
 
-// sanitizeEmptyToolFunctionNames drops tools[] entries whose function.name is
-// empty (or missing) and backfills missing/empty arguments with "{}". Upstage
-// Solar (and any other OpenAI-compatible endpoint enforcing the standard
-// tool-calling schema) rejects such requests with invalid_request_error, so
-// stripping the malformed entries lets well-formed siblings proceed.
-
 // applySensenovaMaxTokensClamp clamps max_tokens into the range SenseNova accepts.
 // A non-numeric or absent max_tokens is left untouched so the upstream default applies.
 func applySensenovaMaxTokensClamp(body []byte) []byte {
@@ -1475,12 +1469,54 @@ func applySensenovaMaxTokensClamp(body []byte) []byte {
 	return next
 }
 
-// sanitizeEmptyToolFunctionNames drops `tools[]` entries whose `function.name` is empty
-// or whitespace, and backfills missing or empty `function.arguments` with "{}". Some
-// OpenAI-compatible routers (e.g. Upstage Solar via the minpeter gateway) reject the
-// request with `Invalid function name: ''` when a tool ships without a name, which
-// silently breaks otherwise valid tool calls.
+// sanitizeEmptyToolFunctionNames drops malformed tool declarations and tool-call
+// references across every wire shape this executor can emit to an
+// OpenAI-compatible upstream:
+//
+//   - tools[].function.name (Chat Completions), tools[].name (flat/Responses-style),
+//     and tools[].custom.name (Responses "custom" tool variant). The effective name is
+//     the first non-empty of function.name / name / custom.name; entries whose effective
+//     name is empty or whitespace are dropped. Missing/empty function.arguments on kept
+//     entries with a function object are backfilled with "{}". If no tools remain the
+//     tools field is removed entirely.
+//   - messages[].tool_calls[].function.name (Chat Completions assistant replay): entries
+//     with an empty/whitespace function name are dropped, mirroring sanitizeSensenovaToolCalls
+//     but applied unconditionally so every openai-compatible provider is protected.
+//   - input[] items shaped like the Responses API (type function_call / custom_tool_call)
+//     whose name is empty or whitespace are dropped.
+//
+// Some OpenAI-compatible routers (e.g. Upstage Solar and other gateways behind the
+// minpeter proxy) reject such requests with `Invalid function name: ''` or `` `name`
+// must be non-empty ``, which silently breaks otherwise valid tool calls/tool catalogs.
 func sanitizeEmptyToolFunctionNames(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	body = sanitizeEmptyToolDeclarations(body)
+	body = sanitizeEmptyToolCallMessages(body)
+	body = sanitizeEmptyResponsesFunctionCallItems(body)
+	return body
+}
+
+// toolEffectiveName resolves a tool declaration's name across every wire shape:
+// the nested Chat Completions form (function.name), the flat Responses-style form
+// (name), and the Responses "custom" tool form (custom.name). The first non-empty
+// candidate wins.
+func toolEffectiveName(tool gjson.Result) string {
+	if name := strings.TrimSpace(tool.Get("function.name").String()); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(tool.Get("name").String()); name != "" {
+		return name
+	}
+	return strings.TrimSpace(tool.Get("custom.name").String())
+}
+
+// sanitizeEmptyToolDeclarations drops tools[] entries whose effective name (see
+// toolEffectiveName) is empty or whitespace, and backfills missing or empty
+// function.arguments with "{}" on entries that carry a function object. If every
+// entry is dropped, the tools field itself is removed.
+func sanitizeEmptyToolDeclarations(body []byte) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
 	}
@@ -1493,18 +1529,20 @@ func sanitizeEmptyToolFunctionNames(body []byte) []byte {
 	kept := make([]string, 0, len(tools.Array()))
 	changed := false
 	for _, tool := range tools.Array() {
-		if strings.TrimSpace(tool.Get("function.name").String()) == "" {
+		if toolEffectiveName(tool) == "" {
 			changed = true
 			continue
 		}
 		raw := tool.Raw
-		if args := tool.Get("function.arguments"); !args.Exists() || strings.TrimSpace(args.String()) == "" {
-			repaired, errSet := sjson.Set(raw, "function.arguments", "{}")
-			if errSet != nil {
-				return body
+		if tool.Get("function").Exists() {
+			if args := tool.Get("function.arguments"); !args.Exists() || strings.TrimSpace(args.String()) == "" {
+				repaired, errSet := sjson.Set(raw, "function.arguments", "{}")
+				if errSet != nil {
+					return body
+				}
+				raw = repaired
+				changed = true
 			}
-			raw = repaired
-			changed = true
 		}
 		kept = append(kept, raw)
 	}
@@ -1519,6 +1557,94 @@ func sanitizeEmptyToolFunctionNames(body []byte) []byte {
 		return next
 	}
 	next, err := sjson.SetRawBytes(out, "tools", []byte("["+strings.Join(kept, ",")+"]"))
+	if err != nil {
+		return body
+	}
+	return next
+}
+
+// sanitizeEmptyToolCallMessages drops messages[].tool_calls[] entries whose
+// function.name is empty or whitespace. Unlike sanitizeSensenovaToolCalls, it does
+// not attempt orphaned tool-result cleanup and applies unconditionally to every
+// openai-compatible provider, not just SenseNova.
+func sanitizeEmptyToolCallMessages(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+
+	out := body
+	for msgIdx, msg := range messages.Array() {
+		toolCalls := msg.Get("tool_calls")
+		if !toolCalls.IsArray() {
+			continue
+		}
+		calls := toolCalls.Array()
+		kept := make([]string, 0, len(calls))
+		changed := false
+		for _, call := range calls {
+			if strings.TrimSpace(call.Get("function.name").String()) == "" {
+				changed = true
+				continue
+			}
+			kept = append(kept, call.Raw)
+		}
+		if !changed {
+			continue
+		}
+		path := fmt.Sprintf("messages.%d.tool_calls", msgIdx)
+		var next []byte
+		var err error
+		if len(kept) == 0 {
+			next, err = sjson.DeleteBytes(out, path)
+		} else {
+			next, err = sjson.SetRawBytes(out, path, []byte("["+strings.Join(kept, ",")+"]"))
+		}
+		if err != nil {
+			return body
+		}
+		out = next
+	}
+	return out
+}
+
+// sanitizeEmptyResponsesFunctionCallItems drops input[] items shaped like the
+// Responses API function-call replay (type function_call / custom_tool_call) whose
+// name is empty or whitespace. Other input item types are left untouched.
+func sanitizeEmptyResponsesFunctionCallItems(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body
+	}
+
+	items := input.Array()
+	kept := make([]string, 0, len(items))
+	changed := false
+	for _, item := range items {
+		itemType := strings.TrimSpace(item.Get("type").String())
+		if (itemType == "function_call" || itemType == "custom_tool_call") && strings.TrimSpace(item.Get("name").String()) == "" {
+			changed = true
+			continue
+		}
+		kept = append(kept, item.Raw)
+	}
+	if !changed {
+		return body
+	}
+	if len(kept) == 0 {
+		next, err := sjson.DeleteBytes(body, "input")
+		if err != nil {
+			return body
+		}
+		return next
+	}
+	next, err := sjson.SetRawBytes(body, "input", []byte("["+strings.Join(kept, ",")+"]"))
 	if err != nil {
 		return body
 	}
