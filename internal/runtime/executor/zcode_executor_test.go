@@ -13,11 +13,11 @@ import (
 func TestBuildZCodeSourceHeaders(t *testing.T) {
 	h := buildZCodeSourceHeaders()
 	checks := map[string]string{
-		"User-Agent":          "ZCode/3.10.1",
+		"User-Agent":          "ZCode/3.10.2",
 		"HTTP-Referer":        "https://zcode.z.ai",
 		"X-Title":             "Z Code@electron",
 		"X-ZCode-Agent":       "glm",
-		"X-ZCode-App-Version": "3.10.1",
+		"X-ZCode-App-Version": "3.10.2",
 		"X-Release-Channel":   "stable",
 	}
 	for k, want := range checks {
