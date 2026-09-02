@@ -555,6 +555,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if auth == nil || len(touchedRoots) == 0 {
 		return
 	}
+	if _, ok := touchedRoots["base_url"]; ok {
+		syncAuthFileBaseURLAttribute(auth)
+	}
 	if _, ok := touchedRoots["prefix"]; ok {
 		if prefix, okString := auth.Metadata["prefix"].(string); okString {
 			auth.Prefix = strings.TrimSpace(prefix)
@@ -630,6 +633,30 @@ func parseAuthFileModelAliases(value any) ([]internalConfig.OAuthModelAlias, err
 		entries[index] = entry
 	}
 	return entries, nil
+}
+
+// syncAuthFileBaseURLAttribute mirrors Metadata["base_url"] into Attributes["base_url"]
+// so executor credential lookup picks up per-credential endpoint overrides without
+// waiting for a file re-synthesis. An empty/removed value clears the attribute.
+func syncAuthFileBaseURLAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	baseURL, ok := auth.Metadata["base_url"].(string)
+	if !ok {
+		baseURL = ""
+	}
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		if auth.Attributes != nil {
+			delete(auth.Attributes, "base_url")
+		}
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Attributes["base_url"] = baseURL
 }
 
 func syncAuthFileHeaderAttributes(auth *coreauth.Auth) {
