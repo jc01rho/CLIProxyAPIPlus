@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	internalConfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -312,6 +313,20 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			return
 		} else if fieldPath == "headers" {
 			applyAuthFileHeadersPatch(targetAuth, value)
+		} else if fieldPath == "model_aliases" {
+			aliases, errAliases := parseAuthFileModelAliases(value)
+			if errAliases != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": errAliases.Error()})
+				return
+			}
+			if aliases == nil {
+				delete(targetAuth.Metadata, "model_aliases")
+			} else {
+				targetAuth.Metadata["model_aliases"] = aliases
+			}
+		} else if rootAuthFileField(fieldPath) == "model_aliases" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "model_aliases does not support nested fields"})
+			return
 		} else if errSet := setAuthFileMetadataValue(targetAuth.Metadata, fieldPath, value); errSet != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": errSet.Error()})
 			return
@@ -553,6 +568,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["headers"]; ok {
 		syncAuthFileHeaderAttributes(auth)
 	}
+	if _, ok := touchedRoots["model_aliases"]; ok {
+		syncAuthFileModelAliasesAttribute(auth)
+	}
 	if _, ok := touchedRoots["priority"]; ok {
 		syncAuthFilePriorityAttribute(auth)
 	}
@@ -570,6 +588,50 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	}
 }
 
+// parseAuthFileModelAliases validates and decodes a model_aliases patch value.
+// It returns (nil, nil) when the value is null/empty (caller should delete the
+// key); (aliases, nil) when the array parses cleanly and every row passes
+// the strict validation (no empty name/alias, no name==alias, no duplicate
+// alias within the same auth); or (nil, error) when any row is invalid.
+func parseAuthFileModelAliases(value any) ([]internalConfig.OAuthModelAlias, error) {
+	if value == nil {
+		return nil, nil
+	}
+	raw, errMarshal := json.Marshal(value)
+	if errMarshal != nil {
+		return nil, fmt.Errorf("model_aliases must be an array of {name, alias}")
+	}
+	var entries []internalConfig.OAuthModelAlias
+	if errUnmarshal := json.Unmarshal(raw, &entries); errUnmarshal != nil {
+		return nil, fmt.Errorf("model_aliases must be an array of {name, alias}")
+	}
+	if len(entries) == 0 {
+		return []internalConfig.OAuthModelAlias{}, nil
+	}
+	seen := make(map[string]int, len(entries))
+	for index, entry := range entries {
+		name := strings.TrimSpace(entry.Name)
+		alias := strings.TrimSpace(entry.Alias)
+		if name == "" {
+			return nil, fmt.Errorf("model_aliases[%d]: name is required", index)
+		}
+		if alias == "" {
+			return nil, fmt.Errorf("model_aliases[%d]: alias is required", index)
+		}
+		if strings.EqualFold(name, alias) {
+			return nil, fmt.Errorf("model_aliases[%d]: name and alias must differ (got %q)", index, name)
+		}
+		if firstIndex, dup := seen[alias]; dup {
+			return nil, fmt.Errorf("model_aliases[%d]: duplicate alias %q (already used at index %d)", index, alias, firstIndex)
+		}
+		seen[alias] = index
+		entry.Name = name
+		entry.Alias = alias
+		entries[index] = entry
+	}
+	return entries, nil
+}
+
 func syncAuthFileHeaderAttributes(auth *coreauth.Auth) {
 	if auth == nil {
 		return
@@ -585,6 +647,32 @@ func syncAuthFileHeaderAttributes(auth *coreauth.Auth) {
 	for name, value := range coreauth.ExtractCustomHeadersFromMetadata(auth.Metadata) {
 		auth.Attributes["header:"+name] = value
 	}
+}
+
+// syncAuthFileModelAliasesAttribute re-derives Attributes["model_aliases"]
+// from Metadata["model_aliases"] using the shared setter, so the value stays
+// parseable by OAuthModelAliasesFromAttributes. Removing the Metadata key
+// removes the Attributes mirror as well.
+func syncAuthFileModelAliasesAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	value := auth.Metadata["model_aliases"]
+	if value == nil {
+		if auth.Attributes != nil {
+			delete(auth.Attributes, "model_aliases")
+		}
+		return
+	}
+	raw, errMarshal := json.Marshal(value)
+	if errMarshal != nil {
+		return
+	}
+	var aliases []internalConfig.OAuthModelAlias
+	if errUnmarshal := json.Unmarshal(raw, &aliases); errUnmarshal != nil {
+		return
+	}
+	coreauth.SetOAuthModelAliasesAttribute(auth, aliases)
 }
 
 func syncAuthFilePriorityAttribute(auth *coreauth.Auth) {

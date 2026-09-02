@@ -598,3 +598,89 @@ func TestSetSourceAuthFileDisabledNormalizesLegacyMetadata(t *testing.T) {
 		}
 	}
 }
+
+// TestPatchAuthFileFields_ModelAliases covers the per-auth model_aliases patch
+// branch: valid arrays persist to Metadata and sync Attributes immediately
+// (no reload), invalid rows are rejected with HTTP 400 (never silent-dropped),
+// and the legacy "model-aliases" key normalizes to the canonical key.
+func TestPatchAuthFileFields_ModelAliases(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	authDir := t.TempDir()
+	fileName := "claude.json"
+	filePath := filepath.Join(authDir, fileName)
+	store := fileauth.NewFileTokenStore()
+	store.SetBaseDir(authDir)
+	manager := coreauth.NewManager(store, nil, nil)
+	record := &coreauth.Auth{
+		ID:         fileName,
+		FileName:   fileName,
+		Provider:   "claude",
+		Attributes: map[string]string{"path": filePath},
+		Metadata:   map[string]any{"type": "claude"},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+
+	patch := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		h.PatchAuthFileFields(ctx)
+		return rec
+	}
+
+	// (a) valid array: Metadata + Attributes sync immediately, no reload.
+	if rec := patch(`{"name":"claude.json","model_aliases":[{"name":"claude-opus-4","alias":"claude-3-opus","fork":true}]}`); rec.Code != http.StatusOK {
+		t.Fatalf("valid patch status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID(fileName)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth record after valid patch")
+	}
+	metaAliases, okMeta := updated.Metadata["model_aliases"].([]config.OAuthModelAlias)
+	if !okMeta || len(metaAliases) != 1 {
+		t.Fatalf("metadata model_aliases = %#v, want 1-entry array", updated.Metadata["model_aliases"])
+	}
+	wantAttributes := `[{"name":"claude-opus-4","alias":"claude-3-opus","fork":true}]`
+	if got := updated.Attributes["model_aliases"]; got == "" {
+		t.Fatalf("runtime Attributes[model_aliases] empty after patch (stale sync regression)")
+	} else {
+		var gotEntries, wantEntries []config.OAuthModelAlias
+		if err := json.Unmarshal([]byte(got), &gotEntries); err != nil {
+			t.Fatalf("Attributes[model_aliases] not parseable JSON: %v", err)
+		}
+		if err := json.Unmarshal([]byte(wantAttributes), &wantEntries); err != nil {
+			t.Fatalf("test fixture unparseable: %v", err)
+		}
+		if len(gotEntries) != 1 || gotEntries[0].Name != "claude-opus-4" || gotEntries[0].Alias != "claude-3-opus" || !gotEntries[0].Fork {
+			t.Fatalf("Attributes[model_aliases] = %q, want %q", got, wantAttributes)
+		}
+	}
+
+	// (b) empty name rejected with 400.
+	if rec := patch(`{"name":"claude.json","model_aliases":[{"name":"","alias":"x"}]}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty-name status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	// (c) name == alias rejected with 400.
+	if rec := patch(`{"name":"claude.json","model_aliases":[{"name":"same","alias":"same"}]}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("name==alias status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	// (d) duplicate alias rejected with 400.
+	if rec := patch(`{"name":"claude.json","model_aliases":[{"name":"a","alias":"dup"},{"name":"b","alias":"dup"}]}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("dup-alias status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	// (e) legacy model-aliases key normalizes to canonical model_aliases.
+	if rec := patch(`{"name":"claude.json","model-aliases":[{"name":"m1","alias":"a1"}]}`); rec.Code != http.StatusOK {
+		t.Fatalf("legacy key status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	updated, _ = manager.GetByID(fileName)
+	if _, okMeta := updated.Metadata["model_aliases"]; !okMeta {
+		t.Fatalf("legacy model-aliases key did not normalize to model_aliases: %#v", updated.Metadata)
+	}
+
+}
