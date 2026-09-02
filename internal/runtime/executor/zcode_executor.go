@@ -28,8 +28,9 @@ const ZCodeAnthropicBaseURL = "https://api.z.ai/api/anthropic"
 
 // ZCodeAppVersion mirrors the ZCode desktop release used for source headers
 // and the balance probe. Keep it aligned with a real published release so the
-// gateway treats the client as a current ZCode build.
-const zcodeAppVersion = "3.10.1"
+// gateway treats the client as a current ZCode build (verified against the
+// 3.10.2 linux-x64 AppImage build metadata).
+const zcodeAppVersion = "3.10.2"
 
 // zcodeReleaseChannel is the release channel used in the ZCode source headers.
 const zcodeReleaseChannel = "stable"
