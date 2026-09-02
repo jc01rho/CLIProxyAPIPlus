@@ -99,7 +99,7 @@ func commandCodeAssistantMessage(msg commandCodeOpenAIMessage) (commandCodeWireM
 		}
 		blocks = append(blocks, commandCodeWireToolCallBlock{
 			Type:       "tool-call",
-			ToolCallID: call.ID,
+			ToolCallID: commandCodeNormalizeCallID(call.ID),
 			ToolName:   call.Function.Name,
 			Input:      input,
 		})
@@ -142,7 +142,7 @@ func commandCodeToolMessage(msg commandCodeOpenAIMessage, toolNames map[string]s
 		Role: "tool",
 		Content: []commandCodeWireContentBlock{commandCodeWireToolResultBlock{
 			Type:       "tool-result",
-			ToolCallID: msg.ToolCallID,
+			ToolCallID: commandCodeNormalizeCallID(msg.ToolCallID),
 			ToolName:   toolNames[msg.ToolCallID],
 			Output:     commandCodeWireToolOutput{Type: "text", Value: text},
 		}},

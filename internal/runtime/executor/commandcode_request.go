@@ -7,6 +7,8 @@
 package executor
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -17,7 +19,26 @@ const (
 	// commandCodeDefaultMaxTokens mirrors the npm default output token limit (64e3).
 	commandCodeDefaultMaxTokens = 64000
 	commandCodePermissionMode   = "standard"
+	// commandCodeMaxCallIDLen is the upstream CommandCode limit on tool-call/
+	// tool-result "toolCallId" wire field length. IDs longer than this are
+	// rejected by CommandCode with "input[N].call_id ... must be <= 64".
+	commandCodeMaxCallIDLen = 64
 )
+
+// commandCodeNormalizeCallID returns id unchanged when it already fits the
+// upstream CommandCode call-id length limit. Longer IDs are replaced with a
+// deterministic 64-char lowercase hex sha256 digest of the original value, so
+// the same raw ID always normalizes to the same wire value independently at
+// every call site — no shared remap table is needed to keep an assistant
+// tool-call and its paired tool-result message consistent on the wire.
+// Empty IDs are returned unchanged; callers validate emptiness separately.
+func commandCodeNormalizeCallID(id string) string {
+	if len(id) <= commandCodeMaxCallIDLen {
+		return id
+	}
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:])
+}
 
 // --- OpenAI input types ---
 
