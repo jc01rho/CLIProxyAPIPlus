@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor"
 	kiloauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kilo"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/meta"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	kiro "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
@@ -631,6 +632,93 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 		response["expires_in"] = deviceFlow.ExpiresIn
 	} else {
 		response["expires_in"] = int(xaiauth.MaxPollDuration / time.Second)
+	}
+	c.JSON(200, response)
+}
+
+// RequestMetaToken runs the Meta Model API subscription device-code login.
+// Unlike the OAuth providers that persist an auth file, Meta mints a Model API
+// key from the subscription and stores it in the config's openai-compatibility
+// "meta" provider, which the standard OpenAI-compatible executor routes to
+// https://api.meta.ai/v1.
+func (h *Handler) RequestMetaToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	fmt.Println("Initializing Meta Model API authentication...")
+
+	state := fmt.Sprintf("meta-%d", time.Now().UnixNano())
+	authSvc := meta.NewMetaAuth(h.cfg)
+
+	deviceFlow, errStartDeviceFlow := authSvc.StartDeviceFlow(ctx)
+	if errStartDeviceFlow != nil {
+		log.Errorf("Failed to start Meta device flow: %v", errStartDeviceFlow)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start device authorization flow"})
+		return
+	}
+	authURL := strings.TrimSpace(deviceFlow.VerificationURIComplete)
+	if authURL == "" {
+		authURL = strings.TrimSpace(deviceFlow.VerificationURI)
+	}
+
+	RegisterOAuthSession(state, "meta")
+
+	go func() {
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		defer cancelPoll()
+		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "meta")
+
+		fmt.Println("Waiting for Meta authentication...")
+		accessToken, errWaitForAuthorization := authSvc.WaitForAuthorization(pollCtx, deviceFlow)
+		if errWaitForAuthorization != nil {
+			if !IsOAuthSessionPending(state, "meta") {
+				return
+			}
+			log.Errorf("Meta authentication failed: %v", errWaitForAuthorization)
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Authentication failed", errWaitForAuthorization))
+			return
+		}
+		if !IsOAuthSessionPending(state, "meta") {
+			return
+		}
+
+		fmt.Println("Signed in. Minting Meta Model API key from the subscription...")
+		apiKey, errMint := authSvc.MintAPIKey(pollCtx, accessToken)
+		if errMint != nil {
+			if !IsOAuthSessionPending(state, "meta") {
+				return
+			}
+			log.Errorf("Meta key mint failed: %v", errMint)
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Failed to mint Model API key", errMint))
+			return
+		}
+		if !IsOAuthSessionPending(state, "meta") {
+			return
+		}
+
+		if !meta.StoreAPIKey(h.cfg, apiKey) {
+			CompleteOAuthSession(state)
+			fmt.Println("Meta Model API key is already present in the config")
+			return
+		}
+		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
+			log.Errorf("Failed to save Meta API key to config: %v", errSave)
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Failed to save config", errSave))
+			return
+		}
+
+		CompleteOAuthSession(state)
+		fmt.Println("Authentication successful! Meta Model API key stored in config")
+	}()
+
+	response := gin.H{"status": "ok", "url": authURL, "state": state, "flow": "device"}
+	if userCode := strings.TrimSpace(deviceFlow.UserCode); userCode != "" {
+		response["user_code"] = userCode
+	}
+	if deviceFlow.ExpiresIn > 0 {
+		response["expires_in"] = deviceFlow.ExpiresIn
+	} else {
+		response["expires_in"] = int(meta.MaxPollDuration / time.Second)
 	}
 	c.JSON(200, response)
 }

@@ -7,13 +7,12 @@ import (
 )
 
 // commandCodeWireFixture is the shared OpenAI chat-completions payload that
-// exercises every request wire element of the installed command-code@1.6.0
+// exercises every request wire element of the installed command-code@1.12.0
 // contract: typed user content (text + image data URL), assistant text plus
 // tool_calls with original IDs and JSON arguments, a tool role result that
 // references the same ID, an OpenAI tools definition, and reasoning_effort
-// (which must be dropped from the wire envelope: command-code@1.6.0 only
-// sends reasoning_effort conditionally via its model registry, and the
-// upstream server rejects the field with HTTP 422).
+// (forwarded only when the resolved model documents the requested effort;
+// the fixture model is not in the effort table, so it is omitted).
 func commandCodeWireFixture() []byte {
 	return []byte(`{
 		"model": "parrot",
@@ -221,15 +220,47 @@ func Test_CommandCodeRequest_stream_true_is_forwarded(t *testing.T) {
 	}
 }
 
-func Test_CommandCodeRequest_reasoning_effort_dropped_when_present(t *testing.T) {
-	// Given the shared fixture, which sets reasoning_effort.
+func Test_CommandCodeRequest_reasoning_effort_forwarded_when_supported(t *testing.T) {
+	// Given a payload with reasoning_effort and a model that documents it.
+	payload := []byte(`{"model": "parrot", "reasoning_effort": "high", "messages": [{"role": "user", "content": "hello"}]}`)
+
 	// When
+	got, err := buildCommandCodePayload(payload, "deepseek/deepseek-v4-flash", true)
+
+	// Then the supported effort is forwarded to the wire params.
+	if err != nil {
+		t.Fatalf("buildCommandCodePayload() error = %v", err)
+	}
+	if v := gjson.GetBytes(got, "params.reasoning_effort").String(); v != "high" {
+		t.Fatalf("params.reasoning_effort = %q, want high", v)
+	}
+}
+
+func Test_CommandCodeRequest_reasoning_effort_remapped_ultra_to_max(t *testing.T) {
+	// Given a payload requesting ultra on a model whose profile aliases ultra→max.
+	payload := []byte(`{"model": "parrot", "reasoning_effort": "ultra", "messages": [{"role": "user", "content": "hello"}]}`)
+
+	// When
+	got, err := buildCommandCodePayload(payload, "deepseek/deepseek-v4-flash", true)
+
+	// Then ultra collapses to max on the wire.
+	if err != nil {
+		t.Fatalf("buildCommandCodePayload() error = %v", err)
+	}
+	if v := gjson.GetBytes(got, "params.reasoning_effort").String(); v != "max" {
+		t.Fatalf("params.reasoning_effort = %q, want max (ultra aliased)", v)
+	}
+}
+
+func Test_CommandCodeRequest_reasoning_effort_dropped_when_unsupported(t *testing.T) {
+	// Given the shared fixture (reasoning_effort high) and a model with no
+	// documented effort ladder.
 	got := buildCommandCodeWireFixture(t)
 
-	// Then reasoning_effort is never copied into the wire params, even when
-	// the inbound OpenAI payload sets it.
+	// Then reasoning_effort is never copied into the wire params for a model
+	// that does not document the requested effort.
 	if gjson.GetBytes(got, "params.reasoning_effort").Exists() {
-		t.Fatalf("params.reasoning_effort present, want the key never forwarded to the wire")
+		t.Fatalf("params.reasoning_effort present, want the key omitted for an unsupported model")
 	}
 }
 

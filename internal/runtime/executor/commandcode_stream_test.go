@@ -269,23 +269,25 @@ func Test_CommandCodeStream_Execute_tool_result_output_is_surfaced(t *testing.T)
 	}
 }
 
-func Test_CommandCodeStream_Execute_reasoning_stays_hidden(t *testing.T) {
+func Test_CommandCodeStream_Execute_exposes_reasoning_content(t *testing.T) {
 	// Given reasoning events wrapping the visible text.
 	body := commandCodeNDJSON(ccEvReasoningOpen, ccEvReasoningText, ccEvReasoningEnd, ccEvText1, ccEvFinishStop)
 
 	// When
 	response, err := executeCommandCodeNDJSON(t, body)
 
-	// Then hidden reasoning never reaches the client-visible content.
+	// Then visible text stays in content and reasoning is exposed as
+	// reasoning_content (the OpenAI-compatible equivalent of thinking_delta).
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	content := gjson.GetBytes(response.Payload, "choices.0.message.content").String()
-	if strings.Contains(content, "secret chain of thought") {
-		t.Fatalf("message content = %q, must not expose hidden reasoning", content)
+	if content != "Hello " {
+		t.Fatalf("message content = %q, want only the visible text %q", content, "Hello ")
 	}
-	if got := content; got != "Hello " {
-		t.Fatalf("message content = %q, want only the visible text %q", got, "Hello ")
+	reasoning := gjson.GetBytes(response.Payload, "choices.0.message.reasoning_content").String()
+	if reasoning != "secret chain of thought" {
+		t.Fatalf("message reasoning_content = %q, want the reasoning text", reasoning)
 	}
 }
 
@@ -492,21 +494,25 @@ func Test_CommandCodeStream_ExecuteStream_tool_result_output_is_surfaced(t *test
 	}
 }
 
-func Test_CommandCodeStream_ExecuteStream_reasoning_stays_hidden(t *testing.T) {
+func Test_CommandCodeStream_ExecuteStream_exposes_reasoning_content(t *testing.T) {
 	// Given reasoning events wrapping the visible text.
 	body := commandCodeNDJSON(ccEvReasoningOpen, ccEvReasoningText, ccEvReasoningEnd, ccEvText1, ccEvFinishStop)
 
 	// When
 	chunks := streamCommandCodeNDJSON(t, body)
 
-	// Then no chunk payload exposes the hidden reasoning text.
-	for i, chunk := range chunks {
+	// Then the reasoning text is exposed as reasoning_content in a chunk.
+	found := false
+	for _, chunk := range chunks {
 		if chunk.Err != nil {
 			continue
 		}
 		if strings.Contains(string(chunk.Payload), "secret chain of thought") {
-			t.Fatalf("chunk %d payload exposes hidden reasoning: %s", i, chunk.Payload)
+			found = true
 		}
+	}
+	if !found {
+		t.Fatal("no chunk exposes the reasoning text as reasoning_content")
 	}
 	if got := commandCodeStreamedText(chunks); got != "Hello " {
 		t.Fatalf("streamed text = %q, want only the visible text %q", got, "Hello ")
@@ -696,6 +702,7 @@ func Test_CommandCodeStream_rawRetention_stays_bounded_and_releases(t *testing.T
 		t.Fatalf("retained raw body regrew to %d bytes after release, want flat 0", got)
 	}
 }
+
 // --- Non-2xx HTTP status surfaces as a stream error chunk ---
 
 // commandCodeStreamTestContextStatus injects a RoundTripper that answers the

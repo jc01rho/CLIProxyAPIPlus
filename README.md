@@ -48,6 +48,10 @@ You can access the following providers locally and with multiple CLI accounts th
         <td align="center"><a href="https://x.ai/grok"><img src="./assets/logo/xai.svg" alt="xAI" width="28" height="28" /></a></td>
         <td>xAI Grok series models (Grok 4.5, Grok Composer 2.5 Fast, etc.). Grok 4.5 is SpaceXAI's frontier model built for coding, agentic tasks, and knowledge work. It was trained in SpaceXAI's data centers in Memphis with new datasets spanning science, engineering, and math.</td>
     </tr>
+    <tr>
+        <td align="center"><a href="https://dev.meta.ai">Meta</a></td>
+        <td>Meta Muse Spark series models (Muse Spark 1.3, etc.). Muse Spark is Meta's coding-focused model with a 1M-token context window, native multimodal input (text, image, PDF, video), and reasoning that carries across turns. CLIProxyAPI supports Meta through the OpenAI-compatible Model API at <code>https://api.meta.ai/v1</code>.</td>
+    </tr>
 </tbody>
 </table>
 
@@ -105,6 +109,33 @@ xAI uses a **dedicated executor** (`XAIExecutor`), not the `openai-compatibility
         models:
           - name: grok-3
           - name: grok-3-mini
+
+
+### Meta (Muse Spark)
+
+Meta Model API is OpenAI-compatible (Chat Completions and Responses). Muse Spark has a 1M-token context window and supports text, image, PDF, and video input. Two setup paths are supported:
+
+**Subscription login (recommended).** Log in with your Meta account (`--meta-login`). The device-code flow signs you in against `auth.meta.com`, mints a Model API key from your Muse subscription, and stores it under the `meta` entry in the `openai-compatibility` section of `config.yaml`:
+
+    server --meta-login
+
+**Manual API key.** Get an API key at [dev.meta.ai](https://dev.meta.ai) and configure it via the standard `openai-compatibility` section in `config.yaml`.
+
+**Example config for Meta:**
+
+    openai-compatibility:
+      - name: meta
+        base-url: https://api.meta.ai/v1
+        api-key-entries:
+          - api-key: your-meta-model-api-key
+        models:
+          - name: muse-spark-1.3
+            alias: muse-spark-1.3
+            max-context-length: 1048576
+            input-modalities: [text, image, pdf, video]
+            output-modalities: [text]
+            thinking:
+              levels: ["low", "medium", "high", "xhigh"]
 
 
 ### Freebuff (Codebuff)

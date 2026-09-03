@@ -114,6 +114,12 @@ func commandCodePostOne(
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		appendAPIResponseChunk(ctx, cfg, b)
+		// A 400/422 reasoning-effort rejection may mean the static ladder is
+		// stale: refresh the model's profile and, when the refreshed ladder no
+		// longer supports the requested effort, retry once without the field.
+		if retryPayload := commandCodeEffortRejectionRetryPayload(ctx, cfg, auth, payload, httpResp.StatusCode, string(b)); retryPayload != nil {
+			return commandCodePostOne(ctx, cfg, auth, provider, retryPayload, apiKey, sessionID, continuation)
+		}
 		return out, statusErr{code: httpResp.StatusCode, msg: string(b)}
 	}
 
@@ -191,7 +197,6 @@ func commandCodePauseChain(
 		}
 	}
 }
-
 
 // gjsonModel reads the model field from a wire params payload for request
 // logging. It tolerates a missing field (the model may be passed out-of-band).

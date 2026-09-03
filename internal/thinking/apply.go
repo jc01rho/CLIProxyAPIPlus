@@ -250,7 +250,9 @@ func applyThinking(ctx context.Context, body, sourceBody []byte, model string, f
 	// 3. Model capability check
 	// Unknown models are treated as user-defined so thinking config can still be applied.
 	// The upstream service is responsible for validating the configuration.
-	if IsUserDefinedModel(modelInfo) {
+	// Also treat all openai-compatible providers as user-defined to allow reasoning_effort values
+	// (xhigh, max, etc.) to pass through without being stripped.
+	if IsUserDefinedModel(modelInfo) || strings.HasPrefix(providerKey, "openai-compatible-") {
 		return applyUserDefinedModel(body, modelInfo, fromFormat, providerFormat, providerKey, suffixResult, summaryConfig)
 	}
 	if modelInfo.Thinking == nil {

@@ -143,6 +143,7 @@ type commandCodeWireParams struct {
 	MaxTokens       int64                    `json:"max_tokens"`
 	Stream          bool                     `json:"stream"`
 	Temperature     *float64                 `json:"temperature,omitempty"`
+	ReasoningEffort string                   `json:"reasoning_effort,omitempty"`
 }
 
 type commandCodeWireConfig struct {
@@ -261,14 +262,18 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 		},
 		PermissionMode: commandCodePermissionMode,
 		Params: commandCodeWireParams{
-			Model:           model,
-			Messages:        messages,
-			Tools:           commandCodeConvertTools(request.Tools),
-			System:          strings.Join(systemParts, "\n"),
-			MaxTokens:       maxTokens,
-			Stream:          stream,
-		Temperature:     request.Temperature,
-	},
+			Model:       model,
+			Messages:    messages,
+			Tools:       commandCodeConvertTools(request.Tools),
+			System:      strings.Join(systemParts, "\n"),
+			MaxTokens:   maxTokens,
+			Stream:      stream,
+			Temperature: request.Temperature,
+			// Forward reasoning_effort only when the resolved model documents the
+			// requested effort; unsupported values are omitted so the upstream never
+			// sees a field it rejects (mirrors opencodex's supportedCommandCodeEffort).
+			ReasoningEffort: commandCodeSupportedEffort(model, request.ReasoningEffort),
+		},
 	}
 	return json.Marshal(envelope)
 }

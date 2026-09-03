@@ -700,6 +700,21 @@ nonstream-keepalive-interval: 0
 #       - name: "kimi-k2.5"
 #         alias: "claude-opus-4.66"
 
+# Meta Model API (Muse Spark) — OpenAI-compatible. Get a key at https://dev.meta.ai
+#   - name: "meta"
+#     base-url: "https://api.meta.ai/v1"
+#     api-key-entries:
+#       - api-key: "your-meta-model-api-key"
+#     models:
+#       - name: "muse-spark-1.3"
+#         alias: "muse-spark-1.3"
+#         display-name: "Muse Spark 1.3"
+#         max-context-length: 1048576
+#         input-modalities: [text, image, pdf, video]
+#         output-modalities: [text]
+#         thinking:
+#           levels: ["low", "medium", "high", "xhigh"]
+
 # Vertex API keys (Vertex-compatible endpoints, base-url is optional)
 # vertex-api-key:
 #   - api-key: "vk-123..."                        # x-goog-api-key header
