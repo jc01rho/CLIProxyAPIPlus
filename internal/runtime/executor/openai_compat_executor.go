@@ -767,6 +767,16 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				}
 			}
 
+			// Meta exposes subscription usage only in a supplemental SSE event
+			// on the inference stream. Preserve the stream payload unchanged;
+			// normalized internal headers let the conductor persist the
+			// observation after this result completes.
+			if !isDone && cliproxyauth.IsMetaMuseProvider(e.Identifier()) {
+				for name, values := range helps.ParseMetaMuseSubscriptionUsageHeaders(eventName, dataPayload) {
+					returnedHeaders[name] = values
+				}
+			}
+
 			// MiniMax-M3 embeds reasoning tags in delta content. Split them into
 			// reasoning_content before reverse translation.
 			if miniMaxStreamState != nil {

@@ -3,6 +3,7 @@ package auth
 import (
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -10,7 +11,14 @@ import (
 const (
 	maxQuotaSignalHeaders = 64
 	maxQuotaSignalValue   = 512
+	metaMuseProvider      = "openai-compatible-meta"
 )
+
+// IsMetaMuseProvider identifies the config-synthesized OpenAI-compatible
+// provider that backs Meta Muse device OAuth credentials.
+func IsMetaMuseProvider(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), metaMuseProvider)
+}
 
 // ProviderSupportsQuotaObservation reports whether the named provider emits a
 // passive credential-level quota snapshot understood by collectQuotaSignals.
@@ -19,8 +27,73 @@ func ProviderSupportsQuotaObservation(provider string) bool {
 	case "claude", "codex":
 		return true
 	default:
-		return false
+		return IsMetaMuseProvider(provider)
 	}
+}
+
+// MuseUsage is the normalized passive quota snapshot observed from a Meta
+// Muse Model API response: the five-hour and weekly rolling-window used
+// percentages, plus the time the observation was made.
+type MuseUsage struct {
+	FiveHourUsedPercent *float64
+	FiveHourResetAt     *time.Time
+	WeeklyUsedPercent   *float64
+	WeeklyResetAt       *time.Time
+	ObservedAt          time.Time
+}
+
+// MuseUsage returns the most recently observed Meta Muse quota snapshot. ok
+// is false when no Meta Muse response has ever been observed on this
+// credential (cache-miss / unknown state).
+func (q QuotaState) MuseUsage() (MuseUsage, bool) {
+	if q.ObservedAt.IsZero() || len(q.Signals) == 0 {
+		return MuseUsage{}, false
+	}
+	fiveHour, hasFiveHour := parseQuotaSignalFloat(q.Signals["X-Muse-Fivehour-Used-Percent"])
+	fiveHourResetAt, hasFiveHourResetAt := parseQuotaSignalTime(q.Signals["X-Muse-Fivehour-Reset-At"])
+	weekly, hasWeekly := parseQuotaSignalFloat(q.Signals["X-Muse-Weekly-Used-Percent"])
+	weeklyResetAt, hasWeeklyResetAt := parseQuotaSignalTime(q.Signals["X-Muse-Weekly-Reset-At"])
+	if !hasFiveHour && !hasFiveHourResetAt && !hasWeekly && !hasWeeklyResetAt {
+		return MuseUsage{}, false
+	}
+	usage := MuseUsage{ObservedAt: q.ObservedAt}
+	if hasFiveHour {
+		usage.FiveHourUsedPercent = &fiveHour
+	}
+	if hasFiveHourResetAt {
+		usage.FiveHourResetAt = &fiveHourResetAt
+	}
+	if hasWeekly {
+		usage.WeeklyUsedPercent = &weekly
+	}
+	if hasWeeklyResetAt {
+		usage.WeeklyResetAt = &weeklyResetAt
+	}
+	return usage, true
+}
+
+// parseQuotaSignalFloat parses a cached quota signal value as a float64. ok is
+// false for an absent or malformed signal.
+func parseQuotaSignalFloat(value string) (float64, bool) {
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	if parsed < 0 || parsed > 100 {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func parseQuotaSignalTime(value string) (time.Time, bool) {
+	seconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || seconds <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(seconds, 0).UTC(), true
 }
 
 // ObserveResponseHeadersForProvider replaces the passive quota snapshot with the
@@ -170,6 +243,15 @@ func quotaSignalRetentionRank(name string) int {
 func isQuotaSignalHeaderForProvider(provider, name string) bool {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	name = strings.ToLower(strings.TrimSpace(name))
+	if IsMetaMuseProvider(provider) {
+		switch name {
+		case "x-muse-fivehour-used-percent", "x-muse-fivehour-reset-at",
+			"x-muse-weekly-used-percent", "x-muse-weekly-reset-at":
+			return true
+		default:
+			return false
+		}
+	}
 	if name == "retry-after" {
 		return provider == "claude" || provider == "codex"
 	}
