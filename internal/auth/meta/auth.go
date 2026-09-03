@@ -283,11 +283,12 @@ func (a *MetaAuth) MintAPIKey(ctx context.Context, accessToken string) (string, 
 		ctx = context.Background()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, MintURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, MintURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("meta key mint: create request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
 
 	resp, err := a.httpClient.Do(req)
