@@ -1343,7 +1343,12 @@ func antigravityRepairUnsignedFirstFunctionCalls(payload []byte) []byte {
 //
 // A functionCall content with only empty-name calls is dropped entirely; a
 // functionResponse content left with zero parts after dropping its paired
-// empty responses is dropped entirely too. History pollution upstream of the
+// empty responses is dropped entirely too. Mixed call+response contents have
+// their empty-name calls dropped as well (the validator checks empty names
+// before the interleaved shape error); if that leaves only responses, they
+// pair against the preceding pending calls like a responses-only content.
+// When dropping leaves real calls interleaved with responses, the repair stops
+// there and the validator reports its accurate interleaved shape error. History pollution upstream of the
 // executor can carry a step's functionCall.name through empty; rather than
 // let the validator hard-fail the request, this repairs the payload in place,
 // mirroring the openai-compat sanitizeEmptyToolCallMessages /
@@ -1393,14 +1398,34 @@ func antigravityDropEmptyNameFunctionCallParts(payload []byte) []byte {
 		}
 
 		switch {
-		case len(callPartIndices) > 0:
-			// A content mixing calls and responses is already an invalid shape the
-			// validator rejects regardless of names; leave it for that error path
-			// and do not touch pending state here.
-			if len(responsePartIndices) > 0 {
-				pendingCallIsReal = nil
-				continue
+		case len(callPartIndices) > 0 && len(responsePartIndices) > 0:
+			// A content mixing calls and responses is an interleaved shape the
+			// validator rejects — but its per-part empty-name check runs first,
+			// so leaving an empty-name call in place here surfaces as the
+			// misleading "missing functionCall.name" instead of the shape
+			// error. Drop empty-name calls from mixed contents as well. If
+			// that leaves no calls, the content degrades to a responses-only
+			// content that pairs against the preceding pending calls exactly
+			// like the responses-only case below; otherwise the validator's
+			// interleaved error applies to the surviving real calls.
+			emptyCalls := 0
+			for _, partIndex := range callPartIndices {
+				if strings.TrimSpace(partsArr[partIndex].Get("functionCall.name").String()) == "" {
+					markRemoval(contentIndex, partIndex)
+					droppedCalls++
+					emptyCalls++
+				}
 			}
+			if emptyCalls == len(callPartIndices) && len(pendingCallIsReal) == len(responsePartIndices) {
+				for slot, partIndex := range responsePartIndices {
+					if !pendingCallIsReal[slot] {
+						markRemoval(contentIndex, partIndex)
+						droppedResponses++
+					}
+				}
+			}
+			pendingCallIsReal = nil
+		case len(callPartIndices) > 0:
 			pendingCallIsReal = make([]bool, len(callPartIndices))
 			for slot, partIndex := range callPartIndices {
 				name := strings.TrimSpace(partsArr[partIndex].Get("functionCall.name").String())
