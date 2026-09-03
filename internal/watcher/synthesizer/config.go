@@ -339,6 +339,7 @@ func (s *ConfigSynthesizer) synthesizeCommandCodeKeys(ctx *SynthesisContext) []*
 			if hash := diff.ComputeCommandCodeModelsHash(ck.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
+			attrs["runtime_only"] = "true"
 			addConfigHeadersToAttrs(ck.Headers, attrs)
 			a := &coreauth.Auth{
 				ID:         id,
@@ -389,6 +390,7 @@ func (s *ConfigSynthesizer) synthesizeCommandCodeKeys(ctx *SynthesisContext) []*
 		if hash := diff.ComputeCommandCodeModelsHash(ck.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
+		attrs["runtime_only"] = "true"
 		addConfigHeadersToAttrs(ck.Headers, attrs)
 		proxyURL := strings.TrimSpace(ck.ProxyURL)
 		a := &coreauth.Auth{
