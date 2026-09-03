@@ -99,6 +99,9 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		"role":    "assistant",
 		"content": acc.text.String(),
 	}
+	if reasoning := acc.reasoning.String(); reasoning != "" {
+		message["reasoning_content"] = reasoning
+	}
 	if toolCalls := acc.openAIToolCalls(); len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 	}

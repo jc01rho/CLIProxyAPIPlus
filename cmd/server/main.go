@@ -102,6 +102,7 @@ func main() {
 	var antigravityLogin bool
 	var kimiLogin bool
 	var xaiLogin bool
+	var metaLogin bool
 	var cursorLogin bool
 	var kiroLogin bool
 	var zcodeLogin bool
@@ -146,6 +147,7 @@ func main() {
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi using OAuth")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
+	flag.BoolVar(&metaLogin, "meta-login", false, "Login to Meta Model API (Muse Spark subscription) using device code flow; mints an API key into the meta openai-compatibility provider")
 	flag.BoolVar(&cursorLogin, "cursor-login", false, "Login to Cursor using OAuth")
 	flag.BoolVar(&kiroLogin, "kiro-login", false, "Login to Kiro using Google OAuth")
 	flag.BoolVar(&zcodeLogin, "zcode-login", false, "Login to GLM ZCode (UNOFFICIAL, opt-in; at your own risk)")
@@ -649,7 +651,7 @@ func main() {
 		CallbackPort: oauthCallbackPort,
 	}
 
-	commandMode := vertexImport != "" || login || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin
+	commandMode := vertexImport != "" || login || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin || metaLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
@@ -725,6 +727,9 @@ func main() {
 	} else if codexDeviceLogin {
 		// Handle Codex device-code login
 		cmd.DoCodexDeviceLogin(cfg, options)
+	} else if metaLogin {
+		// Handle Meta Model API (Muse Spark subscription) device-code login
+		cmd.DoMetaLogin(cfg, configFilePath, options)
 	} else if claudeLogin {
 		// Handle Claude login
 		cmd.DoClaudeLogin(cfg, options)

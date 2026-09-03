@@ -64,7 +64,7 @@ type commandCodeWireEvent struct {
 	// Error stays raw: npm 1.12.0 (readStreamErrorEvent) allows the payload
 	// to be either a quoted string or an object; a typed field here would
 	// fail the whole-line unmarshal on the string form.
-	Error              json.RawMessage       `json:"error"`
+	Error json.RawMessage `json:"error"`
 }
 
 type commandCodeWireUsage struct {
@@ -77,9 +77,9 @@ type commandCodeWireUsage struct {
 }
 
 type commandCodeWireError struct {
-	Message    string `json:"message"`
-	StatusCode int    `json:"statusCode"`
-	IsRetryable *bool `json:"isRetryable"`
+	Message     string `json:"message"`
+	StatusCode  int    `json:"statusCode"`
+	IsRetryable *bool  `json:"isRetryable"`
 }
 
 // commandCodeStreamEvent is one strictly decoded, tagged NDJSON event.
@@ -123,7 +123,7 @@ func decodeCommandCodeStreamEvent(line []byte) commandCodeStreamEvent {
 	case "reasoning-start":
 		return commandCodeStreamEvent{kind: commandCodeEventReasoningStart}
 	case "reasoning-delta":
-		return commandCodeStreamEvent{kind: commandCodeEventReasoningDelta}
+		return commandCodeStreamEvent{kind: commandCodeEventReasoningDelta, text: wire.Text}
 	case "reasoning-end":
 		return commandCodeStreamEvent{kind: commandCodeEventReasoningEnd}
 	case "tool-call":
@@ -226,6 +226,7 @@ func commandCodeIsStreamErrorRetryable(isRetryable *bool, reportedStatus int, me
 func commandCodeIsRetryableStatus(status int) bool {
 	return status == http.StatusTooManyRequests || (status >= 500 && status <= 599)
 }
+
 // commandCodeEffectiveErrorStatus returns the status code the proxy should
 // surface for a stream error. Non-retryable stream errors (credits/plan
 // exhausted) map to 402 so the conductor treats them as a terminal quota
@@ -263,16 +264,17 @@ type commandCodeToolCall struct {
 }
 
 // commandCodeStreamAccumulator is the shared NDJSON stream state machine used
-// by both Execute and ExecuteStream. Hidden reasoning is tracked only as
-// internal lifecycle state and never exposed downstream.
+// by both Execute and ExecuteStream. Reasoning deltas are accumulated so the
+// non-stream Execute path can expose them as reasoning_content; the streaming
+// path emits them live as reasoning_content deltas.
 type commandCodeStreamAccumulator struct {
-	text                                   strings.Builder
+	text, reasoning                        strings.Builder
 	toolCalls                              []commandCodeToolCall
 	incremental, final                     commandCodeUsage
 	rawFinishReason, stopReason            string
-	err                       error
-	errRetryable                          bool
-	terminal                  commandCodeTerminalKind
+	err                                    error
+	errRetryable                           bool
+	terminal                               commandCodeTerminalKind
 	reasoningOpen, sawKnownEvent, hasFinal bool
 	// rawRetained holds a bounded prefix of the raw NDJSON body, kept only
 	// while no known event has been seen, so a legacy single-envelope JSON
@@ -308,8 +310,8 @@ func (a *commandCodeStreamAccumulator) feed(event commandCodeStreamEvent) {
 	case commandCodeEventReasoningStart:
 		a.sawKnownEvent, a.reasoningOpen = true, true
 	case commandCodeEventReasoningDelta:
-		// Hidden reasoning stays internal; it never reaches any output path.
 		a.sawKnownEvent = true
+		a.reasoning.WriteString(event.text)
 	case commandCodeEventReasoningEnd:
 		a.sawKnownEvent, a.reasoningOpen = true, false
 	case commandCodeEventToolCall:
@@ -406,6 +408,7 @@ func (a *commandCodeStreamAccumulator) adoptLegacyText(text string) {
 	a.terminal = commandCodeTerminalFinish
 	a.stopReason = "stop"
 }
+
 // IsPauseTurn reports whether the accumulator terminated on an upstream
 // pause_turn finish reason, which the installed command-code@1.12.0 client
 // answers with a bounded continuation request instead of a final stop.
@@ -440,6 +443,9 @@ func (a *commandCodeStreamAccumulator) merge(other *commandCodeStreamAccumulator
 	}
 	if other.text.Len() > 0 {
 		a.text.WriteString(other.text.String())
+	}
+	if other.reasoning.Len() > 0 {
+		a.reasoning.WriteString(other.reasoning.String())
 	}
 	a.toolCalls = append(a.toolCalls, other.toolCalls...)
 	a.sawKnownEvent = a.sawKnownEvent || other.sawKnownEvent

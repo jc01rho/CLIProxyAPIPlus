@@ -101,6 +101,14 @@ func commandCodeStreamOneAttempt(
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("commandcode executor: close response body error: %v", errClose)
 		}
+		// A 400/422 reasoning-effort rejection may mean the static ladder is
+		// stale: refresh the model's profile and, when the refreshed ladder no
+		// longer supports the requested effort, retry once without the field.
+		if retryPayload := commandCodeEffortRejectionRetryPayload(ctx, cfg, auth, attemptCtx.wirePayload, httpResp.StatusCode, string(b)); retryPayload != nil {
+			retryCtx := attemptCtx
+			retryCtx.wirePayload = retryPayload
+			return commandCodeStreamOneAttempt(ctx, cfg, auth, provider, baseModel, apiKey, retryCtx)
+		}
 		streamErr := statusErr{code: httpResp.StatusCode, msg: string(b)}
 		recordAPIResponseError(ctx, cfg, streamErr)
 		attemptCtx.reporter.publishFailure(ctx)
@@ -162,6 +170,12 @@ func commandCodeStreamOneAttempt(
 		case commandCodeEventTextDelta, commandCodeEventToolResult:
 			if event.text != "" {
 				deltaFor(map[string]any{"role": "assistant", "content": event.text})
+			}
+		case commandCodeEventReasoningDelta:
+			// Expose hidden reasoning to the client as reasoning_content, the
+			// OpenAI-compatible stream equivalent of opencodex's thinking_delta.
+			if event.text != "" {
+				deltaFor(map[string]any{"role": "assistant", "reasoning_content": event.text})
 			}
 		case commandCodeEventToolCall:
 			deltaFor(map[string]any{

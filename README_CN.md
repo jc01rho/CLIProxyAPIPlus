@@ -34,6 +34,10 @@ CLIProxyAPI 是一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API �
         <td align="center"><a href="https://x.ai/grok"><img src="./assets/logo/xai.svg" alt="xAI" width="28" height="28" /></a></td>
         <td>xAI Grok 系列模型（Grok 4.5、Grok Composer 2.5 Fast 等）。Grok 4.5 是 SpaceXAI 面向编程、智能体任务与知识工作打造的前沿模型。它在 SpaceXAI 位于孟菲斯的数据中心训练，并使用了覆盖科学、工程与数学的新数据集。</td>
     </tr>
+    <tr>
+        <td align="center"><a href="https://dev.meta.ai">Meta</a></td>
+        <td>Meta Muse Spark 系列模型（Muse Spark 1.3 等）。Muse Spark 是 Meta 面向编程的模型，拥有 1M token 上下文窗口、原生多模态输入（文本、图像、PDF、视频）以及跨轮次延续的推理能力。CLIProxyAPI 通过位于 <code>https://api.meta.ai/v1</code> 的 OpenAI 兼容 Model API 支持 Meta。</td>
+    </tr>
 </tbody>
 </table>
 
