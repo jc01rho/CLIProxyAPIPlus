@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
@@ -260,6 +261,12 @@ func prepareAntigravityGeminiReasoningReplayPayload(ctx context.Context, modelNa
 	// turn's first function call unsigned. Gemini rejects that, so re-assert the
 	// invariant the pre-replay sanitizer established.
 	updated = antigravityRepairUnsignedFirstFunctionCalls(updated)
+	// A functionCall with an empty/whitespace name is unusable by the model and
+	// is rejected outright by ValidateGeminiFunctionCallPairing below. History
+	// pollution upstream of the executor (ingested from clients or replayed from
+	// a prior turn) can carry these in; repair in place by dropping the call
+	// (and its paired functionResponse, if any) instead of failing the request.
+	updated = antigravityDropEmptyNameFunctionCallParts(updated)
 	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(updated); errPairing != nil {
 		originalPairingValid := internalsignature.ValidateGeminiFunctionCallPairing(payload) == nil
 		if replayApplied && originalPairingValid && scope.valid() {
@@ -1318,6 +1325,146 @@ func antigravityRepairUnsignedFirstFunctionCalls(payload []byte) []byte {
 		})
 		return true
 	})
+	return out
+}
+
+// antigravityDropEmptyNameFunctionCallParts removes Gemini functionCall parts
+// whose name is empty or whitespace-only, together with the functionResponse
+// part(s) that pair with them.
+//
+// ValidateGeminiFunctionCallPairing groups each content's functionCall parts
+// into a single pending batch and matches it, in part order, against the
+// functionResponse parts of the content that follows. This walks contents in
+// that same order and carries a queue of "still pending" call slots (true for
+// a real call, false for an empty-name call being dropped) across content
+// boundaries, so an empty-name response is identified by the same positional
+// pairing the validator itself uses rather than by name equality (which is
+// useless here, since both sides are empty).
+//
+// A functionCall content with only empty-name calls is dropped entirely; a
+// functionResponse content left with zero parts after dropping its paired
+// empty responses is dropped entirely too. History pollution upstream of the
+// executor can carry a step's functionCall.name through empty; rather than
+// let the validator hard-fail the request, this repairs the payload in place,
+// mirroring the openai-compat sanitizeEmptyToolCallMessages /
+// dropOrphanOpenAIToolResults pattern. It never touches thoughtSignature.
+func antigravityDropEmptyNameFunctionCallParts(payload []byte) []byte {
+	contents := util.GetGJSONBytesNoCopy(payload, "request.contents")
+	if !contents.IsArray() {
+		return payload
+	}
+	contentsArr := contents.Array()
+
+	// removals[contentIndex][partIndex] marks a part for deletion.
+	removals := make(map[int]map[int]bool)
+	markRemoval := func(contentIndex, partIndex int) {
+		if removals[contentIndex] == nil {
+			removals[contentIndex] = make(map[int]bool)
+		}
+		removals[contentIndex][partIndex] = true
+	}
+
+	// pendingCallIsReal mirrors the validator's `pending` slice: one entry per
+	// functionCall in the most recent all-calls content, true if that call has
+	// a real name (kept) and false if it is empty (already marked for removal).
+	// It resets whenever a content breaks the call/response chain, exactly like
+	// the validator's own `pending = nil` transitions.
+	var pendingCallIsReal []bool
+	droppedCalls := 0
+	droppedResponses := 0
+
+	for contentIndex, content := range contentsArr {
+		parts := content.Get("parts")
+		if !parts.IsArray() {
+			pendingCallIsReal = nil
+			continue
+		}
+		partsArr := parts.Array()
+
+		var callPartIndices []int
+		var responsePartIndices []int
+		for partIndex, part := range partsArr {
+			switch {
+			case part.Get("functionCall").Exists():
+				callPartIndices = append(callPartIndices, partIndex)
+			case part.Get("functionResponse").Exists():
+				responsePartIndices = append(responsePartIndices, partIndex)
+			}
+		}
+
+		switch {
+		case len(callPartIndices) > 0:
+			// A content mixing calls and responses is already an invalid shape the
+			// validator rejects regardless of names; leave it for that error path
+			// and do not touch pending state here.
+			if len(responsePartIndices) > 0 {
+				pendingCallIsReal = nil
+				continue
+			}
+			pendingCallIsReal = make([]bool, len(callPartIndices))
+			for slot, partIndex := range callPartIndices {
+				name := strings.TrimSpace(partsArr[partIndex].Get("functionCall.name").String())
+				if name == "" {
+					markRemoval(contentIndex, partIndex)
+					droppedCalls++
+					pendingCallIsReal[slot] = false
+				} else {
+					pendingCallIsReal[slot] = true
+				}
+			}
+		case len(responsePartIndices) > 0:
+			if len(pendingCallIsReal) == len(responsePartIndices) {
+				for slot, partIndex := range responsePartIndices {
+					if !pendingCallIsReal[slot] {
+						markRemoval(contentIndex, partIndex)
+						droppedResponses++
+					}
+				}
+			}
+			// A response count mismatched against pending calls is itself a shape the
+			// validator rejects; leave those responses untouched for that error.
+			pendingCallIsReal = nil
+		default:
+			if len(partsArr) > 0 {
+				pendingCallIsReal = nil
+			}
+		}
+	}
+
+	if droppedCalls == 0 && droppedResponses == 0 {
+		return payload
+	}
+
+	contentIndices := make([]int, 0, len(removals))
+	for contentIndex := range removals {
+		contentIndices = append(contentIndices, contentIndex)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(contentIndices)))
+
+	out := payload
+	for _, contentIndex := range contentIndices {
+		dropSet := removals[contentIndex]
+		partsArr := contentsArr[contentIndex].Get("parts").Array()
+		kept := make([]any, 0, len(partsArr))
+		for partIndex, part := range partsArr {
+			if dropSet[partIndex] {
+				continue
+			}
+			kept = append(kept, part.Value())
+		}
+		contentPath := fmt.Sprintf("request.contents.%d", contentIndex)
+		if len(kept) == 0 {
+			if updated, errDelete := sjson.DeleteBytes(out, contentPath); errDelete == nil {
+				out = updated
+			}
+			continue
+		}
+		if updated, errSet := sjson.SetBytes(out, contentPath+".parts", kept); errSet == nil {
+			out = updated
+		}
+	}
+	log.Debugf("antigravity executor: dropped %d empty-name functionCall part(s) and %d paired functionResponse part(s) from request history",
+		droppedCalls, droppedResponses)
 	return out
 }
 
