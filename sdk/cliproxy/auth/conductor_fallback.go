@@ -522,7 +522,9 @@ func (m *Manager) executeWithRetry(
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	for attempt := 0; ; attempt++ {
-		resp, errExec := execOnce(ctx, providers, req, opts, maxRetryCredentials, attempt, defaultRequestRetry)
+		roundAttempted := make(map[string]struct{})
+		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
+		resp, errExec := execOnce(ctx, providers, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry)
 		if errExec == nil {
 			return resp, nil
 		}
@@ -537,7 +539,7 @@ func (m *Manager) executeWithRetry(
 			// configuration.
 			break
 		}
-		wait, shouldRetry := m.shouldRetryAfterErrorWithHomeRetryLimit(ctx, opts, errExec, attempt, providers, retryModel, maxWait, -1, defaultRequestRetry)
+		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errExec, attempt, providers, retryModel, maxWait, -1, defaultRequestRetry, roundAttempted)
 		if !shouldRetry {
 			break
 		}
@@ -567,7 +569,9 @@ func (m *Manager) executeStreamWithRetry(
 	retryRoundPending := false
 	retryRoundWaited := false
 	for {
-		result, errStream := execOnce(ctx, providers, req, opts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
+		roundAttempted := make(map[string]struct{})
+		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
+		result, errStream := execOnce(ctx, providers, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
 		if errStream == nil {
 			return result, nil
 		}
@@ -602,7 +606,7 @@ func (m *Manager) executeStreamWithRetry(
 			return nil, unwrapRequestStopError(errStream)
 		}
 		lastErr = errStream
-		wait, shouldRetry := m.shouldRetryAfterErrorWithHomeRetryLimit(ctx, opts, errStream, attempt, providers, retryModel, maxWait, homeRetryLimit, defaultRequestRetry)
+		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errStream, attempt, providers, retryModel, maxWait, homeRetryLimit, defaultRequestRetry, roundAttempted)
 		if !shouldRetry {
 			break
 		}

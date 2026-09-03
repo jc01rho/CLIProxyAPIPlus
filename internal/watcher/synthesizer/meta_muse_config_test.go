@@ -41,9 +41,9 @@ func TestConfigSynthesizer_when_MetaOpenAICompatibilityUsesFallback(t *testing.T
 	// Given
 	synthesizer := NewConfigSynthesizer()
 	ctx := &SynthesisContext{
-		Config:       &config.Config{OpenAICompatibility: []config.OpenAICompatibility{{Name: "meta"}}},
-		Now:          time.Unix(1, 0),
-		IDGenerator:  NewStableIDGenerator(),
+		Config:      &config.Config{OpenAICompatibility: []config.OpenAICompatibility{{Name: "meta"}}},
+		Now:         time.Unix(1, 0),
+		IDGenerator: NewStableIDGenerator(),
 	}
 
 	// When

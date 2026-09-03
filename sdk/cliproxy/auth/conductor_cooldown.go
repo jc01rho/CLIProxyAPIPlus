@@ -797,7 +797,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							backoffLevel := state.Quota.BackoffLevel
 							if !disableCooling {
 								if result.RetryAfter != nil {
-									next = now.Add(*result.RetryAfter)
+									cooldown := *result.RetryAfter
+									if cooldown < minQuotaCooldownFloor {
+										cooldown = minQuotaCooldownFloor
+									}
+									next = now.Add(cooldown)
 								} else {
 									next, backoffLevel = quotaCooldownAfterFailure(state.Quota, now)
 								}
@@ -1569,7 +1573,11 @@ func hasUnauthorizedAuthFailure(auth *Auth) bool {
 	if auth == nil || auth.LastError == nil {
 		return false
 	}
-	return auth.LastError.StatusCode() == http.StatusUnauthorized || strings.EqualFold(auth.LastError.Code, "unauthorized")
+	if auth.Unavailable && auth.Status == StatusError && auth.NextRefreshAfter.IsZero() &&
+		(auth.LastError.StatusCode() == http.StatusUnauthorized || strings.EqualFold(auth.LastError.Code, "unauthorized")) {
+		return true
+	}
+	return false
 }
 
 func refreshErrorFromError(err error) *Error {
@@ -2223,8 +2231,13 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		var next time.Time
 		if !disableCooling {
 			if retryAfter != nil {
-				// Provider Retry-After always wins, even inside an existing quota window.
-				next = now.Add(*retryAfter)
+				// Provider Retry-After always wins, even inside an existing quota window,
+				// but sub-second Retry-After values are floored to avoid retry storms.
+				cooldown := *retryAfter
+				if cooldown < minQuotaCooldownFloor {
+					cooldown = minQuotaCooldownFloor
+				}
+				next = now.Add(cooldown)
 			} else {
 				next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
 				if auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(next) {

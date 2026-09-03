@@ -792,8 +792,9 @@ func TestSessionAffinityClaudeMetadataSubagentNonInheritingGeminiModel(t *testin
 	t.Parallel()
 
 	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
-		Fallback: &RoundRobinSelector{},
-		TTL:      time.Minute,
+		Fallback:         &RoundRobinSelector{},
+		TTL:              time.Minute,
+		SubagentAffinity: boolPointer(false),
 	})
 	defer selector.Stop()
 
@@ -830,9 +831,9 @@ func TestSessionAffinityClaudeMetadataSubagentNonInheritingGeminiModel(t *testin
 	if errSub1 != nil {
 		t.Fatalf("subagent 1 Pick() error = %v", errSub1)
 	}
-	// For Gemini/Antigravity, subagents must NOT inherit the parent's auth; they should balance to auth-b
+	// When SubagentAffinity is false, subagents must NOT inherit the parent's auth; they should balance to auth-b
 	if subagent1Auth.ID != "auth-b" {
-		t.Fatalf("subagent 1 should not inherit parent auth for Gemini, got %q, want auth-b", subagent1Auth.ID)
+		t.Fatalf("subagent 1 should not inherit parent auth when subagent affinity is disabled, got %q, want auth-b", subagent1Auth.ID)
 	}
 	if got := subagent1Opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; got != "claude:sess-main-1:agent:subagent-001" {
 		t.Fatalf("subagent 1 canonical session ID = %v, want claude:sess-main-1:agent:subagent-001", got)

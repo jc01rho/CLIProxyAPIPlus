@@ -1494,6 +1494,9 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
+	if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
+		return true, blockReasonOther, time.Time{}
+	}
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 		return true, blockReasonCooldown, auth.Quota.NextRecoverAt
 	}
@@ -1563,15 +1566,17 @@ func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextReco
 // It extracts session ID from multiple sources and maintains session-to-auth
 // mappings with automatic failover when the bound auth becomes unavailable.
 type SessionAffinitySelector struct {
-	fallback Selector
-	cache    *SessionCache
-	matcher  *cliproxysession.MerklePrefixMatcher
+	fallback         Selector
+	cache            *SessionCache
+	matcher          *cliproxysession.MerklePrefixMatcher
+	subagentAffinity bool
 }
 
 // SessionAffinityConfig configures the session affinity selector.
 type SessionAffinityConfig struct {
-	Fallback Selector
-	TTL      time.Duration
+	Fallback         Selector
+	TTL              time.Duration
+	SubagentAffinity *bool
 }
 
 // NewSessionAffinitySelector creates a new session-aware selector.
@@ -1590,10 +1595,15 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 	if cfg.TTL <= 0 {
 		cfg.TTL = time.Hour
 	}
+	subagentAffinity := true
+	if cfg.SubagentAffinity != nil {
+		subagentAffinity = *cfg.SubagentAffinity
+	}
 	return &SessionAffinitySelector{
-		fallback: cfg.Fallback,
-		cache:    NewSessionCache(cfg.TTL),
-		matcher:  cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
+		fallback:         cfg.Fallback,
+		cache:            NewSessionCache(cfg.TTL),
+		matcher:          cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
+		subagentAffinity: subagentAffinity,
 	}
 }
 
@@ -1708,7 +1718,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {
-					if !isSubagent || allowsSubagentAuthInheritance(auth, model) {
+					if !isSubagent || s.subagentAffinity {
 						bind(auth.ID)
 						entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
 						return auth, nil
@@ -1967,31 +1977,6 @@ func isSubagentSession(primaryID, fallbackID string) bool {
 		return false
 	}
 	return isHierarchyParent(primaryID, fallbackID)
-}
-
-func isNonInheritingProvider(provider string) bool {
-	p := strings.ToLower(strings.TrimSpace(provider))
-	return p == "antigravity" || p == "gemini" || p == "vertex" || p == "gemini-vertex" || p == "aistudio" || p == "gemini-interactions" || strings.Contains(p, "antigravity") || strings.Contains(p, "gemini")
-}
-
-func isNonInheritingModel(model string) bool {
-	baseModel := strings.ToLower(strings.TrimSpace(model))
-	if parsed := thinking.ParseSuffix(baseModel); parsed.ModelName != "" {
-		baseModel = strings.ToLower(strings.TrimSpace(parsed.ModelName))
-	}
-	baseModel = strings.TrimPrefix(baseModel, "models/")
-	baseModel = strings.TrimPrefix(baseModel, "google/")
-	return strings.HasPrefix(baseModel, "gemini-") || strings.HasPrefix(baseModel, "antigravity-") || strings.Contains(baseModel, "gemini") || strings.Contains(baseModel, "antigravity")
-}
-
-func allowsSubagentAuthInheritance(auth *Auth, model string) bool {
-	if auth != nil && isNonInheritingProvider(auth.Provider) {
-		return false
-	}
-	if isNonInheritingModel(model) {
-		return false
-	}
-	return true
 }
 
 func sessionHeaderValue(headers http.Header, name string) string {
