@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -274,6 +275,16 @@ func (a *MetaAuth) exchangeDeviceCode(ctx context.Context, deviceCode string, in
 	return strings.TrimSpace(payload.AccessToken), nil, interval, false
 }
 
+// mintRequestBody matches the Meta muse-code/key mint schema. The endpoint
+// rejects requests with an empty or null body with HTTP 400 'Request body is
+// required but was empty or null', so we always send an empty JSON object
+// alongside the bearer access token.
+type mintRequestBody struct{}
+
+func (mintRequestBody) MarshalJSON() ([]byte, error) {
+	return []byte("{}"), nil
+}
+
 // MintAPIKey exchanges a subscription access token for a Model API key.
 func (a *MetaAuth) MintAPIKey(ctx context.Context, accessToken string) (string, error) {
 	if strings.TrimSpace(accessToken) == "" {
@@ -283,11 +294,17 @@ func (a *MetaAuth) MintAPIKey(ctx context.Context, accessToken string) (string, 
 		ctx = context.Background()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, MintURL, nil)
+	body, err := json.Marshal(mintRequestBody{})
+	if err != nil {
+		return "", fmt.Errorf("meta key mint: encode request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, MintURL, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("meta key mint: create request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
 
@@ -301,7 +318,7 @@ func (a *MetaAuth) MintAPIKey(ctx context.Context, accessToken string) (string, 
 		}
 	}()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("meta key mint: read response: %w", err)
 	}
