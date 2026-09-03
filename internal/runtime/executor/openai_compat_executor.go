@@ -175,6 +175,11 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	// entries unconditionally so any openai-compat provider stays usable when
 	// upstream clients send malformed tool catalogs.
 	translated = sanitizeEmptyToolFunctionNames(translated)
+	// Orphaned tool results (result whose tool_call_id has no matching
+	// assistant tool_call) make strict upstreams such as MiniMax reject the
+	// request with 400 error 2013. Drop them after all other sanitizers so
+	// results orphaned by those sanitizers are covered too.
+	translated = dropOrphanOpenAIToolResults(translated)
 	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compatCfg, translated)
 	if opts.Alt != "responses/compact" {
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
@@ -477,6 +482,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// entries unconditionally so any openai-compat provider stays usable when
 	// upstream clients send malformed tool catalogs.
 	translated = sanitizeEmptyToolFunctionNames(translated)
+	// Orphaned tool results make strict upstreams such as MiniMax reject the
+	// request with 400 error 2013; see dropOrphanOpenAIToolResults.
+	translated = dropOrphanOpenAIToolResults(translated)
 	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compatCfg, translated)
 	if opts.Alt != "responses/compact" {
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
@@ -1486,8 +1494,8 @@ func applySensenovaMaxTokensClamp(body []byte) []byte {
 //     whose name is empty or whitespace are dropped.
 //
 // Some OpenAI-compatible routers (e.g. Upstage Solar and other gateways behind the
-// minpeter proxy) reject such requests with `Invalid function name: ''` or `` `name`
-// must be non-empty ``, which silently breaks otherwise valid tool calls/tool catalogs.
+// minpeter proxy) reject such requests with `Invalid function name: ”` or “ `name`
+// must be non-empty “, which silently breaks otherwise valid tool calls/tool catalogs.
 func sanitizeEmptyToolFunctionNames(body []byte) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
@@ -1603,6 +1611,60 @@ func sanitizeEmptyToolCallMessages(body []byte) []byte {
 		} else {
 			next, err = sjson.SetRawBytes(out, path, []byte("["+strings.Join(kept, ",")+"]"))
 		}
+		if err != nil {
+			return body
+		}
+		out = next
+	}
+	return out
+}
+
+// dropOrphanOpenAIToolResults removes `role:"tool"` messages whose tool_call_id
+// has no matching tool_calls[].id in any assistant message. Strict upstreams
+// (e.g. MiniMax) reject the whole request with 400 error 2013 — "tool result's
+// tool id ... not found" — when the replayed history contains such an orphan,
+// typically produced when a sanitizer drops a tool call while its paired
+// result message survives, or when history is replayed across a provider
+// switch. Orphans are removed in place; paired results are untouched. Results
+// with an empty tool_call_id are kept because some clients legitimately omit
+// the id and upstreams tolerate it.
+func dropOrphanOpenAIToolResults(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+
+	msgs := messages.Array()
+	known := make(map[string]struct{})
+	for _, msg := range msgs {
+		toolCalls := msg.Get("tool_calls")
+		if !toolCalls.IsArray() {
+			continue
+		}
+		for _, call := range toolCalls.Array() {
+			if id := strings.TrimSpace(call.Get("id").String()); id != "" {
+				known[id] = struct{}{}
+			}
+		}
+	}
+
+	out := body
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		if !strings.EqualFold(msg.Get("role").String(), "tool") {
+			continue
+		}
+		id := strings.TrimSpace(msg.Get("tool_call_id").String())
+		if id == "" {
+			continue
+		}
+		if _, ok := known[id]; ok {
+			continue
+		}
+		next, err := sjson.DeleteBytes(out, fmt.Sprintf("messages.%d", i))
 		if err != nil {
 			return body
 		}
