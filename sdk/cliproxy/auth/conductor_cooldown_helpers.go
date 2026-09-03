@@ -30,6 +30,16 @@ func quotaCooldownDisabledForAuthWithConfig(auth *Auth, cfg *internalconfig.Conf
 
 // providerCoolingOverrideForAuth reports an explicit OpenAI-compat provider
 // disable-cooling override when the matching entry sets the optional bool.
+// QuotaCooldownDisabledForAuth returns whether cooling is disabled for the auth under global settings.
+func QuotaCooldownDisabledForAuth(auth *Auth) bool {
+	return quotaCooldownDisabledForAuth(auth)
+}
+
+// QuotaCooldownDisabledForAuthWithConfig returns whether cooling is disabled for the auth with the given config.
+func QuotaCooldownDisabledForAuthWithConfig(auth *Auth, cfg *internalconfig.Config) bool {
+	return quotaCooldownDisabledForAuthWithConfig(auth, cfg)
+}
+
 func providerCoolingOverrideForAuth(auth *Auth, cfg *internalconfig.Config) (bool, bool) {
 	if auth == nil || cfg == nil {
 		return false, false

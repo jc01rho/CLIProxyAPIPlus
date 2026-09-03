@@ -1250,6 +1250,10 @@ func credentialRetryRoundStateEligible(lastErr *Error, quotaExceeded bool) bool 
 }
 
 func (m *Manager) closestCooldownWait(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int) (time.Duration, bool) {
+	return m.closestCooldownWaitWithAttempted(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, 0, nil)
+}
+
+func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int, status int, attempted map[string]struct{}) (time.Duration, bool) {
 	if m == nil || len(providers) == 0 {
 		return 0, false
 	}
@@ -1301,12 +1305,37 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 		if !retryEligible {
 			continue
 		}
-		if next.IsZero() {
-			return 0, true
+
+		wasAttempted := false
+		if len(attempted) > 0 {
+			_, wasAttempted = attempted[auth.ID]
 		}
-		wait := next.Sub(now)
-		if wait < 0 {
+		coolingDisabled := m.cooldownDisabledForAuth(auth)
+		if !wasAttempted || coolingDisabled || status != http.StatusTooManyRequests {
+			if next.IsZero() {
+				return 0, true
+			}
+			wait := next.Sub(now)
+			if wait < 0 {
+				continue
+			}
+			if !found || wait < minWait {
+				minWait = wait
+				found = true
+			}
 			continue
+		}
+
+		// auth was already attempted in the round that just failed with 429,
+		// and cooling is enabled. It must not trigger an immediate zero-wait retry round.
+		var wait time.Duration
+		if next.IsZero() {
+			wait = minQuotaCooldownFloor
+		} else {
+			wait = next.Sub(now)
+			if wait < minQuotaCooldownFloor {
+				wait = minQuotaCooldownFloor
+			}
 		}
 		if !found || wait < minWait {
 			minWait = wait
@@ -1382,6 +1411,10 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 // immediately. If every eligible credential still needs a positive cooldown,
 // retry stops without waiting.
 func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, opts cliproxyexecutor.Options, err error, attempt int, providers []string, model string, maxWait time.Duration, homeRetryLimit int, defaultRequestRetry int) (time.Duration, bool) {
+	return m.shouldRetryAfterErrorWithAttempted(ctx, opts, err, attempt, providers, model, maxWait, homeRetryLimit, defaultRequestRetry, nil)
+}
+
+func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts cliproxyexecutor.Options, err error, attempt int, providers []string, model string, maxWait time.Duration, homeRetryLimit int, defaultRequestRetry int, attempted map[string]struct{}) (time.Duration, bool) {
 	if err == nil {
 		return 0, false
 	}
@@ -1435,7 +1468,7 @@ func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, o
 	if !isCredentialRetryRoundStatus(status) || !m.retryAllowed(attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry) {
 		return 0, false
 	}
-	wait, found := m.closestCooldownWait(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry)
+	wait, found := m.closestCooldownWaitWithAttempted(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted)
 	if found {
 		if wait > 0 && (maxWait <= 0 || wait > maxWait) {
 			return 0, false

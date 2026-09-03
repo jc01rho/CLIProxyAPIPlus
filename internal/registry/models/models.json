@@ -250,6 +250,36 @@
       ]
     },
     {
+      "id": "claude-fable-5-1",
+      "object": "model",
+      "created": 1788220800,
+      "owned_by": "anthropic",
+      "type": "claude",
+      "display_name": "Claude Fable 5.1",
+      "description": "Claude Fable 5.1 extends Claude Fable 5 at the same input and output prices, with cache reads at a quarter of the cost, and brings stronger long-running agentic coding, multistep research, and document, spreadsheet, and slide work.",
+      "context_length": 1000000,
+      "max_completion_tokens": 128000,
+      "thinking": {
+        "min": 1024,
+        "max": 128000,
+        "zero_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "supportedInputModalities": [
+        "text",
+        "image"
+      ],
+      "supportedOutputModalities": [
+        "text"
+      ]
+    },
+    {
       "id": "claude-opus-4-5-20251101",
       "object": "model",
       "created": 1761955200,
@@ -823,7 +853,37 @@
         "max": 65535,
         "dynamic_allowed": true,
         "levels": [
-          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "supportedInputModalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "supportedOutputModalities": [
+        "text"
+      ]
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "object": "model",
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini 3.8 Flash",
+      "name": "models/gemini-3.8-flash",
+      "version": "3.8",
+      "description": "Gemini 3.8 Flash",
+      "context_length": 1048576,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "min": 128,
+        "max": 65535,
+        "dynamic_allowed": true,
+        "levels": [
           "low",
           "medium",
           "high"
@@ -1467,7 +1527,36 @@
         "max": 65535,
         "dynamic_allowed": true,
         "levels": [
-          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "supportedInputModalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "supportedOutputModalities": [
+        "text"
+      ]
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "object": "model",
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini 3.8 Flash",
+      "name": "gemini-3.8-flash",
+      "description": "Gemini 3.8 Flash",
+      "context_length": 1048576,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "min": 128,
+        "max": 65535,
+        "dynamic_allowed": true,
+        "levels": [
           "low",
           "medium",
           "high"
@@ -2236,7 +2325,37 @@
         "max": 65535,
         "dynamic_allowed": true,
         "levels": [
-          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "supportedInputModalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "supportedOutputModalities": [
+        "text"
+      ]
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "object": "model",
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini 3.8 Flash",
+      "name": "models/gemini-3.8-flash",
+      "version": "3.8",
+      "description": "Gemini 3.8 Flash",
+      "context_length": 1048576,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "min": 128,
+        "max": 65535,
+        "dynamic_allowed": true,
+        "levels": [
           "low",
           "medium",
           "high"
@@ -3429,7 +3548,36 @@
         "max": 65535,
         "dynamic_allowed": true,
         "levels": [
-          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "supportedInputModalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "supportedOutputModalities": [
+        "text"
+      ]
+    },
+    {
+      "id": "gemini-3.8-flash-high",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3.8 Flash",
+      "name": "gemini-3.8-flash-high",
+      "description": "Gemini 3.8 Flash (High)",
+      "context_length": 1048576,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "min": 1,
+        "max": 65535,
+        "dynamic_allowed": true,
+        "levels": [
           "low",
           "medium",
           "high"

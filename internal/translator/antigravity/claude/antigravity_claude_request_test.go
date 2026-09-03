@@ -728,6 +728,26 @@ func TestConvertClaudeRequestToAntigravity_DropsMismatchedMarkedNonEmptyCarrier(
 	}
 }
 
+func TestConvertClaudeRequestToAntigravity_GeminiThoughtTextWithFollowingPreviousCarrierRoundTrip(t *testing.T) {
+	validSignature := testGeminiEPrefixSignature(t)
+	validCarrier := encodeGeminiClaudeCarrierSignature(validSignature, geminiClaudeCarrierPrevious, geminiClaudeCarrierText)
+	inputJSON := []byte(`{"model":"gemini-3.1-pro-preview","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"let me think","signature":""},{"type":"text","text":"answer text"},{"type":"thinking","thinking":"","signature":"` + validCarrier + `"}]},{"role":"user","content":[{"type":"text","text":"continue"}]}]}`)
+
+	inputJSON = StripInvalidGeminiSignatureThinkingBlocks(inputJSON)
+	output := ConvertClaudeRequestToAntigravity("gemini-3.1-pro-preview", inputJSON, false)
+
+	parts := gjson.GetBytes(output, "request.contents.0.parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("parts count = %d, want 2; output=%s", len(parts), output)
+	}
+	if !parts[0].Get("thought").Bool() || parts[0].Get("text").String() != "let me think" {
+		t.Fatalf("part[0] is not thought text; got: %s", parts[0].Raw)
+	}
+	if parts[1].Get("text").String() != "answer text" || parts[1].Get("thoughtSignature").String() != validSignature {
+		t.Fatalf("part[1] is not text with signature; got: %s", parts[1].Raw)
+	}
+}
+
 func TestConvertClaudeRequestToAntigravity_GeminiThinkingSignatureTargetsFollowingTool(t *testing.T) {
 	geminiSig := testGeminiEPrefixSignature(t)
 	inputJSON := []byte(`{
@@ -1375,7 +1395,7 @@ func TestInspectDoubleLayerSignature_TracksEncodingLayers(t *testing.T) {
 	}
 }
 
-func TestConvertClaudeRequestToAntigravity_CacheModeDropsRawSignature(t *testing.T) {
+func TestConvertClaudeRequestToAntigravity_CacheModeAcceptsNativeSignature(t *testing.T) {
 	cache.ClearSignatureCache("")
 	previous := cache.SignatureCacheEnabled()
 	cache.SetSignatureCacheEnabled(true)
@@ -1385,6 +1405,7 @@ func TestConvertClaudeRequestToAntigravity_CacheModeDropsRawSignature(t *testing
 	})
 
 	rawSignature := testAnthropicNativeSignature(t)
+	expectedAntigravitySig := base64.StdEncoding.EncodeToString([]byte(rawSignature))
 	inputJSON := []byte(`{
 		"model": "claude-sonnet-4-5-thinking",
 		"messages": [
@@ -1400,11 +1421,92 @@ func TestConvertClaudeRequestToAntigravity_CacheModeDropsRawSignature(t *testing
 
 	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5-thinking", inputJSON, false)
 	parts := gjson.GetBytes(output, "request.contents.0.parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("Expected native signature thinking block to be preserved in cache mode, got %d parts; output=%s", len(parts), output)
+	}
+	if !parts[0].Get("thought").Bool() || parts[0].Get("thoughtSignature").String() != expectedAntigravitySig {
+		t.Fatalf("Expected normalized thinking part with signature %s, got %s", expectedAntigravitySig, parts[0].Raw)
+	}
+	if parts[1].Get("text").String() != "Answer" {
+		t.Fatalf("Expected remaining text part, got %s", parts[1].Raw)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravity_CacheModeDropsInvalidSignature(t *testing.T) {
+	cache.ClearSignatureCache("")
+	previous := cache.SignatureCacheEnabled()
+	cache.SetSignatureCacheEnabled(true)
+	t.Cleanup(func() {
+		cache.SetSignatureCacheEnabled(previous)
+		cache.ClearSignatureCache("")
+	})
+
+	// Seed cache with a valid signature for the same thinking text.
+	validNativeSig := testAnthropicNativeSignature(t)
+	cache.CacheSignature("claude-sonnet-4-5-thinking", "Let me think...", validNativeSig)
+
+	// Client explicitly sends an invalid signature. Cache MUST NOT be used to replace it.
+	invalidRawSignature := testNonAnthropicRawSignature(t)
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-5-thinking",
+		"messages": [
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "thinking", "thinking": "Let me think...", "signature": "` + invalidRawSignature + `"},
+					{"type": "text", "text": "Answer"}
+				]
+			}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5-thinking", inputJSON, false)
+	parts := gjson.GetBytes(output, "request.contents.0.parts").Array()
 	if len(parts) != 1 {
-		t.Fatalf("Expected raw signature thinking block to be dropped in cache mode, got %d parts", len(parts))
+		t.Fatalf("Expected invalid signature thinking block to be dropped in cache mode even if cache exists, got %d parts", len(parts))
 	}
 	if parts[0].Get("text").String() != "Answer" {
 		t.Fatalf("Expected remaining text part, got %s", parts[0].Raw)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravity_CacheModeRecoversSignatureWhenClientOmitsSignature(t *testing.T) {
+	cache.ClearSignatureCache("")
+	previous := cache.SignatureCacheEnabled()
+	cache.SetSignatureCacheEnabled(true)
+	t.Cleanup(func() {
+		cache.SetSignatureCacheEnabled(previous)
+		cache.ClearSignatureCache("")
+	})
+
+	validNativeSig := testAnthropicNativeSignature(t)
+	expectedAntigravitySig := base64.StdEncoding.EncodeToString([]byte(validNativeSig))
+	cache.CacheSignature("claude-sonnet-4-5-thinking", "Let me think...", validNativeSig)
+
+	// Client omitted signature (signature is empty or absent).
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-5-thinking",
+		"messages": [
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "thinking", "thinking": "Let me think...", "signature": ""},
+					{"type": "text", "text": "Answer"}
+				]
+			}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5-thinking", inputJSON, false)
+	parts := gjson.GetBytes(output, "request.contents.0.parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("Expected omitted signature thinking block to be recovered from cache, got %d parts; output=%s", len(parts), output)
+	}
+	if !parts[0].Get("thought").Bool() || parts[0].Get("thoughtSignature").String() != expectedAntigravitySig {
+		t.Fatalf("Expected recovered thinking part with signature %s, got %s", expectedAntigravitySig, parts[0].Raw)
+	}
+	if parts[1].Get("text").String() != "Answer" {
+		t.Fatalf("Expected remaining text part, got %s", parts[1].Raw)
 	}
 }
 

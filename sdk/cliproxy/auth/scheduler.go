@@ -942,12 +942,44 @@ func (m *modelScheduler) removeEntryLocked(authID string) {
 	m.rebuildIndexesLocked()
 }
 
-// promoteExpiredLocked reevaluates blocked auths whose retry time has elapsed.
-func (m *modelScheduler) promoteExpiredLocked(now time.Time) {
-	if m == nil || len(m.blocked) == 0 {
-		return
+// demoteExpiredTokensLocked checks ready auths and demotes any whose access token has expired.
+func (m *modelScheduler) demoteExpiredTokensLocked(now time.Time) bool {
+	if m == nil || len(m.entries) == 0 {
+		return false
 	}
 	changed := false
+	for _, entry := range m.entries {
+		if entry == nil || entry.auth == nil || entry.state != scheduledStateReady {
+			continue
+		}
+		if exp, ok := entry.auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
+			blocked, reason, next := isAuthBlockedForModel(entry.auth, m.modelKey, now)
+			if blocked {
+				switch {
+				case reason == blockReasonCooldown:
+					entry.state = scheduledStateCooldown
+					entry.nextRetryAt = next
+				case reason == blockReasonDisabled:
+					entry.state = scheduledStateDisabled
+					entry.nextRetryAt = time.Time{}
+				default:
+					entry.state = scheduledStateBlocked
+					entry.nextRetryAt = next
+				}
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// promoteExpiredLocked reevaluates blocked auths whose retry time has elapsed
+// and demotes ready auths whose access token has expired.
+func (m *modelScheduler) promoteExpiredLocked(now time.Time) {
+	if m == nil {
+		return
+	}
+	changed := m.demoteExpiredTokensLocked(now)
 	for _, entry := range m.blocked {
 		if entry == nil || entry.auth == nil {
 			continue
