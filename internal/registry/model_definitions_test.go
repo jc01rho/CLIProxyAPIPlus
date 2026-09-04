@@ -2,6 +2,26 @@ package registry
 
 import "testing"
 
+func TestEmbeddedCodexTierModelsExposeGPT6Astra(t *testing.T) {
+	tiers := map[string][]*ModelInfo{
+		"codex-team": getModels().CodexTeam,
+		"codex-plus": getModels().CodexPlus,
+		"codex-pro":  getModels().CodexPro,
+	}
+	for tier, models := range tiers {
+		found := false
+		for _, model := range models {
+			if model != nil && model.ID == "gpt-6-astra" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("embedded %s catalog is missing gpt-6-astra", tier)
+		}
+	}
+}
+
 func TestGetStaticModelDefinitionsByChannelSupportsGeminiInteractions(t *testing.T) {
 	models := GetStaticModelDefinitionsByChannel("gemini-interactions")
 	if len(models) == 0 {

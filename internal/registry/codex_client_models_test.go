@@ -27,6 +27,20 @@ func TestEmbeddedCodexClientModelsCatalogIsValid(t *testing.T) {
 	}
 }
 
+func TestEmbeddedCodexClientModelsCatalogExposesGPT6Astra(t *testing.T) {
+	data, _ := GetCodexClientModelsSnapshot()
+	var payload codexClientModelsPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("decode embedded Codex client model catalog: %v", err)
+	}
+	for _, model := range payload.Models {
+		if slug, _ := model["slug"].(string); slug == "gpt-6-astra" {
+			return
+		}
+	}
+	t.Fatal("embedded Codex client model catalog is missing gpt-6-astra")
+}
+
 func TestValidateCodexClientModelsJSON(t *testing.T) {
 	validDefault := testCodexClientModel("gpt-5.5", 1)
 	validOther := testCodexClientModel("gpt-5.6-sol", 2)
