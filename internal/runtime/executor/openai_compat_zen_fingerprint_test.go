@@ -138,3 +138,57 @@ func TestApplyOpencodeZenFingerprintSessionStability(t *testing.T) {
 		t.Fatalf("explicit session header rewritten: %q", got)
 	}
 }
+
+func TestOpencodeSessionFingerprintShapes(t *testing.T) {
+	base := func(model, system, user, tools string) []byte {
+		var b strings.Builder
+		b.WriteString(`{"model":"` + model + `"`)
+		if system != "" {
+			b.WriteString(`,"system":"` + system + `"`)
+		}
+		b.WriteString(`,"messages":[`)
+		if user != "" {
+			b.WriteString(`{"role":"user","content":` + user + `}`)
+		}
+		b.WriteString(`]`)
+		if tools != "" {
+			b.WriteString(`,"tools":` + tools)
+		}
+		b.WriteString(`}`)
+		return []byte(b.String())
+	}
+
+	// content as array-of-blocks must hash equal to its plain-string twin.
+	plain := base("muse-spark-1.3-contributor-free", "sys", `"hello"`, "")
+	blocks := base("muse-spark-1.3-contributor-free", "sys", `[{"type":"text","text":"hel"},{"type":"text","text":"lo"}]`, "")
+	if got := opencodeSessionFingerprint(plain); got != opencodeSessionFingerprint(blocks) {
+		t.Fatalf("content-array shape diverged: %q vs %q", got, opencodeSessionFingerprint(blocks))
+	}
+
+	// system as role:"system" message equals top-level system string.
+	topSystem := base("muse-spark-1.3-contributor-free", "sys prompt", `"hi"`, "")
+	msgSystem := []byte(`{"model":"muse-spark-1.3-contributor-free","messages":[{"role":"system","content":"sys prompt"},{"role":"user","content":"hi"}]}`)
+	if got := opencodeSessionFingerprint(topSystem); got != opencodeSessionFingerprint(msgSystem) {
+		t.Fatalf("system dual-shape diverged: %q vs %q", got, opencodeSessionFingerprint(msgSystem))
+	}
+
+	// tools: function.name and name shapes hash the same set.
+	toolsFn := base("m", "", `"hi"`, `[{"type":"function","function":{"name":"bash"}}]`)
+	toolsName := base("m", "", `"hi"`, `[{"name":"bash"}]`)
+	if got := opencodeSessionFingerprint(toolsFn); got != opencodeSessionFingerprint(toolsName) {
+		t.Fatalf("tool name shapes diverged: %q vs %q", got, opencodeSessionFingerprint(toolsName))
+	}
+
+	// No user message (system+assistant only) must not panic and still yields an id.
+	noUser := []byte(`{"model":"m","messages":[{"role":"system","content":"s"},{"role":"assistant","content":"a"}]}`)
+	if got := opencodeSessionFingerprint(noUser); got == "" {
+		t.Fatal("no-user-message body must still yield a session id")
+	}
+
+	// Same conversation prefix but different model must diverge.
+	m1 := base("muse-a", "sys", `"hi"`, "")
+	m2 := base("muse-b", "sys", `"hi"`, "")
+	if got := opencodeSessionFingerprint(m1); got == opencodeSessionFingerprint(m2) {
+		t.Fatal("different models must not share a session id")
+	}
+}
