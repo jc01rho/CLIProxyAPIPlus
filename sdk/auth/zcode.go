@@ -104,6 +104,14 @@ func (a *ZcodeAuthenticator) createAuthRecord(creds *zcode.Credentials) (*coreau
 		},
 		NextRefreshAfter: creds.ExpiresAt.Add(-24 * time.Hour),
 	}
+	// Persist the broker JWT and start plan state: the executor's start plan
+	// routing reads Metadata["zcode_token"]/["start_plan_active"] after a
+	// reload from disk.
+	if creds.ZcodeToken != "" {
+		record.Metadata["zcode_token"] = creds.ZcodeToken
+		record.Attributes["zcode_token"] = creds.ZcodeToken
+		record.Metadata["start_plan_active"] = creds.StartPlanActive
+	}
 
 	if creds.Email != "" {
 		fmt.Printf("\n✓ ZCode authentication completed successfully! (Account: %s)\n", creds.Email)
