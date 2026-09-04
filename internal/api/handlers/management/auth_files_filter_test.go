@@ -258,3 +258,83 @@ func registerAuthForLookupTest(t *testing.T, manager *coreauth.Manager, auth *co
 		t.Fatalf("register auth %q: %v", auth.ID, errRegister)
 	}
 }
+
+func TestBuildAuthFileEntryExposesQuotaAndBaseURL(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
+
+	// Attributes win over Metadata.
+	entry := h.buildAuthFileEntry(&coreauth.Auth{
+		ID:       "claude-a",
+		Index:    "idx-a",
+		FileName: "a.json",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"path":      "/auth/claude-a.json",
+			"quota_url": "https://claude.nekos.me/v1/usage/self",
+			"base_url":  "https://other.example.com",
+		},
+		Metadata: map[string]any{
+			"quota_url": "https://stale.example.com",
+			"base_url":  "https://stale-base.example.com",
+		},
+	})
+	if entry == nil {
+		t.Fatal("entry is nil")
+	}
+	if got := entry["quota_url"]; got != "https://claude.nekos.me/v1/usage/self" {
+		t.Errorf("quota_url = %#v", got)
+	}
+	if got := entry["base_url"]; got != "https://other.example.com" {
+		t.Errorf("base_url = %#v", got)
+	}
+
+	// Metadata fallback when Attributes lack the keys.
+	entry = h.buildAuthFileEntry(&coreauth.Auth{
+		ID:       "claude-b",
+		Index:    "idx-b",
+		FileName: "b.json",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"path": "/auth/claude-b.json",
+		},
+		Metadata: map[string]any{
+			"quota_url": "https://claude.nekos.me/v1/usage/self",
+			"base_url":  "https://claude.nekos.me",
+		},
+	})
+	if entry == nil {
+		t.Fatal("entry is nil")
+	}
+	if got := entry["quota_url"]; got != "https://claude.nekos.me/v1/usage/self" {
+		t.Errorf("quota_url fallback = %#v", got)
+	}
+	if got := entry["base_url"]; got != "https://claude.nekos.me" {
+		t.Errorf("base_url fallback = %#v", got)
+	}
+
+	// Absent keys stay absent — no empty-string noise.
+	entry = h.buildAuthFileEntry(&coreauth.Auth{
+		ID:       "claude-c",
+		Index:    "idx-c",
+		FileName: "c.json",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"path": "/auth/claude-c.json",
+		},
+	})
+	if entry == nil {
+		t.Fatal("entry is nil")
+	}
+	if _, ok := entry["quota_url"]; ok {
+		t.Errorf("quota_url should be absent, got %#v", entry["quota_url"])
+	}
+	if _, ok := entry["base_url"]; ok {
+		t.Errorf("base_url should be absent, got %#v", entry["base_url"])
+	}
+}
+
+
