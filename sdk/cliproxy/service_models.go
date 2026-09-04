@@ -831,9 +831,64 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		info.Thinking = modelconfig.NormalizeThinkingSupport(thinkingSupport)
 		info.SupportedInputModalities = normalizeCompatConfigModalities(model.InputModalities)
 		info.SupportedOutputModalities = normalizeCompatConfigModalities(model.OutputModalities)
+		info.SupportedEndpoints = normalizeCompatConfigEndpoints(model.SupportedEndpoints, compat.BaseURL, model.Name, model.Alias)
 		models = append(models, info)
 	}
 	return models
+}
+
+// normalizeCompatConfigEndpoints resolves a compat model's SupportedEndpoints.
+// An explicit configured list wins untouched. Otherwise, OpenCode Zen
+// responses-only model families auto-declare ["/responses"] so the endpoint
+// compat layer converts client chat/completions requests transparently
+// (OmniRoute PR 12675: upstream serves muse-spark only on /v1/responses).
+// Empty means the upstream accepts both wire shapes.
+func normalizeCompatConfigEndpoints(configured []string, baseURL, name, alias string) []string {
+	out := make([]string, 0, len(configured))
+	seen := make(map[string]struct{}, len(configured))
+	for _, item := range configured {
+		endpoint := strings.TrimSpace(item)
+		if endpoint == "" {
+			continue
+		}
+		if !strings.HasPrefix(endpoint, "/") {
+			endpoint = "/" + endpoint
+		}
+		if _, dup := seen[endpoint]; dup {
+			continue
+		}
+		seen[endpoint] = struct{}{}
+		out = append(out, endpoint)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	if looksLikeOpencodeZenEndpoint(baseURL, name, alias) {
+		family := strings.ToLower(name + " " + alias)
+		for _, fam := range opencodeZenResponsesOnlyModelFamilies {
+			if strings.Contains(family, fam) {
+				return []string{"/responses"}
+			}
+		}
+	}
+	return nil
+}
+
+// looksLikeOpencodeZenEndpoint reports whether the compat entry targets the
+// OpenCode Zen gateway (opencode.ai host, zen path, or opencode branding).
+func looksLikeOpencodeZenEndpoint(baseURL, name, alias string) bool {
+	haystack := strings.ToLower(baseURL + " " + name + " " + alias)
+	return strings.Contains(haystack, "opencode.ai") || strings.Contains(haystack, "/zen") ||
+		strings.Contains(haystack, "opencode-") || strings.Contains(haystack, "opencode_") ||
+		strings.Contains(haystack, "opencode free")
+}
+
+// opencodeZenResponsesOnlyModelFamilies are OpenCode Zen models the upstream
+// serves only on /v1/responses (OmniRoute PR 12675): chat/completions
+// dispatch returns HTTP 500 for them.
+var opencodeZenResponsesOnlyModelFamilies = []string{
+	"muse-spark",
+	"muse-free",
 }
 
 func normalizeCompatConfigModalities(raw []string) []string {
