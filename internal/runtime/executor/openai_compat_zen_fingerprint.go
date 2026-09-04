@@ -85,7 +85,7 @@ func newOpencodeRequestID() string {
 //  4. a random UUID when none of the above are available.
 //
 // x-opencode-request stays per-request UUID.
-func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []byte, clientHeaders http.Header) {
+func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []byte, clientHeaders http.Header, fallbackSeed string) {
 	if req == nil {
 		return
 	}
@@ -96,7 +96,7 @@ func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []b
 	if !shouldApplyOpencodeZenFingerprint(baseURL, providerKey) {
 		return
 	}
-	req.Header.Set("x-opencode-session", opencodeSessionValue(clientHeaders, body))
+	req.Header.Set("x-opencode-session", opencodeSessionValue(clientHeaders, body, fallbackSeed))
 	req.Header.Set("x-opencode-request", newOpencodeRequestID())
 	req.Header.Set("x-opencode-client", opencodeFingerprintClient)
 	req.Header.Set("User-Agent", opencodeFingerprintUserAgent)
@@ -105,7 +105,7 @@ func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []b
 // opencodeSessionValue resolves the provider-owned x-opencode-session per the
 // priority chain above; every branch produces an opaque UUID-shaped id that
 // reveals nothing about its input.
-func opencodeSessionValue(clientHeaders http.Header, body []byte) string {
+func opencodeSessionValue(clientHeaders http.Header, body []byte, fallbackSeed string) string {
 	if clientHeaders != nil {
 		for _, name := range []string{"X-Session-Id", "X-Session-Affinity"} {
 			if v := strings.TrimSpace(clientHeaders.Get(name)); v != "" {
@@ -116,8 +116,8 @@ func opencodeSessionValue(clientHeaders http.Header, body []byte) string {
 	if s := opencodeSessionFingerprint(body); s != "" {
 		return s
 	}
-	if opencodeFallbackSeed != "" {
-		return opencodeHashSession("credential:" + opencodeFallbackSeed)
+	if fallbackSeed != "" {
+		return opencodeHashSession("credential:" + fallbackSeed)
 	}
 	return newOpencodeRequestID()
 }
@@ -132,11 +132,6 @@ func opencodeHashSession(input string) string {
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
-
-// opencodeFallbackSeed carries the current credential's key material for the
-// stable per-credential fallback branch; set by the executor request builders
-// that have apiKey in scope.
-var opencodeFallbackSeed string
 
 // opencodeSessionFingerprint derives a conversation-stable x-opencode-session
 // value from the request body: model, system prompt, first user message and

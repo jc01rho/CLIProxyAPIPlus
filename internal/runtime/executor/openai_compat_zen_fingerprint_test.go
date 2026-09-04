@@ -65,7 +65,7 @@ func TestNewOpencodeRequestIDIsUUIDv4(t *testing.T) {
 func TestApplyOpencodeZenFingerprint(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/responses", nil)
 	req.Header.Set("User-Agent", "cli-proxy-openai-compat")
-	applyOpencodeZenFingerprint(req, "openai-compatible-opencode-free", nil, nil)
+	applyOpencodeZenFingerprint(req, "openai-compatible-opencode-free", nil, nil, "")
 
 	for _, h := range []string{"x-opencode-session", "x-opencode-request", "x-opencode-client"} {
 		if req.Header.Get(h) == "" {
@@ -82,7 +82,7 @@ func TestApplyOpencodeZenFingerprint(t *testing.T) {
 	// Non-Zen upstream stays untouched.
 	req2, _ := http.NewRequest(http.MethodPost, "https://api.openrouter.ai/v1/chat/completions", nil)
 	req2.Header.Set("User-Agent", "cli-proxy-openai-compat")
-	applyOpencodeZenFingerprint(req2, "openai-compatible-openrouter", nil, nil)
+	applyOpencodeZenFingerprint(req2, "openai-compatible-openrouter", nil, nil, "")
 	if req2.Header.Get("x-opencode-session") != "" {
 		t.Error("fingerprint must not apply to non-opencode upstreams")
 	}
@@ -121,8 +121,8 @@ func TestApplyOpencodeZenFingerprintSessionStability(t *testing.T) {
 	body := []byte(`{"model":"muse-spark-1.3-contributor-free","messages":[{"role":"user","content":"hi"}]}`)
 	req1, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/responses", nil)
 	req2, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/responses", nil)
-	applyOpencodeZenFingerprint(req1, "openai-compatible-opencode-free", body, nil)
-	applyOpencodeZenFingerprint(req2, "openai-compatible-opencode-free", body, nil)
+	applyOpencodeZenFingerprint(req1, "openai-compatible-opencode-free", body, nil, "")
+	applyOpencodeZenFingerprint(req2, "openai-compatible-opencode-free", body, nil, "")
 	if req1.Header.Get("x-opencode-session") != req2.Header.Get("x-opencode-session") {
 		t.Fatal("same conversation body must produce the same x-opencode-session")
 	}
@@ -134,9 +134,9 @@ func TestApplyOpencodeZenFingerprintSessionStability(t *testing.T) {
 	// caller cannot influence it, whatever casing they use.
 	req3, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/responses", nil)
 	req3.Header.Set("x-opencode-session", "ATTACKER-CONTROLLED")
-	applyOpencodeZenFingerprint(req3, "openai-compatible-opencode-free", body, nil)
+	applyOpencodeZenFingerprint(req3, "openai-compatible-opencode-free", body, nil, "")
 	baseline, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/responses", nil)
-	applyOpencodeZenFingerprint(baseline, "openai-compatible-opencode-free", body, nil)
+	applyOpencodeZenFingerprint(baseline, "openai-compatible-opencode-free", body, nil, "")
 	if got := req3.Header.Get("x-opencode-session"); got != baseline.Header.Get("x-opencode-session") || got == "ATTACKER-CONTROLLED" {
 		t.Fatalf("inbound x-opencode-session influenced output: %q", got)
 	}
@@ -153,7 +153,7 @@ func TestOpencodeSessionFromClientSessionHeader(t *testing.T) {
 		if clientSession != "" {
 			h.Set("X-Session-Id", clientSession)
 		}
-		applyOpencodeZenFingerprint(r, "openai-compatible-opencode-free", body, h)
+		applyOpencodeZenFingerprint(r, "openai-compatible-opencode-free", body, h, "")
 		return r.Header.Get("x-opencode-session")
 	}
 	a1 := mk("conversation-a")
@@ -172,7 +172,7 @@ func TestOpencodeSessionFromClientSessionHeader(t *testing.T) {
 	h := http.Header{}
 	h.Set("X-Session-Affinity", "conversation-a")
 	r, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/responses", nil)
-	applyOpencodeZenFingerprint(r, "openai-compatible-opencode-free", body, h)
+	applyOpencodeZenFingerprint(r, "openai-compatible-opencode-free", body, h, "")
 	if got := r.Header.Get("x-opencode-session"); got != a1 {
 		t.Fatalf("affinity header mapped differently: %q vs %q", got, a1)
 	}
@@ -181,12 +181,10 @@ func TestOpencodeSessionFromClientSessionHeader(t *testing.T) {
 // PR 3780: stable per-credential fallback when the body yields nothing
 // (multipart image bodies) — same credential, same session across calls.
 func TestOpencodeSessionCredentialFallback(t *testing.T) {
-	opencodeFallbackSeed = "sk-test-credential"
-	defer func() { opencodeFallbackSeed = "" }()
 	r1, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/images/generations", nil)
 	r2, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/images/generations", nil)
-	applyOpencodeZenFingerprint(r1, "openai-compatible-opencode-free", []byte("--multipart"), nil)
-	applyOpencodeZenFingerprint(r2, "openai-compatible-opencode-free", []byte("--multipart"), nil)
+	applyOpencodeZenFingerprint(r1, "openai-compatible-opencode-free", []byte("--multipart"), nil, "sk-test-credential")
+	applyOpencodeZenFingerprint(r2, "openai-compatible-opencode-free", []byte("--multipart"), nil, "sk-test-credential")
 	s1, s2 := r1.Header.Get("x-opencode-session"), r2.Header.Get("x-opencode-session")
 	if s1 == "" || s1 != s2 {
 		t.Fatalf("credential fallback unstable: %q vs %q", s1, s2)
@@ -195,9 +193,8 @@ func TestOpencodeSessionCredentialFallback(t *testing.T) {
 		t.Fatal("unreachable")
 	}
 	// Different credential → different session.
-	opencodeFallbackSeed = "sk-other"
 	r3, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/images/generations", nil)
-	applyOpencodeZenFingerprint(r3, "openai-compatible-opencode-free", []byte("--multipart"), nil)
+	applyOpencodeZenFingerprint(r3, "openai-compatible-opencode-free", []byte("--multipart"), nil, "sk-other")
 	if r3.Header.Get("x-opencode-session") == s1 {
 		t.Fatal("different credentials must not share a fallback session")
 	}
