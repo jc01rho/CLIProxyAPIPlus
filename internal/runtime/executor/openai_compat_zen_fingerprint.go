@@ -71,15 +71,21 @@ func newOpencodeRequestID() string {
 // sees the same x-opencode-* header set and User-Agent the official opencode
 // app sends, matching request.ts:186-205 in sst/opencode.
 //
-// x-opencode-session carries a conversation-stable fingerprint (PR 12719 /
-// 12660 pattern): the official app sends one session id per conversation so
-// upstream keeps the prompt cache warm and, from 2026-09-06, errors on
-// requests with no session header at all. When the caller supplies an
-// existing session header (forwarded from the client), it wins untouched;
-// otherwise the session id derives from the request body's model + system
-// prompt + first user message + tools, so consecutive agent turns of one
-// conversation share a session. x-opencode-request stays per-request UUID.
-func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []byte) {
+// x-opencode-session is PROVIDER-OWNED output (decolua/9router PR 3780): the
+// inbound x-opencode-session header from the client is never forwarded, so a
+// caller cannot influence or spoof upstream session affinity. Derivation
+// priority, all stable within a conversation:
+//  1. the client's proxy-session identity (X-Session-Id / X-Session-Affinity),
+//     hashed opaque — explicit conversation identity beats body heuristics;
+//  2. the conversation-prefix fingerprint of the request body (model +
+//     system + first user message + tools) — upstream keeps its prompt cache
+//     warm and, from 2026-09-06, errors when no session header is present;
+//  3. a stable per-credential hash of the API key (e.g. image generations,
+//     whose multipart bodies yield no body fields);
+//  4. a random UUID when none of the above are available.
+//
+// x-opencode-request stays per-request UUID.
+func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []byte, clientHeaders http.Header) {
 	if req == nil {
 		return
 	}
@@ -90,13 +96,47 @@ func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []b
 	if !shouldApplyOpencodeZenFingerprint(baseURL, providerKey) {
 		return
 	}
-	if req.Header.Get("x-opencode-session") == "" {
-		req.Header.Set("x-opencode-session", opencodeSessionFingerprint(body))
-	}
+	req.Header.Set("x-opencode-session", opencodeSessionValue(clientHeaders, body))
 	req.Header.Set("x-opencode-request", newOpencodeRequestID())
 	req.Header.Set("x-opencode-client", opencodeFingerprintClient)
 	req.Header.Set("User-Agent", opencodeFingerprintUserAgent)
 }
+
+// opencodeSessionValue resolves the provider-owned x-opencode-session per the
+// priority chain above; every branch produces an opaque UUID-shaped id that
+// reveals nothing about its input.
+func opencodeSessionValue(clientHeaders http.Header, body []byte) string {
+	if clientHeaders != nil {
+		for _, name := range []string{"X-Session-Id", "X-Session-Affinity"} {
+			if v := strings.TrimSpace(clientHeaders.Get(name)); v != "" {
+				return opencodeHashSession("client-session:" + v)
+			}
+		}
+	}
+	if s := opencodeSessionFingerprint(body); s != "" {
+		return s
+	}
+	if opencodeFallbackSeed != "" {
+		return opencodeHashSession("credential:" + opencodeFallbackSeed)
+	}
+	return newOpencodeRequestID()
+}
+
+// opencodeHashSession renders an opaque UUID-v4-shaped id from arbitrary
+// input (122-bit effective entropy after the RFC4122 bits are clobbered).
+func opencodeHashSession(input string) string {
+	sum := sha256.Sum256([]byte(input))
+	b := [16]byte{}
+	copy(b[:], sum[:16])
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// opencodeFallbackSeed carries the current credential's key material for the
+// stable per-credential fallback branch; set by the executor request builders
+// that have apiKey in scope.
+var opencodeFallbackSeed string
 
 // opencodeSessionFingerprint derives a conversation-stable x-opencode-session
 // value from the request body: model, system prompt, first user message and
@@ -144,17 +184,9 @@ func opencodeSessionFingerprint(body []byte) string {
 		return true
 	})
 	if len(fields) == 0 {
-		return newOpencodeRequestID()
+		return "" // caller falls through to the next stable branch
 	}
-	// 122-bit effective entropy (SHA-256 truncated to 128 bits, 6 RFC4122
-	// bits clobbered); the id derives only from fields already sent upstream
-	// in cleartext, so it leaks nothing new.
-	sum := sha256.Sum256([]byte(strings.Join(fields, "\x1f")))
-	b := [16]byte{}
-	copy(b[:], sum[:16])
-	b[6] = (b[6] & 0x0f) | 0x40 // keep UUID v4 wire shape
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+	return opencodeHashSession(strings.Join(fields, "\x1f"))
 }
 
 // opencodeContentText normalizes OpenAI content shapes to plain text: a
