@@ -22,7 +22,11 @@ import (
 const (
 	commandCodeBaseURL = "https://api.commandcode.ai"
 	commandCodeVersion = "1.12.0"
-	commandCodeProject = "cli-proxy"
+	// commandCodeUserAgent mirrors the official CLI's literal User-Agent value.
+	commandCodeUserAgent = "cli"
+	// commandCodeProject matches the workspace slug shape the CLI derives from
+	// its current project directory (a bounded lowercase slug).
+	commandCodeProject = "workspace"
 )
 
 // CommandCodeExecutor handles requests to CommandCode API (/alpha/generate).
@@ -246,6 +250,10 @@ func commandCodeGenerateURL(auth *cliproxyauth.Auth) string {
 // session. Pass an empty string to omit the header.
 func applyCommandCodeHeaders(req *http.Request, apiKey string, sessionID string) {
 	req.Header.Set("Content-Type", "application/json")
+	// The official CLI identifies itself with a literal "cli" User-Agent; the
+	// upstream rejects requests that do not look like the CLI with
+	// "Proxy use detected" (400), so mirror the CLI's wire identity.
+	req.Header.Set("User-Agent", commandCodeUserAgent)
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -255,7 +263,7 @@ func applyCommandCodeHeaders(req *http.Request, apiKey string, sessionID string)
 	req.Header.Set("x-command-code-version", commandCodeVersion)
 	req.Header.Set("x-cli-environment", "production")
 	req.Header.Set("x-project-slug", commandCodeProject)
-	req.Header.Set("x-taste-learning", "true")
+	req.Header.Set("x-taste-learning", "false")
 	req.Header.Set("x-co-flag", "false")
 }
 

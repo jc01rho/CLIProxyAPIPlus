@@ -198,6 +198,36 @@ func Test_CommandCodeRequest_envelope_memory_and_taste_are_json_null(t *testing.
 	}
 }
 
+func Test_CommandCodeRequest_envelope_carries_cli_run_mode(t *testing.T) {
+	// Given the shared fixture.
+	// When
+	got := buildCommandCodeWireFixture(t)
+
+	// Then the CLI run mode the official client sends is present; its absence
+	// is one of the non-CLI fingerprints the upstream proxy detector keys on.
+	if got := gjson.GetBytes(got, "mode").String(); got != "agent" {
+		t.Fatalf("mode = %q, want %q", got, "agent")
+	}
+	if got := gjson.GetBytes(got, "permissionMode").String(); got != "standard" {
+		t.Fatalf("permissionMode = %q, want %q", got, "standard")
+	}
+}
+
+func Test_CommandCodeRequest_config_carries_workspace_metadata(t *testing.T) {
+	// Given the shared fixture.
+	// When
+	got := buildCommandCodeWireFixture(t)
+
+	// Then the config block mirrors CLI workspace metadata: a plausible
+	// working directory and a platform environment, not /tmp+"terminal".
+	if got := gjson.GetBytes(got, "config.workingDir").String(); got == "/tmp" || got == "" {
+		t.Fatalf("config.workingDir = %q, want a CLI-plausible workspace path", got)
+	}
+	if got := gjson.GetBytes(got, "config.environment").String(); got == "terminal" || got == "" {
+		t.Fatalf("config.environment = %q, want a platform value like \"linux\"", got)
+	}
+}
+
 func Test_CommandCodeRequest_default_max_tokens_is_64000(t *testing.T) {
 	// Given the shared fixture, which sets no max_tokens.
 	// When

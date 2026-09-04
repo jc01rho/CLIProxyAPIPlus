@@ -11,37 +11,28 @@ package executor
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
-// commandCodeSessionIDLength is the hex-digit count of the random suffix of the
-// x-session-id header, matching the createModelClient format (sess_<16hex>)
-// emitted by the installed command-code@1.12.0 client. The header is required
-// by the upstream API to associate pause_turn continuation posts with the
-// original session.
-const commandCodeSessionIDLength = 16
+// x-session-id is a UUID v4 (newCommandCodeSessionID) matching the official
+// CLI's randomUUID() session identifier. The header is required by the
+// upstream API to associate pause_turn continuation posts with the original
+// session.
 
-// newCommandCodeSessionID generates a fresh sess_<16hex> session identifier
-// used as the x-session-id header value. One identifier is generated per
-// request and reused across all pause_turn continuation posts of that request,
-// mirroring the per-session value held by the real client.
+// newCommandCodeSessionID generates a fresh UUID v4 session identifier used as
+// the x-session-id header value. One identifier is generated per request and
+// reused across all pause_turn continuation posts of that request, mirroring
+// the per-session UUID held by the official CLI (randomUUID()).
 func newCommandCodeSessionID() string {
-	buf := make([]byte, commandCodeSessionIDLength/2)
-	if _, err := rand.Read(buf); err != nil {
-		// crypto/rand should never fail in normal operation; fall back to a
-		// non-secret placeholder rather than aborting the request.
-		return "sess_0000000000000000"
-	}
-	return "sess_" + hex.EncodeToString(buf)
+	return uuid.NewString()
 }
 
 // commandCodeAttemptResult is the outcome of a single /alpha/generate POST and
