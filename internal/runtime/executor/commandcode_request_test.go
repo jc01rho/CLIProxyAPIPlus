@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"os"
+	"runtime"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -225,6 +227,25 @@ func Test_CommandCodeRequest_config_carries_workspace_metadata(t *testing.T) {
 	}
 	if got := gjson.GetBytes(got, "config.environment").String(); got == "terminal" || got == "" {
 		t.Fatalf("config.environment = %q, want a platform value like \"linux\"", got)
+	}
+}
+
+func Test_CommandCodeRequest_config_uses_real_workspace(t *testing.T) {
+	// Given the shared fixture.
+	// When
+	got := buildCommandCodeWireFixture(t)
+
+	// Then the config block carries live process state, not fixed placeholders:
+	// os.Getwd() as workingDir, runtime.GOOS as environment.
+	wantDir, err := os.Getwd()
+	if err != nil {
+		t.Skipf("os.Getwd() unavailable: %v", err)
+	}
+	if got := gjson.GetBytes(got, "config.workingDir").String(); got != wantDir {
+		t.Fatalf("config.workingDir = %q, want process cwd %q", got, wantDir)
+	}
+	if got := gjson.GetBytes(got, "config.environment").String(); got != runtime.GOOS {
+		t.Fatalf("config.environment = %q, want runtime.GOOS %q", got, runtime.GOOS)
 	}
 }
 
