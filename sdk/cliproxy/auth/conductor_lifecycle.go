@@ -104,15 +104,26 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	auth.Generation = 1
 	authClone := auth.Clone()
 	m.auths[auth.ID] = authClone
+	antigravityReconcileChanged := m.reconcileSoleAntigravityPrimaryLocked("")
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(authClone.Clone())
+		for _, changed := range antigravityReconcileChanged {
+			if changed.ID != auth.ID {
+				m.scheduler.upsertAuth(changed.Clone())
+			}
+		}
 	}
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
+	for _, changed := range antigravityReconcileChanged {
+		if changed.ID != auth.ID {
+			_ = m.persist(ctx, changed)
+		}
+	}
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
@@ -184,15 +195,30 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	auth.EnsureIndex()
 	authClone := auth.Clone()
 	m.auths[auth.ID] = authClone
+	preferredID := ""
+	if existing != nil && existing.Disabled && !auth.Disabled && strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		preferredID = auth.ID
+	}
+	antigravityReconcileChanged := m.reconcileSoleAntigravityPrimaryLocked(preferredID)
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(authClone.Clone())
+		for _, changed := range antigravityReconcileChanged {
+			if changed.ID != auth.ID {
+				m.scheduler.upsertAuth(changed.Clone())
+			}
+		}
 	}
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
+	for _, changed := range antigravityReconcileChanged {
+		if changed.ID != auth.ID {
+			_ = m.persist(ctx, changed)
+		}
+	}
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
