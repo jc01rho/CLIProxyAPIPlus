@@ -11,6 +11,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -22,11 +25,9 @@ const (
 	// commandCodeMode mirrors the run mode the CLI sends on the /alpha/generate
 	// wire (opencodex and the installed CLI both send "agent").
 	commandCodeMode = "agent"
-	// commandCodeWorkingDir and commandCodeEnvironment mirror the workspace
-	// metadata the CLI reports in config; a fixed /tmp or "terminal" value is a
-	// non-CLI fingerprint the upstream proxy detector keys on.
-	commandCodeWorkingDir  = "/home/user/workspace"
-	commandCodeEnvironment = "linux"
+	// commandCodeFallbackWorkingDir is the last-resort workspace path when the
+	// process working directory cannot be determined.
+	commandCodeFallbackWorkingDir = "/home/user/workspace"
 	// commandCodeMaxCallIDLen is the upstream CommandCode limit on tool-call/
 	// tool-result "toolCallId" wire field length. IDs longer than this are
 	// rejected by CommandCode with "input[N].call_id ... must be <= 64".
@@ -178,6 +179,111 @@ type commandCodeWireEnvelope struct {
 	Params commandCodeWireParams `json:"params"`
 }
 
+// commandCodeMaxWorkspaceStructureEntries caps the directory listing sent
+// upstream; mirrors opencodex MAX_WORKSPACE_STRUCTURE_ENTRIES behavior.
+const commandCodeMaxWorkspaceStructureEntries = 64
+
+// commandCodeWorkspaceConfig mirrors the workspace metadata the official CLI
+// reports in config: the real working directory, platform, directory listing,
+// and git state. Fixed placeholder values are a non-CLI fingerprint the
+// upstream proxy detector keys on.
+func commandCodeWorkspaceConfig() commandCodeWireConfig {
+	workingDir := ""
+	if cwd, err := os.Getwd(); err == nil {
+		workingDir = strings.TrimSpace(cwd)
+	}
+	if workingDir == "" {
+		workingDir = commandCodeFallbackWorkingDir
+	}
+	cfg := commandCodeWireConfig{
+		WorkingDir:    workingDir,
+		Date:          time.Now().Format("2006-01-02"),
+		Environment:   runtime.GOOS,
+		Structure:     commandCodeWorkspaceStructure(workingDir),
+		IsGitRepo:     false,
+		CurrentBranch: "",
+		MainBranch:    "",
+		GitStatus:     "",
+		RecentCommits: []string{},
+	}
+	if git := commandCodeGitWorkspaceInfo(workingDir); git != nil {
+		cfg.IsGitRepo = true
+		cfg.CurrentBranch = git.currentBranch
+		cfg.MainBranch = git.mainBranch
+		cfg.GitStatus = git.status
+		cfg.RecentCommits = git.recentCommits
+	}
+	return cfg
+}
+
+func commandCodeWorkspaceStructure(workingDir string) []string {
+	if strings.TrimSpace(workingDir) == "" {
+		return []string{}
+	}
+	entries, err := os.ReadDir(workingDir)
+	if err != nil {
+		return []string{}
+	}
+	out := make([]string, 0, commandCodeMaxWorkspaceStructureEntries)
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		out = append(out, name)
+		if len(out) >= commandCodeMaxWorkspaceStructureEntries {
+			break
+		}
+	}
+	return out
+}
+
+type commandCodeGitInfo struct {
+	currentBranch string
+	mainBranch    string
+	status        string
+	recentCommits []string
+}
+
+func commandCodeGitWorkspaceInfo(workingDir string) *commandCodeGitInfo {
+	if strings.TrimSpace(workingDir) == "" {
+		return nil
+	}
+	run := func(args ...string) (string, bool) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = workingDir
+		out, err := cmd.Output()
+		if err != nil {
+			return "", false
+		}
+		return strings.TrimSpace(string(out)), true
+	}
+	if _, ok := run("rev-parse", "--git-dir"); !ok {
+		return nil
+	}
+	info := &commandCodeGitInfo{}
+	if branch, ok := run("rev-parse", "--abbrev-ref", "HEAD"); ok {
+		info.currentBranch = branch
+	}
+	if main, ok := run("symbolic-ref", "refs/remotes/origin/HEAD"); ok {
+		if idx := strings.LastIndex(main, "/"); idx >= 0 {
+			info.mainBranch = main[idx+1:]
+		}
+	}
+	if info.mainBranch == "" {
+		if main, ok := run("branch", "--show-current"); ok {
+			info.mainBranch = main
+		}
+	}
+	if status, ok := run("status", "--porcelain"); ok {
+		info.status = status
+	}
+	if log, ok := run("log", "--oneline", "-5"); ok && log != "" {
+		info.recentCommits = strings.Split(log, "\n")
+	}
+	return info
+}
+
 // buildCommandCodePayload constructs the CommandCode envelope from an OpenAI-format payload.
 // System/developer messages are extracted into params.system; tools and tool-related
 // messages are converted to the typed CommandCode wire shapes.
@@ -259,18 +365,9 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 	if maxTokens == 0 {
 		maxTokens = commandCodeDefaultMaxTokens
 	}
+	workspace := commandCodeWorkspaceConfig()
 	envelope := commandCodeWireEnvelope{
-		Config: commandCodeWireConfig{
-			WorkingDir:    commandCodeWorkingDir,
-			Date:          time.Now().Format("2006-01-02"),
-			Environment:   commandCodeEnvironment,
-			Structure:     []string{},
-			IsGitRepo:     false,
-			CurrentBranch: "",
-			MainBranch:    "",
-			GitStatus:     "",
-			RecentCommits: []string{},
-		},
+		Config:         workspace,
 		PermissionMode: commandCodePermissionMode,
 		Mode:           commandCodeMode,
 		Params: commandCodeWireParams{
