@@ -2,9 +2,12 @@ package executor
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 // The OpenCode Zen gateway fingerprints non-Zen clients on
@@ -66,9 +69,17 @@ func newOpencodeRequestID() string {
 
 // applyOpencodeZenFingerprint rewrites the request identity so the Zen gateway
 // sees the same x-opencode-* header set and User-Agent the official opencode
-// app sends. Values are per-request (UUID v4 session/request ids, cli client
-// flag), matching request.ts:186-205 in sst/opencode.
-func applyOpencodeZenFingerprint(req *http.Request, providerKey string) {
+// app sends, matching request.ts:186-205 in sst/opencode.
+//
+// x-opencode-session carries a conversation-stable fingerprint (PR 12719 /
+// 12660 pattern): the official app sends one session id per conversation so
+// upstream keeps the prompt cache warm and, from 2026-09-06, errors on
+// requests with no session header at all. When the caller supplies an
+// existing session header (forwarded from the client), it wins untouched;
+// otherwise the session id derives from the request body's model + system
+// prompt + first user message + tools, so consecutive agent turns of one
+// conversation share a session. x-opencode-request stays per-request UUID.
+func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []byte) {
 	if req == nil {
 		return
 	}
@@ -79,8 +90,95 @@ func applyOpencodeZenFingerprint(req *http.Request, providerKey string) {
 	if !shouldApplyOpencodeZenFingerprint(baseURL, providerKey) {
 		return
 	}
-	req.Header.Set("x-opencode-session", newOpencodeRequestID())
+	if req.Header.Get("x-opencode-session") == "" {
+		req.Header.Set("x-opencode-session", opencodeSessionFingerprint(body))
+	}
 	req.Header.Set("x-opencode-request", newOpencodeRequestID())
 	req.Header.Set("x-opencode-client", opencodeFingerprintClient)
 	req.Header.Set("User-Agent", opencodeFingerprintUserAgent)
+}
+
+// opencodeSessionFingerprint derives a conversation-stable x-opencode-session
+// value from the request body: model, system prompt, first user message and
+// tool names hash into a UUID-shaped id (UUID formatting keeps the wire
+// shape; the entropy source is the conversation prefix, not randomness).
+// Falls back to a random UUID when the body yields no stable fields, mirroring
+// OmniRoute PR 12719's "random UUID when no body is available" branch.
+func opencodeSessionFingerprint(body []byte) string {
+	fields := make([]string, 0, 4)
+	if v := gjson.GetBytes(body, "model").String(); v != "" {
+		fields = append(fields, "model:"+v)
+	}
+	// system may arrive as a top-level string or as a role:"system" message
+	// after translation; both shapes must hash the same conversation.
+	if v := gjson.GetBytes(body, "system"); v.Exists() {
+		if s := opencodeContentText(v); s != "" {
+			fields = append(fields, "system:"+s)
+		}
+	} else {
+		gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+			if msg.Get("role").String() == "system" {
+				if s := opencodeContentText(msg.Get("content")); s != "" {
+					fields = append(fields, "system:"+s)
+				}
+				return false
+			}
+			return true
+		})
+	}
+	gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+		if msg.Get("role").String() == "user" {
+			if s := opencodeContentText(msg.Get("content")); s != "" {
+				fields = append(fields, "user:"+s)
+			}
+			return false // first user message only
+		}
+		return true
+	})
+	gjson.GetBytes(body, "tools").ForEach(func(_, tool gjson.Result) bool {
+		if name := tool.Get("function.name").String(); name != "" {
+			fields = append(fields, "tool:"+name)
+		} else if name := tool.Get("name").String(); name != "" {
+			fields = append(fields, "tool:"+name)
+		}
+		return true
+	})
+	if len(fields) == 0 {
+		return newOpencodeRequestID()
+	}
+	// 122-bit effective entropy (SHA-256 truncated to 128 bits, 6 RFC4122
+	// bits clobbered); the id derives only from fields already sent upstream
+	// in cleartext, so it leaks nothing new.
+	sum := sha256.Sum256([]byte(strings.Join(fields, "\x1f")))
+	b := [16]byte{}
+	copy(b[:], sum[:16])
+	b[6] = (b[6] & 0x0f) | 0x40 // keep UUID v4 wire shape
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// opencodeContentText normalizes OpenAI content shapes to plain text: a
+// string passes through; an array of typed blocks ({type:text,text} or
+// {type:...,content}) is concatenated so the same conversation whose block
+// layout shifts between turns still hashes identically.
+func opencodeContentText(content gjson.Result) string {
+	if !content.Exists() {
+		return ""
+	}
+	if !content.IsArray() {
+		return content.String()
+	}
+	var text strings.Builder
+	content.ForEach(func(_, block gjson.Result) bool {
+		if s := block.Get("text").String(); s != "" {
+			text.WriteString(s)
+		} else if s := block.Get("content").String(); s != "" {
+			text.WriteString(s)
+		}
+		return true
+	})
+	if text.Len() == 0 {
+		return content.String()
+	}
+	return text.String()
 }
