@@ -501,7 +501,7 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 	cooldownCount := 0
 	var earliest time.Time
 	for _, candidate := range auths {
-		if m.shouldExcludeAntigravityNonPrimary(provider, candidate) {
+		if m.shouldExcludeAntigravityNonPrimary(provider, candidate) || soleAntigravityPrimaryExcluded(provider, auths, candidate) {
 			continue
 		}
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
@@ -1771,6 +1771,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if !isWeightedRobin && executorKeyFromAuth(candidate) != provider {
 			continue
 		}
+		if soleAntigravityPrimaryExcludedAmong(provider, m.auths, candidate) {
+			continue
+		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
@@ -2158,6 +2161,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			continue
 		}
 		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
+			continue
+		}
+		if soleAntigravityPrimaryExcludedAmong("antigravity", m.auths, candidate) {
 			continue
 		}
 		candidates = append(candidates, candidate)
