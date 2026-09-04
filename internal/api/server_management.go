@@ -227,6 +227,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/zcode-quota", s.mgmt.GetZcodeQuota)
 		mgmt.GET("/commandcode-quota", s.mgmt.GetCommandCodeQuota)
 		mgmt.GET("/meta-muse-quota", s.mgmt.GetMetaMuseQuota)
+		mgmt.GET("/claude-quota", s.mgmt.GetClaudeQuota)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 	}

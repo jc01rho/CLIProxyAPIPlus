@@ -558,6 +558,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["base_url"]; ok {
 		syncAuthFileBaseURLAttribute(auth)
 	}
+	if _, ok := touchedRoots["quota_url"]; ok {
+		syncAuthFileQuotaURLAttribute(auth)
+	}
 	if _, ok := touchedRoots["prefix"]; ok {
 		if prefix, okString := auth.Metadata["prefix"].(string); okString {
 			auth.Prefix = strings.TrimSpace(prefix)
@@ -657,6 +660,31 @@ func syncAuthFileBaseURLAttribute(auth *coreauth.Auth) {
 		auth.Attributes = make(map[string]string)
 	}
 	auth.Attributes["base_url"] = baseURL
+}
+
+// syncAuthFileQuotaURLAttribute mirrors Metadata["quota_url"] into
+// Attributes["quota_url"] so the claude-quota handler resolves per-credential
+// quota endpoints without waiting for a file re-synthesis. An empty/removed
+// value clears the attribute (fallback to base_url + /v1/usage/self applies).
+func syncAuthFileQuotaURLAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	quotaURL, ok := auth.Metadata["quota_url"].(string)
+	if !ok {
+		quotaURL = ""
+	}
+	quotaURL = strings.TrimSpace(quotaURL)
+	if quotaURL == "" {
+		if auth.Attributes != nil {
+			delete(auth.Attributes, "quota_url")
+		}
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Attributes["quota_url"] = quotaURL
 }
 
 func syncAuthFileHeaderAttributes(auth *coreauth.Auth) {
