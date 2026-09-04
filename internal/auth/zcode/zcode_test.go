@@ -2,8 +2,8 @@ package zcode
 
 import (
 	"context"
-		"encoding/base64"
-"encoding/json"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
