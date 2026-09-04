@@ -217,7 +217,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	applyOpencodeZenFingerprint(httpReq, e.provider)
+	applyOpencodeZenFingerprint(httpReq, e.provider, translated)
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -351,7 +351,7 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	applyOpencodeZenFingerprint(httpReq, e.provider)
+	applyOpencodeZenFingerprint(httpReq, e.provider, payload)
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -520,7 +520,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	applyOpencodeZenFingerprint(httpReq, e.provider)
+	applyOpencodeZenFingerprint(httpReq, e.provider, translated)
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("Cache-Control", "no-cache")
@@ -930,7 +930,7 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	applyOpencodeZenFingerprint(httpReq, e.provider)
+	applyOpencodeZenFingerprint(httpReq, e.provider, payload)
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
