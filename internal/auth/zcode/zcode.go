@@ -85,57 +85,64 @@ const (
 
 // Credentials holds the result of the zcode OAuth flow.
 type Credentials struct {
-	AccessToken  string // provisioned Z.AI API key "{id}.{secret}"
-	RefreshToken string // upstream Z.AI OAuth access token
-	ExpiresAt    time.Time
-	Email        string
-	AccountID    string
+	AccessToken     string // provisioned Z.AI API key "{id}.{secret}"
+	RefreshToken    string // upstream Z.AI OAuth access token
+	ExpiresAt       time.Time
+	Email           string
+	AccountID       string
+	ZcodeToken      string // broker JWT for zcode.z.ai gateway (start plan routing)
+	StartPlanActive bool   // whether start plan is active (set by quota check)
+	StartPlanLimit  int64  // start plan daily limit in tokens (0 if unknown)
+	StartPlanUsed   int64  // start plan tokens used so far today (0 if unknown)
 }
 
 // OAuth is the zcode OAuth handler.
 type OAuth struct {
 	httpClient *http.Client
 	// Overridable endpoints (defaults used when empty).
-	authorizeURL   string
-	clientID       string
-	redirectURI    string
-	brokerTokenURL string
-	zaiLoginURL    string
-	userinfoURL    string
-	zaiAPIBase     string
-	brokerCLIInitURL string
-	brokerCLIPollURL string
+	authorizeURL        string
+	clientID            string
+	redirectURI         string
+	brokerTokenURL      string
+	zaiLoginURL         string
+	userinfoURL         string
+	zaiAPIBase          string
+	brokerCLIInitURL    string
+	brokerCLIPollURL    string
+	startPlanBalanceURL string
 }
 
 // NewOAuth creates a zcode OAuth handler with default endpoints.
 func NewOAuth() *OAuth {
 	return &OAuth{
-		httpClient:     &http.Client{Timeout: tokenRequestTimeout},
-		authorizeURL:   DefaultAuthorizeURL,
-		clientID:       DefaultClientID,
-		redirectURI:    DefaultRedirectURI,
-		brokerTokenURL: DefaultBrokerTokenURL,
-		zaiLoginURL:    DefaultZaiLoginURL,
-		userinfoURL:    DefaultUserinfoURL,
-		zaiAPIBase:     DefaultZaiAPIBase,
-		brokerCLIInitURL: DefaultBrokerCLIInitURL,
-		brokerCLIPollURL: DefaultBrokerCLIPollURL,
+		httpClient:          &http.Client{Timeout: tokenRequestTimeout},
+		authorizeURL:        DefaultAuthorizeURL,
+		clientID:            DefaultClientID,
+		redirectURI:         DefaultRedirectURI,
+		brokerTokenURL:      DefaultBrokerTokenURL,
+		zaiLoginURL:         DefaultZaiLoginURL,
+		userinfoURL:         DefaultUserinfoURL,
+		zaiAPIBase:          DefaultZaiAPIBase,
+		brokerCLIInitURL:    DefaultBrokerCLIInitURL,
+		brokerCLIPollURL:    DefaultBrokerCLIPollURL,
+		startPlanBalanceURL: DefaultStartPlanBalanceURL,
 	}
 }
 
 // Config overrides the default endpoints and client. Empty fields fall back
 // to defaults. Used for tests and for environments that proxy the endpoints.
 type Config struct {
-	AuthorizeURL   string
-	ClientID       string
-	RedirectURI    string
-	BrokerTokenURL string
-	ZaiLoginURL    string
-	UserinfoURL    string
-	ZaiAPIBase     string
-	BrokerCLIInitURL string
-	BrokerCLIPollURL string
-	HTTPClient     *http.Client
+	AuthorizeURL        string
+	ClientID            string
+	RedirectURI         string
+	BrokerTokenURL      string
+	ZaiLoginURL         string
+	UserinfoURL         string
+	ZaiAPIBase          string
+	BrokerCLIInitURL    string
+	BrokerCLIPollURL    string
+	StartPlanBalanceURL string
+	HTTPClient          *http.Client
 }
 
 // NewOAuthWithConfig creates a zcode OAuth handler with endpoint overrides.
@@ -167,6 +174,9 @@ func NewOAuthWithConfig(cfg Config) *OAuth {
 	}
 	if cfg.BrokerCLIPollURL != "" {
 		o.brokerCLIPollURL = cfg.BrokerCLIPollURL
+	}
+	if cfg.StartPlanBalanceURL != "" {
+		o.startPlanBalanceURL = cfg.StartPlanBalanceURL
 	}
 	if cfg.HTTPClient != nil {
 		o.httpClient = cfg.HTTPClient
@@ -200,7 +210,7 @@ type CLIFlow struct {
 // web redirect handled by the broker, so no custom protocol (zcode://) is
 // required. The caller polls PollCLIFlow until the user completes authorization.
 func (o *OAuth) StartCLIFlow(ctx context.Context) (*CLIFlow, error) {
-	pollToken, err := randomHex(32)
+	pollToken, err := signRandomHex(32)
 	if err != nil {
 		return nil, fmt.Errorf("zcode broker cli init: generate poll token: %w", err)
 	}
@@ -350,12 +360,27 @@ func (o *OAuth) provisionFromUpstream(ctx context.Context, upstreamZaiAccess, zc
 	// Resolve identity (userinfo, then JWT fallback).
 	identity = o.resolveIdentity(ctx, upstreamZaiAccess, identity, []string{zcodeTokenForIdentity, businessToken})
 
+	// When the broker handed us its zcode JWT, probe the zcode-plan billing
+	// balance so the executor knows whether start plan routing is possible.
+	// A failed probe leaves StartPlanActive=false, which keeps every request on
+	// the provisioned api.z.ai key.
+	startPlan := StartPlanInfo{}
+	if zcodeTokenForIdentity != "" {
+		if spi := o.CheckStartPlan(ctx, zcodeTokenForIdentity); spi != nil {
+			startPlan = *spi
+		}
+	}
+
 	return &Credentials{
-		AccessToken:  apiKey,
-		RefreshToken: upstreamZaiAccess,
-		ExpiresAt:    time.Now().Add(apiKeyTTL),
-		Email:        identity.Email,
-		AccountID:    identity.AccountID,
+		AccessToken:     apiKey,
+		RefreshToken:    upstreamZaiAccess,
+		ExpiresAt:       time.Now().Add(apiKeyTTL),
+		Email:           identity.Email,
+		AccountID:       identity.AccountID,
+		ZcodeToken:      zcodeTokenForIdentity,
+		StartPlanActive: startPlan.Active,
+		StartPlanLimit:  startPlan.Limit,
+		StartPlanUsed:   startPlan.Used,
 	}, nil
 }
 
@@ -611,8 +636,9 @@ func redactSecrets(text string) string {
 	return text
 }
 
-// randomHex returns n random bytes encoded as lowercase hex.
-func randomHex(n int) (string, error) {
+// signRandomHex returns n random bytes as lowercase hex. Named to avoid
+// colliding with the signing package's randomHex helper.
+func signRandomHex(n int) (string, error) {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
