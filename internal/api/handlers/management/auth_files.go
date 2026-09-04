@@ -399,6 +399,12 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				if requestRetry, okRetry := authFileRequestRetryFromJSON(data); okRetry {
 					fileData["request_retry"] = requestRetry
 				}
+				if quotaURL := strings.TrimSpace(gjson.GetBytes(data, "quota_url").String()); quotaURL != "" {
+					fileData["quota_url"] = quotaURL
+				}
+				if baseURL := strings.TrimSpace(gjson.GetBytes(data, "base_url").String()); baseURL != "" {
+					fileData["base_url"] = baseURL
+				}
 			}
 
 			files = append(files, fileData)
@@ -579,6 +585,26 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 	}
 	if requestRetry, ok := auth.RequestRetryOverride(); ok {
 		entry["request_retry"] = requestRetry
+	}
+	// Expose base_url/quota_url so Management Center can resolve per-credential
+	// quota endpoints (see claude-quota handler); Attributes first, Metadata fallback.
+	if u := strings.TrimSpace(authAttribute(auth, "quota_url")); u != "" {
+		entry["quota_url"] = u
+	} else if auth.Metadata != nil {
+		if raw, ok := auth.Metadata["quota_url"].(string); ok {
+			if trimmed := strings.TrimSpace(raw); trimmed != "" {
+				entry["quota_url"] = trimmed
+			}
+		}
+	}
+	if u := strings.TrimSpace(authAttribute(auth, "base_url")); u != "" {
+		entry["base_url"] = u
+	} else if auth.Metadata != nil {
+		if raw, ok := auth.Metadata["base_url"].(string); ok {
+			if trimmed := strings.TrimSpace(raw); trimmed != "" {
+				entry["base_url"] = trimmed
+			}
+		}
 	}
 	return entry
 }
