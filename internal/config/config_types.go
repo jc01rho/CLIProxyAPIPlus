@@ -968,6 +968,14 @@ type OpenAICompatibilityModel struct {
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+
+	// SupportedEndpoints declares the upstream wire endpoints this model
+	// accepts (e.g. "/chat/completions", "/responses"). When a model serves
+	// only one endpoint the API handler transparently converts clients'
+	// requests from the other shape (OpenCode Zen muse-spark models serve
+	// only /v1/responses; OmniRoute PR 12675). Empty means the upstream
+	// accepts both shapes.
+	SupportedEndpoints []string `yaml:"supported-endpoints,omitempty" json:"supported-endpoints,omitempty"`
 }
 
 func (m OpenAICompatibilityModel) GetName() string { return m.Name }
