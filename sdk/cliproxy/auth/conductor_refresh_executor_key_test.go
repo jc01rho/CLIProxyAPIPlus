@@ -53,7 +53,7 @@ func TestRefreshAuthForRequest_UsesExecutorKeyFromAuth(t *testing.T) {
 		Attributes: map[string]string{
 			"compat_name":  "custom",
 			"provider_key": "custom",
-			"base_url":     "https://compat.example.com/v1",
+			"base_url":     "https://api.anthropic.com",
 		},
 		Metadata: map[string]any{
 			"access_token":  "old-token",

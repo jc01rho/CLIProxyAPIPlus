@@ -125,6 +125,9 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 	if !a.NextRefreshAfter.IsZero() && now.Before(a.NextRefreshAfter) {
 		return false
 	}
+	if authHasCustomBaseURL(a) {
+		return false
+	}
 	if evaluator, ok := a.Runtime.(RefreshEvaluator); ok && evaluator != nil {
 		return evaluator.ShouldRefresh(now, a)
 	}
@@ -465,6 +468,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	m.mu.RUnlock()
 	if auth == nil || exec == nil {
 		return nil, errors.New("auth or executor not found")
+	}
+	if authHasCustomBaseURL(auth) {
+		return nil, errors.New("custom base_url credential skips token refresh")
 	}
 
 	// Another request may already have refreshed this credential.
