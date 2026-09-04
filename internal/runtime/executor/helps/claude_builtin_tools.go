@@ -1,16 +1,28 @@
 package helps
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/tidwall/gjson"
 )
 
+var claudeServerToolVersionPattern = regexp.MustCompile(`_\d{8}$`)
+
 var defaultClaudeBuiltinToolNames = []string{
 	"web_search",
+	"web_fetch",
 	"code_execution",
 	"text_editor",
+	"str_replace_editor",
+	"str_replace_based_edit_tool",
 	"computer",
+	"bash",
+	"advisor",
+	"agent_toolset",
+	"memory",
+	"tool_search_tool_bm25",
+	"tool_search_tool_regex",
 }
 
 func newClaudeBuiltinToolRegistry() map[string]bool {
@@ -38,11 +50,31 @@ func IsClaudeServerToolType(toolType string) bool {
 		"web_fetch_",
 		"web_search_",
 	} {
-		if strings.HasPrefix(toolType, prefix) {
+		base := strings.TrimSuffix(prefix, "_")
+		if toolType == base || strings.HasPrefix(toolType, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+// CanonicalClaudeServerToolName returns the canonical tool name required by
+// Anthropic for a typed server tool (e.g. "tool_search_tool_bm25" for
+// "tool_search_tool_bm25_20251119", "web_search" for "web_search_20250305").
+// If the toolType is not a known Claude server/client tool type, it returns "".
+func CanonicalClaudeServerToolName(toolType string) string {
+	toolType = strings.ToLower(strings.TrimSpace(toolType))
+	if !IsClaudeServerToolType(toolType) {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(toolType, "text_editor_20250728"):
+		return "str_replace_based_edit_tool"
+	case strings.HasPrefix(toolType, "text_editor_20250124"), strings.HasPrefix(toolType, "text_editor_20241022"):
+		return "str_replace_editor"
+	default:
+		return claudeServerToolVersionPattern.ReplaceAllString(toolType, "")
+	}
 }
 
 func AugmentClaudeBuiltinToolRegistry(body []byte, registry map[string]bool) map[string]bool {
@@ -54,11 +86,15 @@ func AugmentClaudeBuiltinToolRegistry(body []byte, registry map[string]bool) map
 		return registry
 	}
 	tools.ForEach(func(_, tool gjson.Result) bool {
-		if !IsClaudeServerToolType(tool.Get("type").String()) {
+		toolType := tool.Get("type").String()
+		if !IsClaudeServerToolType(toolType) {
 			return true
 		}
 		if name := tool.Get("name").String(); name != "" {
 			registry[name] = true
+		}
+		if canonical := CanonicalClaudeServerToolName(toolType); canonical != "" {
+			registry[canonical] = true
 		}
 		return true
 	})

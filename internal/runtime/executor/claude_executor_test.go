@@ -6790,3 +6790,66 @@ func TestClaudeExecutor_PreservesNativeAgentAndEnvironmentHeaders(t *testing.T) 
 		})
 	}
 }
+
+func TestSanitizeClaudeServerTools_NormalizesDatedToolSearchTool(t *testing.T) {
+	// Case 1: Client sends type with date suffix as the tool name
+	input := []byte(`{
+		"tools": [
+			{
+				"type": "tool_search_tool_bm25_20251119",
+				"name": "tool_search_tool_bm25_20251119"
+			},
+			{
+				"type": "tool_search_tool_regex_20251119",
+				"name": "wrong_regex_name"
+			},
+			{
+				"type": "web_search_20250305",
+				"name": "web_search_20250305"
+			},
+			{
+				"type": "custom",
+				"name": "client_tool"
+			}
+		],
+		"tool_choice": {
+			"type": "tool",
+			"name": "tool_search_tool_bm25_20251119"
+		}
+	}`)
+
+	out := sanitizeClaudeServerTools(input)
+
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "tool_search_tool_bm25" {
+		t.Fatalf("tools.0.name = %q, want tool_search_tool_bm25", got)
+	}
+	if got := gjson.GetBytes(out, "tools.1.name").String(); got != "tool_search_tool_regex" {
+		t.Fatalf("tools.1.name = %q, want tool_search_tool_regex", got)
+	}
+	if got := gjson.GetBytes(out, "tools.2.name").String(); got != "web_search" {
+		t.Fatalf("tools.2.name = %q, want web_search", got)
+	}
+	if got := gjson.GetBytes(out, "tools.3.name").String(); got != "client_tool" {
+		t.Fatalf("tools.3.name = %q, want client_tool", got)
+	}
+	if got := gjson.GetBytes(out, "tool_choice.name").String(); got != "tool_search_tool_bm25" {
+		t.Fatalf("tool_choice.name = %q, want tool_search_tool_bm25", got)
+	}
+}
+
+func TestSanitizeClaudeServerTools_AddsMissingNameOnServerTool(t *testing.T) {
+	// Case 2: Client sends server tool without name property
+	input := []byte(`{
+		"tools": [
+			{
+				"type": "tool_search_tool_bm25_20251119"
+			}
+		]
+	}`)
+
+	out := sanitizeClaudeServerTools(input)
+
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "tool_search_tool_bm25" {
+		t.Fatalf("tools.0.name = %q, want tool_search_tool_bm25", got)
+	}
+}

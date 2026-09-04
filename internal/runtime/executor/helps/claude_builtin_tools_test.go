@@ -54,3 +54,36 @@ func TestIsClaudeServerToolType(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalClaudeServerToolName(t *testing.T) {
+	cases := []struct {
+		toolType string
+		want     string
+	}{
+		{"tool_search_tool_bm25_20251119", "tool_search_tool_bm25"},
+		{"tool_search_tool_regex_20251119", "tool_search_tool_regex"},
+		{"tool_search_tool_bm25", "tool_search_tool_bm25"},
+		{"tool_search_tool_regex", "tool_search_tool_regex"},
+		{"web_search_20250305", "web_search"},
+		{"web_search_20260209", "web_search"},
+		{"web_search", "web_search"},
+		{"web_fetch_20250910", "web_fetch"},
+		{"code_execution_20250522", "code_execution"},
+		{"bash_20250124", "bash"},
+		{"advisor_20260301", "advisor"},
+		{"agent_toolset_20260401", "agent_toolset"},
+		{"memory_20250818", "memory"},
+		{"computer_20241022", "computer"},
+		{"text_editor_20250728", "str_replace_based_edit_tool"},
+		{"text_editor_20250124", "str_replace_editor"},
+		{"custom", ""},
+		{"", ""},
+		{"unknown_tool_20250101", ""},
+	}
+	for _, tc := range cases {
+		got := CanonicalClaudeServerToolName(tc.toolType)
+		if got != tc.want {
+			t.Errorf("CanonicalClaudeServerToolName(%q) = %q, want %q", tc.toolType, got, tc.want)
+		}
+	}
+}
