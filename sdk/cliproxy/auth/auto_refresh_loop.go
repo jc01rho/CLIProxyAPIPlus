@@ -346,6 +346,9 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 	if auth.AuthKind() == AuthKindAPIKey {
 		return time.Time{}, false
 	}
+	if authHasCustomBaseURL(auth) {
+		return time.Time{}, false
+	}
 
 	if !auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter) {
 		return auth.NextRefreshAfter, true

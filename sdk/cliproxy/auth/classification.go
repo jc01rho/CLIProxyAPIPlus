@@ -1,6 +1,9 @@
 package auth
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 const (
 	AuthKindAPIKey = "apikey"
@@ -119,6 +122,29 @@ func authHasOAuthMetadata(auth *Auth) bool {
 		return true
 	}
 	return false
+}
+
+// authHasCustomBaseURL reports whether the credential pins a non-default API
+// base URL (for example a third-party Claude-compatible mirror such as
+// https://claude.nekos.me). Custom-base credentials must not trigger token
+// refresh: the refresh exchange targets the official Anthropic OAuth token
+// endpoint, which neither knows the mirror's credentials nor returns tokens
+// the mirror would accept.
+func authHasCustomBaseURL(a *Auth) bool {
+	if a == nil || a.Attributes == nil {
+		return false
+	}
+	raw := strings.TrimSpace(a.Attributes["base_url"])
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u == nil || u.Hostname() == "" {
+		// An unparseable value is still an explicit override; treat it as
+		// custom so it never silently falls back to official refresh.
+		return true
+	}
+	return !strings.EqualFold(u.Hostname(), "api.anthropic.com")
 }
 
 func authAttribute(auth *Auth, key string) string {
