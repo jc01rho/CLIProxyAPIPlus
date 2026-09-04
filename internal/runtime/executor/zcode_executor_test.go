@@ -40,16 +40,19 @@ func TestPrepareZcodeRequestPinsBaseURL(t *testing.T) {
 	auth := &cliproxyauth.Auth{Provider: "zcode", Attributes: map[string]string{"api_key": "key-1.secret"}}
 	opts := cliproxyexecutor.Options{}
 
-	auth2, opts2 := e.prepareZcodeRequest(auth, opts)
+	auth2, _ := e.prepareZcodeRequest(auth, opts)
 
 	if auth2.Attributes["base_url"] != ZCodeAnthropicBaseURL {
 		t.Errorf("base_url = %q, want %q", auth2.Attributes["base_url"], ZCodeAnthropicBaseURL)
 	}
-	if opts2.Headers.Get("HTTP-Referer") != "https://zcode.z.ai" {
-		t.Errorf("HTTP-Referer not injected: %q", opts2.Headers.Get("HTTP-Referer"))
+	if auth2.Attributes["header:Http-Referer"] != "https://zcode.z.ai" {
+		t.Errorf("HTTP-Referer not injected: %q", auth2.Attributes["header:Http-Referer"])
 	}
-	if opts2.Headers.Get("X-ZCode-Agent") != "glm" {
-		t.Errorf("X-ZCode-Agent not injected: %q", opts2.Headers.Get("X-ZCode-Agent"))
+	if auth2.Attributes["header:X-Zcode-Agent"] != "glm" {
+		t.Errorf("X-ZCode-Agent not injected: %q", auth2.Attributes["header:X-Zcode-Agent"])
+	}
+	if auth2.Attributes["header:X-Session-Id"] == "" {
+		t.Error("X-Session-Id not injected")
 	}
 	// Original auth must not be mutated.
 	if auth.Attributes["base_url"] != "" {
@@ -79,32 +82,33 @@ func TestMergeHeaders(t *testing.T) {
 	}
 }
 
-// TestPrepareZcodeRequestAlwaysUsesProvisionedKey pins the gajae-code contract:
-// every zcode request authenticates with the provisioned Z.AI API key against
-// api.z.ai.
-//
-// Routing through the zcode.z.ai start-plan gateway was implemented and then
-// removed. That origin accepts the broker JWT as a credential but rejects model
-// requests with {"code":3007,"msg":"captcha verify failed"}, because it
-// requires the ZCode desktop app's client attestation, which this proxy cannot
-// produce. A stored broker JWT must therefore never divert the request or
-// replace the credential.
-func TestPrepareZcodeRequestAlwaysUsesProvisionedKey(t *testing.T) {
+// TestPrepareZcodeRequestRouting pins the restored start plan routing:
+//   - a broker JWT WITHOUT an active start plan stays on api.z.ai with the
+//     provisioned Z.AI key (gajae-code contract, safe default);
+//   - a broker JWT WITH an active start plan routes through the zcode.z.ai
+//     gateway with the broker JWT in the credential slot, so start plan quota
+//     is consumed instead of the individual plan;
+//   - the X-Session-Id identity header is always attached.
+func TestPrepareZcodeRequestRouting(t *testing.T) {
 	e := NewZcodeExecutor(nil)
 
 	cases := []struct {
-		name string
-		auth *cliproxyauth.Auth
+		name      string
+		auth      *cliproxyauth.Auth
+		wantBase  string
+		wantCreds string
 	}{
 		{
-			name: "broker jwt present",
+			name: "broker jwt without start plan stays on api.z.ai",
 			auth: &cliproxyauth.Auth{
 				Provider:   "zcode",
 				Attributes: map[string]string{"api_key": "key-1.secret", "zcode_token": "jwt-broker-1"},
 			},
+			wantBase:  ZCodeAnthropicBaseURL,
+			wantCreds: "key-1.secret",
 		},
 		{
-			name: "legacy start-plan attributes",
+			name: "active start plan routes through the gateway",
 			auth: &cliproxyauth.Auth{
 				Provider: "zcode",
 				Attributes: map[string]string{
@@ -113,17 +117,34 @@ func TestPrepareZcodeRequestAlwaysUsesProvisionedKey(t *testing.T) {
 					"start_plan_active": "true",
 				},
 			},
+			wantBase:  ZCodeStartPlanBaseURL,
+			wantCreds: "jwt-broker-1",
 		},
 		{
-			name: "legacy start-plan metadata on reloaded record",
+			name: "metadata start plan on reloaded record routes",
+			auth: &cliproxyauth.Auth{
+				Provider: "zcode",
+				Metadata: map[string]any{
+					"access_token":      "key-1.secret",
+					"zcode_token":       "jwt-meta",
+					"start_plan_active": true,
+				},
+			},
+			wantBase:  ZCodeStartPlanBaseURL,
+			wantCreds: "jwt-meta",
+		},
+		{
+			name: "legacy start_plan metadata routes",
 			auth: &cliproxyauth.Auth{
 				Provider: "zcode",
 				Metadata: map[string]any{
 					"access_token": "key-1.secret",
-					"zcode_token":  "jwt-meta",
+					"zcode_token":  "jwt-legacy",
 					"start_plan":   true,
 				},
 			},
+			wantBase:  ZCodeStartPlanBaseURL,
+			wantCreds: "jwt-legacy",
 		},
 	}
 	for _, tc := range cases {
@@ -131,17 +152,30 @@ func TestPrepareZcodeRequestAlwaysUsesProvisionedKey(t *testing.T) {
 			auth2, opts2 := e.prepareZcodeRequest(tc.auth, cliproxyexecutor.Options{})
 
 			gotKey, gotBase := claudeCreds(auth2)
-			if gotBase != ZCodeAnthropicBaseURL {
-				t.Errorf("base_url = %q, want %q", gotBase, ZCodeAnthropicBaseURL)
+			if gotBase != tc.wantBase {
+				t.Errorf("base_url = %q, want %q", gotBase, tc.wantBase)
 			}
-			if gotKey != "key-1.secret" {
-				t.Errorf("credential = %q, want the provisioned Z.AI key", gotKey)
+			if gotKey != tc.wantCreds {
+				t.Errorf("credential = %q, want %q", gotKey, tc.wantCreds)
 			}
 			if got := opts2.Headers.Get("Authorization"); got != "" {
 				t.Errorf("Authorization should not be preset, got %q", got)
 			}
 			if got := opts2.Headers.Get("x-api-key"); got != "" {
 				t.Errorf("x-api-key should not be preset, got %q", got)
+			}
+			if got := auth2.Attributes["header:X-Session-Id"]; got == "" {
+				t.Error("X-Session-Id identity attr missing")
+			}
+			if got := auth2.Attributes["header:User-Agent"]; got != "ZCode/"+zcodeAppVersion {
+				t.Errorf("User-Agent attr = %q", got)
+			}
+			if got := auth2.Attributes["header:X-Zcode-Agent"]; got != "glm" {
+				t.Errorf("X-Zcode-Agent attr = %q", got)
+			}
+			// Original auth must not be mutated.
+			if tc.auth.Attributes != nil && tc.auth.Attributes["base_url"] != "" {
+				t.Errorf("original auth mutated: base_url = %q", tc.auth.Attributes["base_url"])
 			}
 		})
 	}

@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-		"strings"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,9 +22,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor"
 	kiloauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kilo"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/meta"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	kiro "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/meta"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/zcode"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -1504,6 +1504,14 @@ func (h *Handler) RequestZcodeToken(c *gin.Context) {
 						"source":   "zcode-oauth",
 					},
 					NextRefreshAfter: creds.ExpiresAt.Add(-24 * time.Hour),
+				}
+				// Persist the broker JWT and start plan state: the executor's
+				// start plan routing reads Metadata["zcode_token"]/["start_plan_active"]
+				// after a reload from disk.
+				if creds.ZcodeToken != "" {
+					record.Metadata["zcode_token"] = creds.ZcodeToken
+					record.Attributes["zcode_token"] = creds.ZcodeToken
+					record.Metadata["start_plan_active"] = creds.StartPlanActive
 				}
 
 				if errGuard := guardOAuthSessionPendingForSave(state, "zcode"); errGuard != nil {
