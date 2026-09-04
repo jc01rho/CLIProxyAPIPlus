@@ -109,13 +109,27 @@ func opencodeSessionFingerprint(body []byte) string {
 	if v := gjson.GetBytes(body, "model").String(); v != "" {
 		fields = append(fields, "model:"+v)
 	}
-	if v := gjson.GetBytes(body, "system").String(); v != "" {
-		fields = append(fields, "system:"+v)
+	// system may arrive as a top-level string or as a role:"system" message
+	// after translation; both shapes must hash the same conversation.
+	if v := gjson.GetBytes(body, "system"); v.Exists() {
+		if s := opencodeContentText(v); s != "" {
+			fields = append(fields, "system:"+s)
+		}
+	} else {
+		gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+			if msg.Get("role").String() == "system" {
+				if s := opencodeContentText(msg.Get("content")); s != "" {
+					fields = append(fields, "system:"+s)
+				}
+				return false
+			}
+			return true
+		})
 	}
 	gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
 		if msg.Get("role").String() == "user" {
-			if content := msg.Get("content"); content.Exists() {
-				fields = append(fields, "user:"+content.String())
+			if s := opencodeContentText(msg.Get("content")); s != "" {
+				fields = append(fields, "user:"+s)
 			}
 			return false // first user message only
 		}
@@ -132,10 +146,39 @@ func opencodeSessionFingerprint(body []byte) string {
 	if len(fields) == 0 {
 		return newOpencodeRequestID()
 	}
+	// 122-bit effective entropy (SHA-256 truncated to 128 bits, 6 RFC4122
+	// bits clobbered); the id derives only from fields already sent upstream
+	// in cleartext, so it leaks nothing new.
 	sum := sha256.Sum256([]byte(strings.Join(fields, "\x1f")))
 	b := [16]byte{}
 	copy(b[:], sum[:16])
 	b[6] = (b[6] & 0x0f) | 0x40 // keep UUID v4 wire shape
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// opencodeContentText normalizes OpenAI content shapes to plain text: a
+// string passes through; an array of typed blocks ({type:text,text} or
+// {type:...,content}) is concatenated so the same conversation whose block
+// layout shifts between turns still hashes identically.
+func opencodeContentText(content gjson.Result) string {
+	if !content.Exists() {
+		return ""
+	}
+	if !content.IsArray() {
+		return content.String()
+	}
+	var text strings.Builder
+	content.ForEach(func(_, block gjson.Result) bool {
+		if s := block.Get("text").String(); s != "" {
+			text.WriteString(s)
+		} else if s := block.Get("content").String(); s != "" {
+			text.WriteString(s)
+		}
+		return true
+	})
+	if text.Len() == 0 {
+		return content.String()
+	}
+	return text.String()
 }
