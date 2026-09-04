@@ -19,6 +19,14 @@ const (
 	// commandCodeDefaultMaxTokens mirrors the npm default output token limit (64e3).
 	commandCodeDefaultMaxTokens = 64000
 	commandCodePermissionMode   = "standard"
+	// commandCodeMode mirrors the run mode the CLI sends on the /alpha/generate
+	// wire (opencodex and the installed CLI both send "agent").
+	commandCodeMode = "agent"
+	// commandCodeWorkingDir and commandCodeEnvironment mirror the workspace
+	// metadata the CLI reports in config; a fixed /tmp or "terminal" value is a
+	// non-CLI fingerprint the upstream proxy detector keys on.
+	commandCodeWorkingDir  = "/home/user/workspace"
+	commandCodeEnvironment = "linux"
 	// commandCodeMaxCallIDLen is the upstream CommandCode limit on tool-call/
 	// tool-result "toolCallId" wire field length. IDs longer than this are
 	// rejected by CommandCode with "input[N].call_id ... must be <= 64".
@@ -164,7 +172,10 @@ type commandCodeWireEnvelope struct {
 	Taste          json.RawMessage       `json:"taste"`
 	Skills         json.RawMessage       `json:"skills"`
 	PermissionMode string                `json:"permissionMode"`
-	Params         commandCodeWireParams `json:"params"`
+	// Mode mirrors the agent run mode the CLI sends on every /alpha/generate
+	// request; requests without it are flagged as non-CLI traffic by upstream.
+	Mode   string                `json:"mode"`
+	Params commandCodeWireParams `json:"params"`
 }
 
 // buildCommandCodePayload constructs the CommandCode envelope from an OpenAI-format payload.
@@ -250,9 +261,9 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 	}
 	envelope := commandCodeWireEnvelope{
 		Config: commandCodeWireConfig{
-			WorkingDir:    "/tmp",
+			WorkingDir:    commandCodeWorkingDir,
 			Date:          time.Now().Format("2006-01-02"),
-			Environment:   "terminal",
+			Environment:   commandCodeEnvironment,
 			Structure:     []string{},
 			IsGitRepo:     false,
 			CurrentBranch: "",
@@ -261,6 +272,7 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 			RecentCommits: []string{},
 		},
 		PermissionMode: commandCodePermissionMode,
+		Mode:           commandCodeMode,
 		Params: commandCodeWireParams{
 			Model:       model,
 			Messages:    messages,

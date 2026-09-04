@@ -2,12 +2,12 @@ package executor
 
 import (
 	"context"
-	"encoding/hex"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -124,9 +124,12 @@ func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T
 	}
 
 	// When
-	applyCommandCodeHeaders(req, "user_test", "sess_0123456789abcdef")
+	applyCommandCodeHeaders(req, "user_test", "01890a5d-ac96-774b-bcce-b302099a8057")
 
 	// Then
+	if got := req.Header.Get("User-Agent"); got != "cli" {
+		t.Fatalf("User-Agent = %q, want %q (upstream rejects proxy-fingerprinted requests)", got, "cli")
+	}
 	if got := req.Header.Get("Authorization"); got != "Bearer user_test" {
 		t.Fatalf("Authorization = %q, want %q", got, "Bearer user_test")
 	}
@@ -136,17 +139,17 @@ func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T
 	if got := req.Header.Get("x-cli-environment"); got != "production" {
 		t.Fatalf("x-cli-environment = %q, want %q", got, "production")
 	}
-	if got := req.Header.Get("x-project-slug"); got != "cli-proxy" {
-		t.Fatalf("x-project-slug = %q, want %q", got, "cli-proxy")
+	if got := req.Header.Get("x-project-slug"); got != "workspace" {
+		t.Fatalf("x-project-slug = %q, want %q", got, "workspace")
 	}
-	if got := req.Header.Get("x-taste-learning"); got != "true" {
-		t.Fatalf("x-taste-learning = %q, want %q", got, "true")
+	if got := req.Header.Get("x-taste-learning"); got != "false" {
+		t.Fatalf("x-taste-learning = %q, want %q", got, "false")
 	}
 	if got := req.Header.Get("x-co-flag"); got != "false" {
 		t.Fatalf("x-co-flag = %q, want %q", got, "false")
 	}
-	if got := req.Header.Get("x-session-id"); got != "sess_0123456789abcdef" {
-		t.Fatalf("x-session-id = %q, want %q", got, "sess_0123456789abcdef")
+	if got := req.Header.Get("x-session-id"); got != "01890a5d-ac96-774b-bcce-b302099a8057" {
+		t.Fatalf("x-session-id = %q, want %q", got, "01890a5d-ac96-774b-bcce-b302099a8057")
 	}
 	if got := req.Header.Get("x-oauth-token"); got != "" {
 		t.Fatalf("x-oauth-token = %q, want empty header", got)
@@ -178,19 +181,14 @@ func Test_ApplyCommandCodeHeaders_omits_session_id_when_empty(t *testing.T) {
 	}
 }
 
-func Test_NewCommandCodeSessionID_matches_sess_hex16_format(t *testing.T) {
+func Test_NewCommandCodeSessionID_matches_cli_uuid_format(t *testing.T) {
 	// Given / When
 	got := newCommandCodeSessionID()
 
-	// Then
-	if len(got) != len("sess_0123456789abcdef") {
-		t.Fatalf("session ID length = %d, want %d (got %q)", len(got), len("sess_0123456789abcdef"), got)
-	}
-	if !strings.HasPrefix(got, "sess_") {
-		t.Fatalf("session ID %q missing sess_ prefix", got)
-	}
-	if _, err := hex.DecodeString(got[len("sess_"):]); err != nil {
-		t.Fatalf("session ID %q suffix is not valid hex: %v", got, err)
+	// Then: the CLI sends a UUID in x-session-id; any other shape is a
+	// proxy fingerprint.
+	if _, err := uuid.Parse(got); err != nil {
+		t.Fatalf("session ID %q is not a valid UUID: %v", got, err)
 	}
 }
 
