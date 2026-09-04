@@ -831,9 +831,63 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		info.Thinking = modelconfig.NormalizeThinkingSupport(thinkingSupport)
 		info.SupportedInputModalities = normalizeCompatConfigModalities(model.InputModalities)
 		info.SupportedOutputModalities = normalizeCompatConfigModalities(model.OutputModalities)
+		info.SupportedEndpoints = normalizeCompatConfigEndpoints(model.SupportedEndpoints, compat.BaseURL)
 		models = append(models, info)
 	}
 	return models
+}
+
+// normalizeCompatConfigEndpoints resolves a compat model's SupportedEndpoints.
+// An explicit configured list wins untouched (trimmed, leading-slash
+// normalized, deduped). Otherwise, when the compat entry's base URL points at
+// the OpenCode Zen gateway itself (host opencode.ai or a subdomain), every
+// model on that gateway declares ["/responses"]: the official opencode app
+// never sends chat/completions to Zen, and Zen-proxied upstreams reject
+// chat-shaped dispatch for several catalogs with HTTP 500. The declaration is
+// a property of the GATEWAY, not the model name — model-name heuristics are
+// deliberately not used here. Empty means the upstream accepts both shapes.
+func normalizeCompatConfigEndpoints(configured []string, baseURL string) []string {
+	out := make([]string, 0, len(configured))
+	seen := make(map[string]struct{}, len(configured))
+	for _, item := range configured {
+		endpoint := strings.TrimSpace(item)
+		if endpoint == "" {
+			continue
+		}
+		if !strings.HasPrefix(endpoint, "/") {
+			endpoint = "/" + endpoint
+		}
+		if _, dup := seen[endpoint]; dup {
+			continue
+		}
+		seen[endpoint] = struct{}{}
+		out = append(out, endpoint)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	if opencodeZenGatewayBaseURL(baseURL) {
+		return []string{"/responses"}
+	}
+	return nil
+}
+
+// opencodeZenGatewayBaseURL reports whether the compat entry's base URL points
+// at OpenCode Zen itself: host opencode.ai or a subdomain of it. Mirrors the
+// executor-side looksLikeOpencodeZenBaseURL (internal/runtime/executor
+// openai_compat_zen_fingerprint.go) so both layers gate on the same signal.
+func opencodeZenGatewayBaseURL(baseURL string) bool {
+	u := strings.TrimSpace(baseURL)
+	if u == "" {
+		return false
+	}
+	u = strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")
+	host := u
+	if idx := strings.IndexAny(u, "/?#"); idx >= 0 {
+		host = u[:idx]
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return host == "opencode.ai" || strings.HasSuffix(host, ".opencode.ai")
 }
 
 func normalizeCompatConfigModalities(raw []string) []string {
