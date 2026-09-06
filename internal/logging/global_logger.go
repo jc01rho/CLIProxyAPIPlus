@@ -40,16 +40,29 @@ var logFieldOrder = []string{
 	"media_session_id", "call_id", "peer", "state", "reason",
 }
 
+var routeFallbackFieldOrder = []string{
+	"requested_model", "fallback_trigger_model", "selected_fallback_model", "fallback_source",
+	"fallback_trigger_status", "fallback_trigger_error", "fallback_result_status", "fallback_result_error",
+	"outcome", "elapsed_ms",
+}
+
 var quotedLogFields = map[string]struct{}{
-	"credential":       {},
-	"connection":       {},
-	"proxy_scheme":     {},
-	"remote_transport": {},
-	"media_session_id": {},
-	"call_id":          {},
-	"peer":             {},
-	"state":            {},
-	"reason":           {},
+	"credential":              {},
+	"connection":              {},
+	"proxy_scheme":            {},
+	"remote_transport":        {},
+	"media_session_id":        {},
+	"call_id":                 {},
+	"peer":                    {},
+	"state":                   {},
+	"reason":                  {},
+	"requested_model":         {},
+	"fallback_trigger_model":  {},
+	"selected_fallback_model": {},
+	"fallback_source":         {},
+	"fallback_trigger_error":  {},
+	"fallback_result_error":   {},
+	"outcome":                 {},
 }
 
 var pluginPathFieldOrder = []string{"path", "active_path", "retired_path"}
@@ -86,13 +99,20 @@ func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	}
 	levelStr := fmt.Sprintf("%-5s", level)
 
-	// Build fields string (only print fields in logFieldOrder)
+	// Build fields string from explicit common and event-specific allowlists.
 	var fieldsStr string
 	if len(entry.Data) > 0 {
 		var fields []string
 		for _, k := range logFieldOrder {
 			if v, ok := entry.Data[k]; ok {
 				fields = append(fields, fmt.Sprintf("%s=%s", k, formatLogFieldValue(k, v)))
+			}
+		}
+		if source, _ := entry.Data["fallback_source"].(string); source == "fallback-models" || source == "fallback-chain" {
+			for _, k := range routeFallbackFieldOrder {
+				if v, ok := entry.Data[k]; ok {
+					fields = append(fields, fmt.Sprintf("%s=%s", k, formatLogFieldValue(k, v)))
+				}
 			}
 		}
 		if pluginID, ok := entry.Data["plugin_id"]; ok && strings.TrimSpace(fmt.Sprint(pluginID)) != "" {

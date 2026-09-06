@@ -3,19 +3,20 @@ package auth
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 // GetSelector returns the active credential selector.
@@ -328,20 +329,70 @@ func resolveActualModelName(modelName string) resolvedModelInfo {
 	return resolvedModelInfo{actual: trimmed, isAlias: false}
 }
 
-func logRouteModelFallbackResult(ctx context.Context, originalModel, fallbackModel, source string, triggerErr, resultErr error, startedAt time.Time) {
+func routeFallbackErrorSummary(err error) string {
+	var nested *errorWithCause
+	if errors.As(err, &nested) && nested.base != nil && nested.cause != nil {
+		// A delimiter keeps credential masking in the base error from consuming
+		// the separately sanitized upstream cause appended by WithCause.
+		return SanitizeUpstreamErrorSummary(routeFallbackErrorSummary(nested.base) + "; last upstream error: " + routeFallbackErrorSummary(nested.cause))
+	}
+	raw := strings.TrimSpace(err.Error())
+	payload := raw
+	if start := strings.Index(raw, "{"); start >= 0 {
+		payload = raw[start:]
+	}
+	for _, prefix := range []string{": [", ": <"} {
+		if start := strings.Index(raw, prefix); start >= 0 {
+			payload = raw[start+2:]
+			break
+		}
+	}
+	if strings.HasPrefix(payload, "{") || strings.HasPrefix(payload, "[") || strings.HasPrefix(payload, "<") {
+		// The existing extractor falls back to raw text for unknown payloads.
+		// Only scalar diagnostic fields may enter ordinary fallback logs.
+		if !gjson.Valid(payload) {
+			return SanitizeUpstreamErrorSummary(logging.SafeErrorDiagnostic(err))
+		}
+		parsed := gjson.Parse(payload)
+		hasSummary := false
+		for _, path := range []string{"error.code", "error.type", "error.message", "code", "type", "message", "error"} {
+			value := parsed.Get(path)
+			if path == "error" && value.IsObject() {
+				continue
+			}
+			if value.IsObject() || value.IsArray() {
+				return SanitizeUpstreamErrorSummary(logging.SafeErrorDiagnostic(err))
+			}
+			hasSummary = hasSummary || (value.Type == gjson.String && strings.TrimSpace(value.String()) != "")
+		}
+		if !hasSummary {
+			return SanitizeUpstreamErrorSummary(logging.SafeErrorDiagnostic(err))
+		}
+		raw = payload
+	}
+	return ExtractUpstreamErrorSummary(raw)
+}
+
+func routeModelFallbackLogFields(originalModel, triggerModel, fallbackModel, source string, triggerErr error) log.Fields {
 	fields := log.Fields{
 		"requested_model":         strings.TrimSpace(originalModel),
+		"fallback_trigger_model":  strings.TrimSpace(triggerModel),
 		"selected_fallback_model": strings.TrimSpace(fallbackModel),
 		"fallback_source":         strings.TrimSpace(source),
-	}
-	if !startedAt.IsZero() {
-		fields["elapsed_ms"] = time.Since(startedAt).Milliseconds()
 	}
 	if status := statusCodeFromError(triggerErr); status > 0 {
 		fields["fallback_trigger_status"] = status
 	}
 	if triggerErr != nil {
-		fields["fallback_trigger_error"] = triggerErr.Error()
+		fields["fallback_trigger_error"] = routeFallbackErrorSummary(triggerErr)
+	}
+	return fields
+}
+
+func logRouteModelFallbackResult(ctx context.Context, originalModel, triggerModel, fallbackModel, source string, triggerErr, resultErr error, startedAt time.Time) {
+	fields := routeModelFallbackLogFields(originalModel, triggerModel, fallbackModel, source, triggerErr)
+	if !startedAt.IsZero() {
+		fields["elapsed_ms"] = time.Since(startedAt).Milliseconds()
 	}
 	provider, authID, authLabel := GetProviderAuthFromContext(ctx)
 	if provider = strings.TrimSpace(provider); provider != "" {
@@ -353,18 +404,17 @@ func logRouteModelFallbackResult(ctx context.Context, originalModel, fallbackMod
 	if authLabel = strings.TrimSpace(authLabel); authLabel != "" {
 		fields["selected_auth_label"] = authLabel
 	}
-	fallbackLabel := fmt.Sprintf("%s → %s (%s)", originalModel, fallbackModel, source)
 	if resultErr != nil {
 		fields["outcome"] = "error"
 		if status := statusCodeFromError(resultErr); status > 0 {
 			fields["fallback_result_status"] = status
 		}
-		fields["fallback_result_error"] = resultErr.Error()
-		logEntryWithRequestID(ctx).WithFields(fields).Debugf("fallback model %s finished", fallbackLabel)
+		fields["fallback_result_error"] = routeFallbackErrorSummary(resultErr)
+		logEntryWithRequestID(ctx).WithFields(fields).Debug("fallback model finished")
 		return
 	}
 	fields["outcome"] = "success"
-	logEntryWithRequestID(ctx).WithFields(fields).Infof("fallback model %s finished", fallbackLabel)
+	logEntryWithRequestID(ctx).WithFields(fields).Info("fallback model finished")
 }
 
 func (m *Manager) executeWithRouteFallback(
@@ -395,20 +445,13 @@ func (m *Manager) executeWithRouteFallback(
 	if !m.shouldAllowRouteModelFallback(lastErr) {
 		return cliproxyexecutor.Response{}, lastErr
 	}
+	triggerModel := originalModel
 	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel) {
 		if _, duplicate := attempted[fallbackModel]; duplicate {
 			continue
 		}
 		attempted[fallbackModel] = struct{}{}
 		source := m.fallbackSourceForModel(originalModel, fallbackModel)
-		resolvedActual := resolveActualModelName(fallbackModel)
-		logEntryWithRequestID(ctx).WithFields(log.Fields{
-			"requested_model":         strings.TrimSpace(originalModel),
-			"fallback_model":          strings.TrimSpace(fallbackModel),
-			"fallback_actual_model":   resolvedActual.actual,
-			"fallback_model_is_alias": resolvedActual.isAlias,
-			"fallback_source":         strings.TrimSpace(source),
-		}).Infof("fallback chain activated: %s -> %s via %s", originalModel, fallbackModel, source)
 		startedAt := time.Now()
 		fallbackReq := req
 		fallbackReq.Model = fallbackModel
@@ -420,13 +463,16 @@ func (m *Manager) executeWithRouteFallback(
 		if len(fallbackProviders) == 0 {
 			fallbackProviders = providers
 		}
+		logEntryWithRequestID(ctx).WithFields(routeModelFallbackLogFields(originalModel, triggerModel, fallbackModel, source, lastErr)).
+			WithField("outcome", "attempt").Info("fallback chain activated")
 		resp, errFallback := m.executeWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, defaultRequestRetry, maxWait, true, execOnce)
 		if errFallback == nil {
-			logRouteModelFallbackResult(ctx, originalModel, fallbackModel, source, lastErr, nil, startedAt)
+			logRouteModelFallbackResult(ctx, originalModel, triggerModel, fallbackModel, source, lastErr, nil, startedAt)
 			return resp, nil
 		}
-		logRouteModelFallbackResult(ctx, originalModel, fallbackModel, source, lastErr, errFallback, startedAt)
+		logRouteModelFallbackResult(ctx, originalModel, triggerModel, fallbackModel, source, lastErr, errFallback, startedAt)
 		lastErr = errFallback
+		triggerModel = fallbackModel
 		if !m.shouldAllowRouteModelFallback(lastErr) {
 			break
 		}
@@ -459,6 +505,7 @@ func (m *Manager) executeStreamWithRouteFallback(
 	if !m.shouldAllowRouteModelFallback(lastErr) {
 		return nil, lastErr
 	}
+	triggerModel := originalModel
 	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel) {
 		if _, duplicate := attempted[fallbackModel]; duplicate {
 			continue
@@ -476,13 +523,16 @@ func (m *Manager) executeStreamWithRouteFallback(
 		if len(fallbackProviders) == 0 {
 			fallbackProviders = providers
 		}
+		logEntryWithRequestID(ctx).WithFields(routeModelFallbackLogFields(originalModel, triggerModel, fallbackModel, source, lastErr)).
+			WithField("outcome", "attempt").Info("fallback chain activated")
 		result, errFallback := m.executeStreamWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, defaultRequestRetry, maxWait, true, execOnce)
 		if errFallback == nil {
-			logRouteModelFallbackResult(ctx, originalModel, fallbackModel, source, lastErr, nil, startedAt)
+			logRouteModelFallbackResult(ctx, originalModel, triggerModel, fallbackModel, source, lastErr, nil, startedAt)
 			return result, nil
 		}
-		logRouteModelFallbackResult(ctx, originalModel, fallbackModel, source, lastErr, errFallback, startedAt)
+		logRouteModelFallbackResult(ctx, originalModel, triggerModel, fallbackModel, source, lastErr, errFallback, startedAt)
 		lastErr = errFallback
+		triggerModel = fallbackModel
 		if !m.shouldAllowRouteModelFallback(lastErr) {
 			break
 		}
