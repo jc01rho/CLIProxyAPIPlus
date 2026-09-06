@@ -1089,11 +1089,15 @@ func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) 
 	if !strings.HasPrefix(codexUserAgent, codexOriginator+"/") {
 		t.Fatalf("default Codex User-Agent = %s, want prefix %s/", codexUserAgent, codexOriginator)
 	}
-	if !strings.HasPrefix(codexUserAgent, "codex_exec/") {
-		t.Fatalf("default Codex User-Agent = %s, want codex_exec prefix", codexUserAgent)
+	const wantUserAgent = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
+	if codexUserAgent != wantUserAgent {
+		t.Fatalf("default Codex User-Agent = %q, want %q", codexUserAgent, wantUserAgent)
 	}
-	if !strings.Contains(codexUserAgent, "(codex_exec;") {
-		t.Fatalf("default Codex User-Agent = %s, want codex_exec suffix", codexUserAgent)
+	if codexOriginator != "codex-tui" {
+		t.Fatalf("default Codex Originator = %q, want codex-tui", codexOriginator)
+	}
+	if _, err := uuid.Parse(codexSessionHeaderValue(headers)); err != nil {
+		t.Fatalf("default Mac OS session header must be a UUID: %v", err)
 	}
 	if got := headers.Get("Originator"); got != codexOriginator {
 		t.Fatalf("Originator = %s, want %s", got, codexOriginator)
@@ -1822,7 +1826,7 @@ func TestApplyCodexWebsocketHeaders_EmptyAPIKey_OmitsAuthorizationAndOAuthHeader
 }
 
 func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
-	const wantUA = "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)"
+	const wantUA = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
 	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
