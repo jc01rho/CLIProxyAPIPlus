@@ -280,6 +280,36 @@ func (m *Manager) selectionModelForAuth(auth *Auth, routeModel string) string {
 	return resolvedModel
 }
 
+// configuredSelectionModelPool uses the execution pool without advancing its rotation.
+func (m *Manager) configuredSelectionModelPool(auth *Auth, routeModel string) []string {
+	if !isConfiguredModelRoutingAuth(auth) {
+		return nil
+	}
+	return resolveConfiguredUpstreamModelPool(m.loadAPIKeyModelRouting().config, auth, rewriteModelForAuth(routeModel, auth))
+}
+
+func (m *Manager) isAuthBlockedForRouteModel(auth *Auth, routeModel string, now time.Time) (bool, blockReason, time.Time) {
+	pool := m.configuredSelectionModelPool(auth, routeModel)
+	if len(pool) <= 1 {
+		return isAuthBlockedForModel(auth, m.selectionModelForAuth(auth, routeModel), now)
+	}
+	// Pooled execution records and checks each upstream target, not the route key.
+	// An auth remains eligible while any target can execute. Keep credential-wide
+	// cooldowns and disabled/expired auth checks in isAuthBlockedForModel.
+	reason := blockReasonOther
+	var earliest time.Time
+	for _, model := range pool {
+		blocked, modelReason, next := isAuthBlockedForModel(auth, model, now)
+		if !blocked {
+			return false, blockReasonNone, time.Time{}
+		}
+		if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
+			reason, earliest = modelReason, next
+		}
+	}
+	return true, reason, earliest
+}
+
 func (m *Manager) oauthExecutionModelForRequest(auth *Auth, routeModel, upstreamModel string) string {
 	if m == nil || auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
 		return ""
