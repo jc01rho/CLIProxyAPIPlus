@@ -518,6 +518,131 @@ func TestStreamingTool_UsageWithoutFinishReasonEmitsMessageDelta(t *testing.T) {
 	}
 }
 
+func TestStreamingTool_PerChunkUsagePreservesToolArguments(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Skill","arguments":""}}]},"finish_reason":null}],"usage":{"prompt_tokens":191,"completion_tokens":5}}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{\"skill\": \"stop-s"}}]},"finish_reason":null}],"usage":{"prompt_tokens":191,"completion_tokens":10}}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"lop\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":191,"completion_tokens":15}}`,
+	)
+
+	starts := toolUseStarts(events)
+	if len(starts) != 1 {
+		t.Fatalf("expected one tool_use start, got %d (starts=%+v)", len(starts), starts)
+	}
+	if name := gjson.Get(starts[0].Payload, "content_block.name").String(); name != "Skill" {
+		t.Fatalf("tool name = %q, want %q", name, "Skill")
+	}
+	if id := gjson.Get(starts[0].Payload, "content_block.id").String(); id != "call_1" {
+		t.Fatalf("tool id = %q, want %q", id, "call_1")
+	}
+
+	var deltas []sseEvent
+	for _, e := range events {
+		if e.Type == "content_block_delta" && gjson.Get(e.Payload, "delta.type").String() == "input_json_delta" {
+			deltas = append(deltas, e)
+		}
+	}
+	if len(deltas) == 0 {
+		t.Fatalf("expected at least one input_json_delta, got none (events=%+v)", events)
+	}
+
+	var mergedArgs strings.Builder
+	for _, d := range deltas {
+		mergedArgs.WriteString(gjson.Get(d.Payload, "delta.partial_json").String())
+	}
+	if merged := mergedArgs.String(); merged != `{"skill": "stop-slop"}` {
+		t.Fatalf("merged arguments = %q, want %q", merged, `{"skill": "stop-slop"}`)
+	}
+
+	if got := countByType(events, "message_delta"); got != 1 {
+		t.Fatalf("expected exactly one message_delta, got %d (events=%+v)", got, events)
+	}
+	if got := lastStopReason(events); got != "tool_use" {
+		t.Fatalf("stop_reason = %q, want %q", got, "tool_use")
+	}
+	if got := countByType(events, "message_stop"); got != 1 {
+		t.Fatalf("expected exactly one message_stop, got %d (events=%+v)", got, events)
+	}
+
+	var deltaEvent *sseEvent
+	for _, e := range events {
+		if e.Type == "message_delta" {
+			deltaEvent = &e
+			break
+		}
+	}
+	if deltaEvent == nil {
+		t.Fatalf("missing message_delta event")
+	}
+	if input := gjson.Get(deltaEvent.Payload, "usage.input_tokens").Int(); input != 191 {
+		t.Fatalf("input_tokens = %d, want 191", input)
+	}
+	if output := gjson.Get(deltaEvent.Payload, "usage.output_tokens").Int(); output != 15 {
+		t.Fatalf("output_tokens = %d, want 15", output)
+	}
+}
+
+func TestStreamingTool_PerChunkUsageOmittedFinishReasonPreservesToolArguments(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Skill","arguments":""}}]},"finish_reason":null}],"usage":{"prompt_tokens":191,"completion_tokens":5}}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{\"skill\": \"stop-s"}}]},"finish_reason":null}],"usage":{"prompt_tokens":191,"completion_tokens":10}}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"lop\"}"}}]},"finish_reason":null}],"usage":{"prompt_tokens":191,"completion_tokens":15}}`,
+	)
+
+	starts := toolUseStarts(events)
+	if len(starts) != 1 {
+		t.Fatalf("expected one tool_use start, got %d (starts=%+v)", len(starts), starts)
+	}
+	if name := gjson.Get(starts[0].Payload, "content_block.name").String(); name != "Skill" {
+		t.Fatalf("tool name = %q, want %q", name, "Skill")
+	}
+
+	var deltas []sseEvent
+	for _, e := range events {
+		if e.Type == "content_block_delta" && gjson.Get(e.Payload, "delta.type").String() == "input_json_delta" {
+			deltas = append(deltas, e)
+		}
+	}
+	if len(deltas) == 0 {
+		t.Fatalf("expected at least one input_json_delta, got none (events=%+v)", events)
+	}
+
+	var mergedArgs strings.Builder
+	for _, d := range deltas {
+		mergedArgs.WriteString(gjson.Get(d.Payload, "delta.partial_json").String())
+	}
+	if merged := mergedArgs.String(); merged != `{"skill": "stop-slop"}` {
+		t.Fatalf("merged arguments = %q, want %q", merged, `{"skill": "stop-slop"}`)
+	}
+
+	if got := countByType(events, "message_delta"); got != 1 {
+		t.Fatalf("expected exactly one message_delta, got %d (events=%+v)", got, events)
+	}
+	if got := lastStopReason(events); got != "tool_use" {
+		t.Fatalf("stop_reason = %q, want %q", got, "tool_use")
+	}
+	if got := countByType(events, "message_stop"); got != 1 {
+		t.Fatalf("expected exactly one message_stop, got %d (events=%+v)", got, events)
+	}
+
+	var deltaEvent *sseEvent
+	for _, e := range events {
+		if e.Type == "message_delta" {
+			deltaEvent = &e
+			break
+		}
+	}
+	if deltaEvent == nil {
+		t.Fatalf("missing message_delta event")
+	}
+	if input := gjson.Get(deltaEvent.Payload, "usage.input_tokens").Int(); input != 191 {
+		t.Fatalf("input_tokens = %d, want 191", input)
+	}
+	if output := gjson.Get(deltaEvent.Payload, "usage.output_tokens").Int(); output != 15 {
+		t.Fatalf("output_tokens = %d, want 15", output)
+	}
+}
+
 func TestStreamingTool_OmittedToolCallIndexPreservesParallelCalls(t *testing.T) {
 	events := runStream(t, streamReq,
 		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[
