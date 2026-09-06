@@ -146,7 +146,8 @@ func TestClaudeExecutorMinimalNativeHelperCloaksMarkerlessWire(t *testing.T) {
 	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 2 {
 		t.Fatalf("system block count = %d, want masqueraded 2: %s", got, upstreamBody)
 	}
-	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header: cc_version=2.1.177.3bf; cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000") {
+	// Independent SHA-256 vector: "helper probe" samples "ep0" at indices 4, 7, 20.
+	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header: cc_version=2.1.177.2da; cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000") {
 		t.Fatalf("billing header not re-signed at current baseline: %q", got)
 	}
 	if got := gjson.GetBytes(upstreamBody, "system.1.text").String(); got != "You are Claude Code, Anthropic's official CLI for Claude." {

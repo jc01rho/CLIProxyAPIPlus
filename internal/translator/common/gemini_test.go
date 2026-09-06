@@ -84,3 +84,32 @@ func TestMergeAdjacentGeminiContents(t *testing.T) {
 		}
 	})
 }
+
+func TestMergeAdjacentGeminiUserContents(t *testing.T) {
+	t.Run("merges consecutive pure text user turns", func(t *testing.T) {
+		contents := [][]byte{
+			[]byte(`{"role":"user","parts":[{"text":"prompt 1"}]}`),
+			[]byte(`{"role":"user","parts":[{"text":"prompt 2"}]}`),
+		}
+		merged := MergeAdjacentGeminiUserContents(contents)
+		if len(merged) != 1 {
+			t.Fatalf("expected 1 merged user turn, got %d", len(merged))
+		}
+		parts := gjson.GetBytes(merged[0], "parts").Array()
+		if len(parts) != 2 {
+			t.Fatalf("expected 2 parts, got %d", len(parts))
+		}
+	})
+
+	t.Run("does not merge across functionResponse boundaries", func(t *testing.T) {
+		contents := [][]byte{
+			[]byte(`{"role":"user","parts":[{"functionResponse":{"name":"test","response":{"result":"ok"}}}]}`),
+			[]byte(`{"role":"user","parts":[{"text":"user note"}]}`),
+			[]byte(`{"role":"user","parts":[{"function_response":{"name":"test2","response":{"result":"ok2"}}}]}`),
+		}
+		merged := MergeAdjacentGeminiUserContents(contents)
+		if len(merged) != 3 {
+			t.Fatalf("expected 3 separate turns preserving functionResponse, got %d", len(merged))
+		}
+	})
+}
