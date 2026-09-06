@@ -504,8 +504,7 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 		if m.shouldExcludeAntigravityNonPrimary(provider, candidate) || soleAntigravityPrimaryExcluded(provider, auths, candidate) {
 			continue
 		}
-		checkModel := m.selectionModelForAuth(candidate, routeModel)
-		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
+		blocked, reason, next := m.isAuthBlockedForRouteModel(candidate, routeModel, now)
 		if !blocked {
 			priority := authPriority(candidate)
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
@@ -1742,7 +1741,8 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 	if auth == nil || strings.TrimSpace(routeModel) == "" {
 		return false
 	}
-	return m.selectionModelKeyForAuth(auth, routeModel) != canonicalModelKey(routeModel)
+	return len(m.configuredSelectionModelPool(auth, routeModel)) > 1 ||
+		m.selectionModelKeyForAuth(auth, routeModel) != canonicalModelKey(routeModel)
 }
 
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
@@ -1813,18 +1813,10 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	var selectorAuths []*Auth
 	var errAvailable error
 	if isWeightedRobin {
-		checkModel := modelKey
-		if checkModel == "" {
-			checkModel = model
-		}
-		// Local: weighted-robin distributes across ALL priority tiers, so it
-		// receives the full cross-priority candidate set (getAllAvailableAuths)
-		// plus a prefiltered opt flag so the selector trusts the list as-is.
-		available = getAllAvailableAuths(candidates, checkModel, time.Now())
-		if len(available) == 0 {
-			errAvailable = &Error{Code: "auth_unavailable", Message: "no auth available for weight-robin"}
-		}
-		selectorAuths = available
+		// Keep the global cross-priority cycle, but validate each auth's resolved
+		// model before marking the candidates as prefiltered for the selector.
+		available, errAvailable = m.availableAuthsForRouteModelAcrossPriorities(candidates, provider, model, time.Now())
+		selectorAuths = cloneAuthSlice(available)
 	} else {
 		// Upstream: availableAuthsForSelector returns priorityAuths (scheduler)
 		// and selectorAuths (session-affinity-aware across-priority set).
@@ -2190,15 +2182,8 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	var selectorAuths []*Auth
 	var errAvailable error
 	if weightedRobin {
-		checkModel := modelKey
-		if checkModel == "" {
-			checkModel = model
-		}
-		available = getAllAvailableAuths(candidates, checkModel, time.Now())
-		if len(available) == 0 {
-			errAvailable = &Error{Code: "auth_unavailable", Message: "no auth available for weight-robin"}
-		}
-		selectorAuths = available
+		available, errAvailable = m.availableAuthsForRouteModelAcrossPriorities(candidates, "mixed", model, time.Now())
+		selectorAuths = cloneAuthSlice(available)
 	} else {
 		available, selectorAuths, errAvailable = m.availableAuthsForSelector(selector, candidates, "mixed", model, time.Now())
 	}
