@@ -33,7 +33,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	baseURL := xaiChatBaseURL(auth)
 	logXAIResolvedBaseURL(ctx, baseURL)
 
-	prepared, err := e.prepareResponsesRequest(ctx, req, opts, true)
+	prepared, err := e.prepareHTTPResponsesRequest(ctx, auth, req, opts)
 	if err != nil {
 		return resp, err
 	}
@@ -47,7 +47,11 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	if err != nil {
 		return resp, err
 	}
-	applyXAIChatHeaders(httpReq, auth, token, true, prepared.sessionID, opts.Headers)
+	headerSessionID := prepared.sessionID
+	if xaiOAuthHTTP(auth) {
+		headerSessionID = gjson.GetBytes(prepared.body, "prompt_cache_key").String()
+	}
+	applyXAIChatHeaders(httpReq, auth, token, true, headerSessionID, opts.Headers)
 	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)

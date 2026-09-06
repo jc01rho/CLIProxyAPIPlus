@@ -23,17 +23,18 @@ import (
 )
 
 type xaiPreparedRequest struct {
-	baseModel             string
-	from                  sdktranslator.Format
-	responseFormat        sdktranslator.Format
-	to                    sdktranslator.Format
-	originalPayload       []byte
-	body                  []byte
-	namespaceTools        map[string]xaiNamespaceToolRef
-	clientDeclaredTools   map[xaiClientToolKey]struct{}
-	sessionID             string
-	replayScope           xaiReasoningReplayScope
-	filterInternalXSearch bool
+	baseModel               string
+	from                    sdktranslator.Format
+	responseFormat          sdktranslator.Format
+	to                      sdktranslator.Format
+	originalPayload         []byte
+	body                    []byte
+	namespaceTools          map[string]xaiNamespaceToolRef
+	clientDeclaredTools     map[xaiClientToolKey]struct{}
+	sessionID               string
+	effectivePromptCacheKey gjson.Result
+	replayScope             xaiReasoningReplayScope
+	filterInternalXSearch   bool
 }
 
 type xaiNamespaceToolRef struct {
@@ -126,6 +127,7 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	body = sanitizeXAIResponsesBody(body, baseModel)
 	body = normalizeXAIImageRefs(body)
 
+	effectivePromptCacheKey := gjson.GetBytes(body, "prompt_cache_key")
 	sessionID, errSession := xaiResolveComposerSessionID(ctx, req, opts, baseModel)
 	if errSession != nil {
 		return nil, errSession
@@ -135,18 +137,45 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	}
 
 	return &xaiPreparedRequest{
-		baseModel:             baseModel,
-		from:                  from,
-		responseFormat:        responseFormat,
-		to:                    to,
-		originalPayload:       originalPayload,
-		body:                  body,
-		namespaceTools:        namespaceTools,
-		clientDeclaredTools:   clientDeclaredTools,
-		sessionID:             sessionID,
-		replayScope:           replayScope,
-		filterInternalXSearch: xaiRequestHasNativeXSearch(body),
+		baseModel:               baseModel,
+		from:                    from,
+		responseFormat:          responseFormat,
+		to:                      to,
+		originalPayload:         originalPayload,
+		body:                    body,
+		namespaceTools:          namespaceTools,
+		clientDeclaredTools:     clientDeclaredTools,
+		sessionID:               sessionID,
+		effectivePromptCacheKey: effectivePromptCacheKey,
+		replayScope:             replayScope,
+		filterInternalXSearch:   xaiRequestHasNativeXSearch(body),
 	}, nil
+}
+
+// prepareHTTPResponsesRequest preserves the effective body cache key on the
+// OAuth CLI HTTP lane, leaving CPA's internal replay/session identity untouched.
+func (e *XAIExecutor) prepareHTTPResponsesRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*xaiPreparedRequest, error) {
+	prepared, err := e.prepareResponsesRequest(ctx, req, opts, true)
+	if err != nil || !xaiOAuthHTTP(auth) {
+		return prepared, err
+	}
+	if key := prepared.effectivePromptCacheKey; key.Exists() {
+		prepared.body, err = sjson.SetRawBytes(prepared.body, "prompt_cache_key", []byte(key.Raw))
+	} else {
+		prepared.body, err = sjson.DeleteBytes(prepared.body, "prompt_cache_key")
+	}
+	return prepared, err
+}
+
+func xaiOAuthHTTP(auth *cliproxyauth.Auth) bool {
+	if auth == nil || xaiUsingAPI(auth) || !xaiIsCLIChatProxyBaseURL(xaiChatBaseURL(auth)) {
+		return false
+	}
+	kind := strings.TrimSpace(auth.Attributes["auth_kind"])
+	if kind == "" {
+		kind = xaiMetadataString(auth.Metadata, "auth_kind")
+	}
+	return strings.EqualFold(kind, "oauth")
 }
 
 func (e *XAIExecutor) recordXAIRequest(ctx context.Context, auth *cliproxyauth.Auth, url string, headers http.Header, body []byte) {
@@ -329,6 +358,16 @@ func applyXAICustomHeaders(r *http.Request, auth *cliproxyauth.Auth, clientHeade
 // when using_api is false and the resolved chat base URL is the official CLI
 // chat-proxy endpoint.
 func applyXAIChatHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, sessionID string, clientHeaders ...http.Header) {
+	if xaiOAuthHTTP(auth) {
+		applyXAIDefaultHeaders(r, token, stream, "")
+		target := "auth:" + auth.ID
+		if auth.ID == "" {
+			target = "token:" + token
+		}
+		helps.ApplyXAIOAuthHTTPHeaders(r, sessionID, target, stream)
+		applyXAICustomHeaders(r, auth, clientHeaders...)
+		return
+	}
 	if xaiUsingAPI(auth) {
 		applyXAIHeaders(r, auth, token, stream, sessionID, clientHeaders...)
 		return

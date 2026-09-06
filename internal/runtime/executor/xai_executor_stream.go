@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -27,7 +28,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	baseURL := xaiChatBaseURL(auth)
 	logXAIResolvedBaseURL(ctx, baseURL)
 
-	prepared, err := e.prepareResponsesRequest(ctx, req, opts, true)
+	prepared, err := e.prepareHTTPResponsesRequest(ctx, auth, req, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +42,11 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	if err != nil {
 		return nil, err
 	}
-	applyXAIChatHeaders(httpReq, auth, token, true, prepared.sessionID, opts.Headers)
+	headerSessionID := prepared.sessionID
+	if xaiOAuthHTTP(auth) {
+		headerSessionID = gjson.GetBytes(prepared.body, "prompt_cache_key").String()
+	}
+	applyXAIChatHeaders(httpReq, auth, token, true, headerSessionID, opts.Headers)
 	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
@@ -86,6 +91,16 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		emitTranslatedLine := func(translatedLine []byte) bool {
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
+				// Restore framing stripped by Scanner and the line-oriented native
+				// Responses translation. A data-only event must not wait for the
+				// next upstream event before the HTTP handler can flush it.
+				if prepared.responseFormat == sdktranslator.FormatOpenAIResponse || prepared.responseFormat == sdktranslator.FormatCodex {
+					if bytes.HasPrefix(chunks[i], xaiDataTag) {
+						chunks[i] = append(chunks[i], '\n', '\n')
+					} else if bytes.HasPrefix(chunks[i], xaiEventTag) {
+						chunks[i] = append(chunks[i], '\n')
+					}
+				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 				case <-ctx.Done():

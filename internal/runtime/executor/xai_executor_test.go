@@ -5974,23 +5974,23 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get("Authorization"); got != "Bearer xai-token" {
 			t.Fatalf("Authorization = %q, want Bearer xai-token", got)
 		}
-		if got := req.Header.Get("x-grok-conv-id"); got != "conv-1" {
-			t.Fatalf("x-grok-conv-id = %q, want conv-1", got)
+		if got := req.Header.Get("x-grok-conv-id"); got != "36524fd8f6747fc2712506d01fee0e18" {
+			t.Fatalf("x-grok-conv-id = %q, want SHA256 affinity for conv-1", got)
 		}
 		if got := req.Header.Get(xaiTokenAuthHeader); got != xaiTokenAuthValue {
 			t.Fatalf("%s = %q, want %q", xaiTokenAuthHeader, got, xaiTokenAuthValue)
 		}
-		if got := req.Header.Get(xaiClientVersionHeader); got != xaiClientVersionValue {
-			t.Fatalf("%s = %q, want %q", xaiClientVersionHeader, got, xaiClientVersionValue)
+		if got := req.Header.Get(xaiClientVersionHeader); got != "0.2.93" {
+			t.Fatalf("%s = %q, want 0.2.93", xaiClientVersionHeader, got)
 		}
-		if got := req.Header.Get("x-grok-client-identifier"); got != "grok-shell" {
-			t.Fatalf("x-grok-client-identifier = %q, want grok-shell", got)
+		if got := req.Header.Get("x-grok-client-identifier"); got != "opencodex" {
+			t.Fatalf("x-grok-client-identifier = %q, want opencodex", got)
 		}
 		if got := req.Header.Get("x-authenticateresponse"); got != "authenticate-response" {
 			t.Fatalf("x-authenticateresponse = %q, want authenticate-response", got)
 		}
-		if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/"+xaiClientVersionValue {
-			t.Fatalf("User-Agent = %q, want xai-grok-workspace/%s", got, xaiClientVersionValue)
+		if got := req.Header.Get("User-Agent"); got != "opencodex-grok/0.2.93" {
+			t.Fatalf("User-Agent = %q, want opencodex-grok/0.2.93", got)
 		}
 	})
 
