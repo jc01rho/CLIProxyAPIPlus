@@ -66,7 +66,9 @@ func soleAntigravityPrimaryExcluded(provider string, auths []*Auth, candidate *A
 	if !strings.EqualFold(strings.TrimSpace(provider), "antigravity") {
 		return false
 	}
-	if candidate == nil {
+	// Mixed-provider selection passes the Antigravity family explicitly; the
+	// primary invariant must not exclude credentials belonging to other providers.
+	if candidate == nil || !strings.EqualFold(strings.TrimSpace(candidate.Provider), "antigravity") {
 		return false
 	}
 	winner := soleAntigravityPrimaryWinner(auths)
