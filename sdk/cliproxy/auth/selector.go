@@ -624,6 +624,32 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 	return getAvailableAuthsWithPriorityMode(auths, provider, model, now, false)
 }
 
+type prevalidatedAuthCandidatesKey struct{}
+
+func getSelectorAvailableAuths(ctx context.Context, auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
+	return getSelectorAvailableAuthsWithPriorityMode(ctx, auths, provider, model, now, false)
+}
+
+func getSelectorAvailableAuthsAcrossPriorities(ctx context.Context, auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
+	return getSelectorAvailableAuthsWithPriorityMode(ctx, auths, provider, model, now, true)
+}
+
+func getSelectorAvailableAuthsWithPriorityMode(ctx context.Context, auths []*Auth, provider, model string, now time.Time, allPriorities bool) ([]*Auth, error) {
+	if ctx != nil {
+		if validated, _ := ctx.Value(prevalidatedAuthCandidatesKey{}).(bool); validated && len(auths) > 0 {
+			// The manager already resolved each credential's upstream model and supplied
+			// ID-sorted candidates. Rechecking the alias or an empty model would apply
+			// unrelated cooldowns. Affinity bindings may span all priority tiers, but
+			// fallback selection must still use the highest available tier.
+			if !allPriorities {
+				return highestPriorityAuths(auths), nil
+			}
+			return auths, nil
+		}
+	}
+	return getAvailableAuthsWithPriorityMode(auths, provider, model, now, allPriorities)
+}
+
 func getAvailableAuthsAcrossPriorities(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
 	return getAvailableAuthsWithPriorityMode(auths, provider, model, now, true)
 }
@@ -767,7 +793,7 @@ func getAllAvailableAuths(auths []*Auth, model string, now time.Time) []*Auth {
 // Pick selects the next available auth for the provider in a round-robin manner.
 func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	now := time.Now()
-	available, err := availableAuthsForSelector(auths, provider, model, opts, now)
+	available, err := getSelectorAvailableAuths(ctx, auths, provider, model, now)
 	if err != nil {
 		return nil, err
 	}
@@ -825,7 +851,7 @@ func positiveWeightAuths(auths []*Auth) []*Auth {
 // Pick selects the next available auth using smooth weighted round-robin.
 func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = opts
-	available, errAvailable := getAvailableAuths(positiveWeightAuths(auths), provider, model, time.Now())
+	available, errAvailable := getSelectorAvailableAuths(ctx, positiveWeightAuths(auths), provider, model, time.Now())
 	if errAvailable != nil {
 		return nil, errAvailable
 	}
@@ -964,7 +990,7 @@ func saturatingAddInt64(value, delta int64) int64 {
 // Pick selects the first available auth for the provider in a deterministic manner.
 func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	now := time.Now()
-	available, err := availableAuthsForSelector(auths, provider, model, opts, now)
+	available, err := getSelectorAvailableAuths(ctx, auths, provider, model, now)
 	if err != nil {
 		return nil, err
 	}
@@ -1653,7 +1679,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		delete(opts.Metadata, cliproxyexecutor.LCPAffinitySessionIDMetadataKey)
 		delete(opts.Metadata, cliproxyexecutor.LCPAccessGenerationMetadataKey)
 		if explicitFallbackID != "" {
-			opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = explicitFallbackID
+			opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(explicitFallbackID)
 		} else {
 			delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
 		}
@@ -1666,25 +1692,29 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if primaryID == "" {
 		primaryID, fallbackID = extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
 	}
-	if primaryID != "" && opts.Metadata != nil {
-		opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = primaryID
+	if primaryID != "" {
+		primaryID = cliproxysession.BoundSessionIdentity(primaryID)
+		if fallbackID != "" {
+			fallbackID = cliproxysession.BoundSessionIdentity(fallbackID)
+		}
+		if opts.Metadata != nil {
+			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = primaryID
+		}
 	}
 	now := time.Now()
 	availabilityCandidates := auths
 	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
-	// Local: prefilter-aware availability pass so the session-affinity wrapper can
-	// sit around the weighted-robin selector without re-filtering the prefiltered
-	// candidate set or losing priority semantics. The membership check must see
-	// every available auth across priority tiers (not just the highest tier) so a
-	// bound auth at any priority stays sticky while higher-priority auths recover.
+	// Preserve the legacy weighted-robin prefilter; otherwise trust the manager's
+	// credential-aware validation. Affinity membership spans every priority tier,
+	// while fallback selection below remains scoped to the highest available tier.
 	var available []*Auth
 	var err error
 	if authCandidatesPrefiltered(opts) {
 		available, err = getPrefilteredAvailableAuths(availabilityCandidates)
 	} else {
-		available, err = getAvailableAuthsWithPriorityMode(availabilityCandidates, provider, model, now, true)
+		available, err = getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, now)
 	}
 	if err != nil {
 		return nil, err
@@ -1798,7 +1828,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
-	available, errAvailable := getAvailableAuthsAcrossPriorities(availabilityCandidates, provider, model, time.Now())
+	available, errAvailable := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, time.Now())
 	if errAvailable != nil {
 		return nil, true, errAvailable
 	}
@@ -1965,6 +1995,12 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 	}
 
 	explicitID, explicitFallbackID := extractExplicitSessionIDs(res.Options.Headers, res.Options.OriginalRequest, res.Options.Metadata)
+	if explicitID != "" {
+		explicitID = cliproxysession.BoundSessionIdentity(explicitID)
+		if explicitFallbackID != "" {
+			explicitFallbackID = cliproxysession.BoundSessionIdentity(explicitFallbackID)
+		}
+	}
 	ns := res.Provider
 	if raw, ok := res.Options.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey].(string); ok && raw != "" {
 		ns = raw
@@ -2020,6 +2056,12 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 	}
 	if primaryID == "" && fallbackID == "" {
 		return
+	}
+	if primaryID != "" {
+		primaryID = cliproxysession.BoundSessionIdentity(primaryID)
+	}
+	if fallbackID != "" {
+		fallbackID = cliproxysession.BoundSessionIdentity(fallbackID)
 	}
 
 	cacheKey := ns + "::" + primaryID + "::" + nsModel
@@ -2102,17 +2144,17 @@ func sessionHeaderValue(headers http.Header, name string) string {
 // CanonicalSessionID resolves the single authoritative session identity from request options and metadata.
 func CanonicalSessionID(headers http.Header, payload []byte, metadata map[string]any) string {
 	if explicitID, _ := extractExplicitSessionIDs(headers, payload, metadata); explicitID != "" {
-		return explicitID
+		return cliproxysession.BoundSessionIdentity(explicitID)
 	}
 	if metadata != nil {
 		if canonicalID, ok := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string); ok && strings.TrimSpace(canonicalID) != "" {
-			return strings.TrimSpace(canonicalID)
+			return cliproxysession.BoundSessionIdentity(strings.TrimSpace(canonicalID))
 		}
 		if lcpID, ok := metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey].(string); ok && strings.TrimSpace(lcpID) != "" {
-			return strings.TrimSpace(lcpID)
+			return cliproxysession.BoundSessionIdentity(strings.TrimSpace(lcpID))
 		}
 	}
-	return ExtractSessionID(headers, payload, metadata)
+	return cliproxysession.BoundSessionIdentity(ExtractSessionID(headers, payload, metadata))
 }
 
 // ExtractSessionID extracts a session identifier from explicit client signals,
