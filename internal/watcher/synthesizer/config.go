@@ -253,6 +253,9 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		if entry.DisableCooling != nil {
 			metadata["disable_cooling"] = *entry.DisableCooling
 		}
+		if entry.DisableImageGeneration != nil {
+			metadata["disable_image_generation"] = entry.DisableImageGeneration.String()
+		}
 		addRequestRetryToMetadata(entry.RequestRetry, metadata)
 		addRequestScopedErrorsToMetadata(entry.RequestScopedErrors, metadata)
 		if entry.Priority != 0 {

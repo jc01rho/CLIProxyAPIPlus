@@ -18,6 +18,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -510,6 +511,26 @@ func normalizeCodexResponsesLiteHTTP(body []byte, headers http.Header) ([]byte, 
 	body, _ = sjson.DeleteBytes(body, codexResponsesLiteMetadata)
 	body, _ = sjson.DeleteBytes(body, codexWSStreamStartMetadata)
 	return body, responsesLite
+}
+
+// resolveCodexImageGenerationMode returns the disable-image-generation mode in effect
+// for this request. A per-credential override on the selected auth wins over the global
+// config value; an absent or unparseable override falls back to the global value.
+func resolveCodexImageGenerationMode(cfg *config.Config, auth *cliproxyauth.Auth) config.DisableImageGenerationMode {
+	global := config.DisableImageGenerationOff
+	if cfg != nil {
+		global = cfg.DisableImageGeneration
+	}
+	raw, ok := auth.ImageGenerationModeOverride()
+	if !ok {
+		return global
+	}
+	mode, err := config.ParseDisableImageGenerationMode(raw)
+	if err != nil {
+		log.Warnf("codex executor: ignoring invalid per-credential disable-image-generation %q; using global %q", raw, global.String())
+		return global
+	}
+	return mode
 }
 
 func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header) []byte {

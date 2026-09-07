@@ -539,6 +539,11 @@ type CodexKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
+	// DisableImageGeneration overrides the global disable-image-generation for this
+	// credential when set. Nil inherits the global value, and the field accepts the
+	// same four states as the global key: false, true, "chat", and "passthrough".
+	DisableImageGeneration *DisableImageGenerationMode `yaml:"disable-image-generation,omitempty" json:"disable-image-generation,omitempty"`
+
 	// DisableCooling overrides the global cooling policy for this credential when set.
 	// True disables auth/model cooldowns; false explicitly enables them.
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`

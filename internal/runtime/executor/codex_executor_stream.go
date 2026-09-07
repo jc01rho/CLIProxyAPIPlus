@@ -67,8 +67,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = normalizeCodexInstructions(body)
-	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
+	if imageMode := resolveCodexImageGenerationMode(e.cfg, auth); imageMode == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
+	} else {
+		body = helps.StripImageGenerationForMode(body, "", imageMode, requestPath)
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)

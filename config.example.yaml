@@ -233,6 +233,8 @@ claude-code:
 # - true: disable image_generation everywhere (also returns 404 for /v1/images/generations and /v1/images/edits).
 # - "chat": disable image_generation injection on non-images endpoints, but keep /v1/images/generations and /v1/images/edits enabled.
 # - "passthrough": never inject or strip image_generation on non-images endpoints (forward the client payload unchanged); behaves like "chat" on /v1/images/* endpoints.
+# Individual codex-api-key / xai-api-key entries may override this with their own
+# disable-image-generation value; see the codex-api-key example below.
 disable-image-generation: false
 
 # Base model used by the legacy hosted image_generation tool path when a Codex image request is not proxied directly through the Image API.
@@ -475,6 +477,10 @@ nonstream-keepalive-interval: 0
 #         is-compat: false
 #         thinking:              # optional: exact thinking capability for this configured model
 #           levels: ["xhigh", "high", "medium", "low"]
+#     # optional per-credential override of the global disable-image-generation.
+#     # Accepts the same four states (false, true, "chat", "passthrough"); omit to inherit
+#     # the global value. Applies to the Codex chat/responses paths for this credential only.
+#     disable-image-generation: "chat"
 #     excluded-models:
 #       - "gpt-5.1"         # exclude specific models (exact match)
 #       - "gpt-5-*"         # wildcard matching prefix (e.g. gpt-5-medium, gpt-5-codex)
