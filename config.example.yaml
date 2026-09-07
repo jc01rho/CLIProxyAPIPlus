@@ -343,6 +343,10 @@ codex:
 #   sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions
 #     - "API"
 #     - "proxy"
+#   connection-pool:             # optional: upstream HTTP connection pool settings
+#     enabled: false             # whether to enable connection pooling (default: false; set to true to enable connection pooling)
+#     idle-conn-timeout: "30s"   # idle keep-alive timeout (default: 30s, capped at 210s)
+#     max-idle-conns-per-host: 2 # max idle connections per host per credential (default: 2)
 
 # xAI provider behavior.
 xai:

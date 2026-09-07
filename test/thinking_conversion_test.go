@@ -2872,6 +2872,302 @@ func TestThinkingE2EProviderTargets(t *testing.T) {
 			// suffix alone does not force auto (87ceaf83 explicitness contract).
 			expectAbsent: []string{"generation_config.thinking_summaries"},
 		},
+		// Responses client against a chat-shaped provider. Because thinking is read
+		// back off the translated body, this pair only works if the request translator
+		// rewrites reasoning.effort as reasoning_effort; nothing else covered it.
+		{
+			name:        "R1",
+			from:        "openai-response",
+			to:          "openai",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","input":"hi","reasoning":{"effort":"high"}}`,
+			expectField: "reasoning_effort",
+			expectValue: "high",
+		},
+		{
+			name:        "R2",
+			from:        "openai-response",
+			to:          "openai",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","input":"hi","reasoning":{"effort":"none"}}`,
+			expectField: "reasoning_effort",
+			expectValue: "minimal",
+		},
+		{
+			name:         "R3",
+			from:         "openai-response",
+			to:           "kimi",
+			model:        "kimi-toggle-thinking-model",
+			inputJSON:    `{"model":"kimi-toggle-thinking-model","input":"hi","reasoning":{"effort":"high"}}`,
+			expectField:  "thinking.type",
+			expectValue:  "enabled",
+			expectField2: "thinking.effort",
+			expectValue2: "high",
+			expectAbsent: []string{"reasoning_effort"},
+		},
+		{
+			name:            "R4",
+			from:            "openai-response",
+			to:              "antigravity",
+			model:           "antigravity-budget-model",
+			inputJSON:       `{"model":"antigravity-budget-model","input":"hi","reasoning":{"effort":"medium"}}`,
+			expectField:     "request.generationConfig.thinkingConfig.thinkingBudget",
+			expectValue:     "8192",
+			includeThoughts: "true",
+		},
+	}
+
+	runThinkingTests(t, cases)
+}
+
+// TestThinkingE2EInteractionsMatrix covers the Interactions protocol in both
+// directions, which the suffix and body matrices above barely touch.
+//
+// Interactions expresses thinking through generation_config.thinking_level and the
+// independent auto/none generation_config.thinking_summaries control. Compatibility
+// thinking_budget and none/auto level inputs map onto a documented target level. The
+// IN cases drive Interactions
+// as the provider from every client protocol; the OUT cases drive an Interactions
+// client against every provider, so an explicit on/off request has to survive the
+// round trip in both roles.
+func TestThinkingE2EInteractionsMatrix(t *testing.T) {
+	reg := registry.GetGlobalRegistry()
+	uid := fmt.Sprintf("thinking-e2e-interactions-%d", time.Now().UnixNano())
+
+	reg.RegisterClient(uid, "test", getTestModels())
+	defer reg.UnregisterClient(uid)
+
+	cases := []thinkingTestCase{
+		// Interactions as provider: explicit on from every client protocol.
+		{
+			name:        "IN1",
+			from:        "claude",
+			to:          "interactions",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":10000}}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "high",
+		},
+		{
+			name:        "IN2",
+			from:        "openai",
+			to:          "interactions",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"minimal"}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "minimal",
+		},
+		{
+			name:        "IN3",
+			from:        "openai-response",
+			to:          "interactions",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","input":"hi","reasoning":{"effort":"low"}}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "low",
+		},
+		{
+			name:        "IN4",
+			from:        "gemini",
+			to:          "interactions",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingBudget":20000}}}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "high",
+		},
+		// A level the model does not publish falls back to its highest level.
+		{
+			name:        "IN5",
+			from:        "openai",
+			to:          "interactions",
+			model:       "level-subset-model",
+			inputJSON:   `{"model":"level-subset-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "high",
+		},
+		// Interactions cannot fully disable this model, so thinking clamps to the
+		// lowest documented level. Summary visibility remains omitted unless the
+		// source independently requested it.
+		{
+			name:        "IN6",
+			from:        "claude",
+			to:          "interactions",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "minimal",
+		},
+		{
+			name:        "IN7",
+			from:        "openai",
+			to:          "interactions",
+			model:       "level-model(none)",
+			inputJSON:   `{"model":"level-model(none)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "minimal",
+		},
+		{
+			name:        "IN8",
+			from:        "interactions",
+			to:          "interactions",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","generation_config":{"thinking_level":"none"},"input":"hi"}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "minimal",
+		},
+		// Interactions supports auto as its only enabled summary selector.
+		{
+			name:         "IN9",
+			from:         "interactions",
+			to:           "interactions",
+			model:        "level-model",
+			inputJSON:    `{"model":"level-model","generation_config":{"thinking_level":"low","thinking_summaries":"auto"},"input":"hi"}`,
+			expectField:  "generation_config.thinking_level",
+			expectValue:  "low",
+			expectField2: "generation_config.thinking_summaries",
+			expectValue2: "auto",
+		},
+		// A legacy thinking_budget maps onto the level enum.
+		{
+			name:        "IN10",
+			from:        "interactions",
+			to:          "interactions",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","generation_config":{"thinking_budget":400},"input":"hi"}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "minimal",
+		},
+		// Auto on a model without dynamic thinking resolves to the mid-range level,
+		// the same normalization every other target gets.
+		{
+			name:        "IN11",
+			from:        "interactions",
+			to:          "interactions",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","generation_config":{"thinking_budget":-1},"input":"hi"}`,
+			expectField: "generation_config.thinking_level",
+			expectValue: "medium",
+		},
+
+		// Interactions as client: explicit on has to reach every provider's own knob.
+		{
+			name:        "OUT1",
+			from:        "interactions",
+			to:          "claude",
+			model:       "claude-budget-model",
+			inputJSON:   `{"model":"claude-budget-model","generation_config":{"thinking_level":"medium"},"input":"hi"}`,
+			expectField: "thinking.budget_tokens",
+			expectValue: "8192",
+		},
+		{
+			name:        "OUT2",
+			from:        "interactions",
+			to:          "openai",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","generation_config":{"thinking_level":"high"},"input":"hi"}`,
+			expectField: "reasoning_effort",
+			expectValue: "high",
+		},
+		{
+			name:        "OUT3",
+			from:        "interactions",
+			to:          "codex",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","generation_config":{"thinking_level":"low"},"input":"hi"}`,
+			expectField: "reasoning.effort",
+			expectValue: "low",
+		},
+		{
+			name:        "OUT4",
+			from:        "interactions",
+			to:          "gemini",
+			model:       "gemini-budget-model",
+			inputJSON:   `{"model":"gemini-budget-model","generation_config":{"thinking_level":"medium"},"input":"hi"}`,
+			expectField: "generationConfig.thinkingConfig.thinkingBudget",
+			expectValue: "8192",
+		},
+		{
+			name:            "OUT5",
+			from:            "interactions",
+			to:              "antigravity",
+			model:           "antigravity-budget-model",
+			inputJSON:       `{"model":"antigravity-budget-model","generation_config":{"thinking_level":"medium"},"input":"hi"}`,
+			expectField:     "request.generationConfig.thinkingConfig.thinkingBudget",
+			expectValue:     "8192",
+			includeThoughts: "",
+		},
+		{
+			name:         "OUT6",
+			from:         "interactions",
+			to:           "kimi",
+			model:        "kimi-toggle-thinking-model",
+			inputJSON:    `{"model":"kimi-toggle-thinking-model","generation_config":{"thinking_level":"high"},"input":"hi"}`,
+			expectField:  "thinking.type",
+			expectValue:  "enabled",
+			expectField2: "thinking.effort",
+			expectValue2: "high",
+		},
+		{
+			name:        "OUT7",
+			from:        "interactions",
+			to:          "xai",
+			model:       "xai-level-model",
+			inputJSON:   `{"model":"xai-level-model","generation_config":{"thinking_level":"high"},"input":"hi"}`,
+			expectField: "reasoning.effort",
+			expectValue: "high",
+		},
+		// Interactions as client: explicit off has to reach every provider's own way
+		// of saying no thinking.
+		{
+			name:        "OUT8",
+			from:        "interactions",
+			to:          "claude",
+			model:       "claude-budget-model",
+			inputJSON:   `{"model":"claude-budget-model","generation_config":{"thinking_level":"none"},"input":"hi"}`,
+			expectField: "thinking.type",
+			expectValue: "disabled",
+		},
+		{
+			name:            "OUT9",
+			from:            "interactions",
+			to:              "antigravity",
+			model:           "antigravity-budget-model",
+			inputJSON:       `{"model":"antigravity-budget-model","generation_config":{"thinking_level":"none"},"input":"hi"}`,
+			expectField:     "request.generationConfig.thinkingConfig.thinkingBudget",
+			expectValue:     "0",
+			includeThoughts: "",
+		},
+		{
+			name:         "OUT10",
+			from:         "interactions",
+			to:           "kimi",
+			model:        "kimi-toggle-thinking-model",
+			inputJSON:    `{"model":"kimi-toggle-thinking-model","generation_config":{"thinking_level":"none"},"input":"hi"}`,
+			expectField:  "thinking.type",
+			expectValue:  "disabled",
+			expectAbsent: []string{"thinking.effort", "reasoning_effort"},
+		},
+		// A level+budget model that allows zero expresses off by dropping
+		// thinkingConfig entirely, so an Interactions client reaches the same shape a
+		// chat or Responses client does.
+		{
+			name:         "OUT11",
+			from:         "interactions",
+			to:           "gemini",
+			model:        "gemini-toggle-mixed-model",
+			inputJSON:    `{"model":"gemini-toggle-mixed-model","generation_config":{"thinking_level":"none"},"input":"hi"}`,
+			expectAbsent: []string{"generationConfig.thinkingConfig"},
+		},
+		// Auto reaches a dynamic-capable provider as dynamic thinking.
+		{
+			name:        "OUT12",
+			from:        "interactions",
+			to:          "gemini",
+			model:       "gemini-budget-model",
+			inputJSON:   `{"model":"gemini-budget-model","generation_config":{"thinking_level":"auto"},"input":"hi"}`,
+			expectField: "generationConfig.thinkingConfig.thinkingBudget",
+			expectValue: "-1",
+		},
 	}
 
 	runThinkingTests(t, cases)

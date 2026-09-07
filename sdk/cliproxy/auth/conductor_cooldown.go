@@ -746,6 +746,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					state.Unavailable = true
 					state.Status = StatusError
 					state.UpdatedAt = now
+					prevModelRetryAfter := state.NextRetryAfter
 					if result.Error != nil {
 						state.LastError = cloneError(result.Error)
 						state.StatusMessage = result.Error.Message
@@ -821,15 +822,21 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									if otherState != nil && otherState != state {
 										otherState.Unavailable = true
 										otherState.Status = StatusError
-										otherNext := next
-										if otherState.Quota.Exceeded && otherState.Quota.NextRecoverAt.After(otherNext) {
-											otherNext = otherState.Quota.NextRecoverAt
+										otherQuotaNext := next
+										if otherState.Quota.Exceeded && otherState.Quota.NextRecoverAt.After(otherQuotaNext) {
+											otherQuotaNext = otherState.Quota.NextRecoverAt
 										}
-										otherState.NextRetryAfter = otherNext
+										otherRetryAfter := otherQuotaNext
+										// Propagation only extends a sibling's still-live
+										// per-model deadline; it never shortens one.
+										if !otherState.NextRetryAfter.IsZero() && otherState.NextRetryAfter.After(otherRetryAfter) {
+											otherRetryAfter = otherState.NextRetryAfter
+										}
+										otherState.NextRetryAfter = otherRetryAfter
 										applyCooldownFields(&otherState.Quota, QuotaState{
 											Exceeded:      true,
 											Reason:        "credential_quota",
-											NextRecoverAt: otherNext,
+											NextRecoverAt: otherQuotaNext,
 											BackoffLevel:  backoffLevel,
 										})
 									}
@@ -860,6 +867,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown && state.NextRetryAfter.IsZero() {
 						state.NextRetryAfter = now.Add(transientErrorCooldown)
 						state.Unavailable = true
+					}
+					// A later failure only extends a still-live cooldown; it never
+					// shortens one. A deliberate zero write (disableCooling) still
+					// clears the deadline.
+					if !state.NextRetryAfter.IsZero() && prevModelRetryAfter.After(state.NextRetryAfter) && prevModelRetryAfter.After(now) {
+						state.NextRetryAfter = prevModelRetryAfter
 					}
 					auth.Status = StatusError
 					updateAggregatedAvailability(auth, now)
@@ -902,7 +915,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		_ = m.persist(ctx, authSnapshot)
 	}
 	if m.scheduler != nil && authSnapshot != nil {
-		m.scheduler.upsertAuth(authSnapshot)
+		var targetModels []string
+		if !result.CredentialScope && modelKey != "" {
+			targetModels = append(targetModels, modelKey)
+			if routeKey := canonicalModelKey(result.RouteModel); routeKey != "" && routeKey != modelKey {
+				targetModels = append(targetModels, routeKey)
+			}
+		}
+		m.scheduler.upsertAuthResult(authSnapshot, targetModels, result.CredentialScope)
 	}
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
@@ -2162,6 +2182,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	if auth == nil {
 		return
 	}
+	prevAuthRetryAfter := auth.NextRetryAfter
 	if shouldSkipCredentialCooldown(resultErr) {
 		return
 	}
@@ -2191,72 +2212,72 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			BackoffLevel:  backoffLevel,
 		})
 		auth.NextRetryAfter = next
-		return
-	}
-	if isInvalidGrantResultError(resultErr) {
+	} else if isInvalidGrantResultError(resultErr) {
 		auth.StatusMessage = "invalid_grant"
 		if disableCooling {
 			auth.NextRetryAfter = time.Time{}
 		} else {
 			auth.NextRetryAfter = now.Add(30 * time.Minute)
 		}
-		return
-	}
-	switch statusCode {
-	case 401:
-		auth.StatusMessage = "unauthorized"
-		if disableCooling {
-			auth.NextRetryAfter = time.Time{}
-		} else {
-			auth.NextRetryAfter = now.Add(30 * time.Minute)
-		}
-	case 402, 403:
-		auth.StatusMessage = "payment_required"
-		if disableCooling {
-			auth.NextRetryAfter = time.Time{}
-		} else {
-			auth.NextRetryAfter = now.Add(30 * time.Minute)
-		}
-	case 404:
-		auth.StatusMessage = "not_found"
-		if disableCooling {
-			auth.NextRetryAfter = time.Time{}
-		} else {
-			auth.NextRetryAfter = now.Add(12 * time.Hour)
-		}
-	case 429:
-		auth.StatusMessage = "quota exhausted"
-		auth.Quota.Exceeded = true
-		auth.Quota.Reason = "quota"
-		var next time.Time
-		if !disableCooling {
-			if retryAfter != nil {
-				// Provider Retry-After always wins, even inside an existing quota window,
-				// but sub-second Retry-After values are floored to avoid retry storms.
-				cooldown := *retryAfter
-				if cooldown < minQuotaCooldownFloor {
-					cooldown = minQuotaCooldownFloor
-				}
-				next = now.Add(cooldown)
+	} else {
+		switch statusCode {
+		case 401:
+			auth.StatusMessage = "unauthorized"
+			if disableCooling {
+				auth.NextRetryAfter = time.Time{}
 			} else {
-				next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
-				if auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(next) {
-					next = auth.Quota.NextRecoverAt
+				auth.NextRetryAfter = now.Add(30 * time.Minute)
+			}
+		case 402, 403:
+			auth.StatusMessage = "payment_required"
+			if disableCooling {
+				auth.NextRetryAfter = time.Time{}
+			} else {
+				auth.NextRetryAfter = now.Add(30 * time.Minute)
+			}
+		case 404:
+			auth.StatusMessage = "not_found"
+			if disableCooling {
+				auth.NextRetryAfter = time.Time{}
+			} else {
+				auth.NextRetryAfter = now.Add(12 * time.Hour)
+			}
+		case 429:
+			auth.StatusMessage = "quota exhausted"
+			auth.Quota.Exceeded = true
+			auth.Quota.Reason = "quota"
+			var next time.Time
+			if !disableCooling {
+				if retryAfter != nil {
+					// Provider Retry-After always wins, even inside an existing quota window,
+					// but sub-second Retry-After values are floored to avoid retry storms.
+					cooldown := *retryAfter
+					if cooldown < minQuotaCooldownFloor {
+						cooldown = minQuotaCooldownFloor
+					}
+					next = now.Add(cooldown)
+				} else {
+					next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
 				}
 			}
+			auth.Quota.NextRecoverAt = next
+			auth.NextRetryAfter = next
+		case 408, 500, 502, 503, 504:
+			auth.StatusMessage = "transient upstream error"
+			auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+			auth.Unavailable = !auth.NextRetryAfter.IsZero()
+		default:
+			if auth.StatusMessage == "" {
+				auth.StatusMessage = "request failed"
+			}
+			auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+			auth.Unavailable = !auth.NextRetryAfter.IsZero()
 		}
-		auth.Quota.NextRecoverAt = next
-		auth.NextRetryAfter = next
-	case 408, 500, 502, 503, 504:
-		auth.StatusMessage = "transient upstream error"
-		auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
-		auth.Unavailable = !auth.NextRetryAfter.IsZero()
-	default:
-		if auth.StatusMessage == "" {
-			auth.StatusMessage = "request failed"
-		}
-		auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
-		auth.Unavailable = !auth.NextRetryAfter.IsZero()
+	}
+	// A later failure only extends a still-live credential cooldown; a
+	// deliberate zero write (disableCooling) still clears it.
+	if !auth.NextRetryAfter.IsZero() && prevAuthRetryAfter.After(auth.NextRetryAfter) && prevAuthRetryAfter.After(now) {
+		auth.NextRetryAfter = prevAuthRetryAfter
 	}
 	if resultErr != nil && resultErr.Code == ErrorCodeForceCooldown && auth.NextRetryAfter.IsZero() {
 		auth.NextRetryAfter = now.Add(transientErrorCooldown)
