@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
@@ -31,6 +32,7 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"gopkg.in/yaml.v3"
 )
 
 type codexSearchCaptureExecutor struct {
@@ -2722,5 +2724,53 @@ func TestInteractionsRouteRegistered(t *testing.T) {
 	server.engine.ServeHTTP(rr, req)
 	if rr.Code == http.StatusNotFound {
 		t.Fatalf("status = %d, want route registered; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateClientsContext_AntigravityConnectionPoolPurgesTransports(t *testing.T) {
+	server := newTestServer(t)
+
+	enabled := true
+	disabled := false
+
+	cfg1 := *server.cfg
+	cfg1.Antigravity.ConnectionPool.Enabled = &enabled
+	cfg1.Antigravity.ConnectionPool.IdleConnTimeout = "30s"
+	server.oldConfigYaml, _ = yaml.Marshal(&cfg1)
+
+	// Pre-populate the cache before reload
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	testAuth := &auth.Auth{
+		ID:         "hot-reload-test-auth",
+		Provider:   "antigravity",
+		Attributes: map[string]string{"base_url": srv.URL},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"project_id":   "proj",
+			"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	exec := executor.NewAntigravityExecutor(&cfg1)
+	req := httptest.NewRequest(http.MethodGet, srv.URL, nil)
+	_, _ = exec.HttpRequest(context.Background(), testAuth, req)
+
+	if executor.AntigravityTransportsLen() == 0 {
+		t.Fatal("expected Antigravity transports to be cached before hot reload")
+	}
+
+	cfg2 := cfg1
+	cfg2.Antigravity.ConnectionPool.Enabled = &disabled
+	cfg2.Antigravity.ConnectionPool.IdleConnTimeout = "10s"
+
+	if ok := server.UpdateClientsContext(context.Background(), &cfg2); !ok {
+		t.Fatal("UpdateClientsContext returned false")
+	}
+
+	if got := executor.AntigravityTransportsLen(); got != 0 {
+		t.Fatalf("AntigravityTransportsLen() after reload = %d, want 0", got)
 	}
 }
