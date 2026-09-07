@@ -14,6 +14,8 @@ func CanonicalCredentialMetadataKey(key string) string {
 		return "disable_image_generation"
 	case "excluded-models":
 		return "excluded_models"
+	case "expires-never":
+		return "expires_never"
 	case "fingerprint-profile":
 		return "fingerprint_profile"
 	case "model-aliases":
