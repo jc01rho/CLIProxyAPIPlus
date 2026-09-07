@@ -1010,8 +1010,11 @@ func TestFileSynthesizer_Synthesize_OAuthModelAliases(t *testing.T) {
 		t.Fatalf("expected 1 auth, got %d", len(auths))
 	}
 
+	// Duplicate aliases within a channel are preserved as configured
+	// (see SanitizeOAuthModelAlias); runtime resolution is first-entry-wins.
+	// Entries are trimmed, and rows with an empty name are dropped.
 	got := auths[0].Attributes["model_aliases"]
-	want := `[{"name":"gpt-5.3-codex-spark","alias":"gpt-5.5"},{"name":"gpt-5.3-codex-spark","alias":"gpt-5.4","fork":true}]`
+	want := `[{"name":"gpt-5.3-codex-spark","alias":"gpt-5.5"},{"name":"gpt-5.3-codex-spark","alias":"gpt-5.4","fork":true},{"name":"gpt-5.3-codex-spark","alias":"gpt-5.5"}]`
 	if got != want {
 		t.Fatalf("expected model_aliases %q, got %q", want, got)
 	}
