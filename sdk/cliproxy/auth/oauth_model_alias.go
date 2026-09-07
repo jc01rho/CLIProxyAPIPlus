@@ -50,8 +50,8 @@ type oauthAliasCacheKey struct {
 // represents a safe negative (miss) entry; values are never nil pointers.
 type oauthAliasCacheValue struct {
 	forceMappingHit bool
-	forceResult    OAuthModelAliasResult
-	tailResult     OAuthModelAliasResult
+	forceResult     OAuthModelAliasResult
+	tailResult      OAuthModelAliasResult
 	// tailFork reports whether the phase-2 alias hit is a fork alias. Fork
 	// aliases carry isolated per-alias state, so a registry real-model
 	// registration under the same name legitimately outranks them (local
@@ -410,12 +410,18 @@ func authAttributes(auth *Auth) map[string]string {
 }
 
 // SetOAuthModelAliasesAttribute stores sanitized per-auth OAuth model aliases on an auth entry.
+// An empty or fully-sanitized-away alias list clears any previously stored value, so removing
+// aliases from the auth file (or from a management patch) actually takes effect instead of
+// leaving the stale mapping live.
 func SetOAuthModelAliasesAttribute(auth *Auth, aliases []internalconfig.OAuthModelAlias) {
 	if auth == nil {
 		return
 	}
 	aliases = sanitizeOAuthModelAliases(aliases)
 	if len(aliases) == 0 {
+		if auth.Attributes != nil {
+			delete(auth.Attributes, oauthModelAliasesAttributeKey)
+		}
 		return
 	}
 	data, errMarshal := json.Marshal(aliases)
