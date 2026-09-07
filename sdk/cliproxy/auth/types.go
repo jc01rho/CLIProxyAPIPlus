@@ -559,6 +559,33 @@ func (a *Auth) ImageGenerationModeOverride() (string, bool) {
 	return "", false
 }
 
+// ExpiresNever reports whether this credential's tokens are declared to never
+// expire ("expires-never": true in the auth file; canonical metadata key
+// "expires_never"). Static third-party keys behind a custom base_url set this so
+// selection never blocks them on a stale expiry timestamp.
+func (a *Auth) ExpiresNever() bool {
+	if a == nil {
+		return false
+	}
+	for _, key := range []string{"expires_never", "expires-never"} {
+		if a.Metadata != nil {
+			if val, ok := a.Metadata[key]; ok {
+				if parsed, okParse := parseBoolAny(val); okParse && parsed {
+					return true
+				}
+			}
+		}
+		if a.Attributes != nil {
+			if v := strings.TrimSpace(a.Attributes[key]); v != "" {
+				if parsed, errParse := strconv.ParseBool(v); errParse == nil && parsed {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // ToolPrefixDisabled returns whether the proxy_ tool name prefix should be
 // skipped for this auth. When true, tool names are sent to Anthropic unchanged.
 // The value is read from metadata key "tool_prefix_disabled" (or "tool-prefix-disabled").
@@ -717,7 +744,7 @@ func (a *Auth) AccountInfo() (string, string) {
 // token objects to remain compatible with legacy auth file formats.
 // If the access_token contains a valid JWT exp claim, it is given priority.
 func (a *Auth) ExpirationTime() (time.Time, bool) {
-	if a == nil {
+	if a == nil || a.ExpiresNever() {
 		return time.Time{}, false
 	}
 	if tokenStr := authAccessToken(a); tokenStr != "" {
@@ -732,9 +759,11 @@ func (a *Auth) ExpirationTime() (time.Time, bool) {
 }
 
 // AccessTokenExpirationTime returns the expiration time of the specific access_token.
-// If the access_token is a JWT, its exp claim takes strict precedence.
+// If the access_token is a JWT, its exp claim takes strict precedence. Auths marked
+// with "expires-never" (static third-party keys whose tokens do not expire) report
+// no expiration at all, so selection never blocks them on a stale timestamp.
 func (a *Auth) AccessTokenExpirationTime() (time.Time, bool) {
-	if a == nil {
+	if a == nil || a.ExpiresNever() {
 		return time.Time{}, false
 	}
 	tokenStr := authAccessToken(a)
