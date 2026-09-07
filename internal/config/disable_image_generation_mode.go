@@ -130,6 +130,13 @@ func parseDisableImageGenerationJSON(data []byte) (DisableImageGenerationMode, e
 	return parseDisableImageGenerationString(s)
 }
 
+// ParseDisableImageGenerationMode parses a disable-image-generation value from its
+// string form ("false", "true", "chat", "passthrough"). It lets callers outside this
+// package resolve auth-scoped overrides that travel as strings through auth metadata.
+func ParseDisableImageGenerationMode(s string) (DisableImageGenerationMode, error) {
+	return parseDisableImageGenerationString(s)
+}
+
 func parseDisableImageGenerationString(s string) (DisableImageGenerationMode, error) {
 	s = strings.TrimSpace(strings.ToLower(s))
 	switch s {

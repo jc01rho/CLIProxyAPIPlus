@@ -232,6 +232,19 @@ func isImagesEndpointRequestPath(path string) bool {
 //   - Chat: strip only on non-images endpoints; keep it on /v1/images/* endpoints.
 //   - Off / Passthrough: never strip. Off injects the tool elsewhere; Passthrough forwards
 //     the client payload untouched.
+//
+// StripImageGenerationForMode removes the image_generation tool and tool_choice
+// for an explicitly resolved mode. Executors use it to honor a per-credential
+// disable-image-generation override, which ApplyPayloadConfig cannot see because
+// it only reads the global config value.
+func StripImageGenerationForMode(payload []byte, root string, mode config.DisableImageGenerationMode, requestPath string) []byte {
+	if !shouldStripImageGeneration(mode, requestPath) {
+		return payload
+	}
+	payload = removeToolTypeFromPayloadWithRoot(payload, root, "image_generation")
+	return removeToolChoiceFromPayloadWithRoot(payload, root, "image_generation")
+}
+
 func shouldStripImageGeneration(mode config.DisableImageGenerationMode, requestPath string) bool {
 	switch mode {
 	case config.DisableImageGenerationAll:

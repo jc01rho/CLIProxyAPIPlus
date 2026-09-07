@@ -10,6 +10,8 @@ func CanonicalCredentialMetadataKey(key string) string {
 		return "base_url"
 	case "disable-cooling":
 		return "disable_cooling"
+	case "disable-image-generation":
+		return "disable_image_generation"
 	case "excluded-models":
 		return "excluded_models"
 	case "fingerprint-profile":

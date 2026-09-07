@@ -529,6 +529,36 @@ func (a *Auth) DisableCoolingOverride() (bool, bool) {
 	return false, false
 }
 
+// ImageGenerationModeOverride returns the auth-scoped disable_image_generation
+// override when present, as its raw string form ("false", "true", "chat",
+// "passthrough"). The value is read from metadata key "disable_image_generation"
+// (or legacy "disable-image-generation"). The second return value reports whether
+// an override was present, so callers can distinguish it from the global default.
+func (a *Auth) ImageGenerationModeOverride() (string, bool) {
+	if a == nil || a.Metadata == nil {
+		return "", false
+	}
+	for _, key := range []string{"disable_image_generation", "disable-image-generation"} {
+		val, ok := a.Metadata[key]
+		if !ok {
+			continue
+		}
+		if parsed, okParse := val.(string); okParse {
+			if trimmed := strings.TrimSpace(parsed); trimmed != "" {
+				return trimmed, true
+			}
+			continue
+		}
+		if parsed, okParse := parseBoolAny(val); okParse {
+			if parsed {
+				return "true", true
+			}
+			return "false", true
+		}
+	}
+	return "", false
+}
+
 // ToolPrefixDisabled returns whether the proxy_ tool name prefix should be
 // skipped for this auth. When true, tool names are sent to Anthropic unchanged.
 // The value is read from metadata key "tool_prefix_disabled" (or "tool-prefix-disabled").
