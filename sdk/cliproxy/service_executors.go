@@ -349,6 +349,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewClineExecutor(cfg))
 	case "kilo", "kilocode":
 		s.coreManager.RegisterExecutor(executor.NewKiloExecutor(cfg))
+	case "alysis":
+		s.coreManager.RegisterExecutor(executor.NewAlysisExecutor(cfg))
 	case "kilo-gateway":
 		s.coreManager.RegisterExecutor(executor.NewKiloExecutorForProvider(cfg, "kilo-gateway"))
 	case "cursor":
