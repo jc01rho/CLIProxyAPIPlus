@@ -237,7 +237,11 @@ func getUpstreamRequestInfoFromContext(c *gin.Context) (url, model string) {
 //
 // Returns:
 //   - gin.HandlerFunc: A middleware handler for request logging
-func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
+func GinLogrusLogger(configs ...*config.Config) gin.HandlerFunc {
+	var cfg *config.Config
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
 	return func(c *gin.Context) {
 		start := time.Now()
 		path := c.Request.URL.Path
@@ -263,6 +267,12 @@ func GinLogrusLogger(cfg *config.Config) gin.HandlerFunc {
 		}
 
 		c.Next()
+
+		// Keep failed health probes visible, including responses from global middleware.
+		if path == "/healthz" && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) &&
+			c.Writer.Status() >= http.StatusOK && c.Writer.Status() < http.StatusMultipleChoices {
+			return
+		}
 
 		if shouldSkipGinRequestLogging(c) {
 			return
