@@ -1351,6 +1351,8 @@ type ManagementResponse struct {
 	// Headers contains response headers.
 	Headers http.Header
 	// Body contains the raw response body.
+	// On schema_version >= 6, JSON bodies are returned without HTML entity escaping.
+	// On schema_version < 6, JSON response string values are HTML-escaped for legacy compatibility.
 	Body []byte
 }
 

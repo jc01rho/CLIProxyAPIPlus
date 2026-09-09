@@ -574,3 +574,25 @@ func TestConvertOpenAIResponsesRequestToAntigravity_ReasoningSummaries(t *testin
 		})
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToAntigravity_FunctionCallOutputAlternateIDs(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.7-flash-high",
+		"input": [
+			{"role":"user","content":"run command"},
+			{"type":"function_call","call_id":"call_bash_1","name":"Bash","arguments":"{\"command\":\"ls\"}"},
+			{"type":"function_call_output","id":"call_bash_1","output":"main.go"}
+		]
+	}`
+
+	out := ConvertOpenAIResponsesRequestToAntigravity("gemini-3.7-flash-high", []byte(inputJSON), false)
+	rawRequest := gjson.GetBytes(out, "request").Raw
+	if errPair := sigcompat.ValidateGeminiFunctionCallPairing([]byte(rawRequest)); errPair != nil {
+		t.Fatalf("ValidateGeminiFunctionCallPairing failed on Antigravity request: %v; output=%s", errPair, out)
+	}
+
+	responseID := gjson.GetBytes(out, "request.contents.2.parts.0.functionResponse.id").String()
+	if responseID != "call_bash_1" {
+		t.Fatalf("functionResponse.id = %q, want call_bash_1", responseID)
+	}
+}
