@@ -93,6 +93,7 @@ func main() {
 	var codexDeviceLogin bool
 	var claudeLogin bool
 	var kiloLogin bool
+	var alysisLogin bool
 	var iflowLogin bool
 	var iflowCookie bool
 	var gitlabLogin bool
@@ -136,6 +137,7 @@ func main() {
 	flag.BoolVar(&codexDeviceLogin, "codex-device-login", false, "Login to Codex using device code flow")
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
 	flag.BoolVar(&kiloLogin, "kilo-login", false, "Login to Kilo AI using device flow")
+	flag.BoolVar(&alysisLogin, "alysis-login", false, "Login to Alysis Code Pro using device flow")
 	flag.BoolVar(&iflowLogin, "iflow-login", false, "Login to iFlow using OAuth")
 	flag.BoolVar(&iflowCookie, "iflow-cookie", false, "Login to iFlow using Cookie")
 	flag.BoolVar(&gitlabLogin, "gitlab-login", false, "Login to GitLab Duo using OAuth")
@@ -735,6 +737,8 @@ func main() {
 		cmd.DoClaudeLogin(cfg, options)
 	} else if kiloLogin {
 		cmd.DoKiloLogin(cfg, options)
+	} else if alysisLogin {
+		cmd.DoAlysisLogin(cfg, options)
 	} else if iflowLogin {
 		cmd.DoIFlowLogin(cfg, options)
 	} else if iflowCookie {

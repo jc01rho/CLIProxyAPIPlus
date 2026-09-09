@@ -31,6 +31,9 @@ const (
 	// Kilo represents the Kilo AI provider identifier.
 	Kilo = "kilo"
 
+	// Alysis represents the Alysis Code Pro provider identifier.
+	Alysis = "alysis"
+
 	// Cline represents the Cline AI provider identifier.
 	Cline = "cline"
 	// Cursor represents the Cursor AI provider identifier.

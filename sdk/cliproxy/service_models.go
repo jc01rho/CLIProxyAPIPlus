@@ -158,6 +158,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = executor.FilterKiloModels(registry.GetKiloModels())
 		}
 		models = applyExcludedModels(models, excluded)
+	case "alysis":
+		models = executor.FetchAlysisModels(ctx, a, s.cfg)
+		models = applyExcludedModels(models, excluded)
 	case "kilo-gateway":
 		models = executor.FetchKiloGatewayModels(ctx, a, s.cfg)
 		if len(models) == 0 {

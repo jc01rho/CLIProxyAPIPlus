@@ -27,6 +27,7 @@ var oauthProviders = []oauthProvider{
 	{"xAI", "xai-auth-url", "⬛", true},
 	{"Cursor", "cursor-auth-url", "⬜", true},
 	{"Kilo", "kilo-auth-url", "🟨", true},
+	{"Alysis", "alysis-auth-url", "🟩", true},
 	{"Kiro", "kiro-auth-url", "🟦", true},
 }
 
