@@ -1899,6 +1899,13 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if !m.authMatchesThresholdRule(candidate, model, opts) {
 			continue
 		}
+		// Model time gates (peak-hour blackouts): excluded candidates fall
+		// through to the next provider quietly, with the rule name logged
+		// for traceability.
+		if gateName, gated := m.authMatchesTimeGate(candidate, model, opts); gated {
+			m.warnLogTimeGateExcluded(ctx, provider, model, candidate, gateName)
+			continue
+		}
 		if _, used := tried[candidate.ID]; used {
 			continue
 		}

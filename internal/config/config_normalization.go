@@ -3,6 +3,7 @@ package config
 import (
 	"sort"
 	"strings"
+	"time"
 
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
 )
@@ -392,6 +393,45 @@ func (cfg *Config) SanitizeTokenThresholdRules() {
 		return out[i].ModelPattern < out[j].ModelPattern
 	})
 	cfg.Routing.TokenThresholdRules = out
+}
+
+// SanitizeModelTimeGates normalizes model time-gate rules: trims strings,
+// lowercases the provider, drops rules with no name/schedule/duration, and
+// defaults Enabled to true when unset.
+func (cfg *Config) SanitizeModelTimeGates() {
+	if cfg == nil {
+		return
+	}
+	out := make([]ModelTimeGate, 0, len(cfg.Routing.ModelTimeGates))
+	for _, rule := range cfg.Routing.ModelTimeGates {
+		rule.Name = strings.TrimSpace(rule.Name)
+		rule.Schedule = strings.TrimSpace(rule.Schedule)
+		rule.Duration = strings.TrimSpace(rule.Duration)
+		rule.Provider = strings.ToLower(strings.TrimSpace(rule.Provider))
+		rule.AuthID = strings.TrimSpace(rule.AuthID)
+		models := make([]string, 0, len(rule.Models))
+		for _, m := range rule.Models {
+			if m = strings.TrimSpace(m); m != "" {
+				models = append(models, m)
+			}
+		}
+		rule.Models = models
+		if rule.Name == "" || rule.Schedule == "" || rule.Duration == "" {
+			continue
+		}
+		if _, err := time.ParseDuration(rule.Duration); err != nil {
+			continue
+		}
+		if len(strings.Fields(rule.Schedule)) != 5 {
+			continue
+		}
+		if rule.Enabled == nil {
+			enabled := true
+			rule.Enabled = &enabled
+		}
+		out = append(out, rule)
+	}
+	cfg.Routing.ModelTimeGates = out
 }
 
 // NormalizeHeaders trims header keys and values and removes empty pairs.
