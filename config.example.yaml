@@ -280,6 +280,31 @@ routing:
   # Ignored when routing.session-affinity is false.
   session-affinity-subagents: true
 
+  # ── Model time gates (peak-hour blackouts) ──
+  # Excludes matching provider/auth/model combinations from credential
+  # selection while the cron window is active. Excluded requests fail over
+  # quietly to other providers; each exclusion logs
+  # "auth excluded by model time gate" with rule/auth/model fields.
+  #
+  # Fields: schedule = cron "minute hour dom month dow" in UTC (dom and
+  # month must be "*"), duration = window length after start (e.g. "3h").
+  # provider/auth-id/models are optional filters (empty = match all).
+  # models uses glob patterns ("deepseek-*").
+  # NOTE: model matching is against the route model string — an alias only
+  # blocks requests arriving via that alias; list both the alias and the real
+  # model ID to block either form.
+  #
+  # Example — "deepseek peek time" (7h/day, 01–04 & 06–10 UTC, Mon–Fri):
+  # model-time-gates:
+  #   - name: "deepseek-peek-time-1"
+  #     schedule: "0 1 * * 1-5"
+  #     duration: "3h"
+  #     provider: "deepseek"
+  #   - name: "deepseek-peek-time-2"
+  #     schedule: "0 6 * * 1-5"
+  #     duration: "4h"
+  #     provider: "deepseek"
+
 # Codex provider behavior.
 codex:
   # When true, and routing.strategy is fill-first or routing.session-affinity is true,

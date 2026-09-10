@@ -145,6 +145,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/routing/fallback-chain", s.mgmt.PutFallbackChain)
 		mgmt.GET("/routing/token-threshold-rules", s.mgmt.GetTokenThresholdRules)
 		mgmt.PUT("/routing/token-threshold-rules", s.mgmt.PutTokenThresholdRules)
+		mgmt.GET("/routing/model-time-gates", s.mgmt.GetModelTimeGates)
+		mgmt.PUT("/routing/model-time-gates", s.mgmt.PutModelTimeGates)
 
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)

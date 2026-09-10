@@ -128,6 +128,34 @@ func (h *Handler) PutTokenThresholdRules(c *gin.Context) {
 	h.persist(c)
 }
 
+// GetModelTimeGates returns the model time-gate configuration.
+func (h *Handler) GetModelTimeGates(c *gin.Context) {
+	rules := h.cfg.Routing.ModelTimeGates
+	if rules == nil {
+		rules = []config.ModelTimeGate{}
+	}
+	c.JSON(200, gin.H{"model-time-gates": rules})
+}
+
+// PutModelTimeGates replaces the model time-gate configuration.
+func (h *Handler) PutModelTimeGates(c *gin.Context) {
+	var body struct {
+		Value []config.ModelTimeGate `json:"value"`
+	}
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if body.Value == nil {
+		body.Value = []config.ModelTimeGate{}
+	}
+	tmpCfg := *h.cfg
+	tmpCfg.Routing.ModelTimeGates = append([]config.ModelTimeGate(nil), body.Value...)
+	tmpCfg.SanitizeModelTimeGates()
+	h.cfg.Routing.ModelTimeGates = tmpCfg.Routing.ModelTimeGates
+	h.persist(c)
+}
+
 func normalizeBillingClassValue(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {

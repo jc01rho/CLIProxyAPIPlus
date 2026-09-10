@@ -293,6 +293,32 @@ type RoutingConfig struct {
 
 	// TokenThresholdRules routes requests by estimated input-token ranges.
 	TokenThresholdRules []TokenThresholdRule `yaml:"token-threshold-rules,omitempty" json:"token-threshold-rules,omitempty"`
+
+	// ModelTimeGates excludes matching provider/auth/model combinations from
+	// credential selection during cron windows (e.g. peak-hour blackouts).
+	// Excluded requests fall through to the normal failover path, so another
+	// provider serves them quietly. Empty means no time gating.
+	ModelTimeGates []ModelTimeGate `yaml:"model-time-gates,omitempty" json:"model-time-gates,omitempty"`
+}
+
+// ModelTimeGate excludes one provider/auth/model slice from selection while
+// its cron window is active.
+type ModelTimeGate struct {
+	// Name identifies the rule in logs and the management UI.
+	Name string `yaml:"name" json:"name"`
+	// Schedule is a cron expression "minute hour dom month dow" in UTC.
+	Schedule string `yaml:"schedule" json:"schedule"`
+	// Duration keeps the gate active after the schedule start (e.g. "3h").
+	Duration string `yaml:"duration" json:"duration"`
+	// Provider limits the gate to one provider (empty = all providers).
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	// AuthID limits the gate to one credential ID (empty = all credentials).
+	AuthID string `yaml:"auth-id,omitempty" json:"auth-id,omitempty"`
+	// Models limits the gate to matching route models, glob-style ("deepseek-*").
+	// Empty matches all models.
+	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
+	// Enabled defaults to true; explicit false disables the rule.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 }
 
 // BillingClass identifies how a credential or provider is billed for routing policy.
