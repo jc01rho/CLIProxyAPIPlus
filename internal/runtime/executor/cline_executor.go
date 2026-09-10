@@ -802,14 +802,33 @@ func fetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	return dynamicModels
 }
 
-// FilterClineModels limits a Cline catalog to IDs containing ":free" when enabled.
+// clineCuratedFreeModels are model IDs the Cline UI advertises as FREE even
+// though the catalog API reports nonzero list pricing for them (e.g.
+// z-ai/glm-5.3-flash, upstage/solar-pro4, meituan/longcat-2.0). They are the
+// server-recommended zero-cost picks alongside the official ":free" bucket,
+// mirroring OmniRoute's curated cline catalog.
+var clineCuratedFreeModels = map[string]bool{
+	"meta/muse-spark-1.3-contributor": true,
+	"deepseek/deepseek-v4-flash":      true,
+	"z-ai/glm-5.3-flash":              true,
+	"upstage/solar-pro4":              true,
+	"meituan/longcat-2.0":             true,
+	"poolside/laguna-s-2.1":           true,
+}
+
+// FilterClineModels limits a Cline catalog to free models when enabled: IDs
+// containing ":free" plus the curated zero-cost picks the Cline UI
+// advertises as FREE despite nonzero list pricing.
 func FilterClineModels(models []*registry.ModelInfo, freeOnly bool) []*registry.ModelInfo {
 	if !freeOnly {
 		return models
 	}
 	filtered := make([]*registry.ModelInfo, 0, len(models))
 	for _, model := range models {
-		if model != nil && strings.Contains(model.ID, ":free") {
+		if model == nil {
+			continue
+		}
+		if strings.Contains(model.ID, ":free") || clineCuratedFreeModels[strings.ToLower(strings.TrimSpace(model.ID))] {
 			filtered = append(filtered, model)
 		}
 	}

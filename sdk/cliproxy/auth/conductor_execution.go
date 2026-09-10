@@ -601,6 +601,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					execOpts.Metadata = meta
 				}
 			}
+			payload := execOpts.OriginalRequest
+			if len(payload) == 0 {
+				payload = execReq.Payload
+			}
+			execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
 			var errIntercept error
 			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			if errIntercept != nil {
@@ -837,6 +842,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execOpts.Metadata = meta
 				}
 			}
+			payload := execOpts.OriginalRequest
+			if len(payload) == 0 {
+				payload = execReq.Payload
+			}
+			execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
 			var errIntercept error
 			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			if errIntercept != nil {
@@ -1225,6 +1235,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				execOpts.Metadata = meta
 			}
 		}
+		payload := execOpts.OriginalRequest
+		if len(payload) == 0 {
+			payload = execReq.Payload
+		}
+		execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
 		execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 		if homeMode && len(models) > 1 {
 			models = models[:1]
@@ -2137,6 +2152,24 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 	return exec.HttpRequest(ctx, auth, req)
 }
 
+func ensureCanonicalSessionMetadata(metadata map[string]any, headers http.Header, payload []byte) map[string]any {
+	if metadata != nil {
+		if canonicalID, ok := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string); ok && strings.TrimSpace(canonicalID) != "" {
+			return metadata
+		}
+	}
+	canonicalID := CanonicalSessionID(headers, payload, metadata)
+	if canonicalID == "" {
+		return metadata
+	}
+	out := make(map[string]any, len(metadata)+1)
+	for k, v := range metadata {
+		out[k] = v
+	}
+	out[cliproxyexecutor.CanonicalSessionIDMetadataKey] = canonicalID
+	return out
+}
+
 func syncMetadataSessionToContext(ctx context.Context, metadata map[string]any) context.Context {
 	if ctx == nil {
 		return nil
@@ -2174,9 +2207,9 @@ func syncMetadataSessionToContext(ctx context.Context, metadata map[string]any) 
 		if clientMeta.SessionID != "" || clientMeta.ParentSessionID != "" {
 			clientMeta.SessionID = ""
 			clientMeta.ParentSessionID = ""
-			return logging.WithClientRequestMetadata(ctx, clientMeta)
+			ctx = logging.WithClientRequestMetadata(ctx, clientMeta)
 		}
-		return ctx
+		return util.WithSessionID(ctx, "")
 	}
 	clientMeta := logging.GetClientRequestMetadata(ctx)
 	clientMeta.SessionID = cliproxysession.BoundSessionIdentity(canonicalID)
@@ -2188,5 +2221,6 @@ func syncMetadataSessionToContext(ctx context.Context, metadata map[string]any) 
 	if clientMeta.SessionID == clientMeta.ParentSessionID {
 		clientMeta.ParentSessionID = ""
 	}
-	return logging.WithClientRequestMetadata(ctx, clientMeta)
+	ctx = logging.WithClientRequestMetadata(ctx, clientMeta)
+	return util.WithSessionID(ctx, clientMeta.SessionID)
 }

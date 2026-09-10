@@ -105,3 +105,37 @@ func TestFilterClineModelsAppliesToFallbackCatalog(t *testing.T) {
 		t.Fatalf("filtered fallback models = %#v", filtered)
 	}
 }
+
+func TestFilterClineModelsIncludesCuratedZeroCostPicks(t *testing.T) {
+	// The Cline UI advertises these as FREE despite nonzero list pricing.
+	curated := []string{
+		"meta/muse-spark-1.3-contributor",
+		"deepseek/deepseek-v4-flash",
+		"z-ai/glm-5.3-flash",
+		"upstage/solar-pro4",
+		"meituan/longcat-2.0",
+		"poolside/laguna-s-2.1",
+	}
+	models := []*registry.ModelInfo{{ID: "provider/paid"}}
+	for _, id := range curated {
+		models = append(models, &registry.ModelInfo{ID: id})
+	}
+	models = append(models, &registry.ModelInfo{ID: "provider/bucket:free"})
+
+	filtered := FilterClineModels(models, true)
+	if len(filtered) != len(curated)+1 {
+		t.Fatalf("filtered models = %d, want %d", len(filtered), len(curated)+1)
+	}
+	seen := map[string]bool{}
+	for _, m := range filtered {
+		seen[m.ID] = true
+	}
+	for _, id := range append(curated, "provider/bucket:free") {
+		if !seen[id] {
+			t.Errorf("expected %q in free-only results", id)
+		}
+	}
+	if seen["provider/paid"] {
+		t.Error("paid model must not appear in free-only results")
+	}
+}
