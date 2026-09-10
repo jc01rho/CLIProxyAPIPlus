@@ -2,29 +2,43 @@ package executor
 
 import (
 	"context"
+	ed25519 "crypto/ed25519"
+	crand "crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/zcode"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
-// ZCodeAnthropicBaseURL is the pinned Anthropic-compatible base for the zcode
-// provider. glm-zcode logs in via ZCode's OAuth but auto-provisions a real
-// Z.AI API key and calls api.z.ai directly (no zcode.z.ai gateway, no
-// captcha). Pin the base so dynamic discovery / stale catalogs can't redirect
-// it elsewhere.
+// ZCodeAnthropicBaseURL is the direct Anthropic-compatible base for the zcode
+// provider, used as the unsigned fallback (and historically the only path).
 const ZCodeAnthropicBaseURL = "https://api.z.ai/api/anthropic"
+
+// ZCodeUltraBaseURL is the ultra gateway that the desktop client routes
+// signed traffic to (3.11.2 agent-configs proxyEndpoint.mapping:
+// https://api.z.ai/api/anthropic/v1/messages ->
+// https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages). The extension
+// reference (omo-zcode-oauth) pins this as the default inference base for
+// signed traffic. Set ZCODE_ANTHROPIC_BASE_URL to revert to the direct
+// endpoint.
+const ZCodeUltraBaseURL = "https://zcode.z.ai/api/v1/ultra-zai/anthropic"
 
 // ZCodeStartPlanBaseURL is the ZCode start-plan gateway, verified from the
 // ZCode desktop app (app.asar buildZCodeEndpointUrls): the start/coding-plan
@@ -38,12 +52,19 @@ const ZCodeStartPlanBaseURL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
 
 // ZCodeAppVersion mirrors the ZCode desktop release used for source headers
 // and the balance probe. Keep it aligned with a real published release so the
-// gateway treats the client as a current ZCode build (verified against the
-// 3.10.2 linux-x64 AppImage build metadata).
-const zcodeAppVersion = "3.10.2"
+// gateway treats the client as a current ZCode build (3.11.2 linux-x64).
+const zcodeAppVersion = "3.11.2"
 
 // zcodeReleaseChannel is the release channel used in the ZCode source headers.
-const zcodeReleaseChannel = "stable"
+const zcodeReleaseChannel = "production"
+
+// ZCodeSigningGateURL is the agent-configs endpoint that reports the client
+// signing feature gate (data.codingPlanSignature.enable).
+const ZCodeSigningGateURL = "https://zcode.z.ai/api/v1/agent/configs"
+
+// zcodeGateTTL caches an affirmative gate answer for one hour, mirroring the
+// desktop's tTn cache TTL. Negative results are never cached (fail-open).
+const zcodeGateTTL = time.Hour
 
 // ZcodeExecutor is a stateless executor for the GLM ZCode provider. It reuses
 // the Anthropic-compatible ClaudeExecutor request/stream path but pins the
@@ -63,43 +84,67 @@ func (e *ZcodeExecutor) Identifier() string {
 	return "zcode"
 }
 
-// Execute runs a non-streaming zcode request.
+// Execute runs a non-streaming zcode request. On a 401 carrying a signing
+// verification reason the cached key is invalidated and the SAME request is
+// transparently re-sent once: first with a fresh handshake, then (after a
+// second rejection) unsigned — the desktop's retry-then-bypass sequence
+// (zcode.cjs ClientRequestSigningV4Signer.request).
 func (e *ZcodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	auth, opts = e.prepareZcodeRequest(auth, opts)
+	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
+	resp, err := e.ClaudeExecutor.Execute(ctx, auth, req, opts)
+	if !zcodeSignatureRejected(auth, err) {
+		return resp, err
+	}
+	zcodeInvalidateSigningKey(auth)
+	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
+	resp, err = e.ClaudeExecutor.Execute(ctx, auth, req, opts)
+	if !zcodeSignatureRejected(auth, err) {
+		return resp, err
+	}
+	zcodeDisableSigning(auth)
+	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
 	return e.ClaudeExecutor.Execute(ctx, auth, req, opts)
 }
 
-// ExecuteStream runs a streaming zcode request.
+// ExecuteStream runs a streaming zcode request, applying the same
+// invalidate -> re-handshake -> unsigned retry sequence as Execute. The retry
+// only happens before any bytes reach the caller, so a mid-stream failure is
+// returned as-is (matching the desktop's behavior inside a stream).
 func (e *ZcodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	auth, opts = e.prepareZcodeRequest(auth, opts)
+	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
+	result, err := e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
+	if !zcodeSignatureRejected(auth, err) {
+		return result, err
+	}
+	zcodeInvalidateSigningKey(auth)
+	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
+	result, err = e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
+	if !zcodeSignatureRejected(auth, err) {
+		return result, err
+	}
+	zcodeDisableSigning(auth)
+	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
 	return e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
 }
 
-// prepareZcodeRequest pins the base URL, injects the ZCode source headers, and
-// attaches the desktop client's session identity header.
+// prepareZcodeRequest pins the base URL, injects the ZCode source headers,
+// and attaches the desktop client's session identity header.
 //
-// Routing: when the auth record carries a broker zcode JWT and an active start
-// plan (probed at OAuth/refresh time via billing/balance), requests go through
-// the zcode.z.ai start-plan gateway with the broker JWT so start plan quota is
-// consumed instead of the individual plan that the provisioned Z.AI API key is
-// otherwise billed to. Otherwise every request authenticates with the
-// provisioned key against api.z.ai, matching the gajae-code reference
-// implementation (packages/ai/src/utils/oauth/glm-zcode.ts).
-//
-// History note: an earlier attempt at this routing failed with the gateway's
-// {"code":3007,"msg":"captcha verify failed"}. The reverse-engineered Client
-// Signing V4 shows the zcode-plan model paths are EXEMPT from Ed25519 signing
-// (isUnsignedModelRequestPath), so the captcha is enforced by a separate
-// Aliyun gate. The routing is restored balance-gated: only accounts whose
-// billing/balance explicitly reports an active start plan take the gateway
-// path, and any upstream rejection still surfaces to the caller.
+// Routing (3.11.2 parity with the omo-zcode-oauth extension):
+//  1. Active start plan + broker JWT -> zcode.z.ai start-plan gateway with the
+//     broker JWT (unchanged local behavior; balance-gated).
+//  2. Otherwise the ultra gateway (ZCodeUltraBaseURL) with the provisioned
+//     Z.AI API key, Client Signing V4 signed when the signing feature gate is
+//     on and the handshake succeeds. Gate/handshake failure or an env
+//     override (ZCODE_ANTHROPIC_BASE_URL) sends the request unsigned — to
+//     the direct endpoint when overridden, ultra otherwise.
 //
 // Wire delivery: ClaudeExecutor never reads opts.Headers for the outbound
 // request, so injecting here would silently vanish. Headers travel in
 // auth.Attributes as "header:<name>" entries — util.ApplyCustomHeadersFromAttrs
 // replays them with Set() on the finished request, after the credential
 // rewrite, exactly the seam the desktop's own provider entries use.
-func (e *ZcodeExecutor) prepareZcodeRequest(auth *cliproxyauth.Auth, opts cliproxyexecutor.Options) (*cliproxyauth.Auth, cliproxyexecutor.Options) {
+func (e *ZcodeExecutor) prepareZcodeRequest(auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) {
 	if auth != nil {
 		auth = auth.Clone()
 		if auth.Attributes == nil {
@@ -130,11 +175,207 @@ func (e *ZcodeExecutor) prepareZcodeRequest(auth *cliproxyauth.Auth, opts clipro
 				auth.Metadata = metadata
 			}
 		} else {
-			auth.Attributes["base_url"] = ZCodeAnthropicBaseURL
+			// Extension parity: default destination is the ultra gateway, signed
+			// when possible. ZCODE_ANTHROPIC_BASE_URL overrides to the direct
+			// endpoint with signing disabled AND off-peak routing off (override
+			// always wins — extension offpeak.ts explicitEndpointOverride).
+			override := strings.TrimSpace(os.Getenv("ZCODE_ANTHROPIC_BASE_URL"))
+			if override == "" && zcodeOffPeakActive(auth, req.Model) {
+				// Off-peak ("Idle plan") path: route flash traffic through the
+				// ticket-gated zero-quota gateway. Credential slot = JWT
+				// (start-plan style): ClaudeExecutor rewrites Authorization from
+				// it, giving Bearer <jwt> exactly the off-peak contract. Ticket
+				// and API-key headers travel as header: attrs, replayed after the
+				// credential rewrite.
+				auth.Attributes["base_url"] = zcode.OffPeakBaseURL
+				auth.Attributes["api_key"] = zcodeBrokerToken(auth)
+				if auth.Metadata != nil {
+					metadata := make(map[string]any, len(auth.Metadata))
+					for k, v := range auth.Metadata {
+						metadata[k] = v
+					}
+					metadata["access_token"] = zcodeBrokerToken(auth)
+					auth.Metadata = metadata
+				}
+				zcodeAttachOffPeakTicket(auth)
+			} else {
+				baseURL := ZCodeUltraBaseURL
+				sign := true
+				if override != "" {
+					baseURL = override
+					sign = false
+				}
+				auth.Attributes["base_url"] = baseURL
+				if sign {
+					zcodeSignRequest(auth)
+				}
+			}
 		}
 		zcodeSetWireHeaders(auth, useGateway)
+		if !useGateway {
+			req = zcodeInjectUserIdentity(req, auth)
+		}
 	}
-	return auth, opts
+	return auth, req, opts
+}
+
+// --- off-peak ("Idle plan") routing ---
+
+var (
+	zcodeOffPeakTicket *zcode.OffPeakTicketState
+	zcodeOffPeakTaskID string
+	zcodeOffPeakMu     sync.Mutex
+)
+
+// zcodeOffPeakTaskID returns the stable per-process task id the ticket queue
+// requires (extension currentOffPeakTaskId).
+func zcodeCurrentOffPeakTaskID() string {
+	zcodeOffPeakMu.Lock()
+	defer zcodeOffPeakMu.Unlock()
+	if zcodeOffPeakTaskID == "" {
+		zcodeOffPeakTaskID = "omo-offpeak-" + zcodeUUID()
+	}
+	return zcodeOffPeakTaskID
+}
+
+// zcodeOffPeakEnabled reports whether off-peak routing is turned on. Opt-in
+// only, mirroring the extension's ZCODE_OFFPEAK_ENABLE=1 gate.
+func zcodeOffPeakEnabled() bool {
+	return os.Getenv("ZCODE_OFFPEAK_ENABLE") == "1"
+}
+
+// zcodeOffPeakActive decides whether THIS request should take the off-peak
+// path: enabled, in window, flash model, broker JWT present, and the plan
+// currently grants tickets. Availability is checked once per window per
+// decision point — cheap enough at request granularity.
+func zcodeOffPeakActive(auth *cliproxyauth.Auth, model string) bool {
+	if !zcodeOffPeakEnabled() {
+		return false
+	}
+	if zcodeBrokerToken(auth) == "" {
+		return false
+	}
+	now := time.Now()
+	if !zcode.IsOffPeakWindow(now) {
+		return false
+	}
+	if !zcode.IsFlashModelID(model) {
+		return false
+	}
+	jwt := zcodeBrokerToken(auth)
+	apiKey := zcodeCreds(auth)
+	if apiKey == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return zcode.OffPeakAvailability(ctx, jwt, apiKey)
+}
+
+// zcodeAttachOffPeakTicket ensures a ready ticket exists (reusing the cached
+// one when fresh) and installs the off-peak auth header set on the cloned
+// auth: X-Off-Peak-Ticket-ID plus X-Coding-Plan-Api-Key. The Authorization
+// header itself comes from the credential slot (JWT), set by the caller.
+// Fail-open: any ticket failure logs at debug and leaves the request without
+// a ticket — the executor returns the upstream error visibly rather than
+// silently mis-routing (extension installOffPeakAuth contract).
+func zcodeAttachOffPeakTicket(auth *cliproxyauth.Auth) {
+	jwt := zcodeBrokerToken(auth)
+	apiKey := zcodeCreds(auth)
+	if jwt == "" || apiKey == "" {
+		return
+	}
+	now := time.Now()
+	zcodeOffPeakMu.Lock()
+	fresh := zcode.OffPeakTicketFresh(zcodeOffPeakTicket, now, jwt, apiKey)
+	ticketID := ""
+	if fresh {
+		ticketID = zcodeOffPeakTicket.TicketID
+	}
+	zcodeOffPeakMu.Unlock()
+	if !fresh {
+		ctx, cancel := context.WithTimeout(context.Background(), zcode.OffPeakReadyWaitMS+15*time.Second)
+		defer cancel()
+		id, err := zcode.EnsureOffPeakTicket(ctx, jwt, apiKey, zcodeCurrentOffPeakTaskID())
+		if err != nil {
+			log.Debugf("zcode off-peak: ticket unavailable, staying on ultra: %v", err)
+			return
+		}
+		ticketID = id
+		zcodeOffPeakMu.Lock()
+		zcodeOffPeakTicket = &zcode.OffPeakTicketState{
+			JWT: jwt, APIKey: apiKey, TicketID: ticketID,
+			TakenAt: time.Now(), WindowEpoch: kstEpochOf(time.Now()),
+		}
+		zcodeOffPeakMu.Unlock()
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = map[string]string{}
+	}
+	auth.Attributes["header:X-Off-Peak-Ticket-ID"] = ticketID
+	auth.Attributes["header:X-Coding-Plan-Api-Key"] = apiKey
+	// The signed-request headers must not ride along on off-peak requests
+	// (extension SIGNATURE_HEADERS stripping).
+	for _, name := range zcodeSignatureHeaderNames {
+		delete(auth.Attributes, "header:"+name)
+	}
+}
+
+// zcodeSignatureHeaderNames are the Client Signing V4 headers stripped from
+// off-peak requests.
+var zcodeSignatureHeaderNames = []string{
+	"X-Client-Ts", "X-Client-Version", "X-Client-Sig", "X-Client-Nonce",
+	"X-Client-Pow", "X-App-Id", "X-Client-Sign-Verified",
+}
+
+// kstEpochOf mirrors zcode.kstWindowEpoch via a fresh computation.
+func kstEpochOf(now time.Time) int64 {
+	return now.Add(-9*time.Hour).UTC().Unix() / 86_400
+}
+
+// zcodeSignRequest attaches Client Signing V4 headers to the cloned auth via
+// header: attributes. Fail-open: any gate/handshake/signing error logs at
+// debug and leaves the request unsigned, mirroring the desktop and the
+// extension reference (omo-zcode-oauth signing.ts).
+func zcodeSignRequest(auth *cliproxyauth.Auth) {
+	credential := zcodeCreds(auth)
+	if credential == "" {
+		return
+	}
+	apiKeyID, _, err := zcode.ParseSigningCredential(credential)
+	if err != nil {
+		log.Debugf("zcode signing: parse credential: %v", err)
+		return
+	}
+	if !zcodeSigningEnabled(credential) {
+		return
+	}
+	zcodeSigningMu.Lock()
+	bypassed := zcodeBypassSigning[credential]
+	zcodeSigningMu.Unlock()
+	if bypassed {
+		return
+	}
+	priv, err := zcodeHandshakeFor(credential)
+	if err != nil {
+		log.Debugf("zcode signing: handshake unavailable, sending unsigned: %v", err)
+		return
+	}
+	sessionID := auth.Attributes["header:X-Session-Id"]
+	headers, err := zcode.BuildSigningHeaders(priv, apiKeyID, sessionID, zcodeAppVersion, time.Now())
+	if err != nil {
+		log.Debugf("zcode signing: build headers: %v", err)
+		return
+	}
+	// Attribution headers travel with signed requests on the desktop agent
+	// path (zcode.cjs xnt): request id, trace id, query id, session type.
+	headers["x-request-id"] = zcodeUUID()
+	headers["x-zcode-trace-id"] = zcodeUUID()
+	headers["x-query-id"] = zcodeUUID()
+	headers["x-zcode-session-type"] = "main"
+	for name, value := range headers {
+		auth.Attributes["header:"+name] = value
+	}
 }
 
 // zcodeSetWireHeaders materializes the ZCode desktop wire identity as
@@ -152,7 +393,176 @@ func zcodeSetWireHeaders(auth *cliproxyauth.Auth, useGateway bool) {
 	for name, value := range buildZCodeSourceHeaders() {
 		auth.Attributes["header:"+name] = value[0]
 	}
+	// X-Device-Mid is only set by the host request path (dynamic per-request
+	// variant); the agent path omits it, so the extension reference and this
+	// executor do not send it either.
 	auth.Attributes["header:X-Session-Id"] = zcodeSessionID(auth)
+}
+
+// zcodeSignatureRejected reports whether err is a 401 whose body carries one
+// of the desktop's refreshable signature verification reasons
+// (VERIFY_SIGNATURE_INVALID / VERIFY_APIKEY_EXPIRED).
+func zcodeSignatureRejected(auth *cliproxyauth.Auth, err error) bool {
+	if err == nil || auth == nil {
+		return false
+	}
+	status, body, ok := zcodeUpstreamStatusBody(err)
+	return ok && zcode.HasRefreshableSignatureReason(status, body)
+}
+
+// zcodeInvalidateSigningKey drops the cached Ed25519 private key for the
+// credential so the next prepare performs a fresh handshake (desktop
+// invalidatePrivateKey).
+func zcodeInvalidateSigningKey(auth *cliproxyauth.Auth) {
+	if credential := zcodeCreds(auth); credential != "" {
+		zcodeSigningMu.Lock()
+		delete(zcodePrivateKeys, credential)
+		zcodeSigningMu.Unlock()
+		log.Debug("zcode signing: upstream rejected signature, handshake key invalidated")
+	}
+}
+
+// zcodeDisableSigning turns off signing for the credential after a rejected
+// retry, mirroring the desktop's bypassSigning latch. The cached key is also
+// dropped so a later gate-driven attempt starts from a fresh handshake.
+func zcodeDisableSigning(auth *cliproxyauth.Auth) {
+	credential := zcodeCreds(auth)
+	zcodeSigningMu.Lock()
+	delete(zcodePrivateKeys, credential)
+	if credential != "" {
+		zcodeBypassSigning[credential] = true
+	}
+	zcodeSigningMu.Unlock()
+	log.Debug("zcode signing: rejected after re-handshake, sending unsigned (bypass)")
+}
+
+// zcodeUpstreamStatusBody extracts (status, body) from an upstream HTTP error
+// without depending on the concrete error type.
+func zcodeUpstreamStatusBody(err error) (int, []byte, bool) {
+	type statusBodyer interface {
+		StatusCode() int
+		Body() []byte
+	}
+	var target statusBodyer
+	if errors.As(err, &target) {
+		return target.StatusCode(), target.Body(), true
+	}
+	return 0, nil, false
+}
+
+// zcodeResetSigningStateForTests clears every signing-side cache. Test-only.
+func zcodeResetSigningStateForTests() {
+	zcodeSigningMu.Lock()
+	zcodeGateState = zcodeSignGate{}
+	zcodePrivateKeys = map[string]ed25519.PrivateKey{}
+	zcodeBypassSigning = map[string]bool{}
+	zcodeSigningMu.Unlock()
+	zcodeOffPeakMu.Lock()
+	defer zcodeOffPeakMu.Unlock()
+	zcodeOffPeakTicket = nil
+	zcodeOffPeakTaskID = ""
+}
+
+// --- Client Signing V4 wiring (gate -> handshake -> per-request signing) ---
+
+var (
+	zcodeGateState     zcodeSignGate
+	zcodePrivateKeys   = map[string]ed25519.PrivateKey{}
+	zcodeBypassSigning = map[string]bool{}
+	zcodeHTTPClient    = &http.Client{Timeout: 15 * time.Second}
+	zcodeSigningMu     sync.Mutex
+)
+
+// zcodeSignGate caches the affirmative codingPlanSignature gate answer for
+// one hour. Negative answers are never cached (fail-open).
+type zcodeSignGate struct {
+	enabled   bool
+	checkedAt time.Time
+}
+
+// zcodeSigningEnabled reports whether the upstream signing feature gate is on
+// for the credential. Any failure reads as "disabled" (send unsigned).
+func zcodeSigningEnabled(credential string) bool {
+	zcodeSigningMu.Lock()
+	defer zcodeSigningMu.Unlock()
+	if zcodeGateState.enabled && time.Since(zcodeGateState.checkedAt) < zcodeGateTTL {
+		return true
+	}
+	req, err := http.NewRequest(http.MethodGet, ZCodeSigningGateURL, nil)
+	if err != nil {
+		return false
+	}
+	for name, value := range buildZCodeSourceHeaders() {
+		req.Header.Set(name, value[0])
+	}
+	req.Header.Set("x-api-key", credential)
+	resp, err := zcodeHTTPClient.Do(req)
+	if err != nil {
+		log.Debugf("zcode signing gate: request failed: %v", err)
+		return false
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Debugf("zcode signing gate: close: %v", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return false
+	}
+	var envelope struct {
+		Code int `json:"code"`
+		Data struct {
+			CodingPlanSignature struct {
+				Enable bool `json:"enable"`
+			} `json:"codingPlanSignature"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Code != 0 || !envelope.Data.CodingPlanSignature.Enable {
+		return false
+	}
+	zcodeGateState = zcodeSignGate{enabled: true, checkedAt: time.Now()}
+	return true
+}
+
+// zcodeHandshakeFor returns the cached Ed25519 private key for the credential,
+// performing the get_sign_key handshake on first use. A failed handshake is
+// retried on the next request (the failing request itself sends unsigned).
+func zcodeHandshakeFor(credential string) (ed25519.PrivateKey, error) {
+	zcodeSigningMu.Lock()
+	if priv, ok := zcodePrivateKeys[credential]; ok {
+		zcodeSigningMu.Unlock()
+		return priv, nil
+	}
+	zcodeSigningMu.Unlock()
+	priv, err := zcode.Handshake(context.Background(), "https://api.z.ai", credential, zcodeHTTPClient)
+	if err != nil {
+		return nil, err
+	}
+	zcodeSigningMu.Lock()
+	zcodePrivateKeys[credential] = priv
+	zcodeSigningMu.Unlock()
+	return priv, nil
+}
+
+// zcodeUUID returns a random UUID string for attribution headers.
+func zcodeUUID() string {
+	b := make([]byte, 16)
+	_, _ = crand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	// 8-4-4-4-12 hex layout: the last group reads bytes 10..15 (6 bytes).
+	var last [8]byte
+	copy(last[2:], b[10:16])
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		binary.BigEndian.Uint32(b[0:4]),
+		binary.BigEndian.Uint16(b[4:6]),
+		binary.BigEndian.Uint16(b[6:8]),
+		binary.BigEndian.Uint16(b[8:10]),
+		binary.BigEndian.Uint64(last[:])&0xffffffffffff)
 }
 
 // zcodeUseStartPlan reports whether the auth record has an active start plan
@@ -196,7 +606,8 @@ func zcodeBrokerToken(auth *cliproxyauth.Auth) string {
 
 // buildZCodeSourceHeaders replicates ZCode's buildZCodeSourceHeaders() so
 // api.z.ai sees the request as the ZCode client. Printable-ASCII only;
-// platform/arch resolved at runtime.
+// platform/arch resolved at runtime. X-Device-Mid is intentionally omitted:
+// the desktop agent path does not send it (extension P5 decision).
 func buildZCodeSourceHeaders() http.Header {
 	h := http.Header{}
 	h.Set("User-Agent", "ZCode/"+zcodeAppVersion)
@@ -209,7 +620,6 @@ func buildZCodeSourceHeaders() http.Header {
 	h.Set("X-ZCode-Agent", "glm")
 	h.Set("X-ZCode-App-Version", zcodeAppVersion)
 	h.Set("X-Release-Channel", zcodeReleaseChannel)
-	h.Set("X-Device-Mid", deviceMid())
 	h.Set("X-Os-Version", osVersion())
 	return h
 }
@@ -239,24 +649,41 @@ func timezone() string {
 	return fmt.Sprintf("%s", loc)
 }
 
-// deviceMid reads the ZCode device ID from the telemetry file.
+// deviceMid reads the ZCode device ID from the telemetry file at the path the
+// app itself uses (~/.zcode/v2/telemetry-state.json), creating one in the
+// app's format when absent so a later real app install adopts the same id.
 func deviceMid() string {
-	const file = "telemetry-state.json"
-	dir, err := os.UserConfigDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	path := filepath.Join(dir, "ZCode", file)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
+	path := filepath.Join(home, ".zcode", "v2", "telemetry-state.json")
+	if data, err := os.ReadFile(path); err == nil {
+		var m map[string]any
+		if json.Unmarshal(data, &m) == nil {
+			if v, ok := m["deviceMid"].(string); ok {
+				if mid := strings.TrimSpace(v); mid != "" {
+					return mid
+				}
+			}
+		}
+	} else if os.IsNotExist(err) {
+		mid := zcodeUUID()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
+			if f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644); err == nil {
+				defer func() {
+					if err := f.Close(); err != nil {
+						log.Debugf("zcode deviceMid: close: %v", err)
+					}
+				}()
+				if data, err := json.Marshal(map[string]string{"deviceMid": mid}); err == nil {
+					_, _ = f.Write(data)
+					return mid
+				}
+			}
+		}
 	}
-	var m map[string]any
-	if json.Unmarshal(data, &m) != nil {
-		return ""
-	}
-	v, _ := m["deviceMid"].(string)
-	return strings.TrimSpace(v)
+	return ""
 }
 
 // osVersion returns the OS version string.
@@ -333,7 +760,45 @@ func zcodeCreds(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
-// zcodeSessionID derives a stable desktop-style session identity for the auth
+// zcodeInjectUserIdentity stamps the desktop's device-identity metadata onto
+// the anthropic request body (zcode.cjs A2e/UIo):
+//
+//	metadata.user_id = JSON({device_id, account_uuid: "", session_id})
+//
+// The gateway classifies signed traffic with this marker; requests without it
+// are billed at par. Existing metadata.user_id values are never overwritten.
+func zcodeInjectUserIdentity(req cliproxyexecutor.Request, auth *cliproxyauth.Auth) cliproxyexecutor.Request {
+	if len(req.Payload) == 0 {
+		return req
+	}
+	deviceId := deviceMid()
+	if deviceId == "" {
+		return req
+	}
+	var payload map[string]any
+	if json.Unmarshal(req.Payload, &payload) != nil {
+		return req
+	}
+	metadata, _ := payload["metadata"].(map[string]any)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	if _, exists := metadata["user_id"]; exists {
+		return req
+	}
+	sessionID := ""
+	if auth != nil {
+		sessionID = auth.Attributes["header:X-Session-Id"]
+	}
+	identity, _ := json.Marshal(map[string]string{"device_id": deviceId, "account_uuid": "", "session_id": sessionID})
+	metadata["user_id"] = string(identity)
+	payload["metadata"] = metadata
+	if updated, err := json.Marshal(payload); err == nil {
+		req.Payload = updated
+	}
+	return req
+}
+
 // record. The X-Session-Id value feeds the Client Signing V4 PoW salt and the
 // gateway's session tracking, so it must stay stable across restarts for the
 // same account. Hashing the account email/key avoids leaking any credential

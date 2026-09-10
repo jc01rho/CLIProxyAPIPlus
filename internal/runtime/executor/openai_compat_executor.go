@@ -2098,6 +2098,7 @@ func (e statusErr) Error() string {
 	return fmt.Sprintf("status %d", e.code)
 }
 func (e statusErr) StatusCode() int            { return e.code }
+func (e statusErr) Body() []byte               { return []byte(e.msg) }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
 func (e statusErr) IsCredentialScoped() bool   { return e.credentialScoped }
 
