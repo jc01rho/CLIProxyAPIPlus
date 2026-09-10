@@ -243,12 +243,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// Only a ttl the caller wrote out explicitly survives, because
 	// upgradeClaudeCacheControlTTL skips any block that already has one.
 	// claude-code-cli fingerprint profiles emit extended-cache-ttl and must use the same 1h pool.
-	// In native Claude Code 2.1.258, 1h cache and extended-cache-ttl are restricted to main
-	// interaction queries (repl_main_thread*); subagents, side queries, and probes omit both.
+	// In native Claude Code, subagents default to 5m unless 1h is explicitly configured;
+	// probes omit both 1h cache and extended-cache-ttl.
 	isSubagent := helps.IsClaudeSubagentRequest(incomingHeaders, body)
-	if cpaOwnsCacheControl && fp.ProfileClaudeCodeCLI && !isSubagent && !isProbeOrHelper {
+	subagent1h := isSubagent && helps.ClaudeSubagentRequests1h(incomingHeaders, body)
+	if cpaOwnsCacheControl && fp.ProfileClaudeCodeCLI && (!isSubagent || subagent1h) && !isProbeOrHelper {
 		body = upgradeClaudeCacheControlTTL(body, claudeCacheControlTTL1h)
-	} else if isSubagent || isProbeOrHelper {
+	} else if isProbeOrHelper || (isSubagent && !subagent1h) {
 		body = stripClaudeCacheControlTTL(body)
 	}
 
