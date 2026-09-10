@@ -87,7 +87,7 @@ func TestXAIOAuthHTTPBoundaries(t *testing.T) {
 
 func TestXAIOAuthHTTPLeavesWebsocketHeadersUnchanged(t *testing.T) {
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"auth_kind": "oauth"}}
-	headers := applyXAIWebsocketHeaders(nil, auth, "synthetic-token", "host-session")
+	headers := applyXAIWebsocketHeaders(context.Background(), nil, auth, "synthetic-token", "host-session")
 	if got := headers.Get("x-grok-conv-id"); got != "host-session" {
 		t.Errorf("WS conversation = %q", got)
 	}
