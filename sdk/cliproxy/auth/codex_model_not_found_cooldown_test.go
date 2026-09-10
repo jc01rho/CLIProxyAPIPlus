@@ -152,20 +152,53 @@ func TestCodexStructuredModelNotFound_SessionAffinityReleased(t *testing.T) {
 	}
 }
 
-func TestCodexModelNotFound_CallerInputErrorNotModelCooldown(t *testing.T) {
+// Local divergence (e0a8e394): unlike upstream, generic HTTP 400 caller faults
+// are classified as non-terminal (isRequestInvalidError = false) so the request
+// falls through to the credential/model fallback chains, while neither the
+// credential nor the upstream model state is cooled (client-shape fault).
+// Structured model_not_found responses still rotate via
+// TestCodexStructuredModelNotFound_ClassificationAndCooldown above.
+func TestCodexModelNotFound_CallerInputErrorFallsThroughToFallback(t *testing.T) {
 	rawErr := &statusBearingError{
 		status: http.StatusBadRequest,
 		msg:    `{"error":{"type":"invalid_request_error","message":"The model not found in request body"}}`,
 	}
-	if !isRequestInvalidError(rawErr) {
-		t.Fatalf("isRequestInvalidError(%v) = false, want true for caller request fault", rawErr)
+	if isRequestInvalidError(rawErr) {
+		t.Fatalf("isRequestInvalidError(%v) = true, want false: 400s must fall through to fallback chains", rawErr)
 	}
 	resultErr := resultErrorFromError(rawErr)
-	if resultErr == nil || resultErr.Code != requestScopedErrorCode {
-		t.Fatalf("resultErr = %#v, want request_scoped code", resultErr)
+	if resultErr == nil {
+		t.Fatal("resultErrorFromError = nil")
+	}
+	if resultErr.IsRequestScoped() {
+		t.Fatalf("resultErr = %#v, want non-request-scoped so fallback cools the failing auth", resultErr)
 	}
 	if !shouldSkipCredentialCooldown(resultErr) {
-		t.Fatalf("shouldSkipCredentialCooldown(%#v) = false, want true for request fault", resultErr)
+		t.Fatalf("shouldSkipCredentialCooldown(%#v) = false, want true: generic 400 is a client-shape fault and must not cool the credential", resultErr)
+	}
+
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-codex-caller-400", Provider: "codex"}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	model := "gpt-5.5"
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    model,
+		Success:  false,
+		Error:    resultErr,
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("expected auth to be registered")
+	}
+	state := updated.ModelStates[model]
+	if state != nil && state.Unavailable {
+		t.Fatalf("expected model state to remain available for client-shape faults, got %#v", state)
 	}
 }
 
