@@ -50,13 +50,64 @@ const ZCodeUltraBaseURL = "https://zcode.z.ai/api/v1/ultra-zai/anthropic"
 // (isUnsignedModelRequestPath), so a plain Bearer JWT works.
 const ZCodeStartPlanBaseURL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
 
-// ZCodeAppVersion mirrors the ZCode desktop release used for source headers
-// and the balance probe. Keep it aligned with a real published release so the
-// gateway treats the client as a current ZCode build (3.11.2 linux-x64).
-const zcodeAppVersion = "3.11.2"
+// zcodeDefaultAppVersion mirrors the ZCode desktop release used for source
+// headers and the balance probe. Keep it aligned with a real published release
+// so the gateway treats the client as a current ZCode build (3.11.2 linux-x64).
+// ZCODE_APP_VERSION overrides it, matching the extension's zcodeAppVersion().
+const zcodeDefaultAppVersion = "3.11.2"
 
-// zcodeReleaseChannel is the release channel used in the ZCode source headers.
-const zcodeReleaseChannel = "production"
+// zcodeDefaultReleaseChannel is the release channel used in the ZCode source
+// headers. ZCODE_RELEASE_CHANNEL overrides it.
+const zcodeDefaultReleaseChannel = "production"
+
+// zcodeProviderUtilsVersion is the @ai-sdk/provider-utils version the ZCode
+// desktop bundle appends to its User-Agent (3.11.2 glm/zcode.cjs xm()).
+const zcodeProviderUtilsVersion = "4.0.27"
+
+// zcodePrintableASCII drops every non printable-ASCII byte, mirroring the
+// desktop and extension header normalizer (zcode.cjs tL()).
+func zcodePrintableASCII(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 0x20 && r <= 0x7e {
+			return r
+		}
+		return -1
+	}, value)
+}
+
+// zcodeEnv reads an environment variable as a printable-ASCII value.
+func zcodeEnv(name string) string {
+	return zcodePrintableASCII(strings.TrimSpace(os.Getenv(name)))
+}
+
+// zcodeAppVersion returns the advertised ZCode client version.
+func zcodeAppVersion() string {
+	if v := zcodeEnv("ZCODE_APP_VERSION"); v != "" {
+		return v
+	}
+	return zcodeDefaultAppVersion
+}
+
+// zcodeReleaseChannel returns the advertised ZCode release channel.
+func zcodeReleaseChannel() string {
+	if v := zcodeEnv("ZCODE_RELEASE_CHANNEL"); v != "" {
+		return v
+	}
+	return zcodeDefaultReleaseChannel
+}
+
+// zcodeUserAgent builds the User-Agent the desktop sends: the ZCode app id
+// followed by the AI SDK layers the bundle appends. The proxy has no Node
+// runtime, so the runtime tag is either injected via ZCODE_RUNTIME_NODE_VERSION
+// or reported as "unknown" — the same fallback the desktop uses for a missing
+// version field.
+func zcodeUserAgent() string {
+	node := zcodeEnv("ZCODE_RUNTIME_NODE_VERSION")
+	if node == "" {
+		node = "unknown"
+	}
+	return "ZCode/" + zcodeAppVersion() + " ai-sdk/provider-utils/" + zcodeProviderUtilsVersion + " runtime/node.js/" + node
+}
 
 // ZCodeSigningGateURL is the agent-configs endpoint that reports the client
 // signing feature gate (data.codingPlanSignature.enable).
@@ -90,19 +141,19 @@ func (e *ZcodeExecutor) Identifier() string {
 // second rejection) unsigned — the desktop's retry-then-bypass sequence
 // (zcode.cjs ClientRequestSigningV4Signer.request).
 func (e *ZcodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
+	auth, req, opts = e.prepareZcodeRequest(ctx, auth, req, opts)
 	resp, err := e.ClaudeExecutor.Execute(ctx, auth, req, opts)
 	if !zcodeSignatureRejected(auth, err) {
 		return resp, err
 	}
 	zcodeInvalidateSigningKey(auth)
-	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
+	auth, req, opts = e.prepareZcodeRequest(ctx, auth, req, opts)
 	resp, err = e.ClaudeExecutor.Execute(ctx, auth, req, opts)
 	if !zcodeSignatureRejected(auth, err) {
 		return resp, err
 	}
 	zcodeDisableSigning(auth)
-	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
+	auth, req, opts = e.prepareZcodeRequest(ctx, auth, req, opts)
 	return e.ClaudeExecutor.Execute(ctx, auth, req, opts)
 }
 
@@ -111,24 +162,25 @@ func (e *ZcodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 // only happens before any bytes reach the caller, so a mid-stream failure is
 // returned as-is (matching the desktop's behavior inside a stream).
 func (e *ZcodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
+	auth, req, opts = e.prepareZcodeRequest(ctx, auth, req, opts)
 	result, err := e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
 	if !zcodeSignatureRejected(auth, err) {
 		return result, err
 	}
 	zcodeInvalidateSigningKey(auth)
-	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
+	auth, req, opts = e.prepareZcodeRequest(ctx, auth, req, opts)
 	result, err = e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
 	if !zcodeSignatureRejected(auth, err) {
 		return result, err
 	}
 	zcodeDisableSigning(auth)
-	auth, req, opts = e.prepareZcodeRequest(auth, req, opts)
+	auth, req, opts = e.prepareZcodeRequest(ctx, auth, req, opts)
 	return e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
 }
 
 // prepareZcodeRequest pins the base URL, injects the ZCode source headers,
-// and attaches the desktop client's session identity header.
+// and attaches the desktop client's session identity header. ctx bounds the
+// gate/handshake/availability probes so a cancelled request stops probing.
 //
 // Routing (3.11.2 parity with the omo-zcode-oauth extension):
 //  1. Active start plan + broker JWT -> zcode.z.ai start-plan gateway with the
@@ -144,13 +196,21 @@ func (e *ZcodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 // auth.Attributes as "header:<name>" entries — util.ApplyCustomHeadersFromAttrs
 // replays them with Set() on the finished request, after the credential
 // rewrite, exactly the seam the desktop's own provider entries use.
-func (e *ZcodeExecutor) prepareZcodeRequest(auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) {
+func (e *ZcodeExecutor) prepareZcodeRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if auth != nil {
 		auth = auth.Clone()
 		if auth.Attributes == nil {
 			auth.Attributes = map[string]string{}
 		}
+		// Wire headers (including X-Session-Id) must be installed before the
+		// signature is built: BuildSigningHeaders signs over X-Session-Id and
+		// fails closed when it is absent, so signing after the wire headers would
+		// silently drop the signature on every request.
 		useGateway := zcodeBrokerToken(auth) != "" && zcodeUseStartPlan(auth)
+		zcodeSetWireHeaders(auth, useGateway)
 		if useGateway {
 			auth.Attributes["base_url"] = ZCodeStartPlanBaseURL
 			// The broker JWT is the credential, not an extra header. Verified from
@@ -180,7 +240,7 @@ func (e *ZcodeExecutor) prepareZcodeRequest(auth *cliproxyauth.Auth, req cliprox
 			// endpoint with signing disabled AND off-peak routing off (override
 			// always wins — extension offpeak.ts explicitEndpointOverride).
 			override := strings.TrimSpace(os.Getenv("ZCODE_ANTHROPIC_BASE_URL"))
-			if override == "" && zcodeOffPeakActive(auth, req.Model) {
+			if override == "" && zcodeOffPeakActive(ctx, auth, req.Model) {
 				// Off-peak ("Idle plan") path: route flash traffic through the
 				// ticket-gated zero-quota gateway. Credential slot = JWT
 				// (start-plan style): ClaudeExecutor rewrites Authorization from
@@ -207,11 +267,10 @@ func (e *ZcodeExecutor) prepareZcodeRequest(auth *cliproxyauth.Auth, req cliprox
 				}
 				auth.Attributes["base_url"] = baseURL
 				if sign {
-					zcodeSignRequest(auth)
+					zcodeSignRequest(ctx, auth)
 				}
 			}
 		}
-		zcodeSetWireHeaders(auth, useGateway)
 		if !useGateway {
 			req = zcodeInjectUserIdentity(req, auth)
 		}
@@ -248,9 +307,12 @@ func zcodeOffPeakEnabled() bool {
 // path: enabled, in window, flash model, broker JWT present, and the plan
 // currently grants tickets. Availability is checked once per window per
 // decision point — cheap enough at request granularity.
-func zcodeOffPeakActive(auth *cliproxyauth.Auth, model string) bool {
+func zcodeOffPeakActive(ctx context.Context, auth *cliproxyauth.Auth, model string) bool {
 	if !zcodeOffPeakEnabled() {
 		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if zcodeBrokerToken(auth) == "" {
 		return false
@@ -267,9 +329,9 @@ func zcodeOffPeakActive(auth *cliproxyauth.Auth, model string) bool {
 	if apiKey == "" {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	availabilityCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	return zcode.OffPeakAvailability(ctx, jwt, apiKey)
+	return zcode.OffPeakAvailability(availabilityCtx, jwt, apiKey)
 }
 
 // zcodeAttachOffPeakTicket ensures a ready ticket exists (reusing the cached
@@ -337,7 +399,10 @@ func kstEpochOf(now time.Time) int64 {
 // header: attributes. Fail-open: any gate/handshake/signing error logs at
 // debug and leaves the request unsigned, mirroring the desktop and the
 // extension reference (omo-zcode-oauth signing.ts).
-func zcodeSignRequest(auth *cliproxyauth.Auth) {
+func zcodeSignRequest(ctx context.Context, auth *cliproxyauth.Auth) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	credential := zcodeCreds(auth)
 	if credential == "" {
 		return
@@ -347,7 +412,7 @@ func zcodeSignRequest(auth *cliproxyauth.Auth) {
 		log.Debugf("zcode signing: parse credential: %v", err)
 		return
 	}
-	if !zcodeSigningEnabled(credential) {
+	if !zcodeSigningEnabled(ctx, credential) {
 		return
 	}
 	zcodeSigningMu.Lock()
@@ -356,13 +421,13 @@ func zcodeSignRequest(auth *cliproxyauth.Auth) {
 	if bypassed {
 		return
 	}
-	priv, err := zcodeHandshakeFor(credential)
+	priv, err := zcodeHandshakeFor(ctx, credential)
 	if err != nil {
 		log.Debugf("zcode signing: handshake unavailable, sending unsigned: %v", err)
 		return
 	}
 	sessionID := auth.Attributes["header:X-Session-Id"]
-	headers, err := zcode.BuildSigningHeaders(priv, apiKeyID, sessionID, zcodeAppVersion, time.Now())
+	headers, err := zcode.BuildSigningHeaders(priv, apiKeyID, sessionID, zcodeAppVersion(), time.Now())
 	if err != nil {
 		log.Debugf("zcode signing: build headers: %v", err)
 		return
@@ -453,7 +518,7 @@ func zcodeUpstreamStatusBody(err error) (int, []byte, bool) {
 // zcodeResetSigningStateForTests clears every signing-side cache. Test-only.
 func zcodeResetSigningStateForTests() {
 	zcodeSigningMu.Lock()
-	zcodeGateState = zcodeSignGate{}
+	zcodeGateStates = map[string]zcodeSignGate{}
 	zcodePrivateKeys = map[string]ed25519.PrivateKey{}
 	zcodeBypassSigning = map[string]bool{}
 	zcodeSigningMu.Unlock()
@@ -466,7 +531,7 @@ func zcodeResetSigningStateForTests() {
 // --- Client Signing V4 wiring (gate -> handshake -> per-request signing) ---
 
 var (
-	zcodeGateState     zcodeSignGate
+	zcodeGateStates    = map[string]zcodeSignGate{}
 	zcodePrivateKeys   = map[string]ed25519.PrivateKey{}
 	zcodeBypassSigning = map[string]bool{}
 	zcodeHTTPClient    = &http.Client{Timeout: 15 * time.Second}
@@ -481,14 +546,20 @@ type zcodeSignGate struct {
 }
 
 // zcodeSigningEnabled reports whether the upstream signing feature gate is on
-// for the credential. Any failure reads as "disabled" (send unsigned).
-func zcodeSigningEnabled(credential string) bool {
+// for the credential. Any failure reads as "disabled" (send unsigned). The
+// answer is cached per credential for one hour; negatives are never cached,
+// mirroring the extension's per-API-key states map (signing.ts signingEnabled).
+func zcodeSigningEnabled(ctx context.Context, credential string) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	zcodeSigningMu.Lock()
-	defer zcodeSigningMu.Unlock()
-	if zcodeGateState.enabled && time.Since(zcodeGateState.checkedAt) < zcodeGateTTL {
+	cached, ok := zcodeGateStates[credential]
+	zcodeSigningMu.Unlock()
+	if ok && cached.enabled && time.Since(cached.checkedAt) < zcodeGateTTL {
 		return true
 	}
-	req, err := http.NewRequest(http.MethodGet, ZCodeSigningGateURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ZCodeSigningGateURL, nil)
 	if err != nil {
 		return false
 	}
@@ -524,21 +595,26 @@ func zcodeSigningEnabled(credential string) bool {
 	if json.Unmarshal(raw, &envelope) != nil || envelope.Code != 0 || !envelope.Data.CodingPlanSignature.Enable {
 		return false
 	}
-	zcodeGateState = zcodeSignGate{enabled: true, checkedAt: time.Now()}
+	zcodeSigningMu.Lock()
+	zcodeGateStates[credential] = zcodeSignGate{enabled: true, checkedAt: time.Now()}
+	zcodeSigningMu.Unlock()
 	return true
 }
 
 // zcodeHandshakeFor returns the cached Ed25519 private key for the credential,
 // performing the get_sign_key handshake on first use. A failed handshake is
 // retried on the next request (the failing request itself sends unsigned).
-func zcodeHandshakeFor(credential string) (ed25519.PrivateKey, error) {
+func zcodeHandshakeFor(ctx context.Context, credential string) (ed25519.PrivateKey, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	zcodeSigningMu.Lock()
 	if priv, ok := zcodePrivateKeys[credential]; ok {
 		zcodeSigningMu.Unlock()
 		return priv, nil
 	}
 	zcodeSigningMu.Unlock()
-	priv, err := zcode.Handshake(context.Background(), "https://api.z.ai", credential, zcodeHTTPClient)
+	priv, err := zcode.Handshake(ctx, "https://api.z.ai", credential, zcodeHTTPClient)
 	if err != nil {
 		return nil, err
 	}
@@ -610,7 +686,7 @@ func zcodeBrokerToken(auth *cliproxyauth.Auth) string {
 // the desktop agent path does not send it (extension P5 decision).
 func buildZCodeSourceHeaders() http.Header {
 	h := http.Header{}
-	h.Set("User-Agent", "ZCode/"+zcodeAppVersion)
+	h.Set("User-Agent", zcodeUserAgent())
 	h.Set("HTTP-Referer", "https://zcode.z.ai")
 	h.Set("X-Title", "Z Code@electron")
 	h.Set("X-Platform", runtime.GOOS+"-"+runtime.GOARCH)
@@ -618,41 +694,64 @@ func buildZCodeSourceHeaders() http.Header {
 	h.Set("X-Client-Timezone", timezone())
 	h.Set("X-Os-Category", normalizeOsCategory(runtime.GOOS))
 	h.Set("X-ZCode-Agent", "glm")
-	h.Set("X-ZCode-App-Version", zcodeAppVersion)
-	h.Set("X-Release-Channel", zcodeReleaseChannel)
+	h.Set("X-ZCode-App-Version", zcodeAppVersion())
+	h.Set("X-Release-Channel", zcodeReleaseChannel())
 	h.Set("X-Os-Version", osVersion())
 	return h
 }
 
-// language returns the client language locale, falling back to "en-US".
+// language returns the client language locale the way Intl reports it
+// ("ko-KR"), falling back to "en-US". POSIX values such as "ko_KR.UTF-8" are
+// normalized to the BCP-47 form the desktop sends.
 func language() string {
-	// Use golang.org/x/text/language for locale detection
-	// For now, try environment variables first
-	if locale := os.Getenv("LANG"); locale != "" {
-		return strings.Split(locale, ".")[0]
-	}
-	if locale := os.Getenv("LC_ALL"); locale != "" {
-		return strings.Split(locale, ".")[0]
-	}
-	if locale := os.Getenv("LANGUAGE"); locale != "" {
-		return strings.Split(locale, ":")[0]
+	for _, name := range []string{"LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"} {
+		value := zcodeEnv(os.Getenv(name))
+		if value == "" {
+			continue
+		}
+		if idx := strings.IndexAny(value, ":.@"); idx >= 0 {
+			value = value[:idx]
+		}
+		value = strings.ReplaceAll(value, "_", "-")
+		if value == "C" || value == "POSIX" {
+			continue
+		}
+		return value
 	}
 	return "en-US"
 }
 
-// timezone returns the client timezone, falling back to "UTC".
+// timezone returns the IANA client timezone (the desktop reads
+// Intl.DateTimeFormat().resolvedOptions().timeZone), falling back to "UTC".
 func timezone() string {
-	loc, _ := time.LoadLocation(os.Getenv("TZ"))
-	if loc == nil {
-		return "UTC"
+	if tz := zcodeEnv(os.Getenv("TZ")); tz != "" {
+		return tz
 	}
-	return fmt.Sprintf("%s", loc)
+	// POSIX systems link /etc/localtime into the zoneinfo tree.
+	if target, err := filepath.EvalSymlinks("/etc/localtime"); err == nil {
+		if idx := strings.Index(target, "/zoneinfo/"); idx >= 0 {
+			if name := strings.Trim(strings.TrimPrefix(target[idx:], "/zoneinfo/"), "/"); name != "" {
+				return name
+			}
+		}
+	}
+	// Debian-family fallback.
+	if data, err := os.ReadFile("/etc/timezone"); err == nil {
+		if name := zcodeEnv(strings.SplitN(string(data), "\n", 2)[0]); name != "" {
+			return name
+		}
+	}
+	return "UTC"
 }
 
 // deviceMid reads the ZCode device ID from the telemetry file at the path the
 // app itself uses (~/.zcode/v2/telemetry-state.json), creating one in the
 // app's format when absent so a later real app install adopts the same id.
+// ZCODE_DEVICE_ID overrides the file, matching the extension reference.
 func deviceMid() string {
+	if mid := zcodeEnv("ZCODE_DEVICE_ID"); mid != "" {
+		return mid
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
@@ -662,7 +761,7 @@ func deviceMid() string {
 		var m map[string]any
 		if json.Unmarshal(data, &m) == nil {
 			if v, ok := m["deviceMid"].(string); ok {
-				if mid := strings.TrimSpace(v); mid != "" {
+				if mid := zcodeEnv(v); mid != "" {
 					return mid
 				}
 			}
@@ -676,7 +775,7 @@ func deviceMid() string {
 						log.Debugf("zcode deviceMid: close: %v", err)
 					}
 				}()
-				if data, err := json.Marshal(map[string]string{"deviceMid": mid}); err == nil {
+				if data, err := json.MarshalIndent(map[string]string{"deviceMid": mid}, "", "  "); err == nil {
 					_, _ = f.Write(data)
 					return mid
 				}
@@ -686,19 +785,19 @@ func deviceMid() string {
 	return ""
 }
 
-// osVersion returns the OS version string.
+// osVersion returns the OS version string. Node's os.version() — which the
+// desktop reports — is the kernel release ("5.14.0-…"), not the distribution
+// release, so read the kernel release rather than /etc/os-release.
 func osVersion() string {
 	if runtime.GOOS == "linux" {
-		if data, err := os.ReadFile("/etc/os-release"); err == nil {
-			for _, line := range strings.Split(string(data), "\n") {
-				if strings.HasPrefix(line, "VERSION_ID=") {
-					return strings.Trim(strings.TrimPrefix(line, "VERSION_ID="), "\"")
-				}
+		if data, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
+			if release := strings.TrimSpace(string(data)); release != "" {
+				return release
 			}
 		}
 	}
 	if runtime.GOOS == "darwin" {
-		out, _ := exec.Command("sw_vers", "-productVersion").Output()
+		out, _ := exec.Command("uname", "-r").Output()
 		return strings.TrimSpace(string(out))
 	}
 	if runtime.GOOS == "windows" {
@@ -799,6 +898,7 @@ func zcodeInjectUserIdentity(req cliproxyexecutor.Request, auth *cliproxyauth.Au
 	return req
 }
 
+// zcodeSessionID derives the per-account session identity logged on the auth
 // record. The X-Session-Id value feeds the Client Signing V4 PoW salt and the
 // gateway's session tracking, so it must stay stable across restarts for the
 // same account. Hashing the account email/key avoids leaking any credential

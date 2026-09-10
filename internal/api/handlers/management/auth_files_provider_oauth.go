@@ -1547,7 +1547,12 @@ func (h *Handler) RequestZcodeToken(c *gin.Context) {
 	})
 
 	go func() {
+		// Honour the broker deadline; fall back to a local cap when the broker
+		// did not report expires_at (extension oauth.ts pollCliDeviceFlow).
 		deadline := time.Now().Add(5 * time.Minute)
+		if !flow.ExpiresAt.IsZero() && flow.ExpiresAt.Before(deadline) {
+			deadline = flow.ExpiresAt
+		}
 		interval := time.Duration(flow.PollIntervalSec) * time.Second
 		if interval <= 0 {
 			interval = 2 * time.Second
@@ -1563,17 +1568,23 @@ func (h *Handler) RequestZcodeToken(c *gin.Context) {
 			}
 			result, errPoll := oauth.PollCLIFlow(ctx, flow.FlowID, flow.PollToken)
 			if errPoll != nil {
+				if !zcode.TransientPollError(errPoll) {
+					SetOAuthSessionError(state, oauthSessionErrorWithCause("ZCode broker poll failed", errPoll))
+					log.WithFields(log.Fields{"provider": "zcode", "stage": "poll"}).WithError(errPoll).Error("ZCode broker poll failed")
+					return
+				}
 				// Transient broker error; keep polling.
 				time.Sleep(interval)
 				continue
 			}
-			switch result.Status {
-			case "ready":
-				if strings.TrimSpace(result.ZaiAccessToken) == "" {
-					SetOAuthSessionError(state, "Missing Z.AI access token")
-					log.WithField("provider", "zcode").Error("ZCode OAuth flow ready but missing zai access token")
-					return
-				}
+			switch {
+			case result == nil:
+				// Broker answered without a status; keep polling.
+			case result.Status == "failed":
+				SetOAuthSessionError(state, "Z.AI authorization was rejected or cancelled")
+				log.WithField("provider", "zcode").Error("ZCode OAuth flow reported failure")
+				return
+			case result.Ready():
 				creds, errExchange := oauth.ProvisionFromUpstream(ctx, result.ZaiAccessToken, result.ZcodeToken)
 				if errExchange != nil {
 					SetOAuthSessionError(state, oauthSessionErrorWithCause("Failed to provision Z.AI API key", errExchange))
@@ -1633,10 +1644,6 @@ func (h *Handler) RequestZcodeToken(c *gin.Context) {
 				}
 				log.WithFields(log.Fields{"provider": "zcode", "email": creds.Email, "path": savedPath}).Info("ZCode authentication successful")
 				CompleteOAuthSession(state)
-				return
-			case "failed":
-				SetOAuthSessionError(state, "Authorization failed or was rejected")
-				log.WithField("provider", "zcode").Error("ZCode OAuth flow failed")
 				return
 			default: // pending
 				time.Sleep(interval)
