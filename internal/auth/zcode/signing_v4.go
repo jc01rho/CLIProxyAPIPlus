@@ -6,22 +6,25 @@
 // Ed25519 signature and an 8-bit proof of work. This file replicates the
 // wire-visible algorithms only; no ZCode code is copied.
 //
-// Constants (observed from the app):
+// Constants (observed from the app, re-verified against the 3.11.2 linux-x64
+// AppImage bundle resources/glm/zcode.cjs):
 //   - HKDF salt:                "WD_CLIENT_SIGN_KDF_SALT"
 //   - handshake HKDF info:      "getSignKey_hmac"
 //   - private-key HKDF info:    "ed25519_priv"
 //   - handshake message prefix: "get_sign_key"
 //   - handshake path:           "/api/paas/c1f3a7e2/v2/client"
 //   - app id:                   "zcode"
-//   - nonce length:             16 hex chars
-//   - PoW bits:                 8
+//   - nonce length:             16 bytes (32 hex chars), ERt=16
+//   - PoW bits:                 8 (dTn=8)
+//   - PoW prefix:               12 random bytes (24 hex chars)
 //   - PoW max counter:          2^32 - 1
 //
 // Handshake:
 //
 //	POST {origin}/api/paas/c1f3a7e2/v2/client
-//	Authorization: Bearer {apiKeyId}.{apiKeySecret}
-//	body: {"apiKey":"<id>.<secret>","nonce":"<16hex>","sig":"<b64>","ts":"<ms>"}
+//	Authorization: {apiKeyId}.{apiKeySecret}   (raw credential, NOT "Bearer ...";
+//	                                            verified in 3.11.2 zcode.cjs)
+//	body: {"apiKey":"<id>.<secret>","nonce":"<32hex>","sig":"<b64>","ts":"<ms>"}
 //
 //	sig = base64(HMAC-SHA256(HKDF-SHA256(secret, salt, "getSignKey_hmac"),
 //	                         "get_sign_key\n{id}\n{ts}\n{nonce}"))
@@ -37,10 +40,10 @@
 // Per-request headers (signing requires an X-Session-Id header to exist):
 //
 //	X-Client-Ts      = String(Date.now())  (milliseconds)
-//	X-Client-Version = "3.10.2"
+//	X-Client-Version = "3.11.2"
 //	X-App-Id         = "zcode"
-//	X-Client-Nonce   = 16 hex random
-//	X-Client-Pow     = 20 hex (12 random hex + 8 counter hex)
+//	X-Client-Nonce   = 32 hex random (16 bytes)
+//	X-Client-Pow     = 32 hex (24-hex random prefix + 8-hex counter hex)
 //	X-Client-Sig     = base64(Ed25519.Sign(priv,
 //	                     "{id}\n{ts}\n{version}\n{sessionId}\n{nonce}"))
 package zcode
@@ -82,10 +85,11 @@ const (
 	SignHandshakePath = "/api/paas/c1f3a7e2/v2/client"
 	// SignAppID is the X-App-Id value.
 	SignAppID = "zcode"
-	// SignClientVersion is the X-Client-Version value (desktop 3.10.2).
-	SignClientVersion = "3.10.2"
-	// SignNonceHex is the hex length of handshakes and request nonces.
-	SignNonceHex = 16
+	// SignClientVersion is the X-Client-Version value (desktop 3.11.2).
+	SignClientVersion = "3.11.2"
+	// SignNonceBytes is the byte length of handshakes and request nonces; the
+	// desktop encodes them as 32 lowercase hex chars (ERt=16).
+	SignNonceBytes = 16
 	// SignPoWBits is the difficulty of the request proof of work.
 	SignPoWBits = 8
 	// signHandshakeTimeout bounds the handshake HTTP call.
@@ -191,7 +195,7 @@ func SignRequest(priv ed25519.PrivateKey, apiKeyID, ts, clientVersion, sessionID
 	return base64.StdEncoding.EncodeToString(ed25519.Sign(priv, SignRequestMessage(apiKeyID, ts, clientVersion, sessionID, nonce)))
 }
 
-// SolveProofOfWork finds a 20-hex attempt "{12-hex salt}{8-hex counter}" such
+// SolveProofOfWork finds a 32-hex attempt "{24-hex prefix}{8-hex counter}" such
 // that SHA256("{salt}\n{attempt}") has at least powBits leading zero bits.
 // salt = hex(SHA256("{apiKeyId}\n{appId}\n{sessionId}\n{ts}"))[:32].
 // With powBits=8 the expected loop count is ~256.
@@ -201,8 +205,9 @@ func SolveProofOfWork(apiKeyID, appID, sessionID, ts string, powBits int) (strin
 	}
 	sum := sha256.Sum256([]byte(apiKeyID + "\n" + appID + "\n" + sessionID + "\n" + ts))
 	salt := hexEncode(sum[:])[:32]
-	// The desktop calls pi(12): 12 random bytes hex-encoded = 24 hex chars,
-	// then appends the 8-hex counter for a 32-char attempt.
+	// The desktop calls randomHex(12): 12 random bytes hex-encoded = 24 hex
+	// chars, then appends the 8-hex counter for a 32-char attempt. This PoW
+	// prefix is a separate nonce from the request nonce (16 bytes / 32 hex).
 	prefix := randomHex(24)
 	for counter := 0; counter < SignPoWMaxCounter; counter++ {
 		// The desktop formats the counter itself as 8 hex chars
@@ -262,7 +267,7 @@ func Handshake(ctx context.Context, baseURL, credential string, httpClient *http
 		return nil, fmt.Errorf("zcode signing: build handshake URL: %w", err)
 	}
 	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	nonce := randomHex(SignNonceHex)
+	nonce := randomHex(SignNonceBytes * 2)
 	sig, err := HandshakeSignature(apiKeyID, apiKeySecret, ts, nonce)
 	if err != nil {
 		return nil, err
@@ -274,7 +279,9 @@ func Handshake(ctx context.Context, baseURL, credential string, httpClient *http
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+credential)
+	// The desktop sends the raw "{id}.{secret}" credential with no Bearer
+	// prefix (3.11.2 zcode.cjs performHandshake).
+	req.Header.Set("Authorization", credential)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("zcode signing: handshake request: %w", err)
@@ -329,7 +336,7 @@ func BuildSigningHeaders(priv ed25519.PrivateKey, apiKeyID, sessionID, clientVer
 		clientVersion = SignClientVersion
 	}
 	ts := strconv.FormatInt(now.UnixMilli(), 10)
-	nonce := randomHex(SignNonceHex)
+	nonce := randomHex(SignNonceBytes * 2)
 	pow, err := SolveProofOfWork(apiKeyID, SignAppID, sessionID, ts, SignPoWBits)
 	if err != nil {
 		return nil, err

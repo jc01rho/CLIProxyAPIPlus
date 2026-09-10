@@ -179,8 +179,8 @@ func TestHandshakeEndToEnd(t *testing.T) {
 		if r.URL.Path != SignHandshakePath {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer keyid.secretvalue" {
-			t.Errorf("Authorization = %q", got)
+		if got := r.Header.Get("Authorization"); got != "keyid.secretvalue" {
+			t.Errorf("Authorization = %q (want raw credential, no Bearer prefix)", got)
 		}
 		var body struct {
 			APIKey string `json:"apiKey"`
@@ -190,6 +190,9 @@ func TestHandshakeEndToEnd(t *testing.T) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode body: %v", err)
+		}
+		if l := len(body.Nonce); l != 32 {
+			t.Errorf("nonce length = %d hex chars, want 32 (16 bytes)", l)
 		}
 		wantSig, _ := HandshakeSignature("keyid", "secretvalue", body.Ts, body.Nonce)
 		if body.Sig != wantSig {
