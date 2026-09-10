@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"context"
 	ed25519 "crypto/ed25519"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +18,6 @@ import (
 func TestBuildZCodeSourceHeaders(t *testing.T) {
 	h := buildZCodeSourceHeaders()
 	checks := map[string]string{
-		"User-Agent":          "ZCode/3.11.2",
 		"HTTP-Referer":        "https://zcode.z.ai",
 		"X-Title":             "Z Code@electron",
 		"X-ZCode-Agent":       "glm",
@@ -28,11 +29,44 @@ func TestBuildZCodeSourceHeaders(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got, want)
 		}
 	}
+	// The desktop bundle appends the AI SDK layers to the app id.
+	wantUA := "ZCode/3.11.2 ai-sdk/provider-utils/4.0.27 runtime/node.js/"
+	if ua := h.Get("User-Agent"); !strings.HasPrefix(ua, wantUA) {
+		t.Errorf("User-Agent = %q, want prefix %q", ua, wantUA)
+	}
 	if h.Get("X-Platform") == "" {
 		t.Error("X-Platform should be set")
 	}
 	if h.Get("X-Os-Category") == "" {
 		t.Error("X-Os-Category should be set")
+	}
+}
+
+// TestZcodeSourceHeaderOverrides verifies the app-version/channel/runtime-tag
+// environment overrides and the printable-ASCII filter.
+func TestZcodeSourceHeaderOverrides(t *testing.T) {
+	t.Setenv("ZCODE_APP_VERSION", "9.9.9")
+	t.Setenv("ZCODE_RELEASE_CHANNEL", "beta")
+	t.Setenv("ZCODE_RUNTIME_NODE_VERSION", "22.14.0")
+	t.Cleanup(func() {
+		t.Setenv("ZCODE_APP_VERSION", "")
+		t.Setenv("ZCODE_RELEASE_CHANNEL", "")
+		t.Setenv("ZCODE_RUNTIME_NODE_VERSION", "")
+	})
+	h := buildZCodeSourceHeaders()
+	if got := h.Get("X-ZCode-App-Version"); got != "9.9.9" {
+		t.Errorf("X-ZCode-App-Version = %q, want 9.9.9", got)
+	}
+	if got := h.Get("X-Release-Channel"); got != "beta" {
+		t.Errorf("X-Release-Channel = %q, want beta", got)
+	}
+	wantUA := "ZCode/9.9.9 ai-sdk/provider-utils/4.0.27 runtime/node.js/22.14.0"
+	if got := h.Get("User-Agent"); got != wantUA {
+		t.Errorf("User-Agent = %q, want %q", got, wantUA)
+	}
+	t.Setenv("ZCODE_APP_VERSION", "9.9.9"+string(rune(7)))
+	if got := zcodeAppVersion(); got != "9.9.9" {
+		t.Errorf("zcodeAppVersion() = %q, want the non-printable byte dropped", got)
 	}
 }
 
@@ -44,7 +78,7 @@ func TestPrepareZcodeRequestPinsBaseURL(t *testing.T) {
 	auth := &cliproxyauth.Auth{Provider: "zcode", Attributes: map[string]string{"api_key": "key-1.secret"}}
 	opts := cliproxyexecutor.Options{}
 
-	auth2, _, _ := e.prepareZcodeRequest(auth, cliproxyexecutor.Request{}, opts)
+	auth2, _, _ := e.prepareZcodeRequest(context.Background(), auth, cliproxyexecutor.Request{}, opts)
 
 	if auth2.Attributes["base_url"] != ZCodeUltraBaseURL {
 		t.Errorf("base_url = %q, want %q", auth2.Attributes["base_url"], ZCodeUltraBaseURL)
@@ -154,7 +188,7 @@ func TestPrepareZcodeRequestRouting(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			auth2, _, _ := e.prepareZcodeRequest(tc.auth, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+			auth2, _, _ := e.prepareZcodeRequest(context.Background(), tc.auth, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
 
 			gotKey, gotBase := claudeCreds(auth2)
 			if gotBase != tc.wantBase {
@@ -166,7 +200,7 @@ func TestPrepareZcodeRequestRouting(t *testing.T) {
 			if got := auth2.Attributes["header:X-Session-Id"]; got == "" {
 				t.Error("X-Session-Id identity attr missing")
 			}
-			if got := auth2.Attributes["header:User-Agent"]; got != "ZCode/"+zcodeAppVersion {
+			if got := auth2.Attributes["header:User-Agent"]; !strings.HasPrefix(got, "ZCode/"+zcodeAppVersion()) {
 				t.Errorf("User-Agent attr = %q", got)
 			}
 			if got := auth2.Attributes["header:X-Zcode-Agent"]; got != "glm" {
@@ -251,14 +285,14 @@ func TestZcodeInvalidateAndBypass(t *testing.T) {
 // TestZcodeResetSigningStateForTests verifies the reset helper.
 func TestZcodeResetSigningStateForTests(t *testing.T) {
 	zcodeSigningMu.Lock()
-	zcodeGateState = zcodeSignGate{enabled: true, checkedAt: time.Now()}
+	zcodeGateStates["key-1"] = zcodeSignGate{enabled: true, checkedAt: time.Now()}
 	zcodePrivateKeys["x"] = ed25519.PrivateKey{}
 	zcodeBypassSigning["x"] = true
 	zcodeSigningMu.Unlock()
 	zcodeResetSigningStateForTests()
 	zcodeSigningMu.Lock()
 	defer zcodeSigningMu.Unlock()
-	if zcodeGateState.enabled || len(zcodePrivateKeys) != 0 || len(zcodeBypassSigning) != 0 {
+	if len(zcodeGateStates) != 0 || len(zcodePrivateKeys) != 0 || len(zcodeBypassSigning) != 0 {
 		t.Error("reset must clear gate, keys, and bypass maps")
 	}
 }
@@ -276,7 +310,7 @@ func TestZcodeOffPeakDisabledByDefault(t *testing.T) {
 			"zcode_token": "jwt-1",
 		},
 	}
-	if zcodeOffPeakActive(auth, "glm-5.3-flash") {
+	if zcodeOffPeakActive(context.Background(), auth, "glm-5.3-flash") {
 		t.Error("off-peak must be inactive without ZCODE_OFFPEAK_ENABLE=1")
 	}
 }
@@ -288,7 +322,7 @@ func TestZcodeOffPeakRequiresWindowFlashAndJWT(t *testing.T) {
 
 	// No broker JWT: off.
 	authNoJWT := &cliproxyauth.Auth{Provider: "zcode", Attributes: map[string]string{"api_key": "id.secret"}}
-	if zcodeOffPeakActive(authNoJWT, "glm-5.3-flash") {
+	if zcodeOffPeakActive(context.Background(), authNoJWT, "glm-5.3-flash") {
 		t.Error("off-peak requires a broker JWT")
 	}
 
@@ -297,7 +331,7 @@ func TestZcodeOffPeakRequiresWindowFlashAndJWT(t *testing.T) {
 	authJWT := &cliproxyauth.Auth{Provider: "zcode", Attributes: map[string]string{
 		"api_key": "id.secret", "zcode_token": "jwt-1",
 	}}
-	if zcodeOffPeakActive(authJWT, "glm-5.3") {
+	if zcodeOffPeakActive(context.Background(), authJWT, "glm-5.3") {
 		t.Error("off-peak only routes flash models")
 	}
 }
@@ -315,7 +349,7 @@ func TestZcodeOffPeakRoutingOverridesStartPlanAndDirect(t *testing.T) {
 	authStartPlan := &cliproxyauth.Auth{Provider: "zcode", Attributes: map[string]string{
 		"api_key": "id.secret", "zcode_token": "jwt-1", "start_plan_active": "true",
 	}}
-	auth2, _, _ := e.prepareZcodeRequest(authStartPlan, cliproxyexecutor.Request{Model: "glm-5.3-flash"}, cliproxyexecutor.Options{})
+	auth2, _, _ := e.prepareZcodeRequest(context.Background(), authStartPlan, cliproxyexecutor.Request{Model: "glm-5.3-flash"}, cliproxyexecutor.Options{})
 	if auth2.Attributes["base_url"] != ZCodeStartPlanBaseURL {
 		t.Errorf("start plan base = %q, want %q", auth2.Attributes["base_url"], ZCodeStartPlanBaseURL)
 	}
@@ -325,7 +359,7 @@ func TestZcodeOffPeakRoutingOverridesStartPlanAndDirect(t *testing.T) {
 	authDirect := &cliproxyauth.Auth{Provider: "zcode", Attributes: map[string]string{
 		"api_key": "id.secret", "zcode_token": "jwt-1",
 	}}
-	auth3, _, _ := e.prepareZcodeRequest(authDirect, cliproxyexecutor.Request{Model: "glm-5.3-flash"}, cliproxyexecutor.Options{})
+	auth3, _, _ := e.prepareZcodeRequest(context.Background(), authDirect, cliproxyexecutor.Request{Model: "glm-5.3-flash"}, cliproxyexecutor.Options{})
 	if auth3.Attributes["base_url"] != "https://example.internal/api/anthropic" {
 		t.Errorf("override base = %q", auth3.Attributes["base_url"])
 	}

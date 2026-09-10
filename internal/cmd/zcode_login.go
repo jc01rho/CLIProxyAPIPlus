@@ -10,8 +10,9 @@ import (
 )
 
 // DoZcodeLogin triggers the GLM ZCode OAuth flow (UNOFFICIAL, opt-in).
-// The user completes Z.AI login in the browser and pastes the redirect URL or
-// authorization code (the CLI cannot catch the zcode:// redirect).
+// The browser completes the authorization through the broker device flow; when
+// the broker is unavailable the user pastes the redirect URL or authorization
+// code instead (the CLI cannot catch the zcode:// redirect).
 func DoZcodeLogin(cfg *config.Config, options *LoginOptions) {
 	if options == nil {
 		options = &LoginOptions{}
@@ -27,8 +28,8 @@ func DoZcodeLogin(cfg *config.Config, options *LoginOptions) {
 	if err != nil {
 		log.Errorf("ZCode authentication failed: %v", err)
 		fmt.Println("\nTroubleshooting:")
-		fmt.Println("1. Complete the Z.AI login in the browser")
-		fmt.Println("2. Paste the full redirect URL or authorization code when prompted")
+		fmt.Println("1. Complete the Z.AI login in the browser window the CLI opened")
+		fmt.Println("2. If the broker flow is unavailable, paste the full redirect URL or authorization code when prompted")
 		fmt.Println("3. This is an UNOFFICIAL ZCode-based login — it may stop working or violate ZCode/Z.AI Terms of Service")
 		return
 	}

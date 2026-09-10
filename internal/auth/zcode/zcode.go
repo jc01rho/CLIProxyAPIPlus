@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -249,6 +250,46 @@ type CLIPollResult struct {
 	ZcodeToken     string // broker zcode JWT (status=ready)
 }
 
+// Ready reports whether the flow finished and produced an upstream token. The
+// broker signals completion with status "ready", but a present upstream token is
+// the completion signal itself (extension oauth.ts pollCliDeviceFlowOnce), so a
+// token alone also completes the flow.
+func (r *CLIPollResult) Ready() bool {
+	return r != nil && strings.TrimSpace(r.ZaiAccessToken) != ""
+}
+
+// BrokerHTTPError is a non-2xx answer from the ZCode broker.
+type BrokerHTTPError struct {
+	StatusCode int
+	Label      string
+	Body       string
+}
+
+func (e *BrokerHTTPError) Error() string {
+	return fmt.Sprintf("zcode %s request failed: %d %s", e.Label, e.StatusCode, e.Body)
+}
+
+// TransientPollError reports whether a broker CLI poll failure is worth
+// retrying while the user authorizes in the browser. Network, timeout, and
+// decode failures are transient, as are 408/429/5xx and non-error statuses;
+// every other 4xx means the flow is broken (extension oauth.ts).
+func TransientPollError(err error) bool {
+	var httpErr *BrokerHTTPError
+	if !errors.As(err, &httpErr) {
+		return true
+	}
+	switch {
+	case httpErr.StatusCode == http.StatusRequestTimeout,
+		httpErr.StatusCode == http.StatusTooManyRequests,
+		httpErr.StatusCode >= 500:
+		return true
+	case httpErr.StatusCode >= 400:
+		return false
+	default:
+		return true
+	}
+}
+
 // PollCLIFlow polls a broker CLI OAuth flow for completion.
 func (o *OAuth) PollCLIFlow(ctx context.Context, flowID, pollToken string) (*CLIPollResult, error) {
 	url := strings.TrimSuffix(o.brokerCLIPollURL, "/") + "/" + url.PathEscape(flowID)
@@ -259,14 +300,20 @@ func (o *OAuth) PollCLIFlow(ctx context.Context, flowID, pollToken string) (*CLI
 			Zai    struct {
 				AccessToken string `json:"access_token"`
 			} `json:"zai"`
+			// Some broker revisions answer without the zai envelope.
+			AccessToken string `json:"access_token"`
 		} `json:"data"`
 	}
 	if err := o.getJSON(ctx, url, pollToken, "broker.cli.poll", &resp); err != nil {
 		return nil, err
 	}
+	accessToken := resp.Data.Zai.AccessToken
+	if strings.TrimSpace(accessToken) == "" {
+		accessToken = resp.Data.AccessToken
+	}
 	return &CLIPollResult{
 		Status:         resp.Data.Status,
-		ZaiAccessToken: resp.Data.Zai.AccessToken,
+		ZaiAccessToken: accessToken,
 		ZcodeToken:     resp.Data.Token,
 	}, nil
 }
@@ -617,7 +664,7 @@ func (o *OAuth) getJSON(ctx context.Context, url, bearer, label string, out inte
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyText, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("zcode %s request failed: %d %s", label, resp.StatusCode, redactSecrets(string(bodyText)))
+		return &BrokerHTTPError{StatusCode: resp.StatusCode, Label: label, Body: redactSecrets(string(bodyText))}
 	}
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
