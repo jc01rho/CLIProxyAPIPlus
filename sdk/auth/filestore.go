@@ -300,6 +300,12 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 					}
 					auth.Metadata["disabled"] = true
 				}
+				if p, ok := metadata["proxy_url"].(string); ok && auth.ProxyURL == "" {
+					auth.ProxyURL = strings.TrimSpace(p)
+				}
+				if pref, ok := metadata["prefix"].(string); ok && auth.Prefix == "" {
+					auth.Prefix = strings.Trim(strings.TrimSpace(pref), "/")
+				}
 				if errWeight := cliproxyauth.ApplyAuthWeightMetadata(auth, metadata); errWeight != nil {
 					return nil, errWeight
 				}
@@ -373,11 +379,25 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 		}
 	}
 
+	proxyURL := ""
+	if p, ok := metadata["proxy_url"].(string); ok {
+		proxyURL = strings.TrimSpace(p)
+	}
+	prefix := ""
+	if rawPrefix, ok := metadata["prefix"].(string); ok {
+		trimmed := strings.TrimSpace(rawPrefix)
+		trimmed = strings.Trim(trimmed, "/")
+		if trimmed != "" && !strings.Contains(trimmed, "/") {
+			prefix = trimmed
+		}
+	}
 	auth := &cliproxyauth.Auth{
 		ID:       id,
 		Provider: provider,
 		FileName: id,
 		Label:    s.labelFor(metadata),
+		Prefix:   prefix,
+		ProxyURL: proxyURL,
 		Status:   status,
 		Disabled: disabled,
 		Attributes: map[string]string{

@@ -987,9 +987,14 @@ func responsesStreamErrorText(errMsg *interfaces.ErrorMessage, status int) strin
 	if errorNode.Exists() && errorNode.IsObject() {
 		safe := []byte(`{"error":{}}`)
 		copied := false
-		for _, field := range []string{"type", "code", "message", "param"} {
+		for _, field := range []string{"type", "code", "message", "param", "retryable"} {
 			value := errorNode.Get(field)
 			if !value.Exists() || value.Type == gjson.Null {
+				continue
+			}
+			if field == "retryable" {
+				safe, _ = sjson.SetBytes(safe, "error.retryable", value.Bool())
+				copied = true
 				continue
 			}
 			limit := responsesStreamErrorFieldLimit
@@ -1006,9 +1011,14 @@ func responsesStreamErrorText(errMsg *interfaces.ErrorMessage, status int) strin
 
 	safe := []byte(`{"type":"error"}`)
 	copied := false
-	for _, field := range []string{"code", "message", "param"} {
+	for _, field := range []string{"code", "message", "param", "retryable"} {
 		value := root.Get(field)
 		if !value.Exists() || value.Type == gjson.Null {
+			continue
+		}
+		if field == "retryable" {
+			safe, _ = sjson.SetBytes(safe, "retryable", value.Bool())
+			copied = true
 			continue
 		}
 		limit := responsesStreamErrorFieldLimit
