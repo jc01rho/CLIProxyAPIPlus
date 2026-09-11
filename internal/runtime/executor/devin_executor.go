@@ -57,6 +57,11 @@ const (
 	devinClientVersion       = "3000.10.21"
 	devinClientKind          = "chisel"
 
+	// devinAnswerField is the protobuf field carrying the user-visible answer
+	// delta; devinReasoningField carries the private chain-of-thought.
+	devinAnswerField    = 3
+	devinReasoningField = 9
+
 	devinMaxNonStreamBytes = 64 << 20
 	devinDefaultTimeout    = 120 * time.Second
 )
@@ -267,10 +272,24 @@ func devinDecodeFrames(body []byte) (data [][]byte, trailer []byte, err error) {
 	return data, trailer, nil
 }
 
-// devinExtractTextDelta pulls the generated-text delta (f9) out of one
+// devinExtractTextDelta pulls the assistant answer delta (f3) out of one
 // enveloped data frame. It returns ("", false) when the frame carries no
-// text (timestamps, metadata-only frames).
+// answer text (timestamps, metadata-only, or reasoning-only frames).
+//
+// Devin streams two separate text channels: f3 carries the user-visible
+// answer and f9 carries the model's private reasoning. Reading f9 as the
+// answer leaked the chain-of-thought ("The user wants ... I'll provide
+// that.") while discarding the real reply, so the two must stay distinct.
 func devinExtractTextDelta(frame []byte) (string, bool) {
+	return devinExtractFieldText(frame, devinAnswerField)
+}
+
+// devinExtractReasoningDelta pulls the reasoning delta (f9) out of a frame.
+func devinExtractReasoningDelta(frame []byte) (string, bool) {
+	return devinExtractFieldText(frame, devinReasoningField)
+}
+
+func devinExtractFieldText(frame []byte, want int) (string, bool) {
 	pos := 0
 	for pos < len(frame) {
 		key, n := binary.Uvarint(frame[pos:])
@@ -296,7 +315,7 @@ func devinExtractTextDelta(frame []byte) (string, bool) {
 			}
 			raw := frame[pos+n : pos+n+int(ln)]
 			pos += n + int(ln)
-			if num == 9 {
+			if num == want {
 				return string(raw), true
 			}
 		case 5:
@@ -337,22 +356,59 @@ func (e *DevinExecutor) devinDoPost(ctx context.Context, auth *cliproxyauth.Auth
 	return respBody, resp.Header.Clone(), nil
 }
 
-// devinRequestText extracts the last user message text and an optional
-// system prompt from an OpenAI-style request payload.
+// devinRequestText flattens an OpenAI-style conversation into the single
+// prompt Devin's Connect RPC accepts, plus the joined system prompt.
+//
+// Devin takes exactly one user string, so a multi-turn chat must be rendered
+// as a transcript. Assigning text = m.content per user message (the previous
+// behaviour) kept only the final user turn, so earlier turns and every
+// assistant reply were silently dropped -- a trailing notice block would
+// replace the user's real question and the model answered as if it had
+// received nothing.
 func devinRequestText(req cliproxyexecutor.Request) (text, system string) {
 	payload := req.Payload
 	if len(payload) == 0 {
 		return "", ""
 	}
 	messages := extractDevinMessages(payload)
+
+	var systems []string
+	var turns []devinMessage
 	for _, m := range messages {
-		if m.role == "system" && system == "" {
-			system = m.content
-		} else if m.role == "user" {
-			text = m.content
+		content := strings.TrimSpace(m.content)
+		if content == "" {
+			continue
 		}
+		if m.role == "system" || m.role == "developer" {
+			systems = append(systems, content)
+			continue
+		}
+		turns = append(turns, devinMessage{role: m.role, content: content})
 	}
-	return text, system
+	system = strings.Join(systems, "\n\n")
+
+	// A plain single-turn prompt is forwarded verbatim so simple requests are
+	// not decorated with role labels.
+	if len(turns) == 1 && turns[0].role == "user" {
+		return turns[0].content, system
+	}
+
+	var sb strings.Builder
+	for i, m := range turns {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		switch m.role {
+		case "assistant":
+			sb.WriteString("Assistant: ")
+		case "tool", "function":
+			sb.WriteString("Tool result: ")
+		default:
+			sb.WriteString("User: ")
+		}
+		sb.WriteString(m.content)
+	}
+	return sb.String(), system
 }
 
 type devinMessage struct {
