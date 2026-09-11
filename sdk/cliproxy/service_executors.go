@@ -328,6 +328,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewCommandCodeExecutor(cfg))
 	case constant.Freebuff:
 		s.coreManager.RegisterExecutor(executor.NewFreebuffExecutor(cfg))
+	case constant.Devin:
+		s.coreManager.RegisterExecutor(executor.NewDevinExecutor(cfg))
 	case "kimi":
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(cfg))
 	case "kiro":

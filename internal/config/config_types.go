@@ -796,6 +796,53 @@ func (m FreebuffModel) GetMaxContextLength() int {
 }
 func (m FreebuffModel) GetForceMapping() bool { return m.ForceMapping }
 
+func (k DevinKey) GetAPIKey() string { return k.APIKey }
+
+func (k DevinKey) MatchesCredential(apiKey, proxyURL string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	proxyURL = strings.TrimSpace(proxyURL)
+	if apiKey == "" {
+		return false
+	}
+	return strings.TrimSpace(k.APIKey) == apiKey && strings.TrimSpace(k.ProxyURL) == proxyURL
+}
+
+// DevinKey represents a Devin (Cognition) API credential.
+// Devin speaks Connect RPC (application/proto) against a per-account API
+// server URL, so BaseURL overrides the api_server_url the credential was
+// issued for rather than a fixed upstream default.
+type DevinKey struct {
+	APIKey         string            `yaml:"api-key,omitempty" json:"api-key,omitempty"`
+	Comment        string            `yaml:"comment,omitempty" json:"comment,omitempty"`
+	Priority       int               `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Prefix         string            `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	BaseURL        string            `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	ProxyURL       string            `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	BillingClass   BillingClass      `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+	Models         []DevinModel      `yaml:"models,omitempty" json:"models,omitempty"`
+	Headers        map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ExcludedModels []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	DisableCooling bool              `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+}
+
+// DevinModel maps a client-facing alias to a Devin model UID
+// (e.g. "swe-1-6-fast").
+type DevinModel struct {
+	Name             string `yaml:"name" json:"name"`
+	Alias            string `yaml:"alias" json:"alias"`
+	DisplayName      string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	MaxContextLength int    `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
+	ForceMapping     bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+}
+
+func (m DevinModel) GetName() string        { return m.Name }
+func (m DevinModel) GetAlias() string       { return m.Alias }
+func (m DevinModel) GetDisplayName() string { return m.DisplayName }
+func (m DevinModel) GetMaxContextLength() int {
+	return m.MaxContextLength
+}
+func (m DevinModel) GetForceMapping() bool { return m.ForceMapping }
+
 // MistralKey represents a Mistral API credential.
 type MistralKey struct {
 	APIKey         string            `yaml:"api-key" json:"api-key"`

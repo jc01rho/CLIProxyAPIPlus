@@ -80,6 +80,27 @@ func ComputeCodexModelsHash(models []config.CodexModel) string {
 	return modelconfig.ComputeCodexModelsHash(models)
 }
 
+func ComputeDevinModelsHash(models []config.DevinModel) string {
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.GetName())
+			alias := strings.TrimSpace(model.Alias)
+			displayName := strings.TrimSpace(model.DisplayName)
+			if name == "" && alias == "" && displayName == "" {
+				continue
+			}
+			out(strings.Join([]string{
+				strings.ToLower(name),
+				strings.ToLower(alias),
+				strings.ToLower(displayName),
+				strconv.Itoa(model.MaxContextLength),
+				strconv.FormatBool(model.ForceMapping),
+			}, "|"))
+		}
+	})
+	return hashJoined(keys)
+}
+
 func ComputeGeminiModelsHash(models []config.GeminiModel) string {
 	return modelconfig.ComputeGeminiModelsHash(models)
 }

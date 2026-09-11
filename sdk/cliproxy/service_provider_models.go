@@ -159,3 +159,10 @@ func buildFreebuffConfigModels(entry *config.FreebuffKey) []*ModelInfo {
 	}
 	return buildNativeConfigModels(entry.Models, "freebuff", "freebuff")
 }
+
+func buildDevinConfigModels(entry *config.DevinKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildNativeConfigModels(entry.Models, "devin", "devin")
+}
