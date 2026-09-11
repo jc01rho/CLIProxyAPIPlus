@@ -16,12 +16,13 @@ var modelTimeGateNow = time.Now
 
 // modelTimeGatedByConfig reports whether the auth candidate is excluded by an
 // active model time gate. The match order is provider, then auth ID, then
-// route model: a commandCode credential serving the same model ID is never
-// gated by a deepseek-scoped rule because its provider differs.
-func modelTimeGatedByConfig(rules []internalconfig.ModelTimeGate, auth *Auth, routeModel string) (string, bool) {
+// route model: a rule scoped to one provider never gates a credential from a
+// different provider serving the same model ID.
+func modelTimeGatedByConfig(cfg *internalconfig.Config, rules []internalconfig.ModelTimeGate, auth *Auth, routeModel string) (string, bool) {
 	if len(rules) == 0 || auth == nil {
 		return "", false
 	}
+	candidates := modelTimeGateCandidates(cfg, routeModel)
 	for i := range rules {
 		rule := &rules[i]
 		if rule.Enabled != nil && !*rule.Enabled {
@@ -34,7 +35,7 @@ func modelTimeGatedByConfig(rules []internalconfig.ModelTimeGate, auth *Auth, ro
 		if authID := strings.TrimSpace(rule.AuthID); authID != "" && authID != auth.ID {
 			continue
 		}
-		if !modelTimeGateMatchesModel(rule.Models, routeModel) {
+		if !modelTimeGateMatchesModel(rule.Models, candidates) {
 			continue
 		}
 		if modelTimeGateActiveAt(rule.Schedule, rule.Duration, modelTimeGateNow()) {
@@ -48,14 +49,99 @@ func modelTimeGatedByConfig(rules []internalconfig.ModelTimeGate, auth *Auth, ro
 	return "", false
 }
 
-// modelTimeGateMatchesModel reports whether the route model matches the
-// rule's glob list. Empty matches everything.
-func modelTimeGateMatchesModel(patterns []string, routeModel string) bool {
+// namedModel is the minimal shape shared by every native provider's
+// config-driven model entry (ClaudeModel, CodexModel, CommandCodeModel,
+// FreebuffModel, MistralModel, GeminiModel, OpenAICompatibilityModel).
+type namedModel interface {
+	GetName() string
+	GetAlias() string
+}
+
+// modelTimeGateCandidates returns the request model plus, when it is a
+// config-defined client alias (e.g. "command-deepseek41-flash"), the actual
+// upstream model name it maps to (e.g. "deepseek-v4.1-flash"). The model
+// registry does not retain this mapping (registry.ModelInfo.ID stores only
+// the alias; see buildConfiguredModelInfo), so it is looked up directly from
+// the live config's per-provider Models lists instead. A rule written
+// against either the alias or the real model name then matches regardless
+// of which one the caller sent.
+func modelTimeGateCandidates(cfg *internalconfig.Config, routeModel string) []string {
+	routeModel = strings.TrimSpace(routeModel)
+	if routeModel == "" {
+		return nil
+	}
+	lowerRoute := strings.ToLower(routeModel)
+	candidates := []string{lowerRoute}
+	if cfg == nil {
+		return candidates
+	}
+	seen := map[string]struct{}{lowerRoute: {}}
+	addIfAliasMatches := func(models []namedModel) {
+		for _, model := range models {
+			alias := strings.ToLower(strings.TrimSpace(model.GetAlias()))
+			if alias == "" {
+				alias = strings.ToLower(strings.TrimSpace(model.GetName()))
+			}
+			if alias != lowerRoute {
+				continue
+			}
+			name := strings.ToLower(strings.TrimSpace(model.GetName()))
+			if name == "" {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			candidates = append(candidates, name)
+		}
+	}
+	for i := range cfg.ClaudeKey {
+		addIfAliasMatches(namedModelsOf(cfg.ClaudeKey[i].Models))
+	}
+	for i := range cfg.CodexKey {
+		addIfAliasMatches(namedModelsOf(cfg.CodexKey[i].Models))
+	}
+	for i := range cfg.CommandCodeKey {
+		addIfAliasMatches(namedModelsOf(cfg.CommandCodeKey[i].Models))
+	}
+	for i := range cfg.FreebuffKey {
+		addIfAliasMatches(namedModelsOf(cfg.FreebuffKey[i].Models))
+	}
+	for i := range cfg.MistralKey {
+		addIfAliasMatches(namedModelsOf(cfg.MistralKey[i].Models))
+	}
+	for i := range cfg.GeminiKey {
+		addIfAliasMatches(namedModelsOf(cfg.GeminiKey[i].Models))
+	}
+	for i := range cfg.InteractionsKey {
+		addIfAliasMatches(namedModelsOf(cfg.InteractionsKey[i].Models))
+	}
+	for i := range cfg.OpenAICompatibility {
+		addIfAliasMatches(namedModelsOf(cfg.OpenAICompatibility[i].Models))
+	}
+	return candidates
+}
+
+// namedModelsOf adapts a concrete []T model slice (T implements namedModel)
+// to []namedModel without per-provider boilerplate at each call site.
+func namedModelsOf[T namedModel](models []T) []namedModel {
+	out := make([]namedModel, len(models))
+	for i := range models {
+		out[i] = models[i]
+	}
+	return out
+}
+
+// modelTimeGateMatchesModel reports whether any candidate model string
+// (the raw request model plus, when applicable, its config-resolved actual
+// upstream name; see modelTimeGateCandidates) matches the rule's glob list.
+// Empty matches everything.
+func modelTimeGateMatchesModel(patterns []string, candidates []string) bool {
 	if len(patterns) == 0 {
 		return true
 	}
-	routeModel = strings.ToLower(strings.TrimSpace(routeModel))
-	if routeModel == "" {
+	if len(candidates) == 0 {
 		return false
 	}
 	for _, pattern := range patterns {
@@ -63,8 +149,10 @@ func modelTimeGateMatchesModel(patterns []string, routeModel string) bool {
 		if pattern == "" {
 			continue
 		}
-		if ok, err := matchGlob(pattern, routeModel); err == nil && ok {
-			return true
+		for _, candidate := range candidates {
+			if ok, err := matchGlob(pattern, candidate); err == nil && ok {
+				return true
+			}
 		}
 	}
 	return false
@@ -270,5 +358,5 @@ func (m *Manager) authMatchesTimeGate(auth *Auth, routeModel string, _ cliproxye
 	if cfg == nil {
 		return "", false
 	}
-	return modelTimeGatedByConfig(cfg.Routing.ModelTimeGates, auth, routeModel)
+	return modelTimeGatedByConfig(cfg, cfg.Routing.ModelTimeGates, auth, routeModel)
 }
