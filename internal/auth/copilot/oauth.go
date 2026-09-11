@@ -110,7 +110,7 @@ func (c *DeviceFlowClient) RequestDeviceCode(ctx context.Context) (*DeviceCodeRe
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", copilotUserAgent)
+	req.Header.Set("User-Agent", copilotRefreshUserAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -205,7 +205,7 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", copilotUserAgent)
+	req.Header.Set("User-Agent", copilotRefreshUserAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

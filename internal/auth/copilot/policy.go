@@ -40,10 +40,10 @@ func (c *CopilotAuth) EnableModelPolicy(ctx context.Context, apiToken *CopilotAP
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiToken.Token)
-	req.Header.Set("User-Agent", copilotUserAgent)
-	req.Header.Set("Editor-Version", copilotEditorVersion)
-	req.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
-	req.Header.Set("Copilot-Integration-Id", copilotIntegrationID)
+	req.Header.Set("User-Agent", CopilotUserAgent())
+	req.Header.Set("Editor-Version", CopilotEditorVersion())
+	req.Header.Set("Editor-Plugin-Version", "copilot-chat/"+CopilotCLIVersion())
+	req.Header.Set("Copilot-Integration-Id", CopilotIntegrationID)
 	req.Header.Set("Openai-Intent", "chat-policy")
 	req.Header.Set("X-Interaction-Type", "chat-policy")
 

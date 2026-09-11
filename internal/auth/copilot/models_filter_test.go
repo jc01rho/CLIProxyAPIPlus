@@ -32,9 +32,12 @@ func TestFilterAvailableCopilotModelsPickerPreferred(t *testing.T) {
 		modelEntry("picker-disabled", boolPtr(true), "disabled", nil),
 		modelEntry("no-tool-calls", boolPtr(true), "enabled", false),
 	}
-	got := entryIDs(FilterAvailableCopilotModels(entries, false))
-	if len(got) != 1 || got[0] != "picker-on" {
-		t.Fatalf("filtered = %v, want [picker-on]", got)
+	// OmniRoute isRoutableChatModel semantics: tool-call support is
+	// optional, so tool-call-less models stay; picker-off and
+	// policy-disabled models are dropped.
+	got := entryIDs(FilterAvailableCopilotModels(entries))
+	if len(got) != 2 || got[0] != "picker-on" || got[1] != "no-tool-calls" {
+		t.Fatalf("filtered = %v, want [picker-on no-tool-calls]", got)
 	}
 }
 
@@ -42,16 +45,14 @@ func TestFilterAvailableCopilotModelsPolicyFallback(t *testing.T) {
 	entries := []CopilotModelEntry{
 		modelEntry("policy-enabled", boolPtr(false), "enabled", nil),
 		modelEntry("policy-none", boolPtr(false), "", nil),
+		modelEntry("picker-no-policy", boolPtr(true), "", nil),
 	}
-	// Individual accounts fall back to policy-enabled models when no
-	// picker-enabled model exists.
-	got := entryIDs(FilterAvailableCopilotModels(entries, true))
-	if len(got) != 1 || got[0] != "policy-enabled" {
-		t.Fatalf("fallback filtered = %v, want [policy-enabled]", got)
-	}
-	// Non-individual endpoints keep strict picker semantics (empty result).
-	if got := FilterAvailableCopilotModels(entries, false); len(got) != 0 {
-		t.Fatalf("strict filtered = %v, want empty", entryIDs(got))
+	// OmniRoute requires both model_picker_enabled and a non-disabled
+	// policy state (unset counts as enabled); picker-off entries are
+	// dropped even when their policy is enabled.
+	got := entryIDs(FilterAvailableCopilotModels(entries))
+	if len(got) != 1 || got[0] != "picker-no-policy" {
+		t.Fatalf("fallback filtered = %v, want [picker-no-policy]", got)
 	}
 }
 
@@ -60,7 +61,7 @@ func TestFilterAvailableCopilotModelsNoMetadataPassthrough(t *testing.T) {
 		{ID: "plain-a"},
 		{ID: "plain-b"},
 	}
-	got := FilterAvailableCopilotModels(entries, false)
+	got := FilterAvailableCopilotModels(entries)
 	if len(got) != 2 {
 		t.Fatalf("no-metadata filter dropped entries: %v", entryIDs(got))
 	}
