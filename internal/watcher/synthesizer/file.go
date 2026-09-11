@@ -262,6 +262,20 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
 	applyFingerprintProfileAttribute(a, metadata)
+	if provider == "devin" {
+		for _, field := range []string{"api_key", "session_token", "windsurf_api_key", "token", "access_token"} {
+			if val, ok := metadata[field].(string); ok && strings.TrimSpace(val) != "" {
+				a.Attributes["api_key"] = strings.TrimSpace(val)
+				break
+			}
+		}
+		if apiServerURL, ok := metadata["api_server_url"].(string); ok && strings.TrimSpace(apiServerURL) != "" {
+			a.Attributes["base_url"] = strings.TrimSpace(apiServerURL)
+		}
+		if devinAPIURL, ok := metadata["devin_api_url"].(string); ok && strings.TrimSpace(devinAPIURL) != "" {
+			a.Attributes["devin_api_url"] = strings.TrimSpace(devinAPIURL)
+		}
+	}
 	// For codex auth files, extract plan_type from the JWT id_token.
 	if provider == "codex" {
 		if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {

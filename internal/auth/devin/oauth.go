@@ -265,19 +265,19 @@ func BuildAuthRecord(tokens *TokenResponse, shortID string) *cliproxyauth.Auth {
 	}
 	fileName := fmt.Sprintf("devin-%s.json", shortID)
 
+	primaryKey := strings.TrimSpace(tokens.APIKey)
+	if primaryKey == "" {
+		primaryKey = strings.TrimSpace(tokens.SessionToken)
+	}
+
 	metadata := map[string]any{
 		"type":              "devin",
-		"api_key":           tokens.APIKey,
+		"api_key":           primaryKey,
 		"api_server_url":    tokens.APIServerURL,
 		"devin_webapp_host": tokens.DevinWebappHost,
 		"devin_api_url":     tokens.DevinAPIURL,
 		"session_token":     tokens.SessionToken,
 		"timestamp":         time.Now().UnixMilli(),
-	}
-
-	primaryKey := tokens.APIKey
-	if primaryKey == "" {
-		primaryKey = tokens.SessionToken
 	}
 
 	return &cliproxyauth.Auth{

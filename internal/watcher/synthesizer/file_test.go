@@ -1349,3 +1349,46 @@ func TestFileSynthesizer_Synthesize_MultiProjectGeminiWithNote(t *testing.T) {
 		}
 	}
 }
+
+func TestFileSynthesizer_Synthesize_DevinAuthFile(t *testing.T) {
+	tempDir := t.TempDir()
+	authData := map[string]any{
+		"type":           "devin",
+		"session_token":  "devin-session-jwt-12345",
+		"api_server_url": "https://server.codeium.com",
+		"devin_api_url":  "https://api.devin.ai",
+	}
+	data, _ := json.Marshal(authData)
+	authPath := filepath.Join(tempDir, "devin-test.json")
+	if err := os.WriteFile(authPath, data, 0644); err != nil {
+		t.Fatalf("failed to write auth file: %v", err)
+	}
+
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+	auths, err := SynthesizeAuthFile(ctx, authPath, data)
+	if err != nil {
+		t.Fatalf("SynthesizeAuthFile() error = %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+
+	a := auths[0]
+	if a.Provider != "devin" {
+		t.Errorf("expected provider devin, got %s", a.Provider)
+	}
+	if a.Attributes["api_key"] != "devin-session-jwt-12345" {
+		t.Errorf("expected api_key devin-session-jwt-12345, got %s", a.Attributes["api_key"])
+	}
+	if a.Attributes["base_url"] != "https://server.codeium.com" {
+		t.Errorf("expected base_url https://server.codeium.com, got %s", a.Attributes["base_url"])
+	}
+	if a.Attributes["devin_api_url"] != "https://api.devin.ai" {
+		t.Errorf("expected devin_api_url https://api.devin.ai, got %s", a.Attributes["devin_api_url"])
+	}
+}
