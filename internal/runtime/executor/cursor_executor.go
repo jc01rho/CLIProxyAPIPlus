@@ -827,7 +827,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	go func() {
 		var resumeOutCh chan cliproxyexecutor.StreamChunk
 		_ = resumeOutCh
-		thinkingActive := false
+		roleSent := false
 		toolCallIndex := 0
 		usage := &cursorTokenUsage{}
 		usage.setInputEstimate(len(payload))
@@ -850,19 +850,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			defer attemptCancel()
 			return processH2SessionFrames(attemptCtx, stream, params.BlobStore, params.McpTools,
 				func(text string, isThinking bool) {
-					if isThinking {
-						if !thinkingActive {
-							thinkingActive = true
-							sendChunkSwitchable(`{"role":"assistant","content":"<think>"}`, "")
-						}
-						sendChunkSwitchable(fmt.Sprintf(`{"content":%s}`, jsonString(text)), "")
-					} else {
-						if thinkingActive {
-							thinkingActive = false
-							sendChunkSwitchable(`{"content":"</think>"}`, "")
-						}
-						sendChunkSwitchable(fmt.Sprintf(`{"content":%s}`, jsonString(text)), "")
-					}
+					sendChunkSwitchable(cursorTextDeltaJSON(text, isThinking, &roleSent), "")
 				},
 				func(update cursorToolCallUpdate) {
 					key := update.ToolCallID
@@ -898,10 +886,6 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					}
 				},
 				func(exec pendingMcpExec) {
-					if thinkingActive {
-						thinkingActive = false
-						sendChunkSwitchable(`{"content":"</think>"}`, "")
-					}
 					if call := streamedToolCalls[exec.ToolCallId]; call != nil {
 						missing := exec.Args
 						if strings.HasPrefix(exec.Args, call.args) {
@@ -1006,12 +990,6 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		attemptOpen := true
 		attempt := func(forceResume bool) error {
 			if !attemptOpen {
-				if thinkingActive {
-					// senpi closes any open thinking block before a retry
-					// (endCurrentThinkingBlock, cursor-agent.ts:838-842).
-					thinkingActive = false
-					sendChunkSwitchable(`{"content":"</think>"}`, "")
-				}
 				if forceResume && !params.Resume {
 					params.Resume = true
 				}
@@ -1092,9 +1070,6 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 		}
 
-		if thinkingActive {
-			sendChunkSwitchable(`{"content":"</think>"}`, "")
-		}
 		// Include token usage in the final stop chunk
 		fr := `"stop"`
 		openaiJSON := fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"model":"%s","choices":[{"index":0,"delta":{},"finish_reason":%s}],"usage":%s}`,
@@ -2056,6 +2031,28 @@ func sseChunk(id string, created int64, model string, delta string, finishReason
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// cursorTextDeltaJSON builds the OpenAI delta JSON fragment for one text-delta
+// frame from the Cursor H2 stream. Reasoning is emitted as a dedicated
+// reasoning_content field instead of being wrapped in literal
+// <think>...</think> tags inside content: OpenAI-compatible clients (e.g.
+// pi-ai) only recognize reasoning_content/reasoning/reasoning_text as
+// reasoning and have no support for parsing inline think tags out of
+// content, so the tags previously leaked into the user-visible answer
+// verbatim. roleSent is set to true the first time this emits a role field so
+// later deltas (thinking or not) omit it.
+func cursorTextDeltaJSON(text string, isThinking bool, roleSent *bool) string {
+	role := ""
+	if !*roleSent {
+		role = `"role":"assistant",`
+		*roleSent = true
+	}
+	field := "content"
+	if isThinking {
+		field = "reasoning_content"
+	}
+	return fmt.Sprintf(`{%s"%s":%s}`, role, field, jsonString(text))
 }
 
 func decodeMcpArgsToJSON(args map[string][]byte) string {
