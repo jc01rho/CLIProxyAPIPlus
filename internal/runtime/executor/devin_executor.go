@@ -230,7 +230,7 @@ func devinUserBlock(sessionUUID, text string) []byte {
 
 // devinBuildChatRequest assembles a GetChatMessage unary request body
 // (enveloped: 0x00 + u32be length + protobuf) from the captured schema.
-func devinBuildChatRequest(token, modelUID, systemPrompt, userText, sessionUUID, fingerprint string) []byte {
+func devinBuildChatRequest(token, modelUID, systemPrompt, userText, sessionUUID, fingerprint string, tools ...devinToolDef) []byte {
 	var msg []byte
 	// f1 is itself a length-delimited message.
 	ctx := devinClientContext(token, fingerprint)
@@ -239,6 +239,11 @@ func devinBuildChatRequest(token, modelUID, systemPrompt, userText, sessionUUID,
 	user := devinUserBlock(sessionUUID, userText)
 	msg = append(msg, devinEncodeField(nil, 3, 2, append(devinEncodeVarint(nil, uint64(len(user))), user...))...)
 	msg = append(msg, devinEncodeField(nil, 7, 0, devinEncodeVarint(nil, 5))...)
+	// Tool definitions ride f10, one repeated submessage per tool.
+	for _, t := range tools {
+		def := devinEncodeToolDef(t)
+		msg = append(msg, devinEncodeField(nil, devinReqToolsField, 2, append(devinEncodeVarint(nil, uint64(len(def))), def...))...)
+	}
 	msg = append(msg, devinEncodeField(nil, 20, 0, devinEncodeVarint(nil, 1))...)
 	msg = append(msg, devinEncodeField(nil, 21, 2, devinEncodeString(modelUID))...)
 	out := []byte{0x00}
@@ -565,7 +570,8 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return cliproxyexecutor.Response{}, fmt.Errorf("devin: missing model")
 	}
 	text, system := devinRequestText(req)
-	body := devinBuildChatRequest(token, model, system, text, devinNewSessionUUID(), "")
+	tools := devinExtractTools(req.Payload)
+	body := devinBuildChatRequest(token, model, system, text, devinNewSessionUUID(), "", tools...)
 	respBody, headers, err := e.devinDoPost(ctx, auth, model, devinServerURL(auth)+devinGetChatMessagePath, token, body)
 	if err != nil {
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(err).Debug("devin: upstream request failed")
@@ -579,13 +585,29 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return cliproxyexecutor.Response{}, fmt.Errorf("devin: no data frames: %s", truncateDevinErr(trailer))
 	}
 	var sb strings.Builder
+	finish := "stop"
+	var usage devinUsage
+	calls := make([]devinToolCall, 0, 2)
+	byID := make(map[string]int, 2)
 	for _, frame := range frames {
 		if delta, ok := devinExtractTextDelta(frame); ok {
 			sb.WriteString(delta)
 		}
+		if call, ok := devinExtractToolCallDelta(frame); ok {
+			devinMergeToolCall(&calls, byID, call)
+		}
+		if reason, ok := devinExtractFinishReason(frame); ok {
+			finish = reason
+		}
+		if u, ok := devinExtractUsage(frame); ok {
+			usage = u
+		}
+	}
+	if len(calls) > 0 && finish == "stop" {
+		finish = "tool_calls"
 	}
 	content := sb.String()
-	payload := []byte(fmt.Sprintf("{\"id\":\"chatcmpl-devin\",\"object\":\"chat.completion\",\"created\":0,\"model\":%s,\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":%s},\"finish_reason\":\"stop\"}],\"usage\":{}}", marshalDevinJSONStringOrEmpty(model), mustMarshalDevinJSON(content)))
+	payload := devinBuildCompletionPayload(model, content, calls, finish, usage)
 	return cliproxyexecutor.Response{Payload: payload, Headers: headers}, nil
 }
 
@@ -607,7 +629,8 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, fmt.Errorf("devin: missing model")
 	}
 	text, system := devinRequestText(req)
-	body := devinBuildChatRequest(token, model, system, text, devinNewSessionUUID(), "")
+	tools := devinExtractTools(req.Payload)
+	body := devinBuildChatRequest(token, model, system, text, devinNewSessionUUID(), "", tools...)
 	respBody, headers, err := e.devinDoPost(ctx, auth, model, devinServerURL(auth)+devinGetChatMessagePath, token, body)
 	if err != nil {
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(err).Debug("devin: upstream stream request failed")
@@ -623,26 +646,51 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	chunks := make(chan cliproxyexecutor.StreamChunk, 64)
 	go func() {
 		defer close(chunks)
+		send := func(p []byte) bool {
+			select {
+			case chunks <- cliproxyexecutor.StreamChunk{Payload: p}:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		finish := "stop"
+		var usage devinUsage
+		calls := make([]devinToolCall, 0, 2)
+		byID := make(map[string]int, 2)
 		for _, frame := range frames {
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
-			delta, ok := devinExtractTextDelta(frame)
-			if !ok || delta == "" {
-				continue
+			if delta, ok := devinExtractTextDelta(frame); ok && delta != "" {
+				if !send(devinOpenAIChunk(model, delta, false)) {
+					return
+				}
 			}
-			select {
-			case chunks <- cliproxyexecutor.StreamChunk{Payload: devinOpenAIChunk(model, delta, false)}:
-			case <-ctx.Done():
+			if call, ok := devinExtractToolCallDelta(frame); ok {
+				devinMergeToolCall(&calls, byID, call)
+			}
+			if reason, ok := devinExtractFinishReason(frame); ok {
+				finish = reason
+			}
+			if u, ok := devinExtractUsage(frame); ok {
+				usage = u
+			}
+		}
+		if len(calls) > 0 {
+			if finish == "stop" {
+				finish = "tool_calls"
+			}
+			if !send(devinToolCallChunk(model, calls)) {
 				return
 			}
 		}
-		select {
-		case chunks <- cliproxyexecutor.StreamChunk{Payload: devinOpenAIChunk(model, "", true)}:
-		case <-ctx.Done():
+		if !send(devinFinishChunk(model, finish, usage)) {
+			return
 		}
+		send(devinOpenAIChunk(model, "", true))
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: chunks}, nil
 }
