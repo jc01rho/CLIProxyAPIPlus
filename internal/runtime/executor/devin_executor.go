@@ -417,15 +417,25 @@ func devinRequestText(req cliproxyexecutor.Request) (text, system string) {
 }
 
 type devinMessage struct {
-	role    string
-	content string
+	role       string
+	content    string
+	toolCallID string
+	toolCalls  []devinToolCall
 }
 
 func extractDevinMessages(payload []byte) []devinMessage {
 	var doc struct {
 		Messages []struct {
-			Role    string `json:"role"`
-			Content any    `json:"content"`
+			Role       string `json:"role"`
+			Content    any    `json:"content"`
+			ToolCallID string `json:"tool_call_id"`
+			ToolCalls  []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(payload, &doc); err != nil {
@@ -433,7 +443,11 @@ func extractDevinMessages(payload []byte) []devinMessage {
 	}
 	out := make([]devinMessage, 0, len(doc.Messages))
 	for _, m := range doc.Messages {
-		out = append(out, devinMessage{role: m.Role, content: devinContentToString(m.Content)})
+		msg := devinMessage{role: m.Role, content: devinContentToString(m.Content), toolCallID: m.ToolCallID}
+		for _, tc := range m.ToolCalls {
+			msg.toolCalls = append(msg.toolCalls, devinToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+		}
+		out = append(out, msg)
 	}
 	return out
 }
@@ -569,9 +583,27 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if model == "" {
 		return cliproxyexecutor.Response{}, fmt.Errorf("devin: missing model")
 	}
-	text, system := devinRequestText(req)
-	tools := devinExtractTools(req.Payload)
-	body := devinBuildChatRequest(token, model, system, text, devinNewSessionUUID(), "", tools...)
+	msgs, system := devinRequestMessages(req.Payload)
+	if len(msgs) == 0 {
+		// Fall back to the flattened transcript when no structured turns parse.
+		text, sys := devinRequestText(req)
+		if system == "" {
+			system = sys
+		}
+		msgs = []devinMessage{{role: "user", content: text}}
+	}
+	sessionUUID := devinNewSessionUUID()
+	body := devinBuildChatRequestFull(devinChatSpec{
+		Token:       token,
+		ModelUID:    model,
+		System:      system,
+		Messages:    msgs,
+		SessionUUID: sessionUUID,
+		CascadeID:   sessionUUID,
+		PromptID:    devinNewSessionUUID(),
+		Tools:       devinExtractTools(req.Payload),
+		Config:      devinExtractCompletionConfig(req.Payload),
+	})
 	respBody, headers, err := e.devinDoPost(ctx, auth, model, devinServerURL(auth)+devinGetChatMessagePath, token, body)
 	if err != nil {
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(err).Debug("devin: upstream request failed")
@@ -628,9 +660,27 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if model == "" {
 		return nil, fmt.Errorf("devin: missing model")
 	}
-	text, system := devinRequestText(req)
-	tools := devinExtractTools(req.Payload)
-	body := devinBuildChatRequest(token, model, system, text, devinNewSessionUUID(), "", tools...)
+	msgs, system := devinRequestMessages(req.Payload)
+	if len(msgs) == 0 {
+		// Fall back to the flattened transcript when no structured turns parse.
+		text, sys := devinRequestText(req)
+		if system == "" {
+			system = sys
+		}
+		msgs = []devinMessage{{role: "user", content: text}}
+	}
+	sessionUUID := devinNewSessionUUID()
+	body := devinBuildChatRequestFull(devinChatSpec{
+		Token:       token,
+		ModelUID:    model,
+		System:      system,
+		Messages:    msgs,
+		SessionUUID: sessionUUID,
+		CascadeID:   sessionUUID,
+		PromptID:    devinNewSessionUUID(),
+		Tools:       devinExtractTools(req.Payload),
+		Config:      devinExtractCompletionConfig(req.Payload),
+	})
 	respBody, headers, err := e.devinDoPost(ctx, auth, model, devinServerURL(auth)+devinGetChatMessagePath, token, body)
 	if err != nil {
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(err).Debug("devin: upstream stream request failed")
