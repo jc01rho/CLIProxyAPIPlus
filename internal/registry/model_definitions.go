@@ -1242,7 +1242,7 @@ func GetAmazonQModels() []*ModelInfo {
 
 // GetDevinModels returns the Devin (Cognition) model definitions.
 func GetDevinModels() []*ModelInfo {
-	return []*ModelInfo{
+	models := []*ModelInfo{
 		// Native SWE models
 		{ID: "swe-1-6-fast", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-1.6 Fast", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 		{ID: "swe-1-6", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-1.6", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
@@ -1307,4 +1307,8 @@ func GetDevinModels() []*ModelInfo {
 		{ID: "sonnet", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Sonnet (Devin)", ContextLength: 1000000, MaxCompletionTokens: 128000},
 		{ID: "haiku", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Haiku (Devin)", ContextLength: 200000, MaxCompletionTokens: 64000},
 	}
+	for _, m := range models {
+		m.SupportedEndpoints = []string{"/chat/completions"}
+	}
+	return models
 }
