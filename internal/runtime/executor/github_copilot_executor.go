@@ -37,13 +37,8 @@ const (
 	// maxScannerBufferSize is the maximum buffer size for SSE scanning (20MB).
 	maxScannerBufferSize = 20_971_520
 
-	// Copilot API header values.
-	copilotUserAgent     = "GitHubCopilotChat/0.35.0"
-	copilotEditorVersion = "vscode/1.107.0"
-	copilotPluginVersion = "copilot-chat/0.35.0"
-	copilotIntegrationID = "vscode-chat"
-	copilotOpenAIIntent  = "conversation-edits"
-	copilotGitHubAPIVer  = "2026-06-01"
+	// Copilot request header values come from internal/auth/copilot so both
+	// packages send the identical CLI fingerprint.
 )
 
 // GitHubCopilotExecutor handles requests to the GitHub Copilot API.
@@ -84,7 +79,7 @@ func (e *GitHubCopilotExecutor) PrepareRequest(req *http.Request, auth *cliproxy
 	if errToken != nil {
 		return errToken
 	}
-	e.applyHeaders(req, apiToken, nil)
+	e.applyHeaders(req, apiToken, nil, "", false)
 	return nil
 }
 
@@ -164,15 +159,21 @@ func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.
 		path = githubCopilotResponsesPath
 	}
 	url := baseURL + path
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	buildRequest := func(token string) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		e.applyHeaders(httpReq, token, body, req.Model, false)
+		// Add Copilot-Vision-Request header if the request contains vision content
+		if hasVision {
+			httpReq.Header.Set("Copilot-Vision-Request", "true")
+		}
+		return httpReq, nil
+	}
+	httpReq, err := buildRequest(apiToken)
 	if err != nil {
 		return resp, err
-	}
-	e.applyHeaders(httpReq, apiToken, body)
-
-	// Add Copilot-Vision-Request header if the request contains vision content
-	if hasVision {
-		httpReq.Header.Set("Copilot-Vision-Request", "true")
 	}
 
 	var authID, authLabel, authType, authValue string
@@ -194,7 +195,9 @@ func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.
 	})
 
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := e.doWithAuthRetry(ctx, auth, httpReq, buildRequest, func(r *http.Request) (*http.Response, error) {
+		return httpClient.Do(r)
+	})
 	if err != nil {
 		recordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
@@ -307,15 +310,21 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		path = githubCopilotResponsesPath
 	}
 	url := baseURL + path
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	buildRequest := func(token string) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		e.applyHeaders(httpReq, token, body, req.Model, true)
+		// Add Copilot-Vision-Request header if the request contains vision content
+		if hasVision {
+			httpReq.Header.Set("Copilot-Vision-Request", "true")
+		}
+		return httpReq, nil
+	}
+	httpReq, err := buildRequest(apiToken)
 	if err != nil {
 		return nil, err
-	}
-	e.applyHeaders(httpReq, apiToken, body)
-
-	// Add Copilot-Vision-Request header if the request contains vision content
-	if hasVision {
-		httpReq.Header.Set("Copilot-Vision-Request", "true")
 	}
 
 	var authID, authLabel, authType, authValue string
@@ -337,7 +346,9 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	})
 
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := e.doWithAuthRetry(ctx, auth, httpReq, buildRequest, func(r *http.Request) (*http.Response, error) {
+		return httpClient.Do(r)
+	})
 	if err != nil {
 		recordAPIResponseError(ctx, e.cfg, err)
 		return nil, err
@@ -535,12 +546,12 @@ func buildCopilotAnthropicGatewayAuth(auth *cliproxyauth.Auth, apiToken, baseURL
 	nativeAuth.Attributes["base_url"] = baseURL
 	nativeAuth.Attributes["header:Content-Type"] = "application/json"
 	nativeAuth.Attributes["header:Accept"] = "application/json"
-	nativeAuth.Attributes["header:User-Agent"] = copilotUserAgent
-	nativeAuth.Attributes["header:Editor-Version"] = copilotEditorVersion
-	nativeAuth.Attributes["header:Editor-Plugin-Version"] = copilotPluginVersion
-	nativeAuth.Attributes["header:Openai-Intent"] = copilotOpenAIIntent
-	nativeAuth.Attributes["header:Copilot-Integration-Id"] = copilotIntegrationID
-	nativeAuth.Attributes["header:X-Github-Api-Version"] = copilotGitHubAPIVer
+	nativeAuth.Attributes["header:User-Agent"] = copilotauth.CopilotChatUserAgent()
+	nativeAuth.Attributes["header:Editor-Version"] = copilotauth.CopilotEditorVersion()
+	nativeAuth.Attributes["header:Editor-Plugin-Version"] = "copilot-chat/" + copilotauth.CopilotCLIVersion()
+	nativeAuth.Attributes["header:Openai-Intent"] = copilotauth.CopilotOpenAIIntent
+	nativeAuth.Attributes["header:Copilot-Integration-Id"] = copilotauth.CopilotIntegrationID
+	nativeAuth.Attributes["header:X-GitHub-Api-Version"] = copilotauth.CopilotAPIVersion()
 	nativeAuth.Attributes["header:X-Request-Id"] = uuid.NewString()
 	if isAgentInitiated(body) {
 		nativeAuth.Attributes["header:X-Initiator"] = "agent"
@@ -551,6 +562,45 @@ func buildCopilotAnthropicGatewayAuth(auth *cliproxyauth.Auth, apiToken, baseURL
 		nativeAuth.Attributes["header:Copilot-Vision-Request"] = "true"
 	}
 	return nativeAuth
+}
+
+// doWithAuthRetry performs the HTTP call and, on 401/403, forces a Copilot
+// API token refresh and retries the request exactly once with a rebuilt
+// request (fresh nonce headers). OmniRoute parity: a cached-but-revoked
+// Copilot token surfaces as 401/403 on the inference path.
+func (e *GitHubCopilotExecutor) doWithAuthRetry(
+	ctx context.Context,
+	auth *cliproxyauth.Auth,
+	httpReq *http.Request,
+	buildRequest func(token string) (*http.Request, error),
+	do func(*http.Request) (*http.Response, error),
+) (*http.Response, error) {
+	resp, err := do(httpReq)
+	if err != nil || resp == nil || (resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden) {
+		return resp, err
+	}
+	// Drain and close the failed response before retrying.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	if errClose := resp.Body.Close(); errClose != nil {
+		log.Errorf("github-copilot executor: close response body error: %v", errClose)
+	}
+
+	// Invalidate the cached API token and mint a fresh one.
+	if accessToken := metaStringValue(auth.Metadata, "access_token"); accessToken != "" {
+		e.mu.Lock()
+		delete(e.cache, accessToken)
+		e.mu.Unlock()
+	}
+	newToken, _, errToken := e.ensureAPIToken(ctx, auth)
+	if errToken != nil {
+		return nil, statusErr{code: http.StatusUnauthorized, msg: fmt.Sprintf("failed to refresh copilot api token: %v", errToken)}
+	}
+	retryReq, err := buildRequest(newToken)
+	if err != nil {
+		return nil, err
+	}
+	log.Debug("github-copilot executor: 401/403 from upstream, retried once with a fresh copilot api token")
+	return do(retryReq)
 }
 
 // ensureAPIToken gets or refreshes the Copilot API token.
@@ -602,17 +652,46 @@ func (e *GitHubCopilotExecutor) ensureAPIToken(ctx context.Context, auth *clipro
 }
 
 // applyHeaders sets the required headers for GitHub Copilot API requests.
-func (e *GitHubCopilotExecutor) applyHeaders(r *http.Request, apiToken string, body []byte) {
+// The set mirrors the live @github/copilot CLI 1.0.81-6 inference request
+// (OmniRoute parity): the CLI does NOT send `editor-plugin-version` on the
+// inference path — that belongs to the VS Code Copilot Chat extension. The
+// `copilot-integration-id` (copilot-developer-cli) is the catalog-unlock
+// lever; the stable X-Client-Machine-Id is the CLI's per-install fingerprint.
+// Per-call / per-conversation / per-turn correlation ids the CLI puts on
+// every inference request are minted fresh; the machine id is stable.
+// Repository correlation sentinels mirror the CLI's no-repo literals (CPA is
+// not repo-scoped).
+func (e *GitHubCopilotExecutor) applyHeaders(r *http.Request, apiToken string, body []byte, model string, stream bool) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+apiToken)
 	r.Header.Set("Accept", "application/json")
-	r.Header.Set("User-Agent", copilotUserAgent)
-	r.Header.Set("Editor-Version", copilotEditorVersion)
-	r.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
-	r.Header.Set("Openai-Intent", copilotOpenAIIntent)
-	r.Header.Set("Copilot-Integration-Id", copilotIntegrationID)
-	r.Header.Set("X-Github-Api-Version", copilotGitHubAPIVer)
+	r.Header.Set("User-Agent", copilotauth.CopilotUserAgent())
+	r.Header.Set("Editor-Version", copilotauth.CopilotEditorVersion())
+	r.Header.Set("Copilot-Integration-Id", copilotauth.CopilotIntegrationID)
+	r.Header.Set("Openai-Intent", copilotauth.CopilotOpenAIIntent)
+	r.Header.Set("X-Interaction-Type", copilotauth.CopilotInteractionType)
+	r.Header.Set("Copilot-Harness-Id", copilotauth.CopilotHarnessID)
+	r.Header.Set("X-GitHub-Api-Version", copilotauth.CopilotAPIVersion())
+	r.Header.Set("X-Client-Machine-Id", copilotauth.CopilotMachineID())
 	r.Header.Set("X-Request-Id", uuid.NewString())
+	r.Header.Set("X-Interaction-Id", uuid.NewString())
+	r.Header.Set("X-Client-Session-Id", uuid.NewString())
+	r.Header.Set("X-Agent-Task-Id", uuid.NewString())
+	r.Header.Set("X-GitHub-Repository-Nwo", copilotauth.CopilotNoRepositorySentinel)
+	r.Header.Set("X-GitHub-Repository-Host", copilotauth.CopilotNoRepositorySentinel)
+
+	// OpenAI-SDK (stainless) signature the CLI carries on streamed turns only.
+	if stream {
+		r.Header.Set("X-Stainless-Helper-Method", "stream")
+	}
+
+	// Claude models routed through the Anthropic-native /v1/messages shim
+	// require the anthropic-version header (harmless no-op on
+	// /chat/completions and /responses). Match on the model NAME so it fires
+	// for every claude-* id. Port of OmniRoute/9router#2608.
+	if strings.Contains(strings.ToLower(model), "claude") {
+		r.Header.Set("Anthropic-Version", copilotauth.CopilotAnthropicAPIVersion)
+	}
 
 	initiator := "user"
 	if isAgentInitiated(body) {
@@ -1695,11 +1774,9 @@ func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg 
 		return registry.GetGitHubCopilotModels()
 	}
 
-	// Apply senpi's availability rules: drop tool-call-less models, prefer
-	// model-picker-enabled models, and fall back to policy-enabled models on
-	// individual accounts.
-	allowPolicyFallback := strings.Contains(copilotAuth.ResolveAPIBaseURL(apiToken), "api.individual.githubcopilot.com")
-	if filtered := copilotauth.FilterAvailableCopilotModels(entries, allowPolicyFallback); len(filtered) > 0 {
+	// Apply OmniRoute's availability rules: capability-driven chat filtering
+	// keeps every entitled chat model the live catalog returns.
+	if filtered := copilotauth.FilterAvailableCopilotModels(entries); len(filtered) > 0 {
 		entries = filtered
 	} else {
 		log.Debug("github-copilot: availability filter removed all models, keeping unfiltered list")
@@ -1719,15 +1796,11 @@ func FetchGitHubCopilotModels(ctx context.Context, auth *cliproxyauth.Auth, cfg 
 		if entry.ID == "" {
 			continue
 		}
-		if !registry.IsAllowedGitHubCopilotModel(entry.ID) {
-			continue
-		}
 		// Deduplicate model IDs to avoid incorrect reference counting.
 		if _, dup := seen[entry.ID]; dup {
 			continue
 		}
 		seen[entry.ID] = struct{}{}
-
 		m := &registry.ModelInfo{
 			ID:      entry.ID,
 			Object:  "model",
