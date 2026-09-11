@@ -3,6 +3,7 @@ package chat_completions
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -34,6 +35,90 @@ func TestConvertCodexResponseToOpenAI_IncompleteTerminal(t *testing.T) {
 	nonStreamOut := ConvertCodexResponseToOpenAINonStream(ctx, "gpt-5.5", nil, nil, terminal, nil)
 	if got := gjson.GetBytes(nonStreamOut, "choices.0.finish_reason").String(); got != "length" {
 		t.Fatalf("non-stream finish_reason = %q, want length; payload=%s", got, nonStreamOut)
+	}
+}
+
+// TestConvertCodexResponseToOpenAI_GrokThinkingTagsSplitAcrossDeltas proves
+// the xAI Responses API stream path (grok-4.6) separates literal
+// <think>...</think> tags spanning multiple response.output_text.delta
+// fragments into reasoning_content, keeping choices.0.delta.content clean of
+// the tag markers. Reproduces the reported "literal <think> tags leak into
+// the answer" symptom for the x.ai OAuth (native xai executor) path.
+func TestConvertCodexResponseToOpenAI_GrokThinkingTagsSplitAcrossDeltas(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	_ = ConvertCodexResponseToOpenAI(ctx, "grok-4.6", nil, nil, []byte(`data: {"type":"response.created","response":{"id":"resp_1","created_at":1700000000,"model":"grok-4.6"}}`), &param)
+
+	fragments := []string{"<thi", "nk>reasoning ", "here</thi", "nk>visible ", "answer"}
+	var gotReasoning, gotContent string
+	for _, fragment := range fragments {
+		b, _ := json.Marshal(fragment)
+		event := append([]byte(`data: {"type":"response.output_text.delta","delta":`), b...)
+		event = append(event, '}')
+		chunks := ConvertCodexResponseToOpenAI(ctx, "grok-4.6", nil, nil, event, &param)
+		for _, chunk := range chunks {
+			if reasoning := gjson.GetBytes(chunk, "choices.0.delta.reasoning_content").String(); reasoning != "" {
+				gotReasoning += reasoning
+			}
+			if content := gjson.GetBytes(chunk, "choices.0.delta.content").String(); content != "" {
+				gotContent += content
+			}
+			if strings.Contains(gjson.GetBytes(chunk, "choices.0.delta.content").String(), "<think") {
+				t.Fatalf("content delta must never contain a literal thinking tag, got %q", chunk)
+			}
+		}
+	}
+	terminal := []byte(`data: {"type":"response.completed","response":{"id":"resp_1","created_at":1700000000,"model":"grok-4.6","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+	termChunks := ConvertCodexResponseToOpenAI(ctx, "grok-4.6", nil, nil, terminal, &param)
+	for _, chunk := range termChunks {
+		if reasoning := gjson.GetBytes(chunk, "choices.0.delta.reasoning_content").String(); reasoning != "" {
+			gotReasoning += reasoning
+		}
+		if content := gjson.GetBytes(chunk, "choices.0.delta.content").String(); content != "" {
+			gotContent += content
+		}
+	}
+
+	if gotReasoning != "reasoning here" {
+		t.Fatalf("reasoning_content = %q, want %q", gotReasoning, "reasoning here")
+	}
+	if gotContent != "visible answer" {
+		t.Fatalf("content = %q, want %q", gotContent, "visible answer")
+	}
+}
+
+// TestConvertCodexResponseToOpenAI_NonGrokModelKeepsInlineTagsVerbatim proves
+// the thinking-tag split is scoped to grok/minimax models only; an unrelated
+// model's literal "<think>" text (if any) passes through untouched.
+func TestConvertCodexResponseToOpenAI_NonGrokModelKeepsInlineTagsVerbatim(t *testing.T) {
+	ctx := context.Background()
+	var param any
+
+	_ = ConvertCodexResponseToOpenAI(ctx, "gpt-5.5", nil, nil, []byte(`data: {"type":"response.created","response":{"id":"resp_1","created_at":1700000000,"model":"gpt-5.5"}}`), &param)
+	chunks := ConvertCodexResponseToOpenAI(ctx, "gpt-5.5", nil, nil, []byte(`data: {"type":"response.output_text.delta","delta":"<think>literal</think>"}`), &param)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+	if got := gjson.GetBytes(chunks[0], "choices.0.delta.content").String(); got != "<think>literal</think>" {
+		t.Fatalf("content = %q, want the literal tag text untouched for non-grok models", got)
+	}
+}
+
+// TestConvertCodexResponseToOpenAINonStream_GrokThinkingTagsSplit proves the
+// non-streaming xAI Responses API path also separates literal <think> tags
+// out of message.content into message.reasoning_content.
+func TestConvertCodexResponseToOpenAINonStream_GrokThinkingTagsSplit(t *testing.T) {
+	ctx := context.Background()
+	responseJSON := []byte(`{"type":"response.completed","response":{"id":"resp_1","created_at":1700000000,"model":"grok-4.6","output":[{"type":"message","content":[{"type":"output_text","text":"<think>internal notes</think>final answer"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+
+	out := ConvertCodexResponseToOpenAINonStream(ctx, "grok-4.6", nil, nil, responseJSON, nil)
+
+	if got := gjson.GetBytes(out, "choices.0.message.content").String(); got != "final answer" {
+		t.Fatalf("message.content = %q, want %q; payload=%s", got, "final answer", out)
+	}
+	if got := gjson.GetBytes(out, "choices.0.message.reasoning_content").String(); got != "internal notes" {
+		t.Fatalf("message.reasoning_content = %q, want %q; payload=%s", got, "internal notes", out)
 	}
 }
 
