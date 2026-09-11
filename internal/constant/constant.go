@@ -45,6 +45,9 @@ const (
 	// Freebuff represents the Freebuff provider identifier.
 	Freebuff = "freebuff"
 
+	// Devin represents the Devin (Cognition) provider identifier.
+	Devin = "devin"
+
 	// Mistral represents the Mistral AI provider identifier.
 	Mistral = "mistral"
 

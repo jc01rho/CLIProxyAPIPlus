@@ -169,6 +169,7 @@ type Config struct {
 
 	CommandCodeKey []CommandCodeKey `yaml:"commandcode-api-key" json:"commandcode-api-key"`
 	FreebuffKey    []FreebuffKey    `yaml:"freebuff-api-key" json:"freebuff-api-key"`
+	DevinKey       []DevinKey       `yaml:"devin-api-key" json:"devin-api-key"`
 	MistralKey     []MistralKey     `yaml:"mistral-api-key" json:"mistral-api-key"`
 	AmpCode        AmpCode          `yaml:"ampcode" json:"ampcode"`
 
