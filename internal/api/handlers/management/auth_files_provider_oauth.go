@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cline"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor"
+	devinauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/devin"
 	kiloauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kilo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	kiro "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
@@ -1652,6 +1653,102 @@ func (h *Handler) RequestZcodeToken(c *gin.Context) {
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": flow.AuthorizeURL, "state": state})
+}
+
+// RequestDevinToken starts a Devin PKCE OAuth authorization flow.
+func (h *Handler) RequestDevinToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	log.Info("Initializing Devin authentication")
+
+	pkce, err := devinauth.GeneratePKCE()
+	if err != nil {
+		log.Errorf("Failed to generate PKCE codes: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
+		return
+	}
+
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		log.Errorf("Failed to generate state parameter: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return
+	}
+
+	authURL, err := devinauth.GenerateAuthURL(state, pkce)
+	if err != nil {
+		log.Errorf("Failed to generate authorization URL: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		return
+	}
+
+	RegisterOAuthSession(state, "devin")
+
+	go func() {
+		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-devin-%s.oauth", state))
+		deadline := time.Now().Add(5 * time.Minute)
+		var code string
+		var resultErr string
+		for {
+			if !IsOAuthSessionPending(state, "devin") {
+				return
+			}
+			if time.Now().After(deadline) {
+				SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
+				log.Error("Timeout waiting for Devin OAuth callback")
+				return
+			}
+			if data, errR := os.ReadFile(waitFile); errR == nil {
+				var m map[string]string
+				_ = json.Unmarshal(data, &m)
+				_ = os.Remove(waitFile)
+				code = m["code"]
+				resultErr = m["error"]
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if resultErr != "" {
+			SetOAuthSessionError(state, resultErr)
+			log.Errorf("Devin OAuth callback error: %s", resultErr)
+			return
+		}
+		if code == "" {
+			SetOAuthSessionError(state, "empty authorization code")
+			log.Error("Devin OAuth callback returned empty code")
+			return
+		}
+
+		tokens, errExchange := devinauth.ExchangeCode(ctx, code, pkce.Verifier, "")
+		if errExchange != nil {
+			errMsg := fmt.Sprintf("Exchange failed: %v", errExchange)
+			SetOAuthSessionError(state, errMsg)
+			log.Errorf("Failed to exchange Devin code: %v", errExchange)
+			return
+		}
+
+		shortID := fmt.Sprintf("%x", time.Now().UnixNano())[:8]
+		record := devinauth.BuildAuthRecord(tokens, shortID)
+
+		if errGuard := guardOAuthSessionPendingForSave(state, "devin"); errGuard != nil {
+			return
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save authentication tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+		log.Infof("Authentication successful! Token saved to %s", savedPath)
+		CompleteOAuthSession(state)
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"url":   authURL,
+		"state": state,
+	})
 }
 
 // sanitizeZcodeIdentifier sanitizes an email for use in a filename.
