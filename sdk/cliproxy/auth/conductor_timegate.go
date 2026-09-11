@@ -14,10 +14,19 @@ import (
 // modelTimeGateNow is a controllable clock for tests.
 var modelTimeGateNow = time.Now
 
+// modelTimeGateModeAllow is the ModelTimeGate.Mode value that turns Models
+// into a time-boxed whitelist instead of a blocklist.
+const modelTimeGateModeAllow = "allow"
+
 // modelTimeGatedByConfig reports whether the auth candidate is excluded by an
 // active model time gate. The match order is provider, then auth ID, then
 // route model: a rule scoped to one provider never gates a credential from a
 // different provider serving the same model ID.
+//
+// Mode controls the polarity once provider/auth ID scope and the schedule
+// window both match: "exclude" (default) blocks candidates whose model
+// matches Models; "allow" inverts this, blocking every candidate whose model
+// does NOT match Models, turning the rule into a time-boxed whitelist.
 func modelTimeGatedByConfig(cfg *internalconfig.Config, rules []internalconfig.ModelTimeGate, auth *Auth, routeModel string) (string, bool) {
 	if len(rules) == 0 || auth == nil {
 		return "", false
@@ -35,7 +44,17 @@ func modelTimeGatedByConfig(cfg *internalconfig.Config, rules []internalconfig.M
 		if authID := strings.TrimSpace(rule.AuthID); authID != "" && authID != auth.ID {
 			continue
 		}
-		if !modelTimeGateMatchesModel(rule.Models, candidates) {
+		allowMode := strings.EqualFold(strings.TrimSpace(rule.Mode), modelTimeGateModeAllow)
+		var blocks bool
+		if allowMode {
+			// An empty allowlist matches nothing (unlike exclude mode, where
+			// empty Models means "every model"), so it blocks everything in
+			// scope for the window instead of granting a pass by default.
+			blocks = len(rule.Models) == 0 || !modelTimeGateMatchesModel(rule.Models, candidates)
+		} else {
+			blocks = modelTimeGateMatchesModel(rule.Models, candidates)
+		}
+		if !blocks {
 			continue
 		}
 		if modelTimeGateActiveAt(rule.Schedule, rule.Duration, modelTimeGateNow()) {

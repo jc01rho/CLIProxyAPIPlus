@@ -315,8 +315,18 @@ type ModelTimeGate struct {
 	// AuthID limits the gate to one credential ID (empty = all credentials).
 	AuthID string `yaml:"auth-id,omitempty" json:"auth-id,omitempty"`
 	// Models limits the gate to matching route models, glob-style ("deepseek-*").
-	// Empty matches all models.
+	// Empty matches all models under "exclude" mode (see Mode); "allow" mode
+	// requires at least one pattern, since an empty allowlist would block
+	// every model for the whole window.
 	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
+	// Mode selects the gate's polarity while its schedule window is active:
+	//   - "exclude" (default, empty also means this): candidates matching
+	//     Models are blocked; everything else is unaffected by this rule.
+	//   - "allow": candidates matching Models pass through; every other
+	//     candidate within the rule's Provider/AuthID scope is blocked. This
+	//     turns Models into a time-boxed whitelist (e.g. "only deepseek-v3.2
+	//     may be used 01:00-04:00 UTC").
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
 	// Enabled defaults to true; explicit false disables the rule.
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 }

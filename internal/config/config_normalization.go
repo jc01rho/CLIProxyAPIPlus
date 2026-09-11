@@ -409,6 +409,13 @@ func (cfg *Config) SanitizeModelTimeGates() {
 		rule.Duration = strings.TrimSpace(rule.Duration)
 		rule.Provider = strings.ToLower(strings.TrimSpace(rule.Provider))
 		rule.AuthID = strings.TrimSpace(rule.AuthID)
+		// Unknown/typo'd Mode values fall back to "" (exclude, the default)
+		// rather than being silently persisted as-is.
+		if mode := strings.ToLower(strings.TrimSpace(rule.Mode)); mode == "allow" {
+			rule.Mode = "allow"
+		} else {
+			rule.Mode = ""
+		}
 		models := make([]string, 0, len(rule.Models))
 		for _, m := range rule.Models {
 			if m = strings.TrimSpace(m); m != "" {
