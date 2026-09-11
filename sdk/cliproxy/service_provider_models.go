@@ -171,5 +171,13 @@ func buildDevinConfigModels(entry *config.DevinKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildNativeConfigModels(entry.Models, "devin", "devin")
+	models := buildNativeConfigModels(entry.Models, "devin", "devin")
+	// Devin speaks a Connect chat RPC only; /v1/responses requests must be
+	// converted to the chat completions shape before execution.
+	for _, m := range models {
+		if m != nil {
+			m.SupportedEndpoints = []string{"/chat/completions"}
+		}
+	}
+	return models
 }
