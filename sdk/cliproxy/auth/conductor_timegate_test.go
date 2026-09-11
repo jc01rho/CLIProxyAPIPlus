@@ -132,6 +132,59 @@ func TestModelTimeGateMatchesConfigAlias(t *testing.T) {
 	}
 }
 
+// TestModelTimeGateAllowModeWhitelistsModels proves Mode:"allow" inverts the
+// gate's polarity: within the active window, requests for a whitelisted
+// model pass through untouched while every other model in scope is blocked;
+// outside the window nothing is affected.
+func TestModelTimeGateAllowModeWhitelistsModels(t *testing.T) {
+	oldNow := modelTimeGateNow
+	defer func() { modelTimeGateNow = oldNow }()
+
+	rules := []internalconfig.ModelTimeGate{
+		{
+			Name:     "whitelist-window",
+			Schedule: "0 1 * * 1-5",
+			Duration: "3h",
+			Mode:     "allow",
+			Models:   []string{"deepseek-v3.2"},
+		},
+	}
+	auth := &Auth{ID: "any-auth", Provider: "any-provider"}
+
+	// Inside the window.
+	modelTimeGateNow = func() time.Time { return time.Date(2026, 9, 14, 2, 0, 0, 0, time.UTC) }
+	if _, gated := modelTimeGatedByConfig(nil, rules, auth, "deepseek-v3.2"); gated {
+		t.Error("whitelisted model must pass through during the allow window")
+	}
+	if _, gated := modelTimeGatedByConfig(nil, rules, auth, "gpt-5.5"); !gated {
+		t.Error("non-whitelisted model must be blocked during the allow window")
+	}
+
+	// Outside the window nothing is gated, whitelist or not.
+	modelTimeGateNow = func() time.Time { return time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC) }
+	if _, gated := modelTimeGatedByConfig(nil, rules, auth, "gpt-5.5"); gated {
+		t.Error("outside the window the allow rule must not block anything")
+	}
+}
+
+// TestModelTimeGateAllowModeEmptyModelsBlocksEverything proves an allow-mode
+// rule with no Models entries blocks every candidate in scope for the whole
+// window (an empty allowlist grants no exceptions), matching the documented
+// ModelTimeGate.Models contract.
+func TestModelTimeGateAllowModeEmptyModelsBlocksEverything(t *testing.T) {
+	oldNow := modelTimeGateNow
+	modelTimeGateNow = func() time.Time { return time.Date(2026, 9, 14, 2, 0, 0, 0, time.UTC) }
+	defer func() { modelTimeGateNow = oldNow }()
+
+	rules := []internalconfig.ModelTimeGate{
+		{Name: "lockdown", Schedule: "0 1 * * 1-5", Duration: "3h", Mode: "allow"},
+	}
+	auth := &Auth{ID: "any-auth", Provider: "any-provider"}
+	if _, gated := modelTimeGatedByConfig(nil, rules, auth, "anything-at-all"); !gated {
+		t.Error("an allow rule with an empty allowlist must block every model")
+	}
+}
+
 // TestParseCronStart verifies cron field parsing.
 func TestParseCronStart(t *testing.T) {
 	minute, hour, weekdays, ok := parseCronStart("0 1 * * 1-5")
