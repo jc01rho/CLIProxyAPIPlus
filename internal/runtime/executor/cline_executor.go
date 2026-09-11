@@ -53,6 +53,12 @@ var (
 	clineRefreshLocks = make(map[string]*sync.Mutex)
 )
 
+// clineRefreshDeadKey marks an auth record whose refresh token upstream
+// rejected as unrecoverable (invalid_grant). Set after a classified failure
+// so later requests fail fast instead of re-hitting the refresh endpoint
+// with the same dead token. Cleared on the next successful rotation.
+const clineRefreshDeadKey = "clineRefreshDead"
+
 func clineLockFor(id string) *sync.Mutex {
 	clineRefreshMu.Lock()
 	defer clineRefreshMu.Unlock()
@@ -91,6 +97,9 @@ func persistClineAuth(ctx context.Context, auth *cliproxyauth.Auth) error {
 // ClineExecutor handles requests to Cline API.
 type ClineExecutor struct {
 	cfg *config.Config
+	// refreshURLOverride points the pre-request rotation at a test server.
+	// Empty in production (the ClineAuth default endpoint is used).
+	refreshURLOverride string
 }
 
 // NewClineExecutor creates a new Cline executor instance.
@@ -374,14 +383,30 @@ func (e *ClineExecutor) refreshBeforeExpiry(ctx context.Context, auth *cliproxya
 		return nil
 	}
 
+	// Fail fast on a refresh token upstream already rejected as dead. Without
+	// this, every request logs a WARN and re-hits the endpoint with the same
+	// dead token (the invalid_grant loop seen in production logs).
+	if dead, _ := auth.Metadata[clineRefreshDeadKey].(bool); dead {
+		return fmt.Errorf("cline: refresh token previously rejected as unrecoverable, re-auth required: %w", clineauth.ErrRefreshUnrecoverable)
+	}
+
 	rt := e.refreshToken(auth)
 	if strings.TrimSpace(rt) == "" {
 		return fmt.Errorf("cline refresh token missing from auth metadata")
 	}
 
 	authSvc := clineauth.NewClineAuth(e.cfg)
+	if e.refreshURLOverride != "" {
+		authSvc = authSvc.WithEndpoints("", e.refreshURLOverride, "", "")
+	}
 	refreshed, err := authSvc.RefreshToken(ctx, rt)
 	if err != nil {
+		if clineauth.IsUnrecoverableRefreshError(err) {
+			if auth.Metadata == nil {
+				auth.Metadata = make(map[string]any)
+			}
+			auth.Metadata[clineRefreshDeadKey] = true
+		}
 		return err
 	}
 	if refreshed == nil || strings.TrimSpace(refreshed.AccessToken) == "" {
@@ -418,6 +443,7 @@ func (e *ClineExecutor) refreshBeforeExpiry(ctx context.Context, auth *cliproxya
 		auth.Storage = synth
 	}
 	auth.Metadata["workos_prefixed"] = true
+	delete(auth.Metadata, clineRefreshDeadKey)
 
 	return persistClineAuth(ctx, auth)
 }
