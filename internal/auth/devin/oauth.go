@@ -158,11 +158,23 @@ func DecodeExchangeResponse(data []byte) (*TokenResponse, error) {
 			strVal := string(valBytes)
 			switch fieldNum {
 			case 1:
-				resp.APIKey = strVal
+				if strings.HasPrefix(strVal, "devin-session-token$") || strings.HasPrefix(strVal, "session-") {
+					resp.SessionToken = strVal
+				} else {
+					resp.APIKey = strVal
+				}
 			case 2:
-				resp.APIServerURL = strVal
+				if strings.Contains(strVal, "devin.ai") || !strings.HasPrefix(strVal, "http") {
+					resp.DevinWebappHost = strVal
+				} else {
+					resp.APIServerURL = strVal
+				}
 			case 3:
-				resp.DevinWebappHost = strVal
+				if strings.HasPrefix(strVal, "http") && strings.Contains(strVal, "codeium") {
+					resp.APIServerURL = strVal
+				} else {
+					resp.DevinWebappHost = strVal
+				}
 			case 4:
 				resp.DevinAPIURL = strVal
 			case 5:
@@ -245,14 +257,17 @@ func doExchangeRPC(ctx context.Context, reqURL, code, verifier string) (*TokenRe
 		return nil, fmt.Errorf("devin: exchange succeeded but returned empty credentials")
 	}
 
-	if tokens.APIServerURL == "" {
+	if tokens.APIServerURL == "" || strings.Contains(tokens.APIServerURL, "devin.ai") {
 		tokens.APIServerURL = DefaultCodeiumAPIServer
+	}
+	if !strings.HasPrefix(tokens.APIServerURL, "http://") && !strings.HasPrefix(tokens.APIServerURL, "https://") {
+		tokens.APIServerURL = "https://" + tokens.APIServerURL
 	}
 	if tokens.DevinAPIURL == "" {
 		tokens.DevinAPIURL = "https://api.devin.ai"
 	}
 	if tokens.DevinWebappHost == "" {
-		tokens.DevinWebappHost = "https://app.devin.ai"
+		tokens.DevinWebappHost = "app.devin.ai"
 	}
 
 	return tokens, nil
@@ -269,6 +284,15 @@ func BuildAuthRecord(tokens *TokenResponse, shortID string) *cliproxyauth.Auth {
 	if primaryKey == "" {
 		primaryKey = strings.TrimSpace(tokens.SessionToken)
 	}
+
+	apiServerURL := strings.TrimSpace(tokens.APIServerURL)
+	if apiServerURL == "" || strings.Contains(apiServerURL, "devin.ai") {
+		apiServerURL = DefaultCodeiumAPIServer
+	}
+	if !strings.HasPrefix(apiServerURL, "http://") && !strings.HasPrefix(apiServerURL, "https://") {
+		apiServerURL = "https://" + apiServerURL
+	}
+	tokens.APIServerURL = apiServerURL
 
 	metadata := map[string]any{
 		"type":              "devin",

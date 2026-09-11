@@ -132,21 +132,32 @@ func devinAPIKey(auth *cliproxyauth.Auth) string {
 // devinServerURL resolves the Connect API server URL: per-credential
 // base_url override wins, then the executor default.
 func devinServerURL(auth *cliproxyauth.Auth) string {
+	raw := ""
 	if auth != nil {
 		if auth.Attributes != nil {
-			if base := strings.TrimSpace(auth.Attributes["base_url"]); base != "" {
-				return strings.TrimRight(base, "/")
-			}
+			raw = strings.TrimSpace(auth.Attributes["base_url"])
 		}
-		if auth.Metadata != nil {
+		if raw == "" && auth.Metadata != nil {
 			for _, field := range []string{"api_server_url", "base_url"} {
-				if base, ok := auth.Metadata[field].(string); ok && strings.TrimSpace(base) != "" {
-					return strings.TrimRight(strings.TrimSpace(base), "/")
+				if v, ok := auth.Metadata[field].(string); ok && strings.TrimSpace(v) != "" {
+					raw = strings.TrimSpace(v)
+					break
 				}
 			}
 		}
 	}
-	return devinDefaultAPIServerURL
+	if raw == "" {
+		return devinDefaultAPIServerURL
+	}
+	clean := strings.TrimRight(raw, "/")
+	if !strings.HasPrefix(clean, "http://") && !strings.HasPrefix(clean, "https://") {
+		clean = "https://" + clean
+	}
+	// app.devin.ai or api.devin.ai is the webapp or REST host, not the Connect RPC API server.
+	if strings.Contains(clean, "devin.ai") {
+		return devinDefaultAPIServerURL
+	}
+	return clean
 }
 
 // devinAuthHeader builds the "Basic <T>-<T>" authorization value Devin CLI

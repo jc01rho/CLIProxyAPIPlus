@@ -269,9 +269,17 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				break
 			}
 		}
-		if apiServerURL, ok := metadata["api_server_url"].(string); ok && strings.TrimSpace(apiServerURL) != "" {
-			a.Attributes["base_url"] = strings.TrimSpace(apiServerURL)
+		apiServer := ""
+		if v, ok := metadata["api_server_url"].(string); ok && strings.TrimSpace(v) != "" {
+			apiServer = strings.TrimSpace(v)
 		}
+		if apiServer == "" || strings.Contains(apiServer, "devin.ai") {
+			apiServer = "https://server.codeium.com"
+		}
+		if !strings.HasPrefix(apiServer, "http://") && !strings.HasPrefix(apiServer, "https://") {
+			apiServer = "https://" + apiServer
+		}
+		a.Attributes["base_url"] = strings.TrimRight(apiServer, "/")
 		if devinAPIURL, ok := metadata["devin_api_url"].(string); ok && strings.TrimSpace(devinAPIURL) != "" {
 			a.Attributes["devin_api_url"] = strings.TrimSpace(devinAPIURL)
 		}
