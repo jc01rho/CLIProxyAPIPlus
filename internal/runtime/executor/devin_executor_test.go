@@ -222,3 +222,104 @@ func TestDevinExecuteMissingKey(t *testing.T) {
 		t.Fatal("expected missing-key error")
 	}
 }
+
+func TestDevinAPIKeyResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		auth *cliproxyauth.Auth
+		want string
+	}{
+		{
+			name: "from attributes api_key",
+			auth: &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "k1"}},
+			want: "k1",
+		},
+		{
+			name: "from attributes session_token",
+			auth: &cliproxyauth.Auth{Attributes: map[string]string{"session_token": "s1"}},
+			want: "s1",
+		},
+		{
+			name: "from attributes windsurf_api_key",
+			auth: &cliproxyauth.Auth{Attributes: map[string]string{"windsurf_api_key": "w1"}},
+			want: "w1",
+		},
+		{
+			name: "from metadata api_key",
+			auth: &cliproxyauth.Auth{Metadata: map[string]any{"api_key": "m_k1"}},
+			want: "m_k1",
+		},
+		{
+			name: "from metadata session_token",
+			auth: &cliproxyauth.Auth{Metadata: map[string]any{"session_token": "m_s1"}},
+			want: "m_s1",
+		},
+		{
+			name: "from metadata windsurf_api_key",
+			auth: &cliproxyauth.Auth{Metadata: map[string]any{"windsurf_api_key": "m_w1"}},
+			want: "m_w1",
+		},
+		{
+			name: "from metadata token",
+			auth: &cliproxyauth.Auth{Metadata: map[string]any{"token": "m_t1"}},
+			want: "m_t1",
+		},
+		{
+			name: "from metadata access_token",
+			auth: &cliproxyauth.Auth{Metadata: map[string]any{"access_token": "m_a1"}},
+			want: "m_a1",
+		},
+		{
+			name: "nil auth",
+			auth: nil,
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := devinAPIKey(tc.auth)
+			if got != tc.want {
+				t.Fatalf("devinAPIKey() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDevinServerURLResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		auth *cliproxyauth.Auth
+		want string
+	}{
+		{
+			name: "default",
+			auth: &cliproxyauth.Auth{},
+			want: devinDefaultAPIServerURL,
+		},
+		{
+			name: "from attributes base_url",
+			auth: &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "https://custom.server.com/"}},
+			want: "https://custom.server.com",
+		},
+		{
+			name: "from metadata api_server_url",
+			auth: &cliproxyauth.Auth{Metadata: map[string]any{"api_server_url": "https://meta.server.com"}},
+			want: "https://meta.server.com",
+		},
+		{
+			name: "from metadata base_url",
+			auth: &cliproxyauth.Auth{Metadata: map[string]any{"base_url": "https://meta-base.server.com/"}},
+			want: "https://meta-base.server.com",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := devinServerURL(tc.auth)
+			if got != tc.want {
+				t.Fatalf("devinServerURL() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

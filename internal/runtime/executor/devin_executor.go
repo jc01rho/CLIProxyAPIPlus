@@ -102,13 +102,29 @@ func (e *DevinExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	return auth, nil
 }
 
-// devinAPIKey extracts the Devin session token from the auth record.
+// devinAPIKey extracts the Devin API key or session token from the auth record.
+// It checks Attributes (from config or file synthesis) and Metadata (from JSON auth files).
 func devinAPIKey(auth *cliproxyauth.Auth) string {
-	if auth == nil || auth.Attributes == nil {
+	if auth == nil {
 		return ""
 	}
-	if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
-		return key
+	if auth.Attributes != nil {
+		if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
+			return key
+		}
+		if key := strings.TrimSpace(auth.Attributes["session_token"]); key != "" {
+			return key
+		}
+		if key := strings.TrimSpace(auth.Attributes["windsurf_api_key"]); key != "" {
+			return key
+		}
+	}
+	if auth.Metadata != nil {
+		for _, field := range []string{"api_key", "session_token", "windsurf_api_key", "token", "access_token"} {
+			if v, ok := auth.Metadata[field].(string); ok && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		}
 	}
 	return ""
 }
@@ -116,9 +132,18 @@ func devinAPIKey(auth *cliproxyauth.Auth) string {
 // devinServerURL resolves the Connect API server URL: per-credential
 // base_url override wins, then the executor default.
 func devinServerURL(auth *cliproxyauth.Auth) string {
-	if auth != nil && auth.Attributes != nil {
-		if base := strings.TrimSpace(auth.Attributes["base_url"]); base != "" {
-			return strings.TrimRight(base, "/")
+	if auth != nil {
+		if auth.Attributes != nil {
+			if base := strings.TrimSpace(auth.Attributes["base_url"]); base != "" {
+				return strings.TrimRight(base, "/")
+			}
+		}
+		if auth.Metadata != nil {
+			for _, field := range []string{"api_server_url", "base_url"} {
+				if base, ok := auth.Metadata[field].(string); ok && strings.TrimSpace(base) != "" {
+					return strings.TrimRight(strings.TrimSpace(base), "/")
+				}
+			}
 		}
 	}
 	return devinDefaultAPIServerURL
