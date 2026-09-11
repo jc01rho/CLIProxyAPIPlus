@@ -63,24 +63,72 @@ func TestModelTimeGateMatching(t *testing.T) {
 		return &Auth{ID: id, Provider: provider}
 	}
 
-	if _, gated := modelTimeGatedByConfig(rules, mkAuth("deepseek", "deep-free-1"), "deepseek-v3.2"); !gated {
+	if _, gated := modelTimeGatedByConfig(nil, rules, mkAuth("deepseek", "deep-free-1"), "deepseek-v3.2"); !gated {
 		t.Error("matching provider/auth/model should be gated")
 	}
-	if _, gated := modelTimeGatedByConfig(rules, mkAuth("commandcode", "cc-1"), "deepseek-v3.2"); gated {
-		t.Error("commandCode serving the same model must NOT be gated")
+	if _, gated := modelTimeGatedByConfig(nil, rules, mkAuth("other-provider", "op-1"), "deepseek-v3.2"); gated {
+		t.Error("a different provider serving the same model must NOT be gated")
 	}
-	if _, gated := modelTimeGatedByConfig(rules, mkAuth("deepseek", "deep-paid-2"), "deepseek-v3.2"); gated {
+	if _, gated := modelTimeGatedByConfig(nil, rules, mkAuth("deepseek", "deep-paid-2"), "deepseek-v3.2"); gated {
 		t.Error("non-matching auth ID must NOT be gated")
 	}
-	if _, gated := modelTimeGatedByConfig(rules, mkAuth("deepseek", "deep-free-1"), "claude-opus"); gated {
+	if _, gated := modelTimeGatedByConfig(nil, rules, mkAuth("deepseek", "deep-free-1"), "claude-opus"); gated {
 		t.Error("non-matching model must NOT be gated")
 	}
 	// Outside the window nothing matches.
 	modelTimeGateNow = func() time.Time {
 		return time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	}
-	if _, gated := modelTimeGatedByConfig(rules, mkAuth("deepseek", "deep-free-1"), "deepseek-v3.2"); gated {
+	if _, gated := modelTimeGatedByConfig(nil, rules, mkAuth("deepseek", "deep-free-1"), "deepseek-v3.2"); gated {
 		t.Error("outside the window nothing should be gated")
+	}
+}
+
+// TestModelTimeGateMatchesConfigAlias proves a rule written against the real
+// upstream model name (e.g. "*deepseek-v4.1-flash*") also gates a request
+// that used a client-side config alias for the same model (e.g.
+// "command-deepseek41-flash"), reproducing the reported production case: the
+// registry alone cannot resolve this because registry.ModelInfo.ID stores
+// only the alias (see buildConfiguredModelInfo) with no reverse mapping back
+// to the real name, so the live per-provider config must be consulted.
+func TestModelTimeGateMatchesConfigAlias(t *testing.T) {
+	oldNow := modelTimeGateNow
+	modelTimeGateNow = func() time.Time {
+		return time.Date(2026, 9, 14, 2, 0, 0, 0, time.UTC) // Monday, in window
+	}
+	defer func() { modelTimeGateNow = oldNow }()
+
+	rules := []internalconfig.ModelTimeGate{
+		{
+			Name:     "deepseek-peek-time",
+			Schedule: "0 1 * * 1-5",
+			Duration: "3h",
+			// No Provider/AuthID restriction, matching the reported config.
+			Models: []string{"*deepseek-v4.1-flash*"},
+		},
+	}
+	cfg := &internalconfig.Config{
+		CommandCodeKey: []internalconfig.CommandCodeKey{
+			{
+				Models: []internalconfig.CommandCodeModel{
+					{Name: "deepseek-v4.1-flash", Alias: "command-deepseek41-flash"},
+				},
+			},
+		},
+	}
+	auth := &Auth{ID: "commandcode-apikey", Provider: "commandcode"}
+
+	if _, gated := modelTimeGatedByConfig(cfg, rules, auth, "command-deepseek41-flash"); !gated {
+		t.Error("request using the config alias must be gated by a rule written against the real model name")
+	}
+	if _, gated := modelTimeGatedByConfig(cfg, rules, auth, "deepseek-v4.1-flash"); !gated {
+		t.Error("request using the real model name directly must still be gated")
+	}
+	if _, gated := modelTimeGatedByConfig(nil, rules, auth, "command-deepseek41-flash"); gated {
+		t.Error("without config the alias must not resolve to the real model name")
+	}
+	if _, gated := modelTimeGatedByConfig(cfg, rules, auth, "some-other-alias"); gated {
+		t.Error("an unrelated alias must not be gated")
 	}
 }
 
