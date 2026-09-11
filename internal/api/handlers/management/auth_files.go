@@ -200,6 +200,9 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	// Get models from registry
 	reg := registry.GetGlobalRegistry()
 	models := reg.GetModelsForClient(authID)
+	if len(models) == 0 && matchedAuth != nil {
+		models = registry.GetStaticModelDefinitionsByChannel(matchedAuth.Provider)
+	}
 	excluded := authFileExcludedModelSet(matchedAuth, h.cfg)
 
 	result := make([]gin.H, 0, len(models))

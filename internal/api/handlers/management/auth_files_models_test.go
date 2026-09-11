@@ -210,3 +210,56 @@ func containsModelID(body, id string) bool {
 	}
 	return false
 }
+
+func TestGetAuthFileModelsReturnsDevinModels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "devin-auth-test",
+		Provider: "devin",
+		FileName: "/tmp/auths/devin-user.json",
+	}
+	_, err := manager.Register(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("failed to register auth: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/models?name=devin-user.json", nil)
+
+	h.GetAuthFileModels(ginCtx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(payload.Models) == 0 {
+		t.Fatalf("expected non-empty Devin models for auth file, got 0")
+	}
+	if !containsModelID(rec.Body.String(), "swe-1-6-fast") {
+		t.Fatalf("expected Devin model swe-1-6-fast in response, got %s", rec.Body.String())
+	}
+
+	// Also test GetStaticModelDefinitions for channel "devin"
+	recStatic := httptest.NewRecorder()
+	ginCtxStatic, _ := gin.CreateTestContext(recStatic)
+	ginCtxStatic.Request = httptest.NewRequest(http.MethodGet, "/v0/management/model-definitions/devin", nil)
+	ginCtxStatic.Params = gin.Params{{Key: "channel", Value: "devin"}}
+
+	h.GetStaticModelDefinitions(ginCtxStatic)
+	if recStatic.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for model-definitions/devin, got %d with body %s", recStatic.Code, recStatic.Body.String())
+	}
+	if !containsModelID(recStatic.Body.String(), "swe-2-high") {
+		t.Fatalf("expected swe-2-high in model-definitions/devin, got %s", recStatic.Body.String())
+	}
+}

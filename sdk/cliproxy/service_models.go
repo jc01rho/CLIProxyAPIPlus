@@ -250,6 +250,19 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case constant.Devin:
+		entry := s.resolveConfigDevinKey(a)
+		switch {
+		case entry != nil && len(entry.Models) > 0:
+			models = buildDevinConfigModels(entry)
+			excluded = entry.ExcludedModels
+		default:
+			models = registry.GetDevinModels()
+			if entry != nil {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
 	default:
 		models = applyExcludedModels(registry.GetStaticModelDefinitionsByChannel(provider), excluded)
 		if len(models) > 0 {
