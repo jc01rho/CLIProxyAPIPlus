@@ -139,6 +139,13 @@ func (s *Service) resolveConfigFreebuffKey(auth *coreauth.Auth) *config.Freebuff
 	return nil
 }
 
+func (s *Service) resolveConfigDevinKey(auth *coreauth.Auth) *config.DevinKey {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	return resolveNativeAPIKeyConfig(s.cfg.DevinKey, auth)
+}
+
 func buildCommandCodeConfigModels(entry *config.CommandCodeKey) []*ModelInfo {
 	if entry == nil {
 		return nil

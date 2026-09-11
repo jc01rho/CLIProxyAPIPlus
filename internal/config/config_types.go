@@ -825,6 +825,10 @@ type DevinKey struct {
 	DisableCooling bool              `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
+func (k DevinKey) GetBaseURL() string  { return k.BaseURL }
+func (k DevinKey) GetPrefix() string   { return k.Prefix }
+func (k DevinKey) GetProxyURL() string { return k.ProxyURL }
+
 // DevinModel maps a client-facing alias to a Devin model UID
 // (e.g. "swe-1-6-fast").
 type DevinModel struct {

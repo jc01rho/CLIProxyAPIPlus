@@ -29,6 +29,34 @@ func TestGetStaticModelDefinitionsByChannelSupportsGeminiInteractions(t *testing
 	}
 }
 
+func TestGetStaticModelDefinitionsByChannelSupportsDevin(t *testing.T) {
+	models := GetStaticModelDefinitionsByChannel("devin")
+	if len(models) == 0 {
+		t.Fatal("GetStaticModelDefinitionsByChannel(devin) returned no models")
+	}
+	expected := map[string]bool{
+		"swe-1-6-fast":         false,
+		"swe-2-high":           false,
+		"claude-opus-5-medium": false,
+		"gpt-5-6-sol-high":     false,
+	}
+	for _, m := range models {
+		if _, ok := expected[m.ID]; ok {
+			expected[m.ID] = true
+		}
+	}
+	for id, found := range expected {
+		if !found {
+			t.Errorf("expected Devin model %s not found in GetDevinModels", id)
+		}
+	}
+
+	info := LookupStaticModelInfo("swe-1-6-fast")
+	if info == nil {
+		t.Fatal("LookupStaticModelInfo(swe-1-6-fast) = nil, want ModelInfo")
+	}
+}
+
 func TestModelOverrideHeadersFromEmbeddedModels(t *testing.T) {
 	const wantUA = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
 	got := ModelOverrideHeaders("gpt-5.6-luna")
