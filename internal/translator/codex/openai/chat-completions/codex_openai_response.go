@@ -38,6 +38,11 @@ type ConvertCliToOpenAIParams struct {
 	toolCallStates        map[string]*toolCallStreamState
 	currentToolCall       *toolCallStreamState
 	LastImageHashByItemID map[string][32]byte
+	// thinkingTagState buffers response.output_text.delta fragments for models
+	// (grok-4.6, MiniMax) that embed reasoning as literal <think>...</think>
+	// tags in the answer text instead of a dedicated reasoning field; see
+	// codex_openai_thinking_tags.go.
+	thinkingTagState *codexThinkingTagState
 }
 
 // ConvertCodexResponseToOpenAI translates a single chunk of a streaming response from the
@@ -144,7 +149,25 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	} else if dataType == "response.output_text.delta" {
 		if deltaResult := rootResult.Get("delta"); deltaResult.Exists() {
 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
-			template, _ = sjson.SetBytes(template, "choices.0.delta.content", deltaResult.String())
+			if isCodexThinkingTagModel(p.Model) {
+				if p.thinkingTagState == nil {
+					p.thinkingTagState = &codexThinkingTagState{}
+				}
+				reasoning, content := p.thinkingTagState.feed(deltaResult.String())
+				if reasoning == "" && content == "" {
+					return [][]byte{}
+				}
+				if reasoning != "" {
+					template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", reasoning)
+				}
+				if content != "" {
+					template, _ = sjson.SetBytes(template, "choices.0.delta.content", content)
+				} else {
+					template, _ = sjson.DeleteBytes(template, "choices.0.delta.content")
+				}
+			} else {
+				template, _ = sjson.SetBytes(template, "choices.0.delta.content", deltaResult.String())
+			}
 		}
 	} else if dataType == "response.image_generation_call.partial_image" {
 		itemID := rootResult.Get("item_id").String()
@@ -180,6 +203,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.images.-1", imagePayload)
 	} else if dataType == "response.completed" || dataType == "response.incomplete" {
+		streamParam := (*param).(*ConvertCliToOpenAIParams)
 		finishReason := "stop"
 		nativeFinishReason := finishReason
 		if dataType == "response.incomplete" {
@@ -190,9 +214,18 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 			case "content_filter":
 				finishReason = "content_filter"
 			}
-		} else if (*param).(*ConvertCliToOpenAIParams).FunctionCallIndex != -1 {
+		} else if streamParam.FunctionCallIndex != -1 {
 			finishReason = "tool_calls"
 			nativeFinishReason = finishReason
+		}
+		if streamParam.thinkingTagState != nil {
+			reasoning, content := streamParam.thinkingTagState.flush()
+			if reasoning != "" {
+				template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", reasoning)
+			}
+			if content != "" {
+				template, _ = sjson.SetBytes(template, "choices.0.delta.content", content)
+			}
 		}
 		template, _ = sjson.SetBytes(template, "choices.0.finish_reason", finishReason)
 		template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", nativeFinishReason)
@@ -520,6 +553,18 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 				imagePayload, _ = sjson.SetBytes(imagePayload, "index", len(images))
 				imagePayload, _ = sjson.SetBytes(imagePayload, "image_url.url", imageURL)
 				images = append(images, imagePayload)
+			}
+		}
+
+		// grok-4.6 (and MiniMax) embed reasoning as literal <think>...</think>
+		// tags inside contentText instead of a dedicated reasoning field; split
+		// them out before assigning content/reasoning_content. See
+		// codex_openai_thinking_tags.go.
+		if contentText != "" && isCodexThinkingTagModel(responseResult.Get("model").String()) {
+			tagReasoning, cleanedContent := splitCodexThinking(contentText)
+			contentText = cleanedContent
+			if tagReasoning != "" {
+				reasoningText += tagReasoning
 			}
 		}
 
