@@ -304,7 +304,7 @@ func TestBuildMiniMaxThinkingFlushFrame(t *testing.T) {
 }
 
 func TestIsMiniMaxThinkingTagModel(t *testing.T) {
-	for _, model := range []string{"by-minimax", "MiniMax-M3", "minimax-m3", "  MiniMax-M3  "} {
+	for _, model := range []string{"by-minimax", "MiniMax-M3", "minimax-m3", "  MiniMax-M3  ", "grok-4.6", "Grok-4.6", "  grok-4.6  "} {
 		if !isMiniMaxThinkingTagModel(model) {
 			t.Fatalf("expected %q to match", model)
 		}
@@ -313,5 +313,26 @@ func TestIsMiniMaxThinkingTagModel(t *testing.T) {
 		if isMiniMaxThinkingTagModel(model) {
 			t.Fatalf("expected %q NOT to match", model)
 		}
+	}
+}
+
+// grok-4.6 (routed through the OpenAI-compatible local proxy path) emits
+// reasoning as literal <think>...</think> tags embedded in
+// choices[].message.content instead of a dedicated reasoning_content field,
+// same failure mode MiniMax-M3 has. Regression coverage for the fix that
+// extends isMiniMaxThinkingTagModel/normalizeMiniMaxThinkingBody to grok.
+func TestNormalizeMiniMaxThinkingBodySeparatesGrokThinkTags(t *testing.T) {
+	body := []byte(`{"model":"grok-4.6","choices":[{"message":{"role":"assistant","content":"<think>the user says hi</think>Hi there!"}}]}`)
+	if !isMiniMaxThinkingTagModel(gjson.GetBytes(body, "model").String()) {
+		t.Fatalf("expected grok-4.6 to be recognized as a thinking-tag model")
+	}
+	out := normalizeMiniMaxThinkingBody(body)
+	content := gjson.GetBytes(out, "choices.0.message.content").String()
+	reasoning := gjson.GetBytes(out, "choices.0.message.reasoning_content").String()
+	if content != "Hi there!" {
+		t.Fatalf("expected cleaned content %q, got %q", "Hi there!", content)
+	}
+	if reasoning != "the user says hi" {
+		t.Fatalf("expected reasoning_content %q, got %q", "the user says hi", reasoning)
 	}
 }

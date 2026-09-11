@@ -19,8 +19,15 @@ var minimaxThinkingTagPairs = [...]minimaxThinkingTagPair{
 
 // isMiniMaxThinkingTagModel reports whether the model emits reasoning as
 // inline thinking tags in the OpenAI content field.
+//
+// grok-4.6 (via the OpenAI-compatible local proxy path) exhibits the same
+// behavior: reasoning arrives as literal <think>...</think> tags inside
+// choices[].message.content instead of a dedicated reasoning_content field.
+// Reuse the MiniMax tag-splitting logic for it rather than duplicating a
+// near-identical detector/splitter pair.
 func isMiniMaxThinkingTagModel(model string) bool {
-	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "minimax")
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(normalized, "minimax") || strings.Contains(normalized, "grok")
 }
 
 func splitMiniMaxThinking(content string) (reasoning, cleaned string) {
