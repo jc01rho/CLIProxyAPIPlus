@@ -184,3 +184,25 @@ func TestBuildAuthRecord(t *testing.T) {
 		t.Errorf("expected filename devin-abc12345.json, got %s", auth.FileName)
 	}
 }
+
+func TestBuildAuthRecordDevinCLISessionTokenAndHostFallback(t *testing.T) {
+	// Simulate ExchangeDevinCLIPKCECodeResponse where APIKey is empty,
+	// APIServerURL was set to "app.devin.ai" (schemeless webapp host)
+	tokens := &TokenResponse{
+		APIKey:          "",
+		SessionToken:    "devin-session-jwt-token-999",
+		APIServerURL:    "app.devin.ai",
+		DevinWebappHost: "app.devin.ai",
+	}
+
+	auth := BuildAuthRecord(tokens, "sess123")
+	if auth.Attributes["api_key"] != "devin-session-jwt-token-999" {
+		t.Errorf("expected api_key from session_token, got %s", auth.Attributes["api_key"])
+	}
+	if auth.Attributes["base_url"] != DefaultCodeiumAPIServer {
+		t.Errorf("expected base_url fallback to %s, got %s", DefaultCodeiumAPIServer, auth.Attributes["base_url"])
+	}
+	if auth.Metadata["api_key"] != "devin-session-jwt-token-999" {
+		t.Errorf("expected metadata api_key to match session_token, got %v", auth.Metadata["api_key"])
+	}
+}

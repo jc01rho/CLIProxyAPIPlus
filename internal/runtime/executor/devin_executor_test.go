@@ -312,6 +312,26 @@ func TestDevinServerURLResolution(t *testing.T) {
 			auth: &cliproxyauth.Auth{Metadata: map[string]any{"base_url": "https://meta-base.server.com/"}},
 			want: "https://meta-base.server.com",
 		},
+		{
+			name: "schemeless custom URL gets https",
+			auth: &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "custom.codeium.com"}},
+			want: "https://custom.codeium.com",
+		},
+		{
+			name: "app.devin.ai without scheme falls back to default connect server",
+			auth: &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "app.devin.ai"}},
+			want: devinDefaultAPIServerURL,
+		},
+		{
+			name: "https://app.devin.ai falls back to default connect server",
+			auth: &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "https://app.devin.ai"}},
+			want: devinDefaultAPIServerURL,
+		},
+		{
+			name: "https://api.devin.ai falls back to default connect server",
+			auth: &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "https://api.devin.ai"}},
+			want: devinDefaultAPIServerURL,
+		},
 	}
 
 	for _, tc := range cases {
