@@ -22,9 +22,11 @@ func devinTestAuth() *cliproxyauth.Auth {
 	}
 }
 
+// devinTestFrame builds an answer frame. The answer rides f3; f9 is the
+// separate reasoning channel and must never be surfaced as the reply.
 func devinTestFrame(text string) []byte {
 	var msg []byte
-	msg = append(msg, devinEncodeField(nil, 9, 2, devinEncodeString(text))...)
+	msg = append(msg, devinEncodeField(nil, devinAnswerField, 2, devinEncodeString(text))...)
 	msg = append(msg, devinEncodeField(nil, 17, 2, devinEncodeString("turn-uuid-1"))...)
 	return msg
 }
@@ -79,7 +81,7 @@ func TestDevinExtractTextDelta(t *testing.T) {
 	if !ok || text != "hello" {
 		t.Fatalf("extract = %q,%v, want hello,true", text, ok)
 	}
-	// Frame without f9 must not yield text.
+	// Frame without an answer field must not yield text.
 	var meta []byte
 	meta = append(meta, devinEncodeField(nil, 17, 2, devinEncodeString("turn-uuid-1"))...)
 	if _, ok := devinExtractTextDelta(meta); ok {

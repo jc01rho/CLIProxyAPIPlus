@@ -530,7 +530,6 @@ func claudeCredsForAuthLookup(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 	return
 }
 
-
 // experimentalCCHSigningEnabled determines if the experimental CCH signing method should be used
 // for OAuth credentials.
 func experimentalCCHSigningEnabled(cfg *config.Config, auth *cliproxyauth.Auth) bool {

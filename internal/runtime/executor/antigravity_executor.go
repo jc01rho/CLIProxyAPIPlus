@@ -977,7 +977,6 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	return httpClient.Do(httpReq)
 }
 
-
 // ===== Local-only Antigravity execution helpers (restored from 4ccff390) =====
 // These orchestration helpers were dropped during the upstream executor split
 // (monolithic executor → request/execute/stream separation). They wire the
