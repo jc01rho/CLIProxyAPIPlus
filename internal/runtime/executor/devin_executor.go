@@ -40,8 +40,10 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -609,6 +611,9 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if model == "" {
 		return cliproxyexecutor.Response{}, fmt.Errorf("devin: missing model")
 	}
+	reporter := helps.NewExecutorUsageReporter(ctx, e, model, auth)
+	var execErr error
+	defer reporter.TrackFailure(ctx, &execErr)
 	msgs, system := devinRequestMessages(req.Payload)
 	if len(msgs) == 0 {
 		// Fall back to the flattened transcript when no structured turns parse.
@@ -643,20 +648,24 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body := devinBuildChatRequestFull(spec)
 	respBody, headers, err := e.devinDoPost(ctx, auth, model, devinServerURL(auth)+devinGetChatMessagePath, token, body)
 	if err != nil {
+		execErr = err
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(err).Debug("devin: upstream request failed")
 		return cliproxyexecutor.Response{}, err
 	}
 	frames, trailer, err := devinDecodeFrames(respBody)
 	if err != nil {
+		execErr = err
 		return cliproxyexecutor.Response{}, err
 	}
 	if msg := devinTrailerError(trailer); msg != "" {
+		execErr = devinClassifyTrailerError(msg)
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).
 			Warnf("devin: upstream request rejected [%s]", devinRequestShape(spec, body, len(frames)))
-		return cliproxyexecutor.Response{}, devinClassifyTrailerError(msg)
+		return cliproxyexecutor.Response{}, execErr
 	}
 	if len(frames) == 0 {
-		return cliproxyexecutor.Response{}, fmt.Errorf("devin: no data frames: %s", devinTrailerMessage(trailer))
+		execErr = fmt.Errorf("devin: no data frames: %s", devinTrailerMessage(trailer))
+		return cliproxyexecutor.Response{}, execErr
 	}
 	var sb strings.Builder
 	var reasoning strings.Builder
@@ -687,7 +696,25 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	content := sb.String()
 	payload := devinBuildCompletionPayload(model, content, reasoning.String(), calls, finish, usage)
+	reporter.Publish(ctx, devinUsageToDetail(usage))
+	reporter.EnsurePublished(ctx)
 	return cliproxyexecutor.Response{Payload: payload, Headers: headers}, nil
+}
+
+// devinUsageToDetail converts the upstream ModelUsageStats into the shared
+// usage.Detail so the access log and the usage keeper record devin traffic.
+// Devin reports cache reads separately from cache writes; both map onto the
+// cached/creation split the rest of the pipeline understands.
+func devinUsageToDetail(u devinUsage) usage.Detail {
+	return usage.Detail{
+		InputTokens:         int64(u.PromptTokens),
+		OutputTokens:        int64(u.CompletionTokens),
+		ReasoningTokens:     int64(u.ReasoningTokens),
+		CachedTokens:        int64(u.CachedTokens),
+		CacheReadTokens:     int64(u.CachedTokens),
+		CacheCreationTokens: int64(u.CacheWriteTokens),
+		TotalTokens:         int64(u.Total()),
+	}
 }
 
 func mustMarshalDevinJSON(s string) string {
@@ -707,6 +734,10 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if model == "" {
 		return nil, fmt.Errorf("devin: missing model")
 	}
+	reporter := helps.NewExecutorUsageReporter(ctx, e, model, auth)
+	reporter.SetStream(true)
+	var execErr error
+	defer reporter.TrackFailure(ctx, &execErr)
 	msgs, system := devinRequestMessages(req.Payload)
 	if len(msgs) == 0 {
 		// Fall back to the flattened transcript when no structured turns parse.
@@ -741,6 +772,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body := devinBuildChatRequestFull(spec)
 	resp, err := e.devinOpenStream(ctx, auth, model, devinServerURL(auth)+devinGetChatMessagePath, token, body)
 	if err != nil {
+		execErr = err
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(err).Debug("devin: upstream stream request failed")
 		return nil, err
 	}
@@ -803,6 +835,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(failure).
 				Warnf("devin: upstream stream rejected [%s]", devinRequestShape(spec, body, dataFrames))
 			devinDumpRejectedRequest(body, failure)
+			reporter.PublishFailure(ctx, failure)
 			select {
 			case chunks <- cliproxyexecutor.StreamChunk{Err: failure}:
 			case <-ctx.Done():
@@ -817,6 +850,8 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				return
 			}
 		}
+		reporter.Publish(ctx, devinUsageToDetail(usage))
+		reporter.EnsurePublished(ctx)
 		if !send(devinFinishChunk(model, finish, usage)) {
 			return
 		}
