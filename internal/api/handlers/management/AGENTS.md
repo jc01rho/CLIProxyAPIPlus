@@ -52,3 +52,7 @@ go test ./internal/api/handlers/management -run 'TestGetAuthFileModels|TestUsage
 - Do not return raw auth-file secrets, provider API keys, or request Authorization headers.
 - Do not bury provider auth business logic here; move it to `internal/auth/` or executor helpers.
 - Do not let Management Center and backend response shapes drift.
+
+## Push / PR 규칙
+
+- forked upstream에는 절대 Pull Request를 생성하지 않는다. 모든 push는 `origin`(jc01rho) 브랜치에만 수행한다. upstream remote는 fetch/merge 전용이다.

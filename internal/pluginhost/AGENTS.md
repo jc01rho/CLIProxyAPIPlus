@@ -57,3 +57,7 @@ go test ./internal/pluginhost/... -count=1
 
 - `adapters.go` and `host.go` are hotspot files; prefer small targeted edits with focused tests.
 - Plugin model/executor registration affects registry visibility and route fallback behavior.
+
+## Push / PR 규칙
+
+- forked upstream에는 절대 Pull Request를 생성하지 않는다. 모든 push는 `origin`(jc01rho) 브랜치에만 수행한다. upstream remote는 fetch/merge 전용이다.
