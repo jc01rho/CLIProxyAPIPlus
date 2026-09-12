@@ -629,6 +629,7 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		PromptID:    devinNewSessionUUID(),
 		Tools:       devinExtractTools(req.Payload),
 		Config:      devinExtractCompletionConfig(req.Payload),
+		ExecutionID: devinNewSessionUUID(),
 	}
 	// A router uid must be exchanged for a concrete model first.
 	if devinIsRouterModel(model) {
@@ -726,6 +727,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		PromptID:    devinNewSessionUUID(),
 		Tools:       devinExtractTools(req.Payload),
 		Config:      devinExtractCompletionConfig(req.Payload),
+		ExecutionID: devinNewSessionUUID(),
 	}
 	// A router uid must be exchanged for a concrete model first.
 	if devinIsRouterModel(model) {
