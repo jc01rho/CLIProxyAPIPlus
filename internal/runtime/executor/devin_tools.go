@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
 )
 
@@ -28,13 +27,20 @@ const (
 	// Response fields.
 	devinFinishReasonField = 5
 	devinToolCallField     = 6
-	devinUsageField        = 28
+	devinUsageField        = 7
+
+	// ModelUsageStats submessage fields.
+	devinUsageInputTokensField  = 2
+	devinUsageOutputTokensField = 3
+	devinUsageCacheWriteField   = 4
+	devinUsageCacheReadField    = 5
 
 	// StopReason enum values that are not a plain stop.
 	devinStopIncomplete    = 1
 	devinStopMaxTokens     = 3
 	devinStopFunctionCall  = 10
 	devinStopContentFilter = 11
+	devinStopError         = 13
 
 	// Devin truncates very long tool descriptions upstream.
 	devinMaxToolDescLen = 1024
@@ -59,6 +65,7 @@ type devinUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 	CachedTokens     int
+	CacheWriteTokens int
 	ReasoningTokens  int
 }
 
@@ -124,6 +131,8 @@ func devinFinishReason(stop uint64) string {
 		return "tool_calls"
 	case devinStopContentFilter:
 		return "content_filter"
+	case devinStopError:
+		return "error"
 	case devinStopIncomplete, devinStopMaxTokens:
 		return "length"
 	default:
@@ -229,10 +238,13 @@ func devinExtractFinishReason(frame []byte) (string, bool) {
 	return reason, ok
 }
 
-// devinExtractUsage reads the usage block (f28) from a response frame.
+// devinExtractUsage reads ModelUsageStats from a response frame.
 //
-// Each entry carries the metric name as a string and the value as a float32,
-// which is why a varint-only scan of the response finds no token counts.
+// Field numbers follow the published Cascade schema: the response carries
+// usage on field 7, whose submessage holds uint64 token counts. An earlier
+// implementation read field 28 (response_dimension_groups) and parsed
+// float32 metric pairs, which happened to yield numbers but is not the
+// documented location.
 func devinExtractUsage(frame []byte) (devinUsage, bool) {
 	var usage devinUsage
 	found := false
@@ -240,45 +252,22 @@ func devinExtractUsage(frame []byte) (devinUsage, bool) {
 		if num != devinUsageField || wire != 2 {
 			return true
 		}
-		devinScanFields(data, func(en, ew int, _ uint64, entry []byte) bool {
-			if en != 2 || ew != 2 {
+		devinScanFields(data, func(fn, fw int, v uint64, _ []byte) bool {
+			if fw != 0 {
 				return true
 			}
-			var metric string
-			var value float64
-			hasValue := false
-			devinScanFields(entry, func(fn, fw int, _ uint64, fd []byte) bool {
-				switch {
-				case fn == 5 && fw == 2:
-					metric = string(fd)
-				case fn == 4 && fw == 2:
-					devinScanFields(fd, func(vn, vw int, _ uint64, vd []byte) bool {
-						if vn == 2 && vw == 5 && len(vd) == 4 {
-							value = float64(math.Float32frombits(binary.LittleEndian.Uint32(vd)))
-							hasValue = true
-							return false
-						}
-						return true
-					})
-				}
-				return true
-			})
-			if metric == "" || !hasValue {
-				return true
-			}
-			n := int(math.Round(value))
-			switch metric {
-			case "input_tokens":
-				usage.PromptTokens = n
+			switch fn {
+			case devinUsageInputTokensField:
+				usage.PromptTokens = int(v)
 				found = true
-			case "output_tokens":
-				usage.CompletionTokens = n
+			case devinUsageOutputTokensField:
+				usage.CompletionTokens = int(v)
 				found = true
-			case "cached_input_tokens", "cache_read_input_tokens":
-				usage.CachedTokens = n
+			case devinUsageCacheWriteField:
+				usage.CacheWriteTokens = int(v)
 				found = true
-			case "reasoning_tokens":
-				usage.ReasoningTokens = n
+			case devinUsageCacheReadField:
+				usage.CachedTokens = int(v)
 				found = true
 			}
 			return true

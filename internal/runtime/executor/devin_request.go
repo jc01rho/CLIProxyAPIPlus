@@ -11,15 +11,15 @@ import (
 // Remaining wire fields of the Devin GetChatMessage protocol, confirmed
 // against the published JavaScript implementation (npm ai-sdk-devin).
 const (
-	devinReqMetadataField = 1
-	devinReqSystemField   = 2
-	devinReqPromptField   = 3
-	devinReqTypeField     = 7
-	devinReqConfigField   = 8
-	devinReqCascadeField  = 16
-	devinReqLegacyField   = 20
-	devinReqModelField    = 21
-	devinReqPromptIDField = 22
+	devinReqMetadataField    = 1
+	devinReqSystemField      = 2
+	devinReqPromptField      = 3
+	devinReqTypeField        = 7
+	devinReqConfigField      = 8
+	devinReqCascadeField     = 16
+	devinReqPromptIDField    = 17
+	devinReqPlannerModeField = 20
+	devinReqModelField       = 21
 
 	// request_type enum: 5 = CASCADE.
 	devinRequestTypeCascade = 5
@@ -46,13 +46,13 @@ const (
 
 // ChatMessagePrompt submessage (request f3).
 const (
-	devinPromptSessionField    = 1
-	devinPromptSourceField     = 2
-	devinPromptTextField       = 3
-	devinPromptNumTokensField  = 4
-	devinPromptFlagField       = 5
-	devinPromptToolCallsField  = 6
-	devinPromptToolCallIDField = 7
+	devinPromptSessionField       = 1
+	devinPromptSourceField        = 2
+	devinPromptTextField          = 3
+	devinPromptNumTokensField     = 4
+	devinPromptSafeTelemetryField = 5
+	devinPromptToolCallsField     = 6
+	devinPromptToolCallIDField    = 7
 )
 
 // Message source enum. Cognition rejects source=3, so a system message is
@@ -132,15 +132,14 @@ func devinEncodeSubMessage(num int, body []byte) []byte {
 
 // devinEncodeCompletionConfig builds the completion_configuration submessage.
 func devinEncodeCompletionConfig(cfg devinCompletionConfig) []byte {
+	// CompletionConfiguration: num_completions=1, max_tokens=2,
+	// temperature=5, top_k=7, top_p=8.
 	var msg []byte
 	msg = append(msg, devinEncodeField(nil, 1, 0, devinEncodeVarint(nil, 1))...)
-	msg = append(msg, devinEncodeField(nil, 2, 0, devinEncodeVarint(nil, uint64(cfg.MaxInputTokens)))...)
-	msg = append(msg, devinEncodeField(nil, 3, 0, devinEncodeVarint(nil, uint64(cfg.MaxOutputTokens)))...)
+	msg = append(msg, devinEncodeField(nil, 2, 0, devinEncodeVarint(nil, uint64(cfg.MaxOutputTokens)))...)
 	msg = append(msg, devinEncodeDouble(5, cfg.Temperature)...)
-	msg = append(msg, devinEncodeDouble(6, cfg.TopP)...)
 	msg = append(msg, devinEncodeField(nil, 7, 0, devinEncodeVarint(nil, uint64(cfg.TopK)))...)
-	msg = append(msg, devinEncodeDouble(8, 1.0)...)
-	msg = append(msg, devinEncodeDouble(11, 1.0)...)
+	msg = append(msg, devinEncodeDouble(8, cfg.TopP)...)
 	return msg
 }
 
@@ -183,7 +182,7 @@ func devinEncodeMessagePrompt(sessionUUID string, m devinMessage) []byte {
 	msg = append(msg, devinEncodeField(nil, devinPromptSourceField, 0, devinEncodeVarint(nil, uint64(devinSourceForRole(m.role))))...)
 	msg = append(msg, devinEncodeField(nil, devinPromptTextField, 2, devinEncodeString(m.content))...)
 	msg = append(msg, devinEncodeField(nil, devinPromptNumTokensField, 0, devinEncodeVarint(nil, devinEstimateTokens(m.content)))...)
-	msg = append(msg, devinEncodeField(nil, devinPromptFlagField, 0, devinEncodeVarint(nil, 1))...)
+	msg = append(msg, devinEncodeField(nil, devinPromptSafeTelemetryField, 0, devinEncodeVarint(nil, 1))...)
 	if m.toolCallID != "" {
 		msg = append(msg, devinEncodeField(nil, devinPromptToolCallIDField, 2, devinEncodeString(m.toolCallID))...)
 	}
@@ -270,11 +269,11 @@ func devinBuildChatRequestFull(spec devinChatSpec) []byte {
 	if spec.CascadeID != "" {
 		msg = append(msg, devinEncodeField(nil, devinReqCascadeField, 2, devinEncodeString(spec.CascadeID))...)
 	}
-	msg = append(msg, devinEncodeField(nil, devinReqLegacyField, 0, devinEncodeVarint(nil, 1))...)
-	msg = append(msg, devinEncodeField(nil, devinReqModelField, 2, devinEncodeString(spec.ModelUID))...)
 	if spec.PromptID != "" {
 		msg = append(msg, devinEncodeField(nil, devinReqPromptIDField, 2, devinEncodeString(spec.PromptID))...)
 	}
+	msg = append(msg, devinEncodeField(nil, devinReqPlannerModeField, 0, devinEncodeVarint(nil, 1))...)
+	msg = append(msg, devinEncodeField(nil, devinReqModelField, 2, devinEncodeString(spec.ModelUID))...)
 	out := []byte{0x00}
 	var ln [4]byte
 	binary.BigEndian.PutUint32(ln[:], uint32(len(msg)))
