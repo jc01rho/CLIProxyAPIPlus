@@ -681,18 +681,12 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		Tools:       devinExtractTools(req.Payload),
 		Config:      devinExtractCompletionConfig(req.Payload),
 	})
-	respBody, headers, err := e.devinDoPost(ctx, auth, model, devinServerURL(auth)+devinGetChatMessagePath, token, body)
+	resp, err := e.devinOpenStream(ctx, auth, model, devinServerURL(auth)+devinGetChatMessagePath, token, body)
 	if err != nil {
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(err).Debug("devin: upstream stream request failed")
 		return nil, err
 	}
-	frames, trailer, err := devinDecodeFrames(respBody)
-	if err != nil {
-		return nil, err
-	}
-	if len(frames) == 0 {
-		return nil, fmt.Errorf("devin: no data frames: %s", truncateDevinErr(trailer))
-	}
+	headers := resp.Header.Clone()
 	chunks := make(chan cliproxyexecutor.StreamChunk, 64)
 	go func() {
 		defer close(chunks)
@@ -708,15 +702,23 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		var usage devinUsage
 		calls := make([]devinToolCall, 0, 2)
 		byID := make(map[string]int, 2)
-		for _, frame := range frames {
+		defer func() { _ = resp.Body.Close() }()
+		// Emit each frame as it arrives so throughput and time-to-first-token
+		// reflect the real generation instead of one replay burst.
+		dataFrames := 0
+		streamErr := devinStreamFrames(resp.Body, func(frame []byte, isTrailer bool) error {
+			if isTrailer {
+				return nil
+			}
+			dataFrames++
 			select {
 			case <-ctx.Done():
-				return
+				return ctx.Err()
 			default:
 			}
 			if delta, ok := devinExtractTextDelta(frame); ok && delta != "" {
 				if !send(devinOpenAIChunk(model, delta, false)) {
-					return
+					return context.Canceled
 				}
 			}
 			if call, ok := devinExtractToolCallDelta(frame); ok {
@@ -728,6 +730,13 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if u, ok := devinExtractUsage(frame); ok {
 				usage = u
 			}
+			return nil
+		})
+		if streamErr != nil || dataFrames == 0 {
+			// Still terminate the turn so the caller never sees a silent close.
+			send(devinFinishChunk(model, finish, usage))
+			send(devinOpenAIChunk(model, "", true))
+			return
 		}
 		if len(calls) > 0 {
 			if finish == "stop" {
