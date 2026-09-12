@@ -650,8 +650,8 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return cliproxyexecutor.Response{}, err
 	}
 	if msg := devinTrailerError(trailer); msg != "" {
-		log.WithFields(devinRejectionFields(model, spec, body, len(frames))).
-			Warn("devin: upstream request rejected")
+		log.WithFields(log.Fields{"provider": "devin", "model": model}).
+			Warnf("devin: upstream request rejected [%s]", devinRequestShape(spec, body, len(frames)))
 		return cliproxyexecutor.Response{}, fmt.Errorf("devin: %s", msg)
 	}
 	if len(frames) == 0 {
@@ -798,8 +798,8 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		if failure := devinStreamFailure(trailer, streamErr, dataFrames); failure != nil {
 			// Opaque invalid_argument rejections carry no HTTP body, so the
 			// request shape is the only evidence available for diagnosis.
-			log.WithFields(devinRejectionFields(model, spec, body, dataFrames)).
-				WithError(failure).Warn("devin: upstream stream rejected")
+			log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(failure).
+				Warnf("devin: upstream stream rejected [%s]", devinRequestShape(spec, body, dataFrames))
 			select {
 			case chunks <- cliproxyexecutor.StreamChunk{Err: failure}:
 			case <-ctx.Done():
@@ -886,20 +886,20 @@ func devinTrailerError(trailer []byte) string {
 	return strings.TrimSpace(strings.TrimPrefix(doc.Error.Code+": "+doc.Error.Message, ": "))
 }
 
-// devinRejectionFields describes the request shape behind an upstream
-// rejection. Opaque invalid_argument trailers carry no HTTP body, so the
-// request shape is the only server-side evidence for diagnosis.
-func devinRejectionFields(model string, spec devinChatSpec, framed []byte, dataFrames int) log.Fields {
-	systemLen := len(spec.System)
+// devinRequestShape renders the request shape behind an upstream rejection.
+//
+// Opaque invalid_argument trailers carry no HTTP body, so the request shape
+// is the only evidence available. The log formatter renders fields from an
+// allowlist, so this goes into the message itself.
+func devinRequestShape(spec devinChatSpec, framed []byte, dataFrames int) string {
 	toolNames := make([]string, 0, len(spec.Tools))
-	toolSchemaBytes := 0
+	schemaBytes := 0
 	for _, t := range spec.Tools {
 		toolNames = append(toolNames, t.Name)
-		toolSchemaBytes += len(t.Parameters)
+		schemaBytes += len(t.Parameters)
 	}
 	roles := make([]string, 0, len(spec.Messages))
-	promptBytes := 0
-	toolCalls, toolResults, thinkingTurns := 0, 0, 0
+	promptBytes, toolCalls, toolResults, thinkingTurns := 0, 0, 0, 0
 	for _, m := range spec.Messages {
 		roles = append(roles, m.role)
 		promptBytes += len(m.content)
@@ -911,20 +911,9 @@ func devinRejectionFields(model string, spec devinChatSpec, framed []byte, dataF
 			thinkingTurns++
 		}
 	}
-	return log.Fields{
-		"provider":          "devin",
-		"model":             model,
-		"data_frames":       dataFrames,
-		"framed_bytes":      len(framed),
-		"system_bytes":      systemLen,
-		"prompt_bytes":      promptBytes,
-		"messages":          len(spec.Messages),
-		"roles":             strings.Join(roles, ","),
-		"tools":             len(spec.Tools),
-		"tool_names":        strings.Join(toolNames, ","),
-		"tool_schema_bytes": toolSchemaBytes,
-		"tool_calls":        toolCalls,
-		"tool_results":      toolResults,
-		"thinking_turns":    thinkingTurns,
-	}
+	return fmt.Sprintf(
+		"framed=%dB system=%dB prompt=%dB msgs=%d roles=%s tools=%d tool_schema=%dB tool_calls=%d tool_results=%d thinking=%d frames=%d names=%s",
+		len(framed), len(spec.System), promptBytes, len(spec.Messages),
+		strings.Join(roles, ","), len(spec.Tools), schemaBytes,
+		toolCalls, toolResults, thinkingTurns, dataFrames, strings.Join(toolNames, ","))
 }
