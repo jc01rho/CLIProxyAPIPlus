@@ -135,21 +135,26 @@ func TestDevinFinishReasonMapping(t *testing.T) {
 	}
 }
 
-// TestDevinExtractUsage pins usage parsing on field 28. Values are float32,
-// which is why an earlier varint-only scan concluded Devin reported no tokens.
+// TestDevinExtractUsage pins ModelUsageStats parsing on response field 7.
+// Token counts are uint64 varints inside that submessage; an earlier
+// implementation read field 28 and parsed float32 metric pairs.
 func TestDevinExtractUsage(t *testing.T) {
-	var block []byte
-	block = append(block, devinFieldFrame(2, devinFloatEntry("input_tokens", 1234))...)
-	block = append(block, devinFieldFrame(2, devinFloatEntry("output_tokens", 56))...)
-	block = append(block, devinFieldFrame(2, devinFloatEntry("cached_input_tokens", 900))...)
-	frame := devinFieldFrame(devinUsageField, block)
+	var stats []byte
+	stats = append(stats, devinVarintFrame(devinUsageInputTokensField, 1234)...)
+	stats = append(stats, devinVarintFrame(devinUsageOutputTokensField, 56)...)
+	stats = append(stats, devinVarintFrame(devinUsageCacheReadField, 900)...)
+	stats = append(stats, devinVarintFrame(devinUsageCacheWriteField, 12)...)
+	frame := devinFieldFrame(devinUsageField, stats)
 
 	usage, ok := devinExtractUsage(frame)
 	if !ok {
 		t.Fatal("expected usage to be found")
 	}
-	if usage.PromptTokens != 1234 || usage.CompletionTokens != 56 || usage.CachedTokens != 900 {
+	if usage.PromptTokens != 1234 || usage.CompletionTokens != 56 {
 		t.Fatalf("usage = %+v", usage)
+	}
+	if usage.CachedTokens != 900 || usage.CacheWriteTokens != 12 {
+		t.Fatalf("cache tokens = %+v", usage)
 	}
 	if usage.Total() != 1290 {
 		t.Fatalf("total = %d, want 1290", usage.Total())
