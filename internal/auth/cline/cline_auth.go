@@ -5,6 +5,7 @@ package cline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,6 +41,13 @@ const (
 
 	// workosPrefix is the prefix Cline expects on access tokens in Bearer headers.
 	workosPrefix = "workos:"
+)
+
+var (
+	// unrecoverableRefreshMarkers are upstream refresh failures that retrying
+	// cannot fix (dead/rotated refresh token). OmniRoute classifies them with
+	// an unrecoverable sentinel so callers stop looping and ask for re-auth.
+	unrecoverableRefreshMarkers = []string{"invalid_grant", "invalid_request"}
 )
 
 // TokenResponse represents the response from Cline token endpoints.
@@ -113,6 +121,28 @@ func (tr *TokenResponse) UserEmail() string {
 		return strings.TrimSpace(tr.Email)
 	}
 	return strings.TrimSpace(tr.userInfo.Email)
+}
+
+// ErrRefreshUnrecoverable marks a refresh failure the server will never
+// accept on retry (e.g. invalid_grant for a dead refresh token). Callers
+// must stop retrying and surface a re-auth request instead.
+var ErrRefreshUnrecoverable = errors.New("cline: refresh token rejected as unrecoverable, re-auth required")
+
+// IsUnrecoverableRefreshError reports whether err carries ErrRefreshUnrecoverable.
+func IsUnrecoverableRefreshError(err error) bool {
+	return errors.Is(err, ErrRefreshUnrecoverable)
+}
+
+// classifyRefreshFailure wraps failures carrying an unrecoverable marker so
+// errors.Is(err, ErrRefreshUnrecoverable) holds for them.
+func classifyRefreshFailure(body string, err error) error {
+	lowered := strings.ToLower(body)
+	for _, marker := range unrecoverableRefreshMarkers {
+		if strings.Contains(lowered, marker) {
+			return fmt.Errorf("%w: %w", ErrRefreshUnrecoverable, err)
+		}
+	}
+	return err
 }
 
 // ClineAuth provides methods for handling the Cline WorkOS authentication flow.
@@ -313,7 +343,8 @@ func (c *ClineAuth) RefreshToken(ctx context.Context, refreshToken string) (*Tok
 
 	if resp.StatusCode != http.StatusOK {
 		log.Debugf("cline: token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("cline: token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
+		refreshErr := fmt.Errorf("cline: token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, classifyRefreshFailure(string(respBody), refreshErr)
 	}
 
 	var tokenResp TokenResponse

@@ -370,6 +370,25 @@ func TestRefreshToken_NonOKReturnsError(t *testing.T) {
 	}
 }
 
+func TestRefreshToken_InvalidGrantReturnsSentinel(t *testing.T) {
+	// Production failure shape: invalid_grant must classify as unrecoverable
+	// so callers stop retrying a dead refresh token and ask for re-auth.
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"data":"","error":"failed to refresh token: invalid_grant","success":false}`))
+	}))
+	defer tokenSrv.Close()
+
+	auth := cline.NewClineAuth(nil).WithEndpoints("", tokenSrv.URL+"/api/v1/auth/refresh", "", "")
+	_, err := auth.RefreshToken(t.Context(), "dead-rt")
+	if err == nil {
+		t.Fatal("RefreshToken should error on invalid_grant")
+	}
+	if !cline.IsUnrecoverableRefreshError(err) {
+		t.Fatalf("invalid_grant error should classify unrecoverable, got: %v", err)
+	}
+}
+
 func TestValidateToken_RoundTrip(t *testing.T) {
 	// users/me must be reachable via GET with a Bearer workos: header.
 	var capturedAuth string
