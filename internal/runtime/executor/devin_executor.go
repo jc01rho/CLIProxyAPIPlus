@@ -802,6 +802,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			// request shape is the only evidence available for diagnosis.
 			log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(failure).
 				Warnf("devin: upstream stream rejected [%s]", devinRequestShape(spec, body, dataFrames))
+			devinDumpRejectedRequest(body, failure)
 			select {
 			case chunks <- cliproxyexecutor.StreamChunk{Err: failure}:
 			case <-ctx.Done():
