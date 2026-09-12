@@ -342,7 +342,7 @@ func TestApplyHeaders_XInitiator_UserOnly(t *testing.T) {
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
 	body := []byte(`{"messages":[{"role":"system","content":"sys"},{"role":"user","content":"hello"}]}`)
-	e.applyHeaders(req, "token", body)
+	e.applyHeaders(req, "token", body, "", false)
 	if got := req.Header.Get("X-Initiator"); got != "user" {
 		t.Fatalf("X-Initiator = %q, want user", got)
 	}
@@ -356,7 +356,7 @@ func TestApplyHeaders_XInitiator_AgentWhenLastUserButHistoryHasAssistant(t *test
 	// the request is a continuation (e.g. Claude tool result translated to a
 	// synthetic user message). Should be "agent".
 	body := []byte(`{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"I will read the file"},{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"file contents..."}]}]}`)
-	e.applyHeaders(req, "token", body)
+	e.applyHeaders(req, "token", body, "", false)
 	if got := req.Header.Get("X-Initiator"); got != "agent" {
 		t.Fatalf("X-Initiator = %q, want agent (last user contains tool_result)", got)
 	}
@@ -368,7 +368,7 @@ func TestApplyHeaders_XInitiator_AgentWithToolRole(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
 	// When the last message has role "tool", it's clearly agent-initiated.
 	body := []byte(`{"messages":[{"role":"user","content":"hello"},{"role":"tool","content":"result"}]}`)
-	e.applyHeaders(req, "token", body)
+	e.applyHeaders(req, "token", body, "", false)
 	if got := req.Header.Get("X-Initiator"); got != "agent" {
 		t.Fatalf("X-Initiator = %q, want agent (last role is tool)", got)
 	}
@@ -379,7 +379,7 @@ func TestApplyHeaders_XInitiator_InputArrayLastAssistantMessage(t *testing.T) {
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
 	body := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Hi"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}]}`)
-	e.applyHeaders(req, "token", body)
+	e.applyHeaders(req, "token", body, "", false)
 	if got := req.Header.Get("X-Initiator"); got != "agent" {
 		t.Fatalf("X-Initiator = %q, want agent (last role is assistant)", got)
 	}
@@ -391,7 +391,7 @@ func TestApplyHeaders_XInitiator_InputArrayAgentWhenLastUserButHistoryHasAssista
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
 	// Responses API: last item is user-role but history contains assistant → agent.
 	body := []byte(`{"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I can help"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"Do X"}]}]}`)
-	e.applyHeaders(req, "token", body)
+	e.applyHeaders(req, "token", body, "", false)
 	if got := req.Header.Get("X-Initiator"); got != "agent" {
 		t.Fatalf("X-Initiator = %q, want agent (history has assistant)", got)
 	}
@@ -402,7 +402,7 @@ func TestApplyHeaders_XInitiator_InputArrayLastFunctionCallOutput(t *testing.T) 
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
 	body := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Use tool"}]},{"type":"function_call","call_id":"c1","name":"Read","arguments":"{}"},{"type":"function_call_output","call_id":"c1","output":"ok"}]}`)
-	e.applyHeaders(req, "token", body)
+	e.applyHeaders(req, "token", body, "", false)
 	if got := req.Header.Get("X-Initiator"); got != "agent" {
 		t.Fatalf("X-Initiator = %q, want agent (last item maps to tool role)", got)
 	}
@@ -415,7 +415,7 @@ func TestApplyHeaders_XInitiator_UserInMultiTurnNoTools(t *testing.T) {
 	// Genuine multi-turn: user → assistant (plain text) → user follow-up.
 	// No tool messages → should be "user" (not a false-positive).
 	body := []byte(`{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"Hi there!"},{"role":"user","content":"what is 2+2?"}]}`)
-	e.applyHeaders(req, "token", body)
+	e.applyHeaders(req, "token", body, "", false)
 	if got := req.Header.Get("X-Initiator"); got != "user" {
 		t.Fatalf("X-Initiator = %q, want user (genuine multi-turn, no tools)", got)
 	}
@@ -429,7 +429,7 @@ func TestApplyHeaders_XInitiator_UserFollowUpAfterToolHistory(t *testing.T) {
 	// The last message is a genuine user question — should be "user", not "agent".
 	// This aligns with opencode's behavior: only active tool loops are agent-initiated.
 	body := []byte(`{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"Read","input":{}}]},{"role":"tool","tool_call_id":"tu1","content":"file data"},{"role":"assistant","content":"I read the file."},{"role":"user","content":"What did we do so far?"}]}`)
-	e.applyHeaders(req, "token", body)
+	e.applyHeaders(req, "token", body, "", false)
 	if got := req.Header.Get("X-Initiator"); got != "user" {
 		t.Fatalf("X-Initiator = %q, want user (genuine follow-up after tool history)", got)
 	}
@@ -441,9 +441,9 @@ func TestApplyHeaders_GitHubAPIVersion(t *testing.T) {
 	t.Parallel()
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
-	e.applyHeaders(req, "token", nil)
-	if got := req.Header.Get("X-Github-Api-Version"); got != "2026-06-01" {
-		t.Fatalf("X-Github-Api-Version = %q, want 2026-06-01", got)
+	e.applyHeaders(req, "token", nil, "", false)
+	if got := req.Header.Get("X-Github-Api-Version"); got != copilotauth.CopilotAPIVersion() {
+		t.Fatalf("X-Github-Api-Version = %q, want %q", got, copilotauth.CopilotAPIVersion())
 	}
 }
 
@@ -590,9 +590,9 @@ func TestApplyHeaders_OpenAIIntentValue(t *testing.T) {
 	t.Parallel()
 	e := &GitHubCopilotExecutor{}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
-	e.applyHeaders(req, "token", nil)
-	if got := req.Header.Get("Openai-Intent"); got != "conversation-edits" {
-		t.Fatalf("Openai-Intent = %q, want conversation-edits", got)
+	e.applyHeaders(req, "token", nil, "", false)
+	if got := req.Header.Get("Openai-Intent"); got != copilotauth.CopilotOpenAIIntent {
+		t.Fatalf("Openai-Intent = %q, want %q", got, copilotauth.CopilotOpenAIIntent)
 	}
 }
 
@@ -721,14 +721,14 @@ func TestGitHubCopilotExecute_ClaudeModelUsesNativeGateway(t *testing.T) {
 	if gotAuth != "Bearer copilot-api-token" {
 		t.Fatalf("Authorization = %q, want %q", gotAuth, "Bearer copilot-api-token")
 	}
-	if gotAPIVersion != copilotGitHubAPIVer {
-		t.Fatalf("X-Github-Api-Version = %q, want %q", gotAPIVersion, copilotGitHubAPIVer)
+	if gotAPIVersion != copilotauth.CopilotAPIVersion() {
+		t.Fatalf("X-Github-Api-Version = %q, want %q", gotAPIVersion, copilotauth.CopilotAPIVersion())
 	}
-	if gotEditorVersion != copilotEditorVersion {
-		t.Fatalf("Editor-Version = %q, want %q", gotEditorVersion, copilotEditorVersion)
+	if gotEditorVersion != copilotauth.CopilotEditorVersion() {
+		t.Fatalf("Editor-Version = %q, want %q", gotEditorVersion, copilotauth.CopilotEditorVersion())
 	}
-	if gotIntent != copilotOpenAIIntent {
-		t.Fatalf("Openai-Intent = %q, want %q", gotIntent, copilotOpenAIIntent)
+	if gotIntent != copilotauth.CopilotOpenAIIntent {
+		t.Fatalf("Openai-Intent = %q, want %q", gotIntent, copilotauth.CopilotOpenAIIntent)
 	}
 	if gotInitiator != "user" {
 		t.Fatalf("X-Initiator = %q, want %q", gotInitiator, "user")
@@ -796,8 +796,8 @@ func TestGitHubCopilotExecuteStream_ClaudeModelUsesNativeGateway(t *testing.T) {
 	if gotInitiator != "agent" {
 		t.Fatalf("X-Initiator = %q, want %q", gotInitiator, "agent")
 	}
-	if gotAPIVersion != copilotGitHubAPIVer {
-		t.Fatalf("X-Github-Api-Version = %q, want %q", gotAPIVersion, copilotGitHubAPIVer)
+	if gotAPIVersion != copilotauth.CopilotAPIVersion() {
+		t.Fatalf("X-Github-Api-Version = %q, want %q", gotAPIVersion, copilotauth.CopilotAPIVersion())
 	}
 	if !strings.Contains(joined.String(), "message_start") || !strings.Contains(joined.String(), "text_delta") {
 		t.Fatalf("stream = %q, want Claude SSE payload", joined.String())

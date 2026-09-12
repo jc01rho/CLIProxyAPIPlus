@@ -9,9 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -23,15 +27,79 @@ const (
 	// copilotAPIEndpoint is the base URL for making API requests.
 	copilotAPIEndpoint = "https://api.githubcopilot.com"
 
-	// Common HTTP header values for Copilot API requests. Values mirror
-	// senpi's COPILOT_HEADERS (packages/ai/src/auth/oauth/github-copilot.ts).
-	copilotUserAgent        = "GitHubCopilotChat/0.35.0"
-	copilotEditorVersion    = "vscode/1.107.0"
-	copilotPluginVersion    = "copilot-chat/0.35.0"
-	copilotIntegrationID    = "vscode-chat"
-	copilotOpenAIIntent     = "conversation-panel"
-	copilotGitHubAPIVersion = "2026-06-01"
+	// Request identity mirrors OmniRoute's GitHub Copilot CLI profile
+	// (open-sse/config/providerHeaderProfiles.ts): the @github/copilot CLI
+	// wire identity, NOT the VS Code Copilot Chat extension. The CLI's
+	// `copilot-developer-cli` integration id is the catalog-unlock lever: it
+	// exposes the full entitled model set where `vscode-chat` returns a
+	// narrower list.
+	copilotCLIVersionDefault = "1.0.81-6"
+	copilotAPIVersionDefault = "2026-08-01"
+	copilotRefreshUserAgent  = "GithubCopilot/1.0"
 )
+
+// Exported CLI identity values shared with the executor so both packages
+// send the identical fingerprint.
+const (
+	CopilotIntegrationID   = "copilot-developer-cli"
+	CopilotOpenAIIntent    = "conversation-agent"
+	CopilotInteractionType = "conversation-user"
+	CopilotHarnessID       = "copilot-sdk"
+	// CopilotAnthropicAPIVersion is the anthropic-version header for
+	// Claude models routed through the Anthropic-native shim.
+	CopilotAnthropicAPIVersion = "2023-06-01"
+	// CopilotNoRepositorySentinel is the CLI's no-repo literal for the
+	// X-GitHub-Repository-Nwo/Host correlation headers.
+	CopilotNoRepositorySentinel = "__no_repository__"
+)
+
+const (
+	copilotCLIVersionEnv     = "GITHUB_COPILOT_CLI_VERSION"
+	copilotMachineIDEnv      = "GITHUB_COPILOT_MACHINE_ID"
+	copilotVersionSafePattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$"
+)
+
+var (
+	copilotVersionRe    = regexp.MustCompile(copilotVersionSafePattern)
+	copilotMachineIDOnce sync.Once
+	copilotMachineIDValue string
+)
+
+// CopilotCLIVersion returns the pinned Copilot CLI version string,
+// overridable via GITHUB_COPILOT_CLI_VERSION (OmniRoute #12417 parity).
+func CopilotCLIVersion() string {
+	if v := strings.TrimSpace(os.Getenv(copilotCLIVersionEnv)); v != "" && copilotVersionRe.MatchString(v) {
+		return v
+	}
+	return copilotCLIVersionDefault
+}
+
+// CopilotAPIVersion returns the Copilot API version header value.
+func CopilotAPIVersion() string { return copilotAPIVersionDefault }
+
+// CopilotEditorVersion is the `editor-version` header value (`copilot/<v>`).
+func CopilotEditorVersion() string { return "copilot/" + CopilotCLIVersion() }
+
+// CopilotUserAgent is the request-time `user-agent` header value (`copilot/<v>`).
+func CopilotUserAgent() string { return "copilot/" + CopilotCLIVersion() }
+
+// CopilotChatUserAgent is the internal user headers UA (`GitHubCopilotChat/<v>`).
+func CopilotChatUserAgent() string { return "GitHubCopilotChat/" + CopilotCLIVersion() }
+
+// CopilotMachineID returns a stable per-install device fingerprint for the
+// X-Client-Machine-Id header. The real CLI sends ONE stable UUID on every
+// inference + /models call; a per-call random id would itself be an
+// anti-fingerprint tell. One UUID is minted per process and cached
+// (env-overridable via GITHUB_COPILOT_MACHINE_ID).
+func CopilotMachineID() string {
+	copilotMachineIDOnce.Do(func() {
+		copilotMachineIDValue = strings.TrimSpace(os.Getenv(copilotMachineIDEnv))
+		if copilotMachineIDValue == "" {
+			copilotMachineIDValue = uuid.NewString()
+		}
+	})
+	return copilotMachineIDValue
+}
 
 // CopilotAPIToken represents the Copilot API token response.
 type CopilotAPIToken struct {
@@ -135,12 +203,11 @@ func (c *CopilotAuth) GetCopilotAPIToken(ctx context.Context, githubAccessToken 
 		return nil, NewAuthenticationError(ErrTokenExchangeFailed, err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+githubAccessToken)
+	req.Header.Set("Authorization", "token "+githubAccessToken)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", copilotUserAgent)
-	req.Header.Set("Editor-Version", copilotEditorVersion)
-	req.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
-	req.Header.Set("Copilot-Integration-Id", copilotIntegrationID)
+	req.Header.Set("User-Agent", copilotRefreshUserAgent)
+	req.Header.Set("Editor-Version", CopilotEditorVersion())
+	req.Header.Set("Editor-Plugin-Version", CopilotEditorVersion())
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -254,12 +321,14 @@ func (c *CopilotAuth) MakeAuthenticatedRequest(ctx context.Context, method, url 
 	req.Header.Set("Authorization", "Bearer "+apiToken.Token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", copilotUserAgent)
-	req.Header.Set("Editor-Version", copilotEditorVersion)
-	req.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
-	req.Header.Set("Openai-Intent", copilotOpenAIIntent)
-	req.Header.Set("Copilot-Integration-Id", copilotIntegrationID)
-	req.Header.Set("X-GitHub-Api-Version", copilotGitHubAPIVersion)
+	req.Header.Set("User-Agent", CopilotUserAgent())
+	req.Header.Set("Editor-Version", CopilotEditorVersion())
+	req.Header.Set("Openai-Intent", CopilotOpenAIIntent)
+	req.Header.Set("X-Interaction-Type", CopilotInteractionType)
+	req.Header.Set("Copilot-Integration-Id", CopilotIntegrationID)
+	req.Header.Set("Copilot-Harness-Id", CopilotHarnessID)
+	req.Header.Set("X-GitHub-Api-Version", CopilotAPIVersion())
+	req.Header.Set("X-Client-Machine-Id", CopilotMachineID())
 
 	return req, nil
 }
@@ -279,6 +348,9 @@ type CopilotModelEntry struct {
 	// ModelPickerEnabled reports whether the model is enabled in the
 	// account's Copilot model picker.
 	ModelPickerEnabled *bool `json:"model_picker_enabled,omitempty"`
+	// SupportedEndpoints lists the API endpoints the model is served on
+	// (top-level `supported_endpoints` in the /models response).
+	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
 }
 
 // CopilotModelPolicy is the policy object attached to a Copilot model.
@@ -322,43 +394,99 @@ func (e *CopilotModelEntry) SupportsToolCalls() bool {
 	return true
 }
 
-// FilterAvailableCopilotModels applies senpi's availability rules to a raw
-// /models response: models with capabilities.supports.tool_calls=false are
-// dropped; preferred set is model_picker_enabled=true with policy not
-// disabled; when allowPolicyFallback is true (individual accounts) and no
-// picker-enabled models exist, models with an explicit enabled policy are
-// returned instead.
-func FilterAvailableCopilotModels(entries []CopilotModelEntry, allowPolicyFallback bool) []CopilotModelEntry {
-	pickerEntries := make([]CopilotModelEntry, 0, len(entries))
-	policyEnabledEntries := make([]CopilotModelEntry, 0, len(entries))
-	hasPolicyMetadata := false
+// IsRoutableChatModel reports whether a live /models row is a routable chat
+// model. Capability-driven (rename-robust) rather than an id allowlist: any
+// model the account is entitled to whose capabilities.type is "chat" (or that
+// carries a chat-shaped supported_endpoints list) is kept, so a
+// newly-entitled model shows up with no code change. Also filters out rows
+// when policy.state is set and != "enabled", or when model_picker_enabled=false.
+// Explicitly non-chat rows (embeddings / completion) are dropped as well.
+// Port of OmniRoute's isRoutableChatModel().
+func (e *CopilotModelEntry) IsRoutableChatModel() bool {
+	if e == nil {
+		return false
+	}
+	if policyState := e.PolicyState(); policyState != "" && policyState != "enabled" {
+		return false
+	}
+	if e.ModelPickerEnabled != nil && !*e.ModelPickerEnabled {
+		return false
+	}
+
+	if capType := capabilityString(e.Capabilities, "type"); capType != "" {
+		return capType == "chat"
+	}
+
+	// No capabilities.type present — fall back to supported_endpoints shape.
+	// A chat model exposes /chat/completions, /responses, or /v1/messages.
+	endpoints := e.chatEndpointCandidates()
+	if len(endpoints) > 0 {
+		for _, endpoint := range endpoints {
+			switch {
+			case strings.Contains(endpoint, "/chat/completions"),
+				strings.Contains(endpoint, "/responses"),
+				strings.Contains(endpoint, "/v1/messages"):
+				return true
+			}
+		}
+		return false
+	}
+
+	// Neither signal present: keep it unless its id looks like a known non-chat
+	// utility (embedding / completion sentinels). This keeps discovery
+	// permissive without re-introducing a brittle positive allowlist.
+	id := strings.ToLower(strings.TrimSpace(e.ID))
+	if id == "" {
+		return false
+	}
+	return !strings.Contains(id, "embedding") && id != "gpt-41-copilot"
+}
+
+// chatEndpointCandidates collects supported_endpoints from the top-level
+// field first, then from the capabilities map.
+func (e *CopilotModelEntry) chatEndpointCandidates() []string {
+	candidates := make([]string, 0, len(e.SupportedEndpoints)+4)
+	candidates = append(candidates, e.SupportedEndpoints...)
+	if raw, ok := e.Capabilities["supported_endpoints"]; ok {
+		if list, ok := raw.([]any); ok {
+			for _, item := range list {
+				if s, ok := item.(string); ok {
+					candidates = append(candidates, s)
+				}
+			}
+		}
+	}
+	return candidates
+}
+
+// capabilityString reads a top-level string value from the capabilities map.
+func capabilityString(capabilities map[string]any, key string) string {
+	if capabilities == nil {
+		return ""
+	}
+	if v, ok := capabilities[key].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// FilterAvailableCopilotModels applies OmniRoute's availability rules to a raw
+// /models response: capability-driven chat filtering (IsRoutableChatModel).
+// Unlike the previous id-allowlist approach, this keeps every entitled chat
+// model the catalog returns (grok-*, mai-*, newly-added gemini previews, ...)
+// so newly-entitled models appear without a code change.
+func FilterAvailableCopilotModels(entries []CopilotModelEntry) []CopilotModelEntry {
+	filtered := make([]CopilotModelEntry, 0, len(entries))
 	for _, entry := range entries {
 		if strings.TrimSpace(entry.ID) == "" {
 			continue
 		}
-		if !entry.SupportsToolCalls() {
+		if !entry.IsRoutableChatModel() {
 			continue
 		}
-		if entry.Policy != nil || entry.ModelPickerEnabled != nil {
-			hasPolicyMetadata = true
-		}
-		if entry.IsModelPickerEnabled() && entry.PolicyState() != "disabled" {
-			pickerEntries = append(pickerEntries, entry)
-		}
-		if entry.PolicyState() == "enabled" {
-			policyEnabledEntries = append(policyEnabledEntries, entry)
-		}
+		filtered = append(filtered, entry)
 	}
-	// When the response carries no policy/picker metadata at all, the filter
-	// has no signal to apply; keep every entry so accounts behind older API
-	// shapes do not lose their catalog.
-	if !hasPolicyMetadata {
-		return entries
-	}
-	if len(pickerEntries) > 0 || !allowPolicyFallback {
-		return pickerEntries
-	}
-	return policyEnabledEntries
+	return filtered
 }
 
 // CopilotModelLimits holds the token limits returned by the Copilot /models API
