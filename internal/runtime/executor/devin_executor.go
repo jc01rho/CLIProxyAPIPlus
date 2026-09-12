@@ -855,7 +855,7 @@ func devinIsRouterModel(model string) bool {
 // close leaves the client without a terminal event.
 func devinStreamFailure(trailer []byte, streamErr error, dataFrames int) error {
 	if msg := devinTrailerError(trailer); msg != "" {
-		return fmt.Errorf("devin: %s", msg)
+		return devinClassifyTrailerError(msg)
 	}
 	if streamErr != nil && !errors.Is(streamErr, context.Canceled) {
 		return fmt.Errorf("devin: stream failed: %w", streamErr)
@@ -919,3 +919,42 @@ func devinRequestShape(spec devinChatSpec, framed []byte, dataFrames int) string
 		strings.Join(roles, ","), len(spec.Tools), schemaBytes,
 		toolCalls, toolResults, thinkingTurns, dataFrames, strings.Join(toolNames, ","))
 }
+
+// devinRequestScopedCodes are the Connect codes that describe the request
+// rather than the credential behind it.
+//
+// invalid_argument is the important one: it arrives intermittently for
+// requests whose shape has been reproduced as working, so it is an upstream
+// fault for that attempt, not evidence that the credential is unusable.
+// Treating it as a credential fault took the only devin credential out of
+// rotation, and every request that followed during the cooldown reported
+// auth_unavailable instead of reaching devin at all.
+var devinRequestScopedCodes = []string{"invalid_argument", "failed_precondition", "out_of_range"}
+
+// devinClassifyTrailerError converts a Connect trailer message into an error
+// whose status code tells the cooldown logic whether the credential is at
+// fault.
+func devinClassifyTrailerError(msg string) error {
+	lower := strings.ToLower(msg)
+	for _, code := range devinRequestScopedCodes {
+		if strings.HasPrefix(lower, code) {
+			// A 400 marks this as a request-shape fault, which the credential
+			// cooldown path skips.
+			return &devinStatusError{status: http.StatusBadRequest, msg: "devin: " + msg}
+		}
+	}
+	return fmt.Errorf("devin: %s", msg)
+}
+
+// devinStatusError carries an HTTP status alongside the upstream message so the
+// cooldown logic can classify the failure.
+type devinStatusError struct {
+	status int
+	msg    string
+}
+
+// Error renders the upstream message.
+func (e *devinStatusError) Error() string { return e.msg }
+
+// StatusCode reports the HTTP status this failure maps to.
+func (e *devinStatusError) StatusCode() int { return e.status }
