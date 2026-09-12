@@ -838,7 +838,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponseViaChat(c *gin.Contex
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, OpenAI, modelName, chatJSON, "")
 	var param any
-	guard := &responsesTerminalGuard{}
+	guard := newResponsesTerminalGuard(c)
 
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
