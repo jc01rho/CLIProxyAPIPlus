@@ -178,9 +178,17 @@ Since v6.10.0, CLIProxyAPI and [CPAMC](https://github.com/router-for-me/Cli-Prox
 
 - [Keeper usage export operator runbook](docs/keeper-export.md)
 
-### [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)
+### [CPA Usage Keeper](https://github.com/jc01rho/cpa-usage-keeper) (recommended)
 
-Standalone persistence and visualization service for CLIProxyAPI, with periodic data sync, SQLite storage, aggregate APIs, and a built-in dashboard for usage and statistics.
+> **Track usage with this.** This fork's companion dashboard for CLIProxyAPIPlus: standalone persistence and visualization service with periodic data sync, SQLite storage, aggregate APIs, and a built-in dashboard for usage and statistics. It additionally supports multiple CPA instances in one Keeper and a bearer-credential push protocol (`/api/v1/export/*`, see the [Keeper export runbook](docs/keeper-export.md)).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/jc01rho/cpa-usage-keeper/main/assets/screenshots/overview-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/jc01rho/cpa-usage-keeper/main/assets/screenshots/overview-light.png" />
+    <img src="https://raw.githubusercontent.com/jc01rho/cpa-usage-keeper/main/assets/screenshots/overview-light.png" alt="CPA Usage Keeper overview dashboard" width="720" />
+  </picture>
+</p>
 
 ### [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)
 

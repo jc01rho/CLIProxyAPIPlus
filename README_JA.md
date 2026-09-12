@@ -72,9 +72,17 @@ CLIProxyAPIガイド：[https://help.router-for.me/](https://help.router-for.me/
 
 v6.10.0以降、CLIProxyAPIおよび [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) プロジェクトには使用量統計機能がプリセットされなくなりました。使用量統計が必要な場合は、次のプロジェクトをご利用ください：
 
-### [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)
+### [CPA Usage Keeper](https://github.com/jc01rho/cpa-usage-keeper)（推奨）
 
-CLIProxyAPI向けの独立した使用量永続化・可視化サービス。CLIProxyAPIデータを定期同期してSQLiteに保存し、集計APIと、使用量や各種統計を確認できる組み込みダッシュボードを提供します。
+> **使用量の追跡にはこちら。** 本フォークのCLIProxyAPIPlus向けコンパニオンダッシュボード。CLIProxyAPI向けの独立した使用量永続化・可視化サービスで、CLIProxyAPIデータを定期同期してSQLiteに保存し、集計APIと、使用量や各種統計を確認できる組み込みダッシュボードを提供します。複数CPAインスタンスの一元管理と、ベアラー認証のプッシュプロトコル（`/api/v1/export/*`、[Keeperエクスポート手順書](docs/keeper-export.md)参照）にも対応しています。
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/jc01rho/cpa-usage-keeper/main/assets/screenshots/overview-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/jc01rho/cpa-usage-keeper/main/assets/screenshots/overview-light.png" />
+    <img src="https://raw.githubusercontent.com/jc01rho/cpa-usage-keeper/main/assets/screenshots/overview-light.png" alt="CPA Usage Keeper 概要ダッシュボード" width="720" />
+  </picture>
+</p>
 
 ### [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)
 
