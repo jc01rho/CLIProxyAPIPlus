@@ -5,11 +5,43 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
+
+func TestClineRefreshBeforeExpiry_InvalidGrantFailsFast(t *testing.T) {
+	// A dead refresh token (invalid_grant) must hit upstream exactly once;
+	// the second call must fail fast on the dead marker without a request.
+	var hits atomic.Int32
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"data":"","error":"failed to refresh token: invalid_grant","success":false}`))
+	}))
+	defer tokenSrv.Close()
+
+	e := &ClineExecutor{cfg: &config.Config{}, refreshURLOverride: tokenSrv.URL + "/api/v1/auth/refresh"}
+	auth := &cliproxyauth.Auth{ID: "cline-failfast", Metadata: map[string]any{
+		"refreshToken": "dead-rt",
+		// No accessToken seeded -> the early-return guard cannot trigger and
+		// the refresh attempt must run (expiry recheck requires a token).
+	}}
+	ctx := context.Background()
+
+	if err := e.refreshBeforeExpiry(ctx, auth, false); err == nil {
+		t.Fatal("first refresh should fail on invalid_grant")
+	}
+	if err := e.refreshBeforeExpiry(ctx, auth, false); err == nil {
+		t.Fatal("second refresh should fail fast on the dead marker")
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream refresh hits = %d, want exactly 1 (second call must not re-hit)", got)
+	}
+}
 
 func TestFetchClineModelsUsesLiveCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
