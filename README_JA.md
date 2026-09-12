@@ -1,6 +1,28 @@
-# CLI Proxy API
+<div align="center">
+
+# CLI Proxy API Plus
+
+**すべての AI サブスクリプションを1つのローカルエンドポイントに — [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) の本番強化フォーク、[jc01rho](https://github.com/jc01rho) がメンテナンス**
+
+[![Tag](https://img.shields.io/github/v/tag/jc01rho/CLIProxyAPIPlus?label=release)](https://github.com/jc01rho/CLIProxyAPIPlus/tags)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/jc01rho/CLIProxyAPIPlus)](go.mod)
+[![License](https://img.shields.io/github/license/jc01rho/CLIProxyAPIPlus)](LICENSE)
+[![Upstream](https://img.shields.io/badge/upstream-router--for--me%2FCLIProxyAPI-blue)](https://github.com/router-for-me/CLIProxyAPI)
 
 [English](README.md) | [中文](README_CN.md) | 日本語
+
+</div>
+
+## このフォークを選ぶ理由
+
+このフォークは upstream に密接に追従し、本番環境でのマルチアカウントプール運用から得た修正を追加しています：
+
+| 領域 | このフォークの強化点 |
+|---|---|
+| **フォールバックとクールダウン** | HTTP 400 レスポンスでモデルフォールバックチェーンを発動（upstream は 401/403/429/5xx のみ）；429 レート制限クールダウンを最大 24 時間に延長 |
+| **プロバイダー固有の修正** | DeepSeek 系プロバイダー（DeepSeek.com、nano-gpt.com、deepseek プレフィックスモデル、nanogpt 互換）の `interleaved` コンテンツブロックを除去；Mistral の空 assistant メッセージをフィルタ；xAI reasoning 入力から `encrypted_content` を除去；xAI の 200 ツール上限を強制；Xiaomi プロバイダー名プレフィックスマッチングと reasoning replay のバックフィル |
+| **管理 API** | 欠落していた `/v0/management/request-log-success-body` ルートを復元 |
+| **エージェントネイティブ** | エージェント駆動ワークフロー向けの包括的な `AGENTS.md` ナレッジベース |
 
 デスクトップで CLIProxyAPI を利用したい場合は、[EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) デスクトップクライアントをおすすめします。グラフィカルな設定画面、自動更新、システムトレイ連携、CLIProxyAPI サービスのワンクリック起動/停止などの機能を提供します。
 
