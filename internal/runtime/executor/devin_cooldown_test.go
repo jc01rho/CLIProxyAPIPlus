@@ -44,6 +44,30 @@ func TestDevinCredentialErrorsStillCool(t *testing.T) {
 	}
 }
 
+// TestDevinNonStreamingTrailerIsRequestScoped pins that the non-streaming
+// Execute path classifies a rejected trailer exactly like devinStreamFailure.
+//
+// The stream path (devinStreamFailure) was fixed to skip credential cooldown
+// for invalid_argument, but the non-streaming Execute path built its error
+// with a bare fmt.Errorf and never reclassified it, so an invalid_argument
+// trailer from a non-streaming request still cooled the only devin credential
+// and cascaded auth_unavailable to every request that followed.
+func TestDevinNonStreamingTrailerIsRequestScoped(t *testing.T) {
+	trailer := []byte(`{"error":{"code":"invalid_argument","message":"an internal error occurred (trace ID: abc)"}}`)
+	msg := devinTrailerError(trailer)
+	if msg == "" {
+		t.Fatal("expected a trailer error message")
+	}
+	err := devinClassifyTrailerError(msg)
+	status, ok := err.(interface{ StatusCode() int })
+	if !ok {
+		t.Fatalf("non-streaming Execute error does not carry a status: %v", err)
+	}
+	if status.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", status.StatusCode(), http.StatusBadRequest)
+	}
+}
+
 // TestDevinTrailerMessagePreserved pins that the upstream message and trace id
 // survive classification.
 func TestDevinTrailerMessagePreserved(t *testing.T) {
