@@ -1,6 +1,28 @@
-# CLI Proxy API
+<div align="center">
+
+# CLI Proxy API Plus
+
+**一个本地端点接入所有 AI 订阅 — [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的生产强化 fork，由 [jc01rho](https://github.com/jc01rho) 维护**
+
+[![Tag](https://img.shields.io/github/v/tag/jc01rho/CLIProxyAPIPlus?label=release)](https://github.com/jc01rho/CLIProxyAPIPlus/tags)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/jc01rho/CLIProxyAPIPlus)](go.mod)
+[![License](https://img.shields.io/github/license/jc01rho/CLIProxyAPIPlus)](LICENSE)
+[![Upstream](https://img.shields.io/badge/upstream-router--for--me%2FCLIProxyAPI-blue)](https://github.com/router-for-me/CLIProxyAPI)
 
 [English](README.md) | 中文 | [日本語](README_JA.md)
+
+</div>
+
+## 为什么选择这个 fork
+
+本 fork 紧跟上游，并加入了在生产环境运行多账户池时积累的修复：
+
+| 领域 | 本 fork 的增强 |
+|---|---|
+| **回退与冷却** | HTTP 400 响应触发模型回退链（上游仅在 401/403/429/5xx 时回退）；429 限流冷却最长延至 24 小时 |
+| **提供商适配** | 为 DeepSeek 类提供商剥离 `interleaved` 内容块（DeepSeek.com、nano-gpt.com、deepseek 前缀模型、nanogpt 兼容）；为 Mistral 过滤空 assistant 消息；剥离 xAI reasoning 输入中的 `encrypted_content`；xAI 强制 200 工具上限；Xiaomi 提供商前缀匹配并回填 reasoning replay |
+| **管理 API** | 恢复缺失的 `/v0/management/request-log-success-body` 路由 |
+| **Agent 原生** | 面向 agent 驱动工作流的完整 `AGENTS.md` 知识库 |
 
 如果您想在您的桌面使用 CLIProxyAPI，我们推荐您使用我们的 [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) 桌面客户端，该客户端提供了图形化的配置界面、自动更新、系统托盘集成、一键启动/关闭 CLIProxyAPI 服务等功能。
 

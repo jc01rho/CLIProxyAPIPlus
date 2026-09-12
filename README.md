@@ -1,24 +1,32 @@
-# CLI Proxy API
+<div align="center">
 
-> **This is a fork** of [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) maintained by [jc01rho](https://github.com/jc01rho).
-> 
-> **Key differences from upstream:**
-> - HTTP 400 errors trigger model fallback chains (not just 401/403/429/5xx)
-> - 429 rate-limit cooldown extended to 24 hours max
-> - Strips `interleaved` content blocks from DeepSeek-like provider payloads (DeepSeek.com, nano-gpt.com, deepseek-prefixed models, nanogpt compat providers)
-> - Filters empty assistant messages for Mistral to prevent 400 errors
-> - Strips `encrypted_content` from xAI reasoning input to prevent 400 decryption errors
-> - Enforces 200-tool cap for xAI regardless of namespace normalization
-> - Allows Xiaomi provider name prefix matching for multiple endpoints
-> - Backfills Xiaomi reasoning replay
-> - Added missing `/v0/management/request-log-success-body` route
-> - Comprehensive AGENTS.md project knowledge base with agent-native workflow support
+# CLI Proxy API Plus
+
+**One local endpoint for every AI subscription — a production-hardened fork of [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), maintained by [jc01rho](https://github.com/jc01rho)**
+
+[![Tag](https://img.shields.io/github/v/tag/jc01rho/CLIProxyAPIPlus?label=release)](https://github.com/jc01rho/CLIProxyAPIPlus/tags)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/jc01rho/CLIProxyAPIPlus)](go.mod)
+[![License](https://img.shields.io/github/license/jc01rho/CLIProxyAPIPlus)](LICENSE)
+[![Upstream](https://img.shields.io/badge/upstream-router--for--me%2FCLIProxyAPI-blue)](https://github.com/router-for-me/CLIProxyAPI)
 
 English | [中文](README_CN.md) | [日本語](README_JA.md)
 
-If you want to use CLIProxyAPI on your desktop, we recommend our [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) desktop client. It provides a graphical configuration UI, automatic updates, system tray integration, and one-click start/stop for the CLIProxyAPI service.
+</div>
 
-CLIProxyAPI is a proxy server that provides OpenAI/Gemini/Claude/Codex/Grok compatible API interfaces for CLI.
+## Why this fork
+
+This fork tracks upstream closely and adds fixes learned from running multi-account pools in production:
+
+| Area | What this fork adds |
+|---|---|
+| **Fallback & cooldown** | HTTP 400 responses trigger model fallback chains (upstream only falls back on 401/403/429/5xx); 429 rate-limit cooldown extends up to 24 hours |
+| **Provider quirks** | Strips `interleaved` content blocks for DeepSeek-like providers (DeepSeek.com, nano-gpt.com, deepseek-prefixed models, nanogpt compat); filters empty assistant messages for Mistral; strips `encrypted_content` from xAI reasoning input; enforces a 200-tool cap for xAI; Xiaomi provider prefix matching with reasoning-replay backfill |
+| **Management API** | Restores the missing `/v0/management/request-log-success-body` route |
+| **Agent-native** | Comprehensive `AGENTS.md` knowledge base for agent-driven workflows |
+
+CLIProxyAPI is a proxy server that provides OpenAI/Gemini/Claude/Codex/Grok compatible API interfaces for CLI tools.
+
+If you want to use CLIProxyAPI on your desktop, we recommend our [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) desktop client. It provides a graphical configuration UI, automatic updates, system tray integration, and one-click start/stop for the CLIProxyAPI service.
 
 You can access the following providers locally and with multiple CLI accounts through any OpenAI (including Responses), Gemini (including Interactions), or Claude-compatible client or SDK.
 
