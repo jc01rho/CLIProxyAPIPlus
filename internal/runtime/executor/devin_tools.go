@@ -119,11 +119,39 @@ func devinExtractTools(payload []byte) []devinToolDef {
 }
 
 // devinEncodeToolDef encodes one ChatToolDefinition submessage.
-func devinEncodeToolDef(t devinToolDef) []byte {
-	desc := t.Description
-	if len(desc) > devinMaxToolDescLen {
-		desc = desc[:devinMaxToolDescLen-24] + "\n…(truncated for cloud)"
+// devinToolDescSuffix marks a description the cloud limit forced us to cut.
+const devinToolDescSuffix = "\n…(truncated for cloud)"
+
+// devinTruncateToolDesc keeps a tool description under the cloud limit without
+// splitting a multi-byte rune.
+//
+// Slicing by byte cut a Korean description mid-rune and left a dangling 0xED in
+// the protobuf string field. Protobuf string fields must be valid UTF-8, so the
+// backend rejected the whole request with invalid_argument and no further
+// detail - deterministically, for any client whose tool descriptions are not
+// pure ASCII, and only once such a tool was in the manifest.
+func devinTruncateToolDesc(desc string) string {
+	if len(desc) <= devinMaxToolDescLen {
+		return desc
 	}
+	limit := devinMaxToolDescLen - len(devinToolDescSuffix)
+	if limit <= 0 {
+		return devinToolDescSuffix
+	}
+	// Walk back to the last rune boundary at or before the limit so the cut
+	// never lands inside a multi-byte sequence.
+	cut := 0
+	for idx := range desc {
+		if idx > limit {
+			break
+		}
+		cut = idx
+	}
+	return desc[:cut] + devinToolDescSuffix
+}
+
+func devinEncodeToolDef(t devinToolDef) []byte {
+	desc := devinTruncateToolDesc(t.Description)
 	params := "{}"
 	if len(t.Parameters) > 0 {
 		params = string(t.Parameters)
