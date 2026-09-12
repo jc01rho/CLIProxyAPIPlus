@@ -50,7 +50,7 @@ func TestEnableModelPolicyRequestShape(t *testing.T) {
 	if got := gotHeaders.Get("X-Interaction-Type"); got != "chat-policy" {
 		t.Errorf("X-Interaction-Type = %q", got)
 	}
-	if got := gotHeaders.Get("User-Agent"); got != copilotUserAgent {
+	if got := gotHeaders.Get("User-Agent"); got != CopilotUserAgent() {
 		t.Errorf("User-Agent = %q", got)
 	}
 	var body map[string]string
