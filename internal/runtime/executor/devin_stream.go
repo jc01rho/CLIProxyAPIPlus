@@ -3,11 +3,14 @@ package executor
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
@@ -41,7 +44,15 @@ func devinStreamFrames(r io.Reader, fn func(frame []byte, isTrailer bool) error)
 			}
 			return err
 		}
-		if err := fn(payload, flag == 0x02); err != nil {
+		// Connect flags: 0x01 marks a gzip payload, 0x02 the trailer.
+		if flag&devinConnectCompressedFlag != 0 {
+			decoded, errGz := devinGunzip(payload)
+			if errGz != nil {
+				return fmt.Errorf("devin: gunzip frame: %w", errGz)
+			}
+			payload = decoded
+		}
+		if err := fn(payload, flag&devinConnectEndStreamFlag != 0); err != nil {
 			return err
 		}
 	}
@@ -50,7 +61,11 @@ func devinStreamFrames(r io.Reader, fn func(frame []byte, isTrailer bool) error)
 // devinOpenStream issues the upstream request and returns the live response so
 // frames can be consumed as they arrive.
 func (e *DevinExecutor) devinOpenStream(ctx context.Context, auth *cliproxyauth.Auth, model, url, token string, body []byte) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	framed, errGz := devinGzipFrame(body)
+	if errGz != nil {
+		return nil, errGz
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(framed))
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +73,9 @@ func (e *DevinExecutor) devinOpenStream(ctx context.Context, auth *cliproxyauth.
 	req.Header.Set("connect-protocol-version", devinConnectProtocolVersion)
 	req.Header.Set("authorization", devinAuthHeader(token))
 	req.Header.Set("accept", "*/*")
+	req.Header.Set("connect-content-encoding", "gzip")
+	req.Header.Set("connect-accept-encoding", "gzip")
+	req.Header.Set("accept-encoding", "identity")
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -69,4 +87,64 @@ func (e *DevinExecutor) devinOpenStream(ctx context.Context, auth *cliproxyauth.
 		return nil, fmt.Errorf("devin: upstream status %d: %s", resp.StatusCode, truncateDevinErr(respBody))
 	}
 	return resp, nil
+}
+
+// Connect envelope flags.
+const (
+	devinConnectCompressedFlag = 0x01
+	devinConnectEndStreamFlag  = 0x02
+)
+
+// devinGunzip decompresses a gzip frame payload.
+func devinGunzip(b []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = zr.Close() }()
+	return io.ReadAll(io.LimitReader(zr, devinMaxNonStreamBytes))
+}
+
+// devinGzipFrame re-frames an uncompressed Connect envelope as a gzip frame.
+//
+// The native client compresses every GetChatMessage body and advertises it via
+// connect-content-encoding. Sending large histories uncompressed is a known
+// trigger for opaque invalid_argument trailers from the backend.
+func devinGzipFrame(envelope []byte) ([]byte, error) {
+	if len(envelope) < 5 {
+		return envelope, nil
+	}
+	payload := envelope[5:]
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(payload); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	gz := buf.Bytes()
+	out := make([]byte, 0, 5+len(gz))
+	out = append(out, devinConnectCompressedFlag)
+	var ln [4]byte
+	binary.BigEndian.PutUint32(ln[:], uint32(len(gz)))
+	out = append(out, ln[:]...)
+	return append(out, gz...), nil
+}
+
+// devinTrailerMessage extracts a readable message from a Connect trailer.
+func devinTrailerMessage(trailer []byte) string {
+	var doc struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(trailer, &doc); err != nil {
+		return truncateDevinErr(trailer)
+	}
+	if doc.Error.Code == "" && doc.Error.Message == "" {
+		return truncateDevinErr(trailer)
+	}
+	return strings.TrimSpace(doc.Error.Code + ": " + doc.Error.Message)
 }

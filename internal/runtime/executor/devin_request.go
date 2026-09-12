@@ -53,6 +53,10 @@ const (
 	devinPromptSafeTelemetryField = 5
 	devinPromptToolCallsField     = 6
 	devinPromptToolCallIDField    = 7
+	devinPromptToolErrorField     = 9
+	devinPromptThinkingField      = 11
+	devinPromptSignatureField     = 12
+	devinPromptSigTypeField       = 18
 )
 
 // Message source enum. Cognition rejects source=3, so a system message is
@@ -186,6 +190,20 @@ func devinEncodeMessagePrompt(sessionUUID string, m devinMessage) []byte {
 	if m.toolCallID != "" {
 		msg = append(msg, devinEncodeField(nil, devinPromptToolCallIDField, 2, devinEncodeString(m.toolCallID))...)
 	}
+	// Reasoning models need their own thinking echoed back so the chain
+	// survives across turns instead of restarting every request.
+	if m.thinking != "" {
+		msg = append(msg, devinEncodeField(nil, devinPromptThinkingField, 2, devinEncodeString(m.thinking))...)
+	}
+	if m.signature != "" {
+		msg = append(msg, devinEncodeField(nil, devinPromptSignatureField, 2, devinEncodeString(m.signature))...)
+	}
+	if m.signatureType != "" {
+		msg = append(msg, devinEncodeField(nil, devinPromptSigTypeField, 2, devinEncodeString(m.signatureType))...)
+	}
+	if m.toolIsError {
+		msg = append(msg, devinEncodeField(nil, devinPromptToolErrorField, 0, devinEncodeVarint(nil, 1))...)
+	}
 	for _, tc := range m.toolCalls {
 		var call []byte
 		call = append(call, devinEncodeField(nil, devinToolCallIDField, 2, devinEncodeString(tc.ID))...)
@@ -198,20 +216,21 @@ func devinEncodeMessagePrompt(sessionUUID string, m devinMessage) []byte {
 
 // devinChatSpec is the full input to a GetChatMessage request.
 type devinChatSpec struct {
-	Token       string
-	ModelUID    string
-	System      string
-	Messages    []devinMessage
-	SessionUUID string
-	CascadeID   string
-	PromptID    string
-	TriggerID   string
-	RequestID   uint64
-	Fingerprint string
-	UserJWT     string
-	Tools       []devinToolDef
-	Config      devinCompletionConfig
-	Now         time.Time
+	Token         string
+	ModelUID      string
+	System        string
+	Messages      []devinMessage
+	SessionUUID   string
+	CascadeID     string
+	PromptID      string
+	TriggerID     string
+	RequestID     uint64
+	Fingerprint   string
+	UserJWT       string
+	Tools         []devinToolDef
+	AssignmentJWT string
+	Config        devinCompletionConfig
+	Now           time.Time
 }
 
 // devinBuildMetadata builds the request metadata submessage.
@@ -274,6 +293,9 @@ func devinBuildChatRequestFull(spec devinChatSpec) []byte {
 	}
 	msg = append(msg, devinEncodeField(nil, devinReqPlannerModeField, 0, devinEncodeVarint(nil, 1))...)
 	msg = append(msg, devinEncodeField(nil, devinReqModelField, 2, devinEncodeString(spec.ModelUID))...)
+	if spec.AssignmentJWT != "" {
+		msg = append(msg, devinEncodeField(nil, devinReqAssignmentJWTField, 2, devinEncodeString(spec.AssignmentJWT))...)
+	}
 	out := []byte{0x00}
 	var ln [4]byte
 	binary.BigEndian.PutUint32(ln[:], uint32(len(msg)))
@@ -296,10 +318,80 @@ func devinRequestMessages(payload []byte) (msgs []devinMessage, system string) {
 			}
 			continue
 		}
-		if strings.TrimSpace(m.content) == "" && m.toolCallID == "" && len(m.toolCalls) == 0 {
+		if strings.TrimSpace(m.content) == "" && m.toolCallID == "" && len(m.toolCalls) == 0 && m.thinking == "" {
 			continue
 		}
 		msgs = append(msgs, m)
 	}
 	return msgs, strings.Join(systems, "\n\n")
+}
+
+// AssignModel resolves a router uid to a concrete model before the chat call.
+const (
+	devinAssignModelPath = "/exa.api_server_pb.ApiServerService/AssignModel"
+
+	devinAssignMetadataField = 1
+	devinAssignRouterField   = 2
+	devinAssignCascadeField  = 3
+	devinAssignPromptField   = 5
+
+	devinAssignmentField    = 1
+	devinAssignmentJWTField = 1
+	devinAssignmentUIDField = 2
+
+	devinReqAssignmentJWTField = 26
+)
+
+// devinModelAssignment is the resolved routing decision.
+type devinModelAssignment struct {
+	JWT      string
+	ModelUID string
+}
+
+// devinBuildAssignModelRequest encodes an AssignModelRequest envelope.
+func devinBuildAssignModelRequest(spec devinChatSpec, routerUID string) []byte {
+	var msg []byte
+	msg = append(msg, devinEncodeSubMessage(devinAssignMetadataField, devinBuildMetadata(spec))...)
+	msg = append(msg, devinEncodeField(nil, devinAssignRouterField, 2, devinEncodeString(routerUID))...)
+	if spec.CascadeID != "" {
+		msg = append(msg, devinEncodeField(nil, devinAssignCascadeField, 2, devinEncodeString(spec.CascadeID))...)
+	}
+	if len(spec.Messages) > 0 {
+		last := spec.Messages[len(spec.Messages)-1]
+		msg = append(msg, devinEncodeSubMessage(devinAssignPromptField, devinEncodeMessagePrompt(spec.SessionUUID, last))...)
+	}
+	out := []byte{0x00}
+	var ln [4]byte
+	binary.BigEndian.PutUint32(ln[:], uint32(len(msg)))
+	out = append(out, ln[:]...)
+	return append(out, msg...)
+}
+
+// devinParseAssignModelResponse reads the assignment out of the response frames.
+func devinParseAssignModelResponse(frames [][]byte) (devinModelAssignment, bool) {
+	var out devinModelAssignment
+	found := false
+	for _, frame := range frames {
+		devinScanFields(frame, func(num, wire int, _ uint64, data []byte) bool {
+			if num != devinAssignmentField || wire != 2 {
+				return true
+			}
+			devinScanFields(data, func(fn, fw int, _ uint64, fd []byte) bool {
+				if fw != 2 {
+					return true
+				}
+				switch fn {
+				case devinAssignmentJWTField:
+					out.JWT = string(fd)
+					found = true
+				case devinAssignmentUIDField:
+					out.ModelUID = string(fd)
+					found = true
+				}
+				return true
+			})
+			return true
+		})
+	}
+	return out, found
 }

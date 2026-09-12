@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -28,6 +29,13 @@ const (
 	devinFinishReasonField = 5
 	devinToolCallField     = 6
 	devinUsageField        = 7
+
+	// Cost accounting fields on the response.
+	devinCreditCostField      = 14
+	devinCommittedCreditField = 18
+	devinCommittedACUField    = 22
+	devinSignatureField       = 10
+	devinSignatureTypeField   = 21
 
 	// ModelUsageStats submessage fields.
 	devinUsageInputTokensField  = 2
@@ -66,6 +74,9 @@ type devinUsage struct {
 	CompletionTokens int
 	CachedTokens     int
 	CacheWriteTokens int
+	CreditCost       int
+	CommittedCredit  int
+	CommittedACU     float64
 	ReasoningTokens  int
 }
 
@@ -332,6 +343,9 @@ func devinUsageJSON(u devinUsage) string {
 	if u.CachedTokens > 0 {
 		extra = fmt.Sprintf(`,"prompt_tokens_details":{"cached_tokens":%d}`, u.CachedTokens)
 	}
+	if u.CreditCost > 0 || u.CommittedCredit > 0 || u.CommittedACU > 0 {
+		extra += fmt.Sprintf(`,"cost":{"credit":%d,"committed_credit":%d,"committed_acu":%g}`, u.CreditCost, u.CommittedCredit, u.CommittedACU)
+	}
 	if u.ReasoningTokens > 0 {
 		extra += fmt.Sprintf(`,"completion_tokens_details":{"reasoning_tokens":%d}`, u.ReasoningTokens)
 	}
@@ -340,8 +354,11 @@ func devinUsageJSON(u devinUsage) string {
 }
 
 // devinBuildCompletionPayload renders the non-streaming chat.completion body.
-func devinBuildCompletionPayload(model, content string, calls []devinToolCall, finish string, usage devinUsage) []byte {
+func devinBuildCompletionPayload(model, content, reasoning string, calls []devinToolCall, finish string, usage devinUsage) []byte {
 	msg := fmt.Sprintf(`{"role":"assistant","content":%s`, mustMarshalDevinJSON(content))
+	if reasoning != "" {
+		msg += `,"reasoning_content":` + mustMarshalDevinJSON(reasoning)
+	}
 	if tc := devinToolCallsJSON(calls); tc != "" {
 		msg += `,"tool_calls":` + tc
 	}
@@ -387,4 +404,90 @@ func devinNormalizeToolCallID(id string, index int) string {
 		return id
 	}
 	return "call_" + id
+}
+
+// devinExtractSignature pulls the thinking signature (f10) and its type (f21).
+func devinExtractSignature(frame []byte) (sig, sigType string) {
+	devinScanFields(frame, func(num, wire int, _ uint64, data []byte) bool {
+		if wire != 2 {
+			return true
+		}
+		switch num {
+		case devinSignatureField:
+			sig += string(data)
+		case devinSignatureTypeField:
+			sigType = string(data)
+		}
+		return true
+	})
+	return sig, sigType
+}
+
+// devinExtractCost reads credit and ACU accounting from a response frame.
+func devinExtractCost(frame []byte, usage *devinUsage) bool {
+	found := false
+	devinScanFields(frame, func(num, wire int, v uint64, data []byte) bool {
+		switch {
+		case num == devinCreditCostField && wire == 0:
+			usage.CreditCost = int(v)
+			found = true
+		case num == devinCommittedCreditField && wire == 0:
+			usage.CommittedCredit = int(v)
+			found = true
+		case num == devinCommittedACUField && wire == 1 && len(data) == 8:
+			usage.CommittedACU = math.Float64frombits(binary.LittleEndian.Uint64(data))
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+// devinPartialJSONObject returns the longest prefix of a streaming JSON
+// object that parses, so tool arguments can be surfaced before the stream
+// finishes. It returns false while nothing parses yet.
+func devinPartialJSONObject(sofar string) (string, bool) {
+	trimmed := strings.TrimSpace(sofar)
+	if trimmed == "" {
+		return "", false
+	}
+	var probe any
+	if json.Unmarshal([]byte(trimmed), &probe) == nil {
+		return trimmed, true
+	}
+	// Close any still-open braces/brackets so a partial object parses.
+	depthCurly, depthSquare, inStr, esc := 0, 0, false, false
+	for _, r := range trimmed {
+		switch {
+		case esc:
+			esc = false
+		case r == 92 && inStr:
+			esc = true
+		case r == 34:
+			inStr = !inStr
+		case inStr:
+		case r == 123:
+			depthCurly++
+		case r == 125:
+			depthCurly--
+		case r == 91:
+			depthSquare++
+		case r == 93:
+			depthSquare--
+		}
+	}
+	if inStr || depthCurly < 0 || depthSquare < 0 {
+		return "", false
+	}
+	candidate := trimmed
+	for i := 0; i < depthSquare; i++ {
+		candidate += "]"
+	}
+	for i := 0; i < depthCurly; i++ {
+		candidate += "}"
+	}
+	if json.Unmarshal([]byte(candidate), &probe) == nil {
+		return candidate, true
+	}
+	return "", false
 }

@@ -166,7 +166,7 @@ func TestDevinExtractUsage(t *testing.T) {
 func TestDevinCompletionPayloadCarriesToolCallsAndUsage(t *testing.T) {
 	calls := []devinToolCall{{ID: "call_1", Name: "get_weather", Arguments: `{"city":"Seoul"}`}}
 	usage := devinUsage{PromptTokens: 100, CompletionTokens: 20}
-	got := string(devinBuildCompletionPayload("swe-2-high", "text", calls, "tool_calls", usage))
+	got := string(devinBuildCompletionPayload("swe-2-high", "text", "", calls, "tool_calls", usage))
 
 	for _, want := range []string{
 		`"finish_reason":"tool_calls"`,
@@ -184,7 +184,7 @@ func TestDevinCompletionPayloadCarriesToolCallsAndUsage(t *testing.T) {
 // TestDevinCompletionPayloadWithoutUsageStaysEmpty keeps the previous shape
 // when the upstream reports nothing.
 func TestDevinCompletionPayloadWithoutUsageStaysEmpty(t *testing.T) {
-	got := string(devinBuildCompletionPayload("m", "hi", nil, "stop", devinUsage{}))
+	got := string(devinBuildCompletionPayload("m", "hi", "", nil, "stop", devinUsage{}))
 	if !strings.Contains(got, `"usage":{}`) {
 		t.Fatalf("expected empty usage, got: %s", got)
 	}
@@ -227,5 +227,86 @@ func TestDevinToolCallsJSONNormalizesIDs(t *testing.T) {
 	got := devinToolCallsJSON([]devinToolCall{{ID: "web_search_0", Name: "web_search", Arguments: "{}"}})
 	if !strings.Contains(got, `"id":"call_web_search_0"`) {
 		t.Fatalf("id not normalized: %s", got)
+	}
+}
+
+// TestDevinPromptCarriesThinking pins that assistant thinking and its
+// signature ride the prompt so reasoning models keep their chain across
+// turns instead of restarting each request.
+func TestDevinPromptCarriesThinking(t *testing.T) {
+	enc := devinEncodeMessagePrompt("sess", devinMessage{
+		role: "assistant", content: "answer",
+		thinking: "step one", signature: "sig-1", signatureType: "anthropic",
+	})
+	for _, want := range []string{"step one", "sig-1", "anthropic"} {
+		if !bytes.Contains(enc, []byte(want)) {
+			t.Fatalf("prompt missing %q", want)
+		}
+	}
+}
+
+// TestDevinRequestMessagesKeepsThinkingOnlyTurn pins that a turn carrying only
+// reasoning is not dropped by the empty-content filter.
+func TestDevinRequestMessagesKeepsThinkingOnlyTurn(t *testing.T) {
+	msgs, _ := devinRequestMessages([]byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"","reasoning_content":"thinking hard"}]}`))
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2", len(msgs))
+	}
+	if msgs[1].thinking != "thinking hard" {
+		t.Fatalf("thinking lost: %+v", msgs[1])
+	}
+}
+
+// TestDevinExtractCost pins credit and ACU accounting.
+func TestDevinExtractCost(t *testing.T) {
+	var frame []byte
+	frame = append(frame, devinVarintFrame(devinCreditCostField, 7)...)
+	frame = append(frame, devinVarintFrame(devinCommittedCreditField, 5)...)
+	var usage devinUsage
+	if !devinExtractCost(frame, &usage) {
+		t.Fatal("expected cost to be found")
+	}
+	if usage.CreditCost != 7 || usage.CommittedCredit != 5 {
+		t.Fatalf("cost = %+v", usage)
+	}
+}
+
+// TestDevinPartialJSONObject pins streaming tool-argument parsing.
+func TestDevinPartialJSONObject(t *testing.T) {
+	if got, ok := devinPartialJSONObject(`{"city":"Seo`); ok {
+		t.Fatalf("unterminated string must not parse, got %q", got)
+	}
+	got, ok := devinPartialJSONObject(`{"city":"Seoul"`)
+	if !ok || got != `{"city":"Seoul"}` {
+		t.Fatalf("partial = (%q,%v)", got, ok)
+	}
+	full, ok := devinPartialJSONObject(`{"city":"Seoul"}`)
+	if !ok || full != `{"city":"Seoul"}` {
+		t.Fatalf("full = (%q,%v)", full, ok)
+	}
+}
+
+// TestDevinAssignModelRequestShape pins the AssignModel envelope.
+func TestDevinAssignModelRequestShape(t *testing.T) {
+	spec := devinChatSpec{Token: "tok", CascadeID: "casc-1", SessionUUID: "sess-1",
+		Messages: []devinMessage{{role: "user", content: "hello"}}}
+	body := devinBuildAssignModelRequest(spec, "swe-2-router")
+	if !bytes.Contains(body, []byte("swe-2-router")) {
+		t.Fatal("router uid missing")
+	}
+	if !bytes.Contains(body, []byte("casc-1")) {
+		t.Fatal("cascade id missing")
+	}
+}
+
+// TestDevinParseAssignModelResponse pins assignment parsing.
+func TestDevinParseAssignModelResponse(t *testing.T) {
+	var inner []byte
+	inner = append(inner, devinFieldFrame(devinAssignmentJWTField, []byte("jwt-1"))...)
+	inner = append(inner, devinFieldFrame(devinAssignmentUIDField, []byte("swe-2-high"))...)
+	frame := devinFieldFrame(devinAssignmentField, inner)
+	got, ok := devinParseAssignModelResponse([][]byte{frame})
+	if !ok || got.JWT != "jwt-1" || got.ModelUID != "swe-2-high" {
+		t.Fatalf("assignment = %+v ok=%v", got, ok)
 	}
 }
