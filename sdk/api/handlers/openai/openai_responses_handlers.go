@@ -838,6 +838,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponseViaChat(c *gin.Contex
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, OpenAI, modelName, chatJSON, "")
 	var param any
+	guard := &responsesTerminalGuard{}
 
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
@@ -867,7 +868,10 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponseViaChat(c *gin.Contex
 			if !ok {
 				setSSEHeaders()
 				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-				_, _ = c.Writer.Write([]byte("\n"))
+				// The upstream closed without sending any payload. Emit a terminal
+				// event so the client sees the turn end instead of reporting that
+				// the stream ended before a terminal response event.
+				guard.ensure(c, "upstream stream closed before any payload")
 				flusher.Flush()
 				cliCancel(nil)
 				return
@@ -875,43 +879,24 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponseViaChat(c *gin.Contex
 
 			setSSEHeaders()
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-			writeChatAsResponsesChunk(c, cliCtx, modelName, originalResponsesJSON, chunk, &param)
+			writeChatAsResponsesChunk(c, cliCtx, modelName, originalResponsesJSON, chunk, &param, guard)
 			flusher.Flush()
 
-			h.forwardChatAsResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, cliCtx, modelName, originalResponsesJSON, &param)
+			h.forwardChatAsResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, cliCtx, modelName, originalResponsesJSON, &param, guard)
 			return
 		}
 	}
 }
 
-func writeChatAsResponsesChunk(c *gin.Context, ctx context.Context, modelName string, originalResponsesJSON, chunk []byte, param *any) {
+func writeChatAsResponsesChunk(c *gin.Context, ctx context.Context, modelName string, originalResponsesJSON, chunk []byte, param *any, guard *responsesTerminalGuard) {
 	outputs := responsesconverter.ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx, modelName, originalResponsesJSON, originalResponsesJSON, chunk, param)
-	for _, out := range outputs {
-		if len(out) == 0 {
-			continue
-		}
-		if bytes.HasPrefix(out, []byte("event:")) {
-			_, _ = c.Writer.Write([]byte("\n"))
-		}
-		_, _ = c.Writer.Write(out)
-		_, _ = c.Writer.Write([]byte("\n"))
-	}
+	guard.write(c, outputs)
 }
 
-func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, ctx context.Context, modelName string, originalResponsesJSON []byte, param *any) {
+func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, ctx context.Context, modelName string, originalResponsesJSON []byte, param *any, guard *responsesTerminalGuard) {
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
-			outputs := responsesconverter.ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx, modelName, originalResponsesJSON, originalResponsesJSON, chunk, param)
-			for _, out := range outputs {
-				if len(out) == 0 {
-					continue
-				}
-				if bytes.HasPrefix(out, []byte("event:")) {
-					_, _ = c.Writer.Write([]byte("\n"))
-				}
-				_, _ = c.Writer.Write(out)
-				_, _ = c.Writer.Write([]byte("\n"))
-			}
+			guard.write(c, responsesconverter.ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx, modelName, originalResponsesJSON, originalResponsesJSON, chunk, param))
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
 			if errMsg == nil {
@@ -927,6 +912,7 @@ func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context,
 			}
 			body := handlers.BuildErrorResponseBody(status, errText)
 			_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(body))
+			guard.emitted = true
 		},
 		WriteDone: func() {
 			// Guarantee a terminal response event. The chat-to-responses
@@ -946,6 +932,10 @@ func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context,
 				_, _ = c.Writer.Write(out)
 				_, _ = c.Writer.Write([]byte("\n"))
 			}
+			// The converter ignores the marker when it never started, so a
+			// stream that produced no convertible payload still needs an
+			// explicit terminal event.
+			guard.ensure(c, "upstream stream closed before a terminal event")
 			_, _ = c.Writer.Write([]byte("\n"))
 		},
 	})
