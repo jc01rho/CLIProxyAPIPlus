@@ -31,6 +31,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -648,6 +649,9 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
+	if msg := devinTrailerError(trailer); msg != "" {
+		return cliproxyexecutor.Response{}, fmt.Errorf("devin: %s", msg)
+	}
 	if len(frames) == 0 {
 		return cliproxyexecutor.Response{}, fmt.Errorf("devin: no data frames: %s", devinTrailerMessage(trailer))
 	}
@@ -756,8 +760,10 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		// Emit each frame as it arrives so throughput and time-to-first-token
 		// reflect the real generation instead of one replay burst.
 		dataFrames := 0
+		var trailer []byte
 		streamErr := devinStreamFrames(resp.Body, func(frame []byte, isTrailer bool) error {
 			if isTrailer {
+				trailer = append(trailer[:0], frame...)
 				return nil
 			}
 			dataFrames++
@@ -783,10 +789,20 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			devinExtractCost(frame, &usage)
 			return nil
 		})
-		if streamErr != nil || dataFrames == 0 {
-			// Still terminate the turn so the caller never sees a silent close.
-			send(devinFinishChunk(model, finish, usage))
-			send(devinOpenAIChunk(model, "", true))
+		// Surface upstream failures instead of closing the stream as if it
+		// succeeded. A silently empty stream reaches the client as a missing
+		// terminal event, whose wording differs per client format, and hides
+		// the Connect trailer that explains the rejection.
+		if failure := devinStreamFailure(trailer, streamErr, dataFrames); failure != nil {
+			log.WithFields(log.Fields{
+				"provider":    "devin",
+				"model":       model,
+				"data_frames": dataFrames,
+			}).WithError(failure).Warn("devin: upstream stream rejected")
+			select {
+			case chunks <- cliproxyexecutor.StreamChunk{Err: failure}:
+			case <-ctx.Done():
+			}
 			return
 		}
 		if len(calls) > 0 {
@@ -827,4 +843,44 @@ func (e *DevinExecutor) devinAssignModel(ctx context.Context, auth *cliproxyauth
 // Thinking-effort suffixes are resolved server side.
 func devinIsRouterModel(model string) bool {
 	return strings.HasSuffix(model, "-router") || strings.Contains(model, "model-router")
+}
+
+// devinStreamFailure classifies the end of an upstream stream.
+//
+// A Connect trailer carrying an error, a transport failure, or a stream that
+// produced no data frames all mean the turn failed. Reporting them as a clean
+// close leaves the client without a terminal event.
+func devinStreamFailure(trailer []byte, streamErr error, dataFrames int) error {
+	if msg := devinTrailerError(trailer); msg != "" {
+		return fmt.Errorf("devin: %s", msg)
+	}
+	if streamErr != nil && !errors.Is(streamErr, context.Canceled) {
+		return fmt.Errorf("devin: stream failed: %w", streamErr)
+	}
+	if dataFrames == 0 && streamErr == nil {
+		return fmt.Errorf("devin: upstream produced no data frames")
+	}
+	return nil
+}
+
+// devinTrailerError returns a readable message when a Connect trailer carries
+// an error, or an empty string for a clean trailer.
+func devinTrailerError(trailer []byte) string {
+	trimmed := bytes.TrimSpace(trailer)
+	if len(trimmed) == 0 || string(trimmed) == "{}" {
+		return ""
+	}
+	var doc struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(trimmed, &doc); err != nil {
+		return ""
+	}
+	if doc.Error.Code == "" && doc.Error.Message == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(doc.Error.Code+": "+doc.Error.Message, ": "))
 }
