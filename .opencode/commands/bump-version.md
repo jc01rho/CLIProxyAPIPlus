@@ -1,7 +1,5 @@
 ---
 description: Bump version tags for CLIProxyAPIPlus, Cli-Proxy-API-Management-Center, and cpa-usage-keeper
-agent: sisyphus
-subtask: true
 ---
 Load the `cli-proxy-release` skill and execute the full release process for all sub-projects under `~/git/cli-proxy`.
 
