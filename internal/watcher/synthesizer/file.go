@@ -284,9 +284,11 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			a.Attributes["devin_api_url"] = strings.TrimSpace(devinAPIURL)
 		}
 	}
-	// For codex auth files, extract plan_type from the JWT id_token.
+	// For codex auth files, extract plan_type from metadata or JWT id_token.
 	if provider == "codex" {
-		if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {
+		if ptRaw, ok := metadata["plan_type"].(string); ok && strings.TrimSpace(ptRaw) != "" {
+			a.Attributes["plan_type"] = strings.TrimSpace(ptRaw)
+		} else if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {
 			if claims, errParse := codex.ParseJWTToken(idTokenRaw); errParse == nil && claims != nil {
 				if pt := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); pt != "" {
 					a.Attributes["plan_type"] = pt
@@ -567,7 +569,6 @@ func syncPriorityFromMetadata(auth *coreauth.Auth, metadata map[string]any) {
 		}
 	}
 }
-
 
 func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
 	if metadata == nil {

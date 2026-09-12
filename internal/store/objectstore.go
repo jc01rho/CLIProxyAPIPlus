@@ -173,7 +173,10 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		return "", fmt.Errorf("object store: missing file path attribute for %s", auth.ID)
 	}
 
-	if auth.Disabled && !shouldPersistDisabledAuth(auth) {
+	// Runtime updates must not recreate a disabled credential whose source file
+	// was deliberately removed. Login and migration callers explicitly mark the
+	// save when creating a missing disabled credential is intentional.
+	if auth.Disabled && !cliproxyauth.HasAuthCreationIntent(ctx) && !shouldPersistDisabledAuth(auth) {
 		if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
 			return "", nil
 		}
