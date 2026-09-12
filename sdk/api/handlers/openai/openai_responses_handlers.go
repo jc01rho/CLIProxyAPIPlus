@@ -929,6 +929,23 @@ func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context,
 			_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(body))
 		},
 		WriteDone: func() {
+			// Guarantee a terminal response event. The chat-to-responses
+			// converter defers response.completed until the [DONE] marker so
+			// late usage-only chunks can still populate response.usage, so an
+			// upstream that closes without sending [DONE] would leave the
+			// stream unterminated and clients report that it ended before a
+			// terminal event. Feeding the marker here is idempotent: the
+			// converter ignores it once the completed event was emitted.
+			for _, out := range responsesconverter.ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx, modelName, originalResponsesJSON, originalResponsesJSON, []byte("[DONE]"), param) {
+				if len(out) == 0 {
+					continue
+				}
+				if bytes.HasPrefix(out, []byte("event:")) {
+					_, _ = c.Writer.Write([]byte("\n"))
+				}
+				_, _ = c.Writer.Write(out)
+				_, _ = c.Writer.Write([]byte("\n"))
+			}
 			_, _ = c.Writer.Write([]byte("\n"))
 		},
 	})
