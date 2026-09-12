@@ -40,3 +40,7 @@ registry/
 - Do not hardcode model catalogs in handlers or UI.
 - Do not let `oauth-model-alias` entries leak into upstream `/models` requests.
 - Do not expose unsupported upstream Copilot models from static fallback, dynamic discovery, or auth-file model endpoints.
+
+## Push / PR 규칙
+
+- forked upstream에는 절대 Pull Request를 생성하지 않는다. 모든 push는 `origin`(jc01rho) 브랜치에만 수행한다. upstream remote는 fetch/merge 전용이다.

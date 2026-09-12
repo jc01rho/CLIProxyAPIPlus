@@ -58,3 +58,7 @@ runtime/executor/AGENTS.md
 translator/AGENTS.md
 util/AGENTS.md
 ```
+
+## Push / PR 규칙
+
+- forked upstream에는 절대 Pull Request를 생성하지 않는다. 모든 push는 `origin`(jc01rho) 브랜치에만 수행한다. upstream remote는 fetch/merge 전용이다.
