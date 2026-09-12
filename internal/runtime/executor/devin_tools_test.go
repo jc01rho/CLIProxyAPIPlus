@@ -201,3 +201,26 @@ func TestDevinExtractToolsFromPayload(t *testing.T) {
 		t.Fatalf("name = %q", tools[0].Name)
 	}
 }
+
+// TestDevinNormalizeToolCallID pins that bare upstream ids gain the call_
+// prefix the Responses API requires, while conforming ids are preserved.
+func TestDevinNormalizeToolCallID(t *testing.T) {
+	cases := map[string]string{
+		"web_search_0": "call_web_search_0",
+		"call_abc":     "call_abc",
+		"":             "call_devin_3",
+	}
+	for in, want := range cases {
+		if got := devinNormalizeToolCallID(in, 3); got != want {
+			t.Fatalf("devinNormalizeToolCallID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestDevinToolCallsJSONNormalizesIDs pins the emitted payload.
+func TestDevinToolCallsJSONNormalizesIDs(t *testing.T) {
+	got := devinToolCallsJSON([]devinToolCall{{ID: "web_search_0", Name: "web_search", Arguments: "{}"}})
+	if !strings.Contains(got, `"id":"call_web_search_0"`) {
+		t.Fatalf("id not normalized: %s", got)
+	}
+}

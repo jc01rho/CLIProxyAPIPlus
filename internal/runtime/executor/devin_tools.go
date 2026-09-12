@@ -324,10 +324,7 @@ func devinToolCallsJSON(calls []devinToolCall) string {
 		if strings.TrimSpace(args) == "" {
 			args = "{}"
 		}
-		id := c.ID
-		if id == "" {
-			id = fmt.Sprintf("call_devin_%d", i)
-		}
+		id := devinNormalizeToolCallID(c.ID, i)
 		sb.WriteString(fmt.Sprintf(
 			`{"id":%s,"type":"function","function":{"name":%s,"arguments":%s}}`,
 			mustMarshalDevinJSON(id), mustMarshalDevinJSON(c.Name), mustMarshalDevinJSON(args)))
@@ -386,4 +383,19 @@ func devinFinishChunk(model, finish string, usage devinUsage) []byte {
 	return []byte(fmt.Sprintf(
 		`data: {"id":"chatcmpl-devin","object":"chat.completion.chunk","created":0,"model":%s,"choices":[{"index":0,"delta":{},"finish_reason":%s}]%s}`+"\n\n",
 		marshalDevinJSONStringOrEmpty(model), mustMarshalDevinJSON(finish), usagePart))
+}
+
+// devinNormalizeToolCallID makes a tool call id conform to the OpenAI
+// convention. Devin returns bare ids such as "web_search_0", but the
+// Responses API expects a call_ prefixed id; clients that validate the
+// function_call item reject the bare form and never see the turn complete.
+func devinNormalizeToolCallID(id string, index int) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Sprintf("call_devin_%d", index)
+	}
+	if strings.HasPrefix(id, "call_") {
+		return id
+	}
+	return "call_" + id
 }
