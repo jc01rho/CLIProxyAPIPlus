@@ -10,11 +10,13 @@ import (
 //
 // omo (package omo-ai, github.com/code-yeongyu/oh-my-openagent) is a distinct
 // project from oh-my-pi; only the Cascade wire format was borrowed from the
-// latter. Its user agent is brand based and defaults to the "pi" app name.
+// latter. Its launcher injects a brand profile whose name, userAgent and
+// originator are all "omo", so it sends "Originator: omo" and a user agent of
+// the form "omo/<version> (<platform>; <runtime>; <arch>)".
 const omoOriginator = "omo"
 
 // omoUserAgentPrefixes are the user-agent identities the omo agent presents.
-var omoUserAgentPrefixes = []string{"omo/", "pi/", "omo-coding-agent", "pi-coding-agent"}
+var omoUserAgentPrefixes = []string{"omo/", "omo-coding-agent"}
 
 // isOmoClientRequest reports whether a request comes from the omo agent.
 //

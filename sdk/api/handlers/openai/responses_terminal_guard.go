@@ -17,6 +17,16 @@ import (
 // Clients then report that the stream ended before a terminal response event.
 type responsesTerminalGuard struct {
 	emitted bool
+	// strict selects a response.failed terminal event over a bare error event.
+	// The Responses API defines response.completed, response.incomplete and
+	// response.failed as the terminal events; a plain error event is an
+	// extension that strict clients such as omo do not accept as an ending.
+	strict bool
+}
+
+// newResponsesTerminalGuard builds a guard tuned to the calling client.
+func newResponsesTerminalGuard(c *gin.Context) *responsesTerminalGuard {
+	return &responsesTerminalGuard{strict: isOmoClientRequest(c)}
 }
 
 // write forwards converter output and records any terminal event it carries.
@@ -36,15 +46,18 @@ func (g *responsesTerminalGuard) write(c *gin.Context, outputs [][]byte) {
 	}
 }
 
-// ensure writes a terminal error event when nothing terminal was emitted, so
-// the turn always ends with an event the client recognises.
+// ensure writes a terminal event when nothing terminal was emitted, so the turn
+// always ends with an event the client recognises.
 func (g *responsesTerminalGuard) ensure(c *gin.Context, reason string) {
 	if g.emitted {
 		return
 	}
 	g.emitted = true
-	body := handlersBuildResponsesErrorBody(reason)
-	_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", body)
+	if g.strict {
+		_, _ = fmt.Fprintf(c.Writer, "\nevent: response.failed\ndata: %s\n\n", buildResponsesFailedBody(reason))
+		return
+	}
+	_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", handlersBuildResponsesErrorBody(reason))
 }
 
 // responsesOutputIsTerminal reports whether converter output carries a
@@ -66,4 +79,11 @@ func responsesOutputIsTerminal(out []byte) bool {
 // handlersBuildResponsesErrorBody renders the error payload body.
 func handlersBuildResponsesErrorBody(reason string) string {
 	return fmt.Sprintf(`{"type":"error","sequence_number":0,"code":%d,"message":%q}`, http.StatusBadGateway, reason)
+}
+
+// buildResponsesFailedBody renders a response.failed payload.
+func buildResponsesFailedBody(reason string) string {
+	return fmt.Sprintf(
+		`{"type":"response.failed","sequence_number":0,"response":{"object":"response","status":"failed","error":{"code":"upstream_error","message":%q}}}`,
+		reason)
 }
