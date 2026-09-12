@@ -14,7 +14,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -101,6 +100,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 	executionSessionID := executionSessionIDFromOptions(opts)
 	var sess *codexWebsocketSession
+	isEphemeralSession := false
 	sessionLocked := false
 	unlockSession := func() {
 		if sess != nil && sessionLocked {
@@ -113,6 +113,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		sess.reqMu.Lock()
 		sessionLocked = true
 		defer unlockSession()
+	} else {
+		isEphemeralSession = true
+		sess = newEphemeralCodexWebsocketSession()
 	}
 
 	wsReqBody, errFormat := prepareCodexWebsocketRequestBody(upstreamBody)
@@ -176,17 +179,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
 	reporter.StartResponseTTFT()
-	if sess == nil {
-		logCodexWebsocketConnected(executionSessionID, authID, wsURL)
+	if isEphemeralSession {
 		defer func() {
 			reason := "completed"
 			if err != nil {
 				reason = "error"
 			}
-			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, reason, err)
-			if errClose := closer.Close(); errClose != nil {
-				log.Errorf("codex websockets executor: close websocket error: %v", errClose)
-			}
+			closeCodexWebsocketSession(sess, reason)
 		}()
 	}
 
@@ -202,7 +201,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
 		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
-		if sess != nil {
+		if sess != nil && !isEphemeralSession {
 			if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, "send_error", errSend)
 				if !shouldRetryCodexWebsocketSend(errSend) {
@@ -265,6 +264,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				return resp, errDialRetry
 			}
 		} else {
+			if sess != nil {
+				e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
+				sess.clearActive(conn, readCh)
+				if isEphemeralSession {
+					closeCodexWebsocketSession(sess, "send_error")
+				}
+			}
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 			return resp, errSend
 		}

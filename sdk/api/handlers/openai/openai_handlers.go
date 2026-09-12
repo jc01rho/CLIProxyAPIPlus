@@ -65,7 +65,7 @@ func (h *OpenAIAPIHandler) Models() []map[string]any {
 func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	if _, ok := c.Request.URL.Query()["client_version"]; ok {
 		clientVersion := c.Query("client_version")
-		c.JSON(http.StatusOK, h.codexClientModelsResponse(sdkaccess.FilterModelMaps(c, h.Models()), clientVersion))
+		h.WriteModelListResponse(c, h.HandlerType(), h.codexClientModelsResponse(sdkaccess.FilterModelMaps(c, h.Models()), clientVersion))
 		return
 	}
 
@@ -93,7 +93,7 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		filteredModels[i] = filteredModel
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	h.WriteModelListResponse(c, h.HandlerType(), gin.H{
 		"object": "list",
 		"data":   filteredModels,
 	})

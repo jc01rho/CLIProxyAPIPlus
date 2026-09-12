@@ -26,6 +26,7 @@ import (
 
 type UsageReporter struct {
 	provider            string
+	baseURL             string
 	executorType        string
 	model               string
 	alias               string
@@ -82,8 +83,20 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 			parentSessionID = ""
 		}
 	}
+	baseURL := ""
+	if auth != nil {
+		if auth.Attributes != nil {
+			baseURL = strings.TrimSpace(auth.Attributes["base_url"])
+		}
+		if baseURL == "" && auth.Metadata != nil {
+			if v, ok := auth.Metadata["base_url"].(string); ok {
+				baseURL = strings.TrimSpace(v)
+			}
+		}
+	}
 	reporter := &UsageReporter{
 		provider:        provider,
+		baseURL:         baseURL,
 		model:           model,
 		alias:           strings.TrimSpace(alias),
 		requestedAt:     time.Now(),
@@ -453,6 +466,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	}
 	return usage.Record{
 		Provider:            r.provider,
+		BaseURL:             r.baseURL,
 		ExecutorType:        r.executorType,
 		Model:               model,
 		Alias:               r.alias,
