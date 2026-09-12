@@ -56,3 +56,7 @@ go test ./sdk/cliproxy/auth -run 'Test.*Fallback|Test.*Alias|Test.*Conductor' -c
 - Do not bypass selectors for a one-off provider special case.
 - Do not hold locks while making upstream network calls.
 - Do not suppress route/fallback failures with silent fallback; log structured context.
+
+## Push / PR 규칙
+
+- forked upstream에는 절대 Pull Request를 생성하지 않는다. 모든 push는 `origin`(jc01rho) 브랜치에만 수행한다. upstream remote는 fetch/merge 전용이다.

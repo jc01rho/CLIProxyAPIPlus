@@ -39,3 +39,7 @@ config/
 - Do not hardcode ports, hosts, endpoints, or credentials in code.
 - Do not bypass backward-compatibility paths when adding new fields.
 - Do not accept config values into logs without masking/sanitization.
+
+## Push / PR 규칙
+
+- forked upstream에는 절대 Pull Request를 생성하지 않는다. 모든 push는 `origin`(jc01rho) 브랜치에만 수행한다. upstream remote는 fetch/merge 전용이다.
