@@ -922,16 +922,10 @@ func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context,
 			// stream unterminated and clients report that it ended before a
 			// terminal event. Feeding the marker here is idempotent: the
 			// converter ignores it once the completed event was emitted.
-			for _, out := range responsesconverter.ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx, modelName, originalResponsesJSON, originalResponsesJSON, []byte("[DONE]"), param) {
-				if len(out) == 0 {
-					continue
-				}
-				if bytes.HasPrefix(out, []byte("event:")) {
-					_, _ = c.Writer.Write([]byte("\n"))
-				}
-				_, _ = c.Writer.Write(out)
-				_, _ = c.Writer.Write([]byte("\n"))
-			}
+			// Route the marker through the guard so a completed event it emits
+			// counts as terminal. Writing it directly left the guard blind and
+			// appended a spurious error after a healthy turn.
+			guard.write(c, responsesconverter.ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx, modelName, originalResponsesJSON, originalResponsesJSON, []byte("[DONE]"), param))
 			// The converter ignores the marker when it never started, so a
 			// stream that produced no convertible payload still needs an
 			// explicit terminal event.
