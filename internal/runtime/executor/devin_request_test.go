@@ -94,7 +94,7 @@ func TestDevinCompletionConfigFromPayload(t *testing.T) {
 		t.Fatalf("config = %+v", cfg)
 	}
 	def := devinExtractCompletionConfig([]byte(`{}`))
-	if def.Temperature != 0.7 || def.TopK != 50 {
+	if def.Temperature != 0.4 || def.TopK != 50 {
 		t.Fatalf("defaults = %+v", def)
 	}
 }

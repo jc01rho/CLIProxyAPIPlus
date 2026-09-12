@@ -11,18 +11,28 @@ import (
 // Remaining wire fields of the Devin GetChatMessage protocol, confirmed
 // against the published JavaScript implementation (npm ai-sdk-devin).
 const (
-	devinReqMetadataField    = 1
-	devinReqSystemField      = 2
-	devinReqPromptField      = 3
-	devinReqTypeField        = 7
-	devinReqConfigField      = 8
-	devinReqCascadeField     = 16
-	devinReqPromptIDField    = 17
-	devinReqPlannerModeField = 20
-	devinReqModelField       = 21
+	devinReqMetadataField      = 1
+	devinReqSystemField        = 2
+	devinReqPromptField        = 3
+	devinReqTypeField          = 7
+	devinReqConfigField        = 8
+	devinReqCascadeField       = 16
+	devinReqPromptIDField      = 17
+	devinReqParallelToolsField = 11
+	devinReqToolChoiceField    = 12
+	devinReqCacheOptionsField  = 13
+	devinReqExecutionIDField   = 22
+	devinReqPlannerModeField   = 20
+	devinReqModelField         = 21
 
 	// request_type enum: 5 = CASCADE.
 	devinRequestTypeCascade = 5
+
+	// devinMaxNewlines mirrors the native client cap.
+	devinMaxNewlines = 200
+
+	// CacheControlType.EPHEMERAL
+	devinCacheControlEphemeral = 1
 )
 
 // Metadata submessage (request f1).
@@ -74,17 +84,25 @@ type devinCompletionConfig struct {
 	Temperature     float64
 	TopP            float64
 	TopK            int
+	StopPatterns    []string
 }
 
 // devinDefaultCompletionConfig mirrors the reference client defaults.
 func devinDefaultCompletionConfig() devinCompletionConfig {
 	return devinCompletionConfig{
 		MaxInputTokens:  64000,
-		MaxOutputTokens: 128000,
-		Temperature:     0.7,
-		TopP:            0.95,
+		MaxOutputTokens: 64000,
+		Temperature:     0.4,
+		TopP:            1,
 		TopK:            50,
+		StopPatterns:    devinDefaultStopPatterns(),
 	}
+}
+
+// devinDefaultStopPatterns are the turn-boundary control tokens the native
+// client always sends.
+func devinDefaultStopPatterns() []string {
+	return []string{"<|user|>", "<|bot|>", "<|context_request|>", "<|endoftext|>", "<|end_of_turn|>"}
 }
 
 // devinExtractCompletionConfig reads sampling parameters from an OpenAI-style
@@ -100,6 +118,7 @@ func devinExtractCompletionConfig(payload []byte) devinCompletionConfig {
 		TopK        *int     `json:"top_k"`
 		MaxTokens   *int     `json:"max_tokens"`
 		MaxCompTok  *int     `json:"max_completion_tokens"`
+		Stop        any      `json:"stop"`
 	}
 	if err := json.Unmarshal(payload, &doc); err != nil {
 		return cfg
@@ -117,6 +136,10 @@ func devinExtractCompletionConfig(payload []byte) devinCompletionConfig {
 		cfg.MaxOutputTokens = *doc.MaxCompTok
 	} else if doc.MaxTokens != nil && *doc.MaxTokens > 0 {
 		cfg.MaxOutputTokens = *doc.MaxTokens
+	}
+	// User stop sequences extend the control tokens rather than replacing them.
+	if extra := devinStopSequences(doc.Stop); len(extra) > 0 {
+		cfg.StopPatterns = append(devinDefaultStopPatterns(), extra...)
 	}
 	return cfg
 }
@@ -136,14 +159,22 @@ func devinEncodeSubMessage(num int, body []byte) []byte {
 
 // devinEncodeCompletionConfig builds the completion_configuration submessage.
 func devinEncodeCompletionConfig(cfg devinCompletionConfig) []byte {
-	// CompletionConfiguration: num_completions=1, max_tokens=2,
-	// temperature=5, top_k=7, top_p=8.
+	// CompletionConfiguration mirrors the native client: num_completions=1,
+	// max_tokens=2, max_newlines=3, temperature=5, first_temperature=6,
+	// top_k=7, top_p=8, stop_patterns=9, fim_eot_prob_threshold=11.
 	var msg []byte
 	msg = append(msg, devinEncodeField(nil, 1, 0, devinEncodeVarint(nil, 1))...)
 	msg = append(msg, devinEncodeField(nil, 2, 0, devinEncodeVarint(nil, uint64(cfg.MaxOutputTokens)))...)
+	msg = append(msg, devinEncodeField(nil, 3, 0, devinEncodeVarint(nil, devinMaxNewlines))...)
 	msg = append(msg, devinEncodeDouble(5, cfg.Temperature)...)
+	msg = append(msg, devinEncodeDouble(6, cfg.Temperature)...)
 	msg = append(msg, devinEncodeField(nil, 7, 0, devinEncodeVarint(nil, uint64(cfg.TopK)))...)
 	msg = append(msg, devinEncodeDouble(8, cfg.TopP)...)
+	// Stop patterns keep the model from emitting turn-boundary control tokens.
+	for _, pattern := range cfg.StopPatterns {
+		msg = append(msg, devinEncodeField(nil, 9, 2, devinEncodeString(pattern))...)
+	}
+	msg = append(msg, devinEncodeDouble(11, 1.0)...)
 	return msg
 }
 
@@ -216,21 +247,23 @@ func devinEncodeMessagePrompt(sessionUUID string, m devinMessage) []byte {
 
 // devinChatSpec is the full input to a GetChatMessage request.
 type devinChatSpec struct {
-	Token         string
-	ModelUID      string
-	System        string
-	Messages      []devinMessage
-	SessionUUID   string
-	CascadeID     string
-	PromptID      string
-	TriggerID     string
-	RequestID     uint64
-	Fingerprint   string
-	UserJWT       string
-	Tools         []devinToolDef
-	AssignmentJWT string
-	Config        devinCompletionConfig
-	Now           time.Time
+	Token                string
+	ModelUID             string
+	System               string
+	Messages             []devinMessage
+	SessionUUID          string
+	CascadeID            string
+	PromptID             string
+	TriggerID            string
+	RequestID            uint64
+	Fingerprint          string
+	UserJWT              string
+	Tools                []devinToolDef
+	AssignmentJWT        string
+	ExecutionID          string
+	DisableParallelTools bool
+	Config               devinCompletionConfig
+	Now                  time.Time
 }
 
 // devinBuildMetadata builds the request metadata submessage.
@@ -290,6 +323,18 @@ func devinBuildChatRequestFull(spec devinChatSpec) []byte {
 	}
 	if spec.PromptID != "" {
 		msg = append(msg, devinEncodeField(nil, devinReqPromptIDField, 2, devinEncodeString(spec.PromptID))...)
+	}
+	// tool_choice=auto, an ephemeral system prompt cache entry, and an
+	// execution id are part of every native request.
+	if len(spec.Tools) > 0 {
+		msg = append(msg, devinEncodeSubMessage(devinReqToolChoiceField, devinEncodeToolChoiceAuto())...)
+		if spec.DisableParallelTools {
+			msg = append(msg, devinEncodeField(nil, devinReqParallelToolsField, 0, devinEncodeVarint(nil, 1))...)
+		}
+	}
+	msg = append(msg, devinEncodeSubMessage(devinReqCacheOptionsField, devinEncodeCacheOptions())...)
+	if spec.ExecutionID != "" {
+		msg = append(msg, devinEncodeField(nil, devinReqExecutionIDField, 2, devinEncodeString(spec.ExecutionID))...)
 	}
 	msg = append(msg, devinEncodeField(nil, devinReqPlannerModeField, 0, devinEncodeVarint(nil, 1))...)
 	msg = append(msg, devinEncodeField(nil, devinReqModelField, 2, devinEncodeString(spec.ModelUID))...)
@@ -394,4 +439,37 @@ func devinParseAssignModelResponse(frames [][]byte) (devinModelAssignment, bool)
 		})
 	}
 	return out, found
+}
+
+// devinEncodeToolChoiceAuto encodes ChatToolChoice{option_name: "auto"}.
+func devinEncodeToolChoiceAuto() []byte {
+	return devinEncodeField(nil, 1, 2, devinEncodeString("auto"))
+}
+
+// devinEncodeCacheOptions encodes PromptCacheOptions{type: EPHEMERAL}.
+//
+// The native client marks the system prompt as an ephemeral cache entry, which
+// is what makes prompt caching effective across turns.
+func devinEncodeCacheOptions() []byte {
+	return devinEncodeField(nil, 1, 0, devinEncodeVarint(nil, devinCacheControlEphemeral))
+}
+
+// devinStopSequences reads OpenAI-style stop values, which may be a string or
+// an array of strings.
+func devinStopSequences(v any) []string {
+	switch t := v.(type) {
+	case string:
+		if strings.TrimSpace(t) != "" {
+			return []string{t}
+		}
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if str, ok := item.(string); ok && strings.TrimSpace(str) != "" {
+				out = append(out, str)
+			}
+		}
+		return out
+	}
+	return nil
 }
