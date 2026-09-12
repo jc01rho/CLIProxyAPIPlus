@@ -653,7 +653,7 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if msg := devinTrailerError(trailer); msg != "" {
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).
 			Warnf("devin: upstream request rejected [%s]", devinRequestShape(spec, body, len(frames)))
-		return cliproxyexecutor.Response{}, fmt.Errorf("devin: %s", msg)
+		return cliproxyexecutor.Response{}, devinClassifyTrailerError(msg)
 	}
 	if len(frames) == 0 {
 		return cliproxyexecutor.Response{}, fmt.Errorf("devin: no data frames: %s", devinTrailerMessage(trailer))
