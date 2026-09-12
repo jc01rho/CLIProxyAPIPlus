@@ -257,7 +257,12 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = buildDevinConfigModels(entry)
 			excluded = entry.ExcludedModels
 		default:
-			models = registry.GetDevinModels()
+			// Discover the live catalog; the static seed only covers the
+			// SWE-2 router UIDs and is a fallback for failed discovery.
+			models = executor.FetchDevinModels(ctx, a, s.cfg)
+			if len(models) == 0 {
+				models = registry.GetDevinModels()
+			}
 			if entry != nil {
 				excluded = entry.ExcludedModels
 			}
