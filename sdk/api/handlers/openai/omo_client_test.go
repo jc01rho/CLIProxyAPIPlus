@@ -18,18 +18,22 @@ func omoTestContext(header, value string) *gin.Context {
 	return c
 }
 
-// TestIsOmoClientRequest pins detection of the oh-my-pi agent across the
-// headers it identifies itself with.
+// TestIsOmoClientRequest pins detection against the identities the omo agent
+// actually sends. omo is a different project from oh-my-pi, so an oh-my-pi
+// string must not be treated as omo.
 func TestIsOmoClientRequest(t *testing.T) {
 	cases := []struct {
 		header string
 		value  string
 		want   bool
 	}{
-		{"User-Agent", "oh-my-pi/1.2.3", true},
 		{"Originator", "omo", true},
-		{"X-Client-Name", "ohmypi", true},
+		{"Originator", "OMO", true},
+		{"User-Agent", "pi/5.0.0-0.beta.56 (linux; node/v24.14.0; x64)", true},
+		{"User-Agent", "omo/5.0.0 (darwin; bun/1.4.2; arm64)", true},
+		{"User-Agent", "pi-coding-agent", true},
 		{"User-Agent", "curl/8.0", false},
+		{"User-Agent", "oh-my-pi/1.0", false},
 		{"", "", false},
 	}
 	for _, tc := range cases {
