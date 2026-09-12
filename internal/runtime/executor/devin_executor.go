@@ -266,12 +266,18 @@ func devinDecodeFrames(body []byte) (data [][]byte, trailer []byte, err error) {
 		}
 		payload := body[pos+5 : pos+5+ln]
 		pos += 5 + ln
-		if flag == 0x02 {
+		// Bit 0x01 marks a gzip payload; bit 0x02 marks the trailer.
+		if flag&devinConnectCompressedFlag != 0 {
+			decoded, errGz := devinGunzip(payload)
+			if errGz != nil {
+				return nil, nil, fmt.Errorf("devin: gunzip frame: %w", errGz)
+			}
+			payload = decoded
+		}
+		if flag&devinConnectEndStreamFlag != 0 {
 			trailer = payload
-		} else if flag == 0x00 {
-			data = append(data, payload)
 		} else {
-			return nil, nil, fmt.Errorf("devin: unknown connect frame flag %#x", flag)
+			data = append(data, payload)
 		}
 	}
 	return data, trailer, nil
@@ -341,10 +347,17 @@ func (e *DevinExecutor) devinDoPost(ctx context.Context, auth *cliproxyauth.Auth
 	if err != nil {
 		return nil, nil, err
 	}
+	framed, errGz := devinGzipFrame(body)
+	if errGz == nil {
+		req.Body = io.NopCloser(bytes.NewReader(framed))
+		req.ContentLength = int64(len(framed))
+		req.Header.Set("connect-content-encoding", "gzip")
+	}
 	req.Header.Set("content-type", devinConnectProtoContentType)
 	req.Header.Set("connect-protocol-version", devinConnectProtocolVersion)
 	req.Header.Set("authorization", devinAuthHeader(token))
 	req.Header.Set("accept", "*/*")
+	req.Header.Set("connect-accept-encoding", "gzip")
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return nil, nil, err
@@ -417,10 +430,14 @@ func devinRequestText(req cliproxyexecutor.Request) (text, system string) {
 }
 
 type devinMessage struct {
-	role       string
-	content    string
-	toolCallID string
-	toolCalls  []devinToolCall
+	role          string
+	content       string
+	toolCallID    string
+	toolCalls     []devinToolCall
+	thinking      string
+	signature     string
+	signatureType string
+	toolIsError   bool
 }
 
 func extractDevinMessages(payload []byte) []devinMessage {
@@ -429,6 +446,9 @@ func extractDevinMessages(payload []byte) []devinMessage {
 			Role       string `json:"role"`
 			Content    any    `json:"content"`
 			ToolCallID string `json:"tool_call_id"`
+			Reasoning  string `json:"reasoning_content"`
+			Thinking   string `json:"thinking"`
+			Signature  string `json:"thinking_signature"`
 			ToolCalls  []struct {
 				ID       string `json:"id"`
 				Function struct {
@@ -444,6 +464,11 @@ func extractDevinMessages(payload []byte) []devinMessage {
 	out := make([]devinMessage, 0, len(doc.Messages))
 	for _, m := range doc.Messages {
 		msg := devinMessage{role: m.Role, content: devinContentToString(m.Content), toolCallID: m.ToolCallID}
+		msg.thinking = m.Reasoning
+		if msg.thinking == "" {
+			msg.thinking = m.Thinking
+		}
+		msg.signature = m.Signature
 		for _, tc := range m.ToolCalls {
 			msg.toolCalls = append(msg.toolCalls, devinToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 		}
@@ -593,7 +618,7 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		msgs = []devinMessage{{role: "user", content: text}}
 	}
 	sessionUUID := devinNewSessionUUID()
-	body := devinBuildChatRequestFull(devinChatSpec{
+	spec := devinChatSpec{
 		Token:       token,
 		ModelUID:    model,
 		System:      system,
@@ -603,7 +628,17 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		PromptID:    devinNewSessionUUID(),
 		Tools:       devinExtractTools(req.Payload),
 		Config:      devinExtractCompletionConfig(req.Payload),
-	})
+	}
+	// A router uid must be exchanged for a concrete model first.
+	if devinIsRouterModel(model) {
+		if assignment, ok := e.devinAssignModel(ctx, auth, spec, model); ok {
+			if assignment.ModelUID != "" {
+				spec.ModelUID = assignment.ModelUID
+			}
+			spec.AssignmentJWT = assignment.JWT
+		}
+	}
+	body := devinBuildChatRequestFull(spec)
 	respBody, headers, err := e.devinDoPost(ctx, auth, model, devinServerURL(auth)+devinGetChatMessagePath, token, body)
 	if err != nil {
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(err).Debug("devin: upstream request failed")
@@ -614,9 +649,10 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return cliproxyexecutor.Response{}, err
 	}
 	if len(frames) == 0 {
-		return cliproxyexecutor.Response{}, fmt.Errorf("devin: no data frames: %s", truncateDevinErr(trailer))
+		return cliproxyexecutor.Response{}, fmt.Errorf("devin: no data frames: %s", devinTrailerMessage(trailer))
 	}
 	var sb strings.Builder
+	var reasoning strings.Builder
 	finish := "stop"
 	var usage devinUsage
 	calls := make([]devinToolCall, 0, 2)
@@ -634,12 +670,16 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		if u, ok := devinExtractUsage(frame); ok {
 			usage = u
 		}
+		if r, ok := devinExtractReasoningDelta(frame); ok {
+			reasoning.WriteString(r)
+		}
+		devinExtractCost(frame, &usage)
 	}
 	if len(calls) > 0 && finish == "stop" {
 		finish = "tool_calls"
 	}
 	content := sb.String()
-	payload := devinBuildCompletionPayload(model, content, calls, finish, usage)
+	payload := devinBuildCompletionPayload(model, content, reasoning.String(), calls, finish, usage)
 	return cliproxyexecutor.Response{Payload: payload, Headers: headers}, nil
 }
 
@@ -670,7 +710,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		msgs = []devinMessage{{role: "user", content: text}}
 	}
 	sessionUUID := devinNewSessionUUID()
-	body := devinBuildChatRequestFull(devinChatSpec{
+	spec := devinChatSpec{
 		Token:       token,
 		ModelUID:    model,
 		System:      system,
@@ -680,7 +720,17 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		PromptID:    devinNewSessionUUID(),
 		Tools:       devinExtractTools(req.Payload),
 		Config:      devinExtractCompletionConfig(req.Payload),
-	})
+	}
+	// A router uid must be exchanged for a concrete model first.
+	if devinIsRouterModel(model) {
+		if assignment, ok := e.devinAssignModel(ctx, auth, spec, model); ok {
+			if assignment.ModelUID != "" {
+				spec.ModelUID = assignment.ModelUID
+			}
+			spec.AssignmentJWT = assignment.JWT
+		}
+	}
+	body := devinBuildChatRequestFull(spec)
 	resp, err := e.devinOpenStream(ctx, auth, model, devinServerURL(auth)+devinGetChatMessagePath, token, body)
 	if err != nil {
 		log.WithFields(log.Fields{"provider": "devin", "model": model}).WithError(err).Debug("devin: upstream stream request failed")
@@ -730,6 +780,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if u, ok := devinExtractUsage(frame); ok {
 				usage = u
 			}
+			devinExtractCost(frame, &usage)
 			return nil
 		})
 		if streamErr != nil || dataFrames == 0 {
@@ -752,4 +803,28 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		send(devinOpenAIChunk(model, "", true))
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: chunks}, nil
+}
+
+// devinAssignModel resolves a model-router uid via the AssignModel RPC.
+//
+// Router uids (thinking-effort aliases) must be exchanged for a concrete model
+// before GetChatMessage; the returned jwt is echoed back on the chat request.
+func (e *DevinExecutor) devinAssignModel(ctx context.Context, auth *cliproxyauth.Auth, spec devinChatSpec, routerUID string) (devinModelAssignment, bool) {
+	body := devinBuildAssignModelRequest(spec, routerUID)
+	respBody, _, err := e.devinDoPost(ctx, auth, routerUID, devinServerURL(auth)+devinAssignModelPath, spec.Token, body)
+	if err != nil {
+		log.WithFields(log.Fields{"provider": "devin", "router": routerUID}).WithError(err).Debug("devin: AssignModel failed; using the requested model")
+		return devinModelAssignment{}, false
+	}
+	frames, _, err := devinDecodeFrames(respBody)
+	if err != nil {
+		return devinModelAssignment{}, false
+	}
+	return devinParseAssignModelResponse(frames)
+}
+
+// devinIsRouterModel reports whether a model id routes through AssignModel.
+// Thinking-effort suffixes are resolved server side.
+func devinIsRouterModel(model string) bool {
+	return strings.HasSuffix(model, "-router") || strings.Contains(model, "model-router")
 }
