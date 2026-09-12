@@ -650,6 +650,8 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return cliproxyexecutor.Response{}, err
 	}
 	if msg := devinTrailerError(trailer); msg != "" {
+		log.WithFields(devinRejectionFields(model, spec, body, len(frames))).
+			Warn("devin: upstream request rejected")
 		return cliproxyexecutor.Response{}, fmt.Errorf("devin: %s", msg)
 	}
 	if len(frames) == 0 {
@@ -794,11 +796,10 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		// terminal event, whose wording differs per client format, and hides
 		// the Connect trailer that explains the rejection.
 		if failure := devinStreamFailure(trailer, streamErr, dataFrames); failure != nil {
-			log.WithFields(log.Fields{
-				"provider":    "devin",
-				"model":       model,
-				"data_frames": dataFrames,
-			}).WithError(failure).Warn("devin: upstream stream rejected")
+			// Opaque invalid_argument rejections carry no HTTP body, so the
+			// request shape is the only evidence available for diagnosis.
+			log.WithFields(devinRejectionFields(model, spec, body, dataFrames)).
+				WithError(failure).Warn("devin: upstream stream rejected")
 			select {
 			case chunks <- cliproxyexecutor.StreamChunk{Err: failure}:
 			case <-ctx.Done():
@@ -883,4 +884,47 @@ func devinTrailerError(trailer []byte) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.TrimPrefix(doc.Error.Code+": "+doc.Error.Message, ": "))
+}
+
+// devinRejectionFields describes the request shape behind an upstream
+// rejection. Opaque invalid_argument trailers carry no HTTP body, so the
+// request shape is the only server-side evidence for diagnosis.
+func devinRejectionFields(model string, spec devinChatSpec, framed []byte, dataFrames int) log.Fields {
+	systemLen := len(spec.System)
+	toolNames := make([]string, 0, len(spec.Tools))
+	toolSchemaBytes := 0
+	for _, t := range spec.Tools {
+		toolNames = append(toolNames, t.Name)
+		toolSchemaBytes += len(t.Parameters)
+	}
+	roles := make([]string, 0, len(spec.Messages))
+	promptBytes := 0
+	toolCalls, toolResults, thinkingTurns := 0, 0, 0
+	for _, m := range spec.Messages {
+		roles = append(roles, m.role)
+		promptBytes += len(m.content)
+		toolCalls += len(m.toolCalls)
+		if m.toolCallID != "" {
+			toolResults++
+		}
+		if m.thinking != "" {
+			thinkingTurns++
+		}
+	}
+	return log.Fields{
+		"provider":          "devin",
+		"model":             model,
+		"data_frames":       dataFrames,
+		"framed_bytes":      len(framed),
+		"system_bytes":      systemLen,
+		"prompt_bytes":      promptBytes,
+		"messages":          len(spec.Messages),
+		"roles":             strings.Join(roles, ","),
+		"tools":             len(spec.Tools),
+		"tool_names":        strings.Join(toolNames, ","),
+		"tool_schema_bytes": toolSchemaBytes,
+		"tool_calls":        toolCalls,
+		"tool_results":      toolResults,
+		"thinking_turns":    thinkingTurns,
+	}
 }
