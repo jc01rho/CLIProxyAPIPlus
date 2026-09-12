@@ -34,11 +34,15 @@ func TestGetStaticModelDefinitionsByChannelSupportsDevin(t *testing.T) {
 	if len(models) == 0 {
 		t.Fatal("GetStaticModelDefinitionsByChannel(devin) returned no models")
 	}
+	// The static catalog is only the SWE-2 seed: it keeps a configured Devin
+	// provider usable when GetCliModelConfigs discovery fails. Every other
+	// family (SWE-1.x, Claude, GPT, Gemini, GLM, Kimi, Fusion) comes from that
+	// live catalog, so asserting them here would pin names the seed no longer
+	// owns.
 	expected := map[string]bool{
-		"swe-1-6-fast":         false,
-		"swe-2-high":           false,
-		"claude-opus-5-medium": false,
-		"gpt-5-6-sol-high":     false,
+		"swe-2-high":   false,
+		"swe-2-medium": false,
+		"swe-2-max":    false,
 	}
 	for _, m := range models {
 		if _, ok := expected[m.ID]; ok {
@@ -51,9 +55,9 @@ func TestGetStaticModelDefinitionsByChannelSupportsDevin(t *testing.T) {
 		}
 	}
 
-	info := LookupStaticModelInfo("swe-1-6-fast")
+	info := LookupStaticModelInfo("swe-2-high")
 	if info == nil {
-		t.Fatal("LookupStaticModelInfo(swe-1-6-fast) = nil, want ModelInfo")
+		t.Fatal("LookupStaticModelInfo(swe-2-high) = nil, want ModelInfo")
 	}
 }
 

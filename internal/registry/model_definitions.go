@@ -1243,69 +1243,14 @@ func GetAmazonQModels() []*ModelInfo {
 // GetDevinModels returns the Devin (Cognition) model definitions.
 func GetDevinModels() []*ModelInfo {
 	models := []*ModelInfo{
-		// Native SWE models
-		{ID: "swe-1-6-fast", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-1.6 Fast", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-1-6", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-1.6", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-1-6-slow", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-1.6 Slow", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-1-7", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-1.7 Max", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-1-7-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-1.7 Medium", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-1-7-lightning", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-1.7 Lightning Max", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-1-7-lightning-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-1.7 Lightning Medium", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-2-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-2 High", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-2-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-2 Medium", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-2-max", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-2 Max", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-
-		// Claude models on Devin
-		{ID: "claude-opus-5-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Opus 5 Medium", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-opus-5-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Opus 5 High", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-opus-5-low", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Opus 5 Low", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-opus-5-max", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Opus 5 Max", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-opus-5-xhigh", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Opus 5 XHigh", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-sonnet-5-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Sonnet 5 Medium", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-sonnet-5-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Sonnet 5 High", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-sonnet-5-low", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Sonnet 5 Low", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-fable-5-1-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Fable 5.1 High", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-fable-5-1-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Fable 5.1 Medium", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-opus-4-6-thinking", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Opus 4.6 Thinking", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude-sonnet-4-6-thinking", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude Sonnet 4.6 Thinking", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "claude", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Claude", ContextLength: 1000000, MaxCompletionTokens: 128000},
-
-		// GPT models on Devin
-		{ID: "gpt-5-6-sol-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Sol High Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-6-sol-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Sol Medium Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-6-sol-low", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Sol Low Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-6-sol-max", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Sol Max Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-6-sol-none", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Sol No Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000},
-		{ID: "gpt-5-6-luna-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Luna High Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-6-luna-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Luna Medium Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-6-luna-max", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Luna Max Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-6-luna-none", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Luna No Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000},
-		{ID: "gpt-5-6-terra-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Terra High Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-6-terra-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Terra Medium Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-6-terra-none", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.6 Terra No Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000},
-		{ID: "gpt-6-astra-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-6 Astra High Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-6-astra-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-6 Astra Medium Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-5-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.5 High Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-4-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.4 High Thinking", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt-5-3-codex-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT-5.3-Codex High", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gpt", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GPT", ContextLength: 1000000, MaxCompletionTokens: 128000},
-
-		// Gemini / GLM / Kimi / DeepSeek / Grok on Devin
-		{ID: "gemini-3-7-flash-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Gemini 3.7 Flash High", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gemini-3-7-flash-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Gemini 3.7 Flash Medium", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gemini-3-8-flash-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Gemini 3.8 Flash High", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "gemini", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Gemini", ContextLength: 1000000, MaxCompletionTokens: 128000},
-		{ID: "glm-5-2", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GLM-5.2 High", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "glm-5-3-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "GLM-5.3 High", ContextLength: 1000000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "kimi-k3-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Kimi K3 High", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "deepseek-v4-pro-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "DeepSeek V4 Pro High", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "grok-4-6-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Grok 4.6 High", ContextLength: 200000, MaxCompletionTokens: 64000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-
-		// Aliases
-		{ID: "opus", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Opus (Devin)", ContextLength: 1000000, MaxCompletionTokens: 128000},
-		{ID: "sonnet", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Sonnet (Devin)", ContextLength: 1000000, MaxCompletionTokens: 128000},
-		{ID: "haiku", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "Haiku (Devin)", ContextLength: 200000, MaxCompletionTokens: 64000},
+		// Static seed: the SWE-2 router UIDs. The full catalog (420+ configs
+		// including the SWE-1.x, Claude, GPT, Gemini, GLM and Fusion families) is
+		// discovered at runtime through GetCliModelConfigs; this seed only has to
+		// keep a configured Devin provider usable when that discovery fails.
+		// Context and output limits below are the values the live catalog reports.
+		{ID: "swe-2-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-2 High", ContextLength: 262000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "swe-2-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-2 Medium", ContextLength: 262000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
+		{ID: "swe-2-max", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-2 Max", ContextLength: 262000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
 	}
 	for _, m := range models {
 		m.SupportedEndpoints = []string{"/chat/completions"}
