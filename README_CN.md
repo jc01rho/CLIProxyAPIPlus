@@ -73,9 +73,17 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 自v6.10.0版本以后，CLIProxyAPI及 [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) 项目不再预置数据统计功能，如果有数据统计需求的请使用以下项目：
 
-### [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)
+### [CPA Usage Keeper](https://github.com/jc01rho/cpa-usage-keeper)（推荐）
 
-独立的 CLIProxyAPI 使用量持久化与可视化服务，定期同步 CLIProxyAPI 数据，存储到 SQLite，提供聚合 API，并内置使用量分析与统计仪表盘。
+> **用量统计请用这个。** 本 fork 面向 CLIProxyAPIPlus 的配套面板：独立的 CLIProxyAPI 使用量持久化与可视化服务，定期同步 CLIProxyAPI 数据，存储到 SQLite，提供聚合 API，并内置使用量分析与统计仪表盘。另支持单 Keeper 管理多个 CPA 实例，以及 bearer 凭据推送协议（`/api/v1/export/*`，见 [Keeper 导出运维手册](docs/keeper-export.md)）。
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/jc01rho/cpa-usage-keeper/main/assets/screenshots/overview-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/jc01rho/cpa-usage-keeper/main/assets/screenshots/overview-light.png" />
+    <img src="https://raw.githubusercontent.com/jc01rho/cpa-usage-keeper/main/assets/screenshots/overview-light.png" alt="CPA Usage Keeper 总览仪表盘" width="720" />
+  </picture>
+</p>
 
 ### [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)
 
