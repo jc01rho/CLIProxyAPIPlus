@@ -21,7 +21,7 @@ import (
 
 const (
 	commandCodeBaseURL = "https://api.commandcode.ai"
-	commandCodeVersion = "1.12.0"
+	commandCodeVersion = "1.53.1"
 	// commandCodeUserAgent mirrors the official CLI's literal User-Agent value.
 	commandCodeUserAgent = "cli"
 	// commandCodeProject matches the workspace slug shape the CLI derives from
@@ -264,7 +264,6 @@ func applyCommandCodeHeaders(req *http.Request, apiKey string, sessionID string)
 	req.Header.Set("x-cli-environment", "production")
 	req.Header.Set("x-project-slug", commandCodeProject)
 	req.Header.Set("x-taste-learning", "false")
-	req.Header.Set("x-co-flag", "false")
 }
 
 // resolveCommandCodeModelName resolves a model alias to the actual upstream model name
