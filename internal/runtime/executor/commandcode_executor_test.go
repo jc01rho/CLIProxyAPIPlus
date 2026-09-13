@@ -133,8 +133,8 @@ func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T
 	if got := req.Header.Get("Authorization"); got != "Bearer user_test" {
 		t.Fatalf("Authorization = %q, want %q", got, "Bearer user_test")
 	}
-	if got := req.Header.Get("x-command-code-version"); got != "1.12.0" {
-		t.Fatalf("x-command-code-version = %q, want %q", got, "1.12.0")
+	if got := req.Header.Get("x-command-code-version"); got != "1.53.1" {
+		t.Fatalf("x-command-code-version = %q, want %q", got, "1.53.1")
 	}
 	if got := req.Header.Get("x-cli-environment"); got != "production" {
 		t.Fatalf("x-cli-environment = %q, want %q", got, "production")
@@ -145,8 +145,9 @@ func Test_ApplyCommandCodeHeaders_matches_provider_cli_auth_headers(t *testing.T
 	if got := req.Header.Get("x-taste-learning"); got != "false" {
 		t.Fatalf("x-taste-learning = %q, want %q", got, "false")
 	}
-	if got := req.Header.Get("x-co-flag"); got != "false" {
-		t.Fatalf("x-co-flag = %q, want %q", got, "false")
+	// x-co-flag was removed in command-code@1.53.1; it must not be sent.
+	if got := req.Header.Get("x-co-flag"); got != "" {
+		t.Fatalf("x-co-flag = %q, want empty (removed in 1.53.1)", got)
 	}
 	if got := req.Header.Get("x-session-id"); got != "01890a5d-ac96-774b-bcce-b302099a8057" {
 		t.Fatalf("x-session-id = %q, want %q", got, "01890a5d-ac96-774b-bcce-b302099a8057")
