@@ -80,11 +80,12 @@ func TestDevinUserStopSequencesExtendDefaults(t *testing.T) {
 	}
 }
 
-// TestDevinCompletionConfigDefaultsMatchNative pins the sampling defaults.
-func TestDevinCompletionConfigDefaultsMatchNative(t *testing.T) {
+// TestDevinCompletionConfigDefaults pins the sampling defaults. Temperature is
+// a fork override (0.15) instead of the reference client's 0.4.
+func TestDevinCompletionConfigDefaults(t *testing.T) {
 	cfg := devinDefaultCompletionConfig()
-	if cfg.Temperature != 0.4 {
-		t.Fatalf("temperature = %v, want 0.4", cfg.Temperature)
+	if cfg.Temperature != 0.15 {
+		t.Fatalf("temperature = %v, want 0.15", cfg.Temperature)
 	}
 	if cfg.TopP != 1 {
 		t.Fatalf("top_p = %v, want 1", cfg.TopP)

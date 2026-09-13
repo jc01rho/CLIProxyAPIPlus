@@ -87,12 +87,13 @@ type devinCompletionConfig struct {
 	StopPatterns    []string
 }
 
-// devinDefaultCompletionConfig mirrors the reference client defaults.
+// devinDefaultCompletionConfig mirrors the reference client defaults, except
+// for temperature which this fork pins to 0.15 for steadier output.
 func devinDefaultCompletionConfig() devinCompletionConfig {
 	return devinCompletionConfig{
 		MaxInputTokens:  64000,
 		MaxOutputTokens: 64000,
-		Temperature:     0.4,
+		Temperature:     0.15,
 		TopP:            1,
 		TopK:            50,
 		StopPatterns:    devinDefaultStopPatterns(),
