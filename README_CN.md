@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/github/license/jc01rho/CLIProxyAPIPlus)](LICENSE)
 [![Upstream](https://img.shields.io/badge/upstream-router--for--me%2FCLIProxyAPI-blue)](https://github.com/router-for-me/CLIProxyAPI)
 
-[English](README.md) | 中文 | [日本語](README_JA.md)
+[English](README.md) | 中文 | [日本語](README_JA.md) | [한국어](README_KO.md)
 
 </div>
 
