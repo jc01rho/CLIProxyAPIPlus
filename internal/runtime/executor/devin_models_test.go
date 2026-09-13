@@ -177,3 +177,43 @@ func TestDevinBuildModelConfigsRequestCarriesDiscoveryIdentity(t *testing.T) {
 		}
 	}
 }
+
+// devinTestConfigWithCostTier encodes a ClientModelConfig that also carries
+// field 24 (model_cost_tier), which devinTestConfig does not emit.
+func devinTestConfigWithCostTier(label, uid string, contextWindow, maxOutput, costTier uint64) []byte {
+	var info []byte
+	if contextWindow > 0 {
+		info = append(info, devinEncodeField(nil, devinModelInfoMaxTokensField, 0, devinEncodeVarint(nil, contextWindow))...)
+	}
+	if maxOutput > 0 {
+		info = append(info, devinEncodeField(nil, devinModelInfoMaxOutputTokensField, 0, devinEncodeVarint(nil, maxOutput))...)
+	}
+	var cfg []byte
+	cfg = append(cfg, devinEncodeField(nil, devinConfigLabelField, 2, devinEncodeString(label))...)
+	cfg = append(cfg, devinEncodeField(nil, devinConfigModelUIDField, 2, devinEncodeString(uid))...)
+	if len(info) > 0 {
+		cfg = append(cfg, devinEncodeSubMessage(devinConfigModelInfoField, info)...)
+	}
+	cfg = append(cfg, devinEncodeField(nil, devinConfigCostTierField, 0, devinEncodeVarint(nil, costTier))...)
+	return devinEncodeSubMessage(1, cfg)
+}
+
+// TestDevinParseModelConfigsMarksFreeTier pins that a config whose
+// model_cost_tier is MODEL_COST_TIER_FREE (4) surfaces as a free model, while
+// paid tiers do not. The live catalog marks glm-5-2 and swe-2-high as FREE.
+func TestDevinParseModelConfigsMarksFreeTier(t *testing.T) {
+	var body []byte
+	body = append(body, devinTestConfigWithCostTier("GLM-5.2 High", "glm-5-2", 200000, 64000, devinCostTierFree)...)
+	body = append(body, devinTestConfigWithCostTier("GLM-5.2 Max", "glm-5-2-max", 200000, 64000, 1)...) // LOW
+
+	models := devinParseModelConfigs(body)
+	if len(models) != 2 {
+		t.Fatalf("got %d models, want 2", len(models))
+	}
+	if !models[0].IsFree || models[0].CostTier != "free" {
+		t.Errorf("glm-5-2 IsFree=%v CostTier=%q, want free", models[0].IsFree, models[0].CostTier)
+	}
+	if models[1].IsFree || models[1].CostTier != "" {
+		t.Errorf("glm-5-2-max IsFree=%v CostTier=%q, want not-free", models[1].IsFree, models[1].CostTier)
+	}
+}
