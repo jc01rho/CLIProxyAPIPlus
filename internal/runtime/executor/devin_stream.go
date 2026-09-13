@@ -76,7 +76,7 @@ func (e *DevinExecutor) devinOpenStream(ctx context.Context, auth *cliproxyauth.
 	req.Header.Set("connect-content-encoding", "gzip")
 	req.Header.Set("connect-accept-encoding", "gzip")
 	req.Header.Set("accept-encoding", "identity")
-	resp, err := e.client.Do(req)
+	resp, err := e.devinHTTPClient(ctx, auth).Do(req)
 	if err != nil {
 		return nil, err
 	}

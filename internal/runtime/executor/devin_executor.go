@@ -37,7 +37,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -66,7 +65,6 @@ const (
 	devinReasoningField = 9
 
 	devinMaxNonStreamBytes = 64 << 20
-	devinDefaultTimeout    = 120 * time.Second
 )
 
 // DevinExecutor is a stateless executor for the Devin (Cognition) provider.
@@ -74,16 +72,31 @@ const (
 // streams back Connect enveloped data frames, and maps generated text deltas
 // (f9) to OpenAI Chat Completions SSE chunks.
 type DevinExecutor struct {
-	cfg    *config.Config
+	cfg *config.Config
+	// client, when set, overrides the per-request client built by
+	// devinHTTPClient. Tests use it to point at an httptest server.
 	client *http.Client
 }
 
 // NewDevinExecutor creates a Devin executor.
 func NewDevinExecutor(cfg *config.Config) *DevinExecutor {
-	return &DevinExecutor{
-		cfg:    cfg,
-		client: &http.Client{Timeout: devinDefaultTimeout},
+	return &DevinExecutor{cfg: cfg}
+}
+
+// devinHTTPClient builds the per-request HTTP client.
+//
+// The reference client (the Devin CLI / oh-my-pi) bounds a stream by an idle
+// watchdog, not a whole-request deadline: it waits up to ~5 minutes for the
+// first event and aborts only after ~5 minutes with no bytes flowing. A fixed
+// http.Client.Timeout instead capped the entire body read at 120s, which cut
+// long generations mid-stream and surfaced to the client as a dropped stream.
+// Passing timeout=0 keeps the transport-level header/idle timeouts that
+// NewProxyAwareHTTPClient installs while removing the harmful total cap.
+func (e *DevinExecutor) devinHTTPClient(ctx context.Context, auth *cliproxyauth.Auth) *http.Client {
+	if e.client != nil {
+		return e.client
 	}
+	return helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 }
 
 // Identifier returns the executor identifier.
@@ -361,7 +374,7 @@ func (e *DevinExecutor) devinDoPost(ctx context.Context, auth *cliproxyauth.Auth
 	req.Header.Set("authorization", devinAuthHeader(token))
 	req.Header.Set("accept", "*/*")
 	req.Header.Set("connect-accept-encoding", "gzip")
-	resp, err := e.client.Do(req)
+	resp, err := e.devinHTTPClient(ctx, auth).Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
