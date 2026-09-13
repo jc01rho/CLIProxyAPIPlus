@@ -699,7 +699,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					"selected_model_is_alias": resolvedActual.isAlias,
 					"resolved_alias_target":   resolvedActual.actual,
 					"selected_provider":       strings.TrimPrefix(strings.TrimSpace(provider), "openai-compatible-"),
-				}).Infof("provider-level fallback selected alias-resolved model: %s -> %s", routeModel, upstreamModel)
+				}).Infof("alias-resolved model selected: %s -> %s", routeModel, upstreamModel)
 			}
 			return resp, nil
 		}
@@ -944,7 +944,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					"selected_model_is_alias": resolvedActual.isAlias,
 					"resolved_alias_target":   resolvedActual.actual,
 					"selected_provider":       strings.TrimPrefix(strings.TrimSpace(provider), "openai-compatible-"),
-				}).Infof("provider-level fallback selected alias-resolved model: %s -> %s", routeModel, upstreamModel)
+				}).Infof("alias-resolved model selected: %s -> %s", routeModel, upstreamModel)
 			}
 			return resp, nil
 		}
