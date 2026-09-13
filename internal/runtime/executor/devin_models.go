@@ -41,6 +41,7 @@ const (
 	devinConfigMaxTokensField = 18
 	devinConfigModelUIDField  = 22
 	devinConfigModelInfoField = 23
+	devinConfigCostTierField  = 24
 
 	// ModelInfo field numbers.
 	devinModelInfoMaxTokensField       = 4
@@ -54,6 +55,11 @@ const (
 
 	devinDefaultContextWindow = 200000
 	devinDefaultMaxTokens     = 64000
+
+	// devinCostTierFree is the ClientModelConfig.model_cost_tier value the
+	// backend assigns to models it bills as free/unlimited (e.g. glm-5-2,
+	// swe-2-high). Mirrors MODEL_COST_TIER_FREE in the published proto.
+	devinCostTierFree = 4
 )
 
 // devinDiscoveryDisplayOptions are the display slots the native client
@@ -169,6 +175,7 @@ func devinParseModelConfig(buf []byte) *registry.ModelInfo {
 		uid       string
 		disabled  bool
 		configMax uint64
+		costTier  uint64
 		infoBuf   []byte
 	)
 	devinScanFields(buf, func(num int, wire int, v uint64, data []byte) bool {
@@ -181,6 +188,8 @@ func devinParseModelConfig(buf []byte) *registry.ModelInfo {
 			disabled = v != 0
 		case num == devinConfigMaxTokensField && wire == 0:
 			configMax = v
+		case num == devinConfigCostTierField && wire == 0:
+			costTier = v
 		case num == devinConfigModelInfoField && wire == 2:
 			infoBuf = data
 		}
@@ -243,6 +252,10 @@ func devinParseModelConfig(buf []byte) *registry.ModelInfo {
 		ContextLength:       int(contextWindow),
 		MaxCompletionTokens: int(maxOutput),
 		SupportedEndpoints:  []string{"/chat/completions"},
+	}
+	if costTier == devinCostTierFree {
+		model.CostTier = "free"
+		model.IsFree = true
 	}
 	if thinking {
 		model.Thinking = &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}

@@ -75,6 +75,16 @@ type ModelInfo struct {
 	// fetchAvailableModels.webSearchModelIds and can execute native googleSearch.
 	SupportsWebSearch bool `json:"supports_web_search,omitempty"`
 
+	// CostTier is the provider-reported billing tier for the model, when known.
+	// Devin's catalog carries a model_cost_tier enum where 4 means FREE
+	// (unlimited/no charge). It is surfaced so the model list and Management
+	// Center can flag free/unlimited models. Empty when the provider does not
+	// report a tier.
+	CostTier string `json:"cost_tier,omitempty"`
+	// IsFree reports whether the provider marked this model as free/unlimited
+	// (Devin model_cost_tier == MODEL_COST_TIER_FREE). Derived from CostTier.
+	IsFree bool `json:"is_free,omitempty"`
+
 	// Thinking holds provider-specific reasoning/thinking budget capabilities.
 	// This is optional and currently used for Gemini thinking budget normalization.
 	Thinking *ThinkingSupport `json:"thinking,omitempty"`
