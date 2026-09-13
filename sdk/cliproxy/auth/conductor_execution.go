@@ -330,6 +330,8 @@ func requestToFormat(provider string, executor ProviderExecutor, req cliproxyexe
 		return sdktranslator.FromString("cursor")
 	case "antigravity":
 		return sdktranslator.FormatAntigravity
+	case "devin":
+		return sdktranslator.FormatInteractions
 	default:
 		return sdktranslator.FormatOpenAI
 	}

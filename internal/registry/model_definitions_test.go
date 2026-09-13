@@ -25,14 +25,14 @@ func TestEmbeddedCodexTierModelsExposeGPT6Astra(t *testing.T) {
 func TestGetStaticModelDefinitionsByChannelSupportsGeminiInteractions(t *testing.T) {
 	models := GetStaticModelDefinitionsByChannel("gemini-interactions")
 	if len(models) == 0 {
-		t.Fatal("GetStaticModelDefinitionsByChannel(gemini-interactions) returned no models")
+		t.Fatal("GetStaticModelDefinitionsByChannel(\"devin\") returned empty list")
 	}
 }
 
 func TestGetStaticModelDefinitionsByChannelSupportsDevin(t *testing.T) {
 	models := GetStaticModelDefinitionsByChannel("devin")
 	if len(models) == 0 {
-		t.Fatal("GetStaticModelDefinitionsByChannel(devin) returned no models")
+		t.Fatal("GetStaticModelDefinitionsByChannel(\"devin\") returned empty list")
 	}
 	// The static catalog is only the SWE-2 seed: it keeps a configured Devin
 	// provider usable when GetCliModelConfigs discovery fails. Every other
@@ -57,7 +57,7 @@ func TestGetStaticModelDefinitionsByChannelSupportsDevin(t *testing.T) {
 
 	info := LookupStaticModelInfo("swe-2-high")
 	if info == nil {
-		t.Fatal("LookupStaticModelInfo(swe-2-high) = nil, want ModelInfo")
+		t.Fatal("LookupStaticModelInfo(\"swe-2-high\") = nil, want valid model")
 	}
 }
 
@@ -204,5 +204,51 @@ func TestWithCodexBuiltinsIncludesImage25Models(t *testing.T) {
 		if model.Created != 1704067200 {
 			t.Errorf("model %s Created = %d, want 1704067200", id, model.Created)
 		}
+	}
+}
+
+func TestGetDevinModelsFallback(t *testing.T) {
+	devinModels := GetDevinModels()
+	if len(devinModels) == 0 {
+		t.Fatal("GetDevinModels() returned empty list")
+	}
+
+	// The static catalog is only the SWE-2 seed; every other family comes from
+	// the live Devin CLI catalog, so this pins the seed rather than the
+	// discovered catalog.
+	expected := map[string]bool{
+		"swe-2-high":   false,
+		"swe-2-medium": false,
+		"swe-2-max":    false,
+	}
+	for _, m := range devinModels {
+		if m == nil {
+			continue
+		}
+		if _, ok := expected[m.ID]; !ok {
+			continue
+		}
+		expected[m.ID] = true
+		if m.Type != "devin" {
+			t.Errorf("%s Type = %q, want devin", m.ID, m.Type)
+		}
+		if m.ContextLength != 262000 {
+			t.Errorf("%s ContextLength = %d, want 262000", m.ID, m.ContextLength)
+		}
+	}
+	for id, found := range expected {
+		if !found {
+			t.Errorf("expected %s in GetDevinModels()", id)
+		}
+	}
+
+	byChannel := GetStaticModelDefinitionsByChannel("devin")
+	if len(byChannel) == 0 {
+		t.Fatal("GetStaticModelDefinitionsByChannel(\"devin\") returned empty list")
+	}
+
+	info := LookupStaticModelInfo("swe-2-high")
+	if info == nil {
+		t.Fatal("LookupStaticModelInfo(\"swe-2-high\") = nil, want valid model")
 	}
 }

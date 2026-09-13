@@ -188,7 +188,7 @@ func TestCodexClientModelsResponse_OAuthAliasesIntegration(t *testing.T) {
 
 	base := handlers.NewBaseAPIHandlers(&config.SDKConfig{}, nil)
 	handler := NewOpenAIAPIHandler(base)
-	resp := handler.codexClientModelsResponse("0.153.4")
+	resp := handler.codexClientModelsResponse(handler.Models(), "0.153.4")
 	models, ok := resp["models"].([]map[string]any)
 	if !ok {
 		t.Fatalf("models type = %T, want []map[string]any", resp["models"])

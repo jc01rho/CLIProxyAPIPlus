@@ -26,6 +26,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	runtimehelps "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
@@ -2840,5 +2841,265 @@ func TestUpdateClientsContext_AntigravityConnectionPoolPurgesTransports(t *testi
 
 	if got := executor.AntigravityTransportsLen(); got != 0 {
 		t.Fatalf("AntigravityTransportsLen() after reload = %d, want 0", got)
+	}
+}
+
+type mockServerStreamingCaptureExecutor struct {
+	cfg            *proxyconfig.Config
+	capturedCtx    context.Context
+	executionCalls int
+}
+
+func (e *mockServerStreamingCaptureExecutor) Identifier() string { return "codex-test" }
+
+func (e *mockServerStreamingCaptureExecutor) Execute(ctx context.Context, _ *auth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
+	e.capturedCtx = ctx
+	return coreexecutor.Response{Payload: []byte(`{"id":"resp-1","status":"completed"}`)}, nil
+}
+
+func (e *mockServerStreamingCaptureExecutor) ExecuteStream(ctx context.Context, _ *auth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.capturedCtx = ctx
+	e.executionCalls++
+
+	runtimehelps.RecordAPIRequest(ctx, e.cfg, runtimehelps.UpstreamRequestLog{
+		URL:     "https://api.example.com/v1/responses",
+		Method:  http.MethodPost,
+		Headers: http.Header{"Content-Type": []string{"application/json"}},
+		Body:    []byte(`{"model":"gpt-5-codex","input":[]}`),
+	})
+
+	ch := make(chan coreexecutor.StreamChunk, 2)
+	chunkPayload := []byte("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\"}\n\n")
+	runtimehelps.AppendAPIResponseChunk(ctx, e.cfg, chunkPayload)
+	ch <- coreexecutor.StreamChunk{Payload: chunkPayload}
+
+	terminalPayload := []byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
+	runtimehelps.AppendAPIResponseChunk(ctx, e.cfg, terminalPayload)
+	ch <- coreexecutor.StreamChunk{Payload: terminalPayload}
+	close(ch)
+
+	return &coreexecutor.StreamResult{Chunks: ch}, nil
+}
+
+func (e *mockServerStreamingCaptureExecutor) Refresh(_ context.Context, auth *auth.Auth) (*auth.Auth, error) {
+	return auth, nil
+}
+
+func (e *mockServerStreamingCaptureExecutor) CountTokens(_ context.Context, _ *auth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *mockServerStreamingCaptureExecutor) HttpRequest(_ context.Context, _ *auth.Auth, _ *http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func TestServerResponsesStreamingRequestLogCapturesUpstreamSections(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	logsDir := filepath.Join(tmpDir, "logs")
+	if err := os.MkdirAll(logsDir, 0o700); err != nil {
+		t.Fatalf("failed to create logs dir: %v", err)
+	}
+
+	mockLogger := internallogging.NewFileRequestLogger(true, logsDir, "", 10)
+	server := newTestServerWithOptions(t, WithRequestLoggerFactory(func(*proxyconfig.Config, string) internallogging.RequestLogger {
+		return mockLogger
+	}))
+	server.cfg.RequestLog = true
+	server.cfg.LoggingToFile = true
+
+	mockExec := &mockServerStreamingCaptureExecutor{cfg: server.cfg}
+	server.handlers.AuthManager.RegisterExecutor(mockExec)
+
+	credential := &auth.Auth{
+		ID:       "codex-stream-auth",
+		Provider: mockExec.Identifier(),
+		Status:   auth.StatusActive,
+	}
+	if _, err := server.handlers.AuthManager.Register(context.Background(), credential); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{{ID: "gpt-5-codex"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(credential.ID)
+	})
+
+	rr := httptest.NewRecorder()
+	body := `{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hi"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if mockExec.executionCalls != 1 {
+		t.Fatalf("executor calls = %d, want 1", mockExec.executionCalls)
+	}
+
+	entries, errReadDir := os.ReadDir(logsDir)
+	if errReadDir != nil {
+		t.Fatalf("read logs dir: %v", errReadDir)
+	}
+	var logPath string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "v1-responses-") && strings.HasSuffix(entry.Name(), ".log") {
+			logPath = filepath.Join(logsDir, entry.Name())
+			break
+		}
+	}
+	if logPath == "" {
+		t.Fatal("streaming request log was not created in logs dir")
+	}
+	content, errReadLog := os.ReadFile(logPath)
+	if errReadLog != nil {
+		t.Fatalf("read log file: %v", errReadLog)
+	}
+	logText := string(content)
+	apiRequestIdx := strings.Index(logText, "=== API REQUEST 1 ===")
+	if apiRequestIdx == -1 {
+		t.Fatalf("streaming log missing API REQUEST 1:\n%s", logText)
+	}
+	apiResponseIdx := strings.Index(logText, "=== API RESPONSE 1 ===")
+	if apiResponseIdx == -1 {
+		t.Fatalf("streaming log missing API RESPONSE 1:\n%s", logText)
+	}
+	downstreamResponseIdx := strings.Index(logText, "=== RESPONSE ===")
+	if downstreamResponseIdx == -1 {
+		t.Fatalf("streaming log missing downstream RESPONSE:\n%s", logText)
+	}
+	if apiRequestIdx >= apiResponseIdx || apiResponseIdx >= downstreamResponseIdx {
+		t.Fatalf("unexpected section order (req=%d, apiResp=%d, resp=%d):\n%s", apiRequestIdx, apiResponseIdx, downstreamResponseIdx, logText)
+	}
+	apiRequestSection := logText[apiRequestIdx:apiResponseIdx]
+	apiResponseSection := logText[apiResponseIdx:downstreamResponseIdx]
+	if !strings.Contains(apiRequestSection, "https://api.example.com/v1/responses") {
+		t.Fatalf("API REQUEST section missing upstream URL:\n%s", apiRequestSection)
+	}
+	if !strings.Contains(apiRequestSection, `"gpt-5-codex"`) {
+		t.Fatalf("API REQUEST section missing request body:\n%s", apiRequestSection)
+	}
+	if !strings.Contains(apiResponseSection, "response.output_item.added") {
+		t.Fatalf("API RESPONSE section missing response chunk data:\n%s", apiResponseSection)
+	}
+}
+
+func TestServerCodexAPIKeyResponsesStreamingRequestLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamReceived := make(chan struct{}, 1)
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case upstreamReceived <- struct{}{}:
+		default:
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.added\"}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer mockUpstream.Close()
+
+	tmpDir := t.TempDir()
+	logsDir := filepath.Join(tmpDir, "logs")
+	if err := os.MkdirAll(logsDir, 0o700); err != nil {
+		t.Fatalf("failed to create logs dir: %v", err)
+	}
+
+	mockLogger := internallogging.NewFileRequestLogger(true, logsDir, "", 10)
+	server := newTestServerWithOptions(t, WithRequestLoggerFactory(func(*proxyconfig.Config, string) internallogging.RequestLogger {
+		return mockLogger
+	}))
+	server.cfg.RequestLog = true
+	server.cfg.LoggingToFile = true
+
+	codexExec := executor.NewCodexExecutor(server.cfg)
+	server.handlers.AuthManager.RegisterExecutor(codexExec)
+
+	credential := &auth.Auth{
+		ID:       "codex-api-key-test",
+		Provider: "codex",
+		Status:   auth.StatusActive,
+		Attributes: map[string]string{
+			auth.AttributeAPIKey: "test-codex-key",
+			"base_url":           mockUpstream.URL,
+		},
+	}
+	if _, err := server.handlers.AuthManager.Register(context.Background(), credential); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{{ID: "gpt-5-codex"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(credential.ID)
+	})
+
+	rr := httptest.NewRecorder()
+	body := `{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hello"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case <-upstreamReceived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for upstream request")
+	}
+
+	entries, errReadDir := os.ReadDir(logsDir)
+	if errReadDir != nil {
+		t.Fatalf("read logs dir: %v", errReadDir)
+	}
+	var logPath string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "v1-responses-") && strings.HasSuffix(entry.Name(), ".log") {
+			logPath = filepath.Join(logsDir, entry.Name())
+			break
+		}
+	}
+	if logPath == "" {
+		t.Fatal("streaming request log was not created in logs dir")
+	}
+	content, errReadLog := os.ReadFile(logPath)
+	if errReadLog != nil {
+		t.Fatalf("read log file: %v", errReadLog)
+	}
+	logText := string(content)
+	apiRequestIdx := strings.Index(logText, "=== API REQUEST 1 ===")
+	if apiRequestIdx == -1 {
+		t.Fatalf("streaming log missing API REQUEST 1:\n%s", logText)
+	}
+	apiResponseIdx := strings.Index(logText, "=== API RESPONSE 1 ===")
+	if apiResponseIdx == -1 {
+		t.Fatalf("streaming log missing API RESPONSE 1:\n%s", logText)
+	}
+	downstreamResponseIdx := strings.Index(logText, "=== RESPONSE ===")
+	if downstreamResponseIdx == -1 {
+		t.Fatalf("streaming log missing downstream RESPONSE:\n%s", logText)
+	}
+	if apiRequestIdx >= apiResponseIdx || apiResponseIdx >= downstreamResponseIdx {
+		t.Fatalf("unexpected section order (req=%d, apiResp=%d, resp=%d):\n%s", apiRequestIdx, apiResponseIdx, downstreamResponseIdx, logText)
+	}
+	apiRequestSection := logText[apiRequestIdx:apiResponseIdx]
+	apiResponseSection := logText[apiResponseIdx:downstreamResponseIdx]
+	if !strings.Contains(apiRequestSection, mockUpstream.URL) {
+		t.Fatalf("API REQUEST section missing upstream URL %s:\n%s", mockUpstream.URL, apiRequestSection)
+	}
+	if !strings.Contains(apiRequestSection, `"gpt-5-codex"`) {
+		t.Fatalf("API REQUEST section missing request body:\n%s", apiRequestSection)
+	}
+	if !strings.Contains(apiResponseSection, "response.output_item.added") {
+		t.Fatalf("API RESPONSE section missing response chunk data:\n%s", apiResponseSection)
 	}
 }
