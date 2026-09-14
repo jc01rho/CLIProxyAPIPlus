@@ -1,347 +1,941 @@
 package executor
 
 import (
+	"bytes"
 	"context"
-	"encoding/binary"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+	devinauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/devin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/tidwall/gjson"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
-func devinTestAuth() *cliproxyauth.Auth {
-	return &cliproxyauth.Auth{
-		ID:       "devin-test-1",
-		Provider: "devin",
+func TestDevinExecutorIdentifierAndFormat(t *testing.T) {
+	exec := NewDevinExecutor(&config.Config{})
+	if exec.Identifier() != "devin" {
+		t.Fatalf("Identifier() = %q, want %q", exec.Identifier(), "devin")
+	}
+
+	format := exec.RequestToFormat(cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+	if format != sdktranslator.FormatInteractions {
+		t.Fatalf("RequestToFormat() = %q, want %q", format, sdktranslator.FormatInteractions)
+	}
+}
+
+func TestDevinExecutorPrepareRequest(t *testing.T) {
+	exec := NewDevinExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
 		Attributes: map[string]string{
-			"api_key": "test-token-abc",
+			"api_key": "my-secret-key",
 		},
 	}
-}
-
-// devinTestFrame builds an answer frame. The answer rides f3; f9 is the
-// separate reasoning channel and must never be surfaced as the reply.
-func devinTestFrame(text string) []byte {
-	var msg []byte
-	msg = append(msg, devinEncodeField(nil, devinAnswerField, 2, devinEncodeString(text))...)
-	msg = append(msg, devinEncodeField(nil, 17, 2, devinEncodeString("turn-uuid-1"))...)
-	return msg
-}
-
-func devinEnvelope(payload []byte) []byte {
-	out := []byte{0x00}
-	var ln [4]byte
-	binary.BigEndian.PutUint32(ln[:], uint32(len(payload)))
-	out = append(out, ln[:]...)
-	return append(out, payload...)
-}
-
-func TestDevinAuthHeader(t *testing.T) {
-	got := devinAuthHeader("tok123")
-	if got != "Basic tok123-tok123" {
-		t.Fatalf("auth header = %q, want %q", got, "Basic tok123-tok123")
-	}
-}
-
-func TestDevinDecodeFrames(t *testing.T) {
-	var body []byte
-	body = append(body, devinEnvelope(devinTestFrame("hello "))...)
-	body = append(body, devinEnvelope(devinTestFrame("world"))...)
-	trailer := []byte(`{"error":{"code":"ok"}}`)
-	body = append(body, 0x02)
-	var ln [4]byte
-	binary.BigEndian.PutUint32(ln[:], uint32(len(trailer)))
-	body = append(body, ln[:]...)
-	body = append(body, trailer...)
-
-	data, tr, err := devinDecodeFrames(body)
+	req, err := http.NewRequest(http.MethodPost, "https://server.codeium.com/test", nil)
 	if err != nil {
-		t.Fatalf("decode frames: %v", err)
+		t.Fatalf("NewRequest failed: %v", err)
 	}
-	if len(data) != 2 {
-		t.Fatalf("data frames = %d, want 2", len(data))
-	}
-	if string(tr) != string(trailer) {
-		t.Fatalf("trailer = %q", tr)
-	}
-}
 
-func TestDevinDecodeFramesTruncated(t *testing.T) {
-	_, _, err := devinDecodeFrames([]byte{0x00, 0x00, 0x00, 0x00, 0x05, 0x01})
-	if err == nil {
-		t.Fatal("expected truncation error")
+	if err := exec.PrepareRequest(req, auth); err != nil {
+		t.Fatalf("PrepareRequest failed: %v", err)
 	}
-}
 
-func TestDevinExtractTextDelta(t *testing.T) {
-	text, ok := devinExtractTextDelta(devinTestFrame("hello"))
-	if !ok || text != "hello" {
-		t.Fatalf("extract = %q,%v, want hello,true", text, ok)
+	authHeader := req.Header.Get("Authorization")
+	if authHeader != "Basic my-secret-key-my-secret-key" {
+		t.Fatalf("Authorization = %q, want %q", authHeader, "Basic my-secret-key-my-secret-key")
 	}
-	// Frame without an answer field must not yield text.
-	var meta []byte
-	meta = append(meta, devinEncodeField(nil, 17, 2, devinEncodeString("turn-uuid-1"))...)
-	if _, ok := devinExtractTextDelta(meta); ok {
-		t.Fatal("metadata-only frame must not yield text")
+	if req.Header.Get("Content-Type") != "application/connect+proto" {
+		t.Fatalf("Content-Type = %q, want application/connect+proto", req.Header.Get("Content-Type"))
 	}
-}
+	if req.Header.Get("Connect-Protocol-Version") != "1" {
+		t.Fatalf("Connect-Protocol-Version = %q, want 1", req.Header.Get("Connect-Protocol-Version"))
+	}
+	if req.Header.Get("Accept") != "*/*" {
+		t.Fatalf("Accept = %q, want */*", req.Header.Get("Accept"))
+	}
+	sentryTrace := req.Header.Get("Sentry-Trace")
+	if sentryTrace == "" {
+		t.Fatalf("Sentry-Trace header missing")
+	}
+	parts := strings.Split(sentryTrace, "-")
+	if len(parts) != 3 || len(parts[0]) != 32 || len(parts[1]) != 16 || parts[2] != "1" {
+		t.Fatalf("invalid Sentry-Trace format: %q", sentryTrace)
+	}
 
-func TestDevinBuildChatRequest(t *testing.T) {
-	body := devinBuildChatRequest("tok", "swe-1-6-fast", "sys prompt", "say hi", "sess-uuid-1", "")
-	if len(body) < 6 || body[0] != 0x00 {
-		t.Fatalf("missing connect envelope prefix: %x", body[:minDevinTestLen(body)])
-	}
-	ln := int(binary.BigEndian.Uint32(body[1:5]))
-	if ln != len(body)-5 {
-		t.Fatalf("envelope length %d != body %d", ln, len(body)-5)
-	}
-	inner := body[5:]
-	if !strings.Contains(string(inner), "swe-1-6-fast") {
-		t.Fatal("model UID missing from request")
-	}
-	if !strings.Contains(string(inner), "say hi") {
-		t.Fatal("user text missing from request")
-	}
-	if !strings.Contains(string(inner), "sys prompt") {
-		t.Fatal("system prompt missing from request")
-	}
-	if !strings.Contains(string(inner), "sess-uuid-1") {
-		t.Fatal("session UUID missing from request")
-	}
-	if !strings.Contains(string(inner), "devin-cli") {
-		t.Fatal("client context missing from request")
-	}
-}
-
-func minDevinTestLen(b []byte) int {
-	if len(b) < 5 {
-		return len(b)
-	}
-	return 5
-}
-
-func TestDevinExecuteAgainstLocalServer(t *testing.T) {
-	var gotAuth, gotCT string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("authorization")
-		gotCT = r.Header.Get("content-type")
-		var body []byte
-		body = append(body, devinEnvelope(devinTestFrame("hi "))...)
-		body = append(body, devinEnvelope(devinTestFrame("there"))...)
-		w.Header().Set("content-type", "application/connect+proto")
-		_, _ = w.Write(body)
+	// Verify User-Agent suppression on the wire
+	var receivedUA []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedUA = r.Header["User-Agent"]
 	}))
-	defer srv.Close()
+	defer ts.Close()
 
-	auth := devinTestAuth()
-	auth.Attributes["base_url"] = srv.URL
-	ex := &DevinExecutor{client: srv.Client()}
-	resp, err := ex.Execute(context.Background(), auth,
-		cliproxyexecutor.Request{
-			Model:   "swe-1-6-fast",
-			Payload: []byte(`{"model":"swe-1-6-fast","messages":[{"role":"user","content":"say hi"}]}`),
-		}, cliproxyexecutor.Options{})
+	wireReq, err := http.NewRequest(http.MethodPost, ts.URL, nil)
 	if err != nil {
-		t.Fatalf("Execute: %v", err)
+		t.Fatalf("NewRequest failed: %v", err)
 	}
-	if gotAuth != "Basic test-token-abc-test-token-abc" {
-		t.Fatalf("auth header = %q", gotAuth)
+	if err := exec.PrepareRequest(wireReq, auth); err != nil {
+		t.Fatalf("PrepareRequest failed: %v", err)
 	}
-	if gotCT != "application/connect+proto" {
-		t.Fatalf("content-type = %q", gotCT)
+	resp, err := ts.Client().Do(wireReq)
+	if err != nil {
+		t.Fatalf("Do request failed: %v", err)
 	}
-	if !strings.Contains(string(resp.Payload), "hi there") {
-		t.Fatalf("payload missing concatenated text: %s", resp.Payload)
-	}
-	if !strings.Contains(string(resp.Payload), "chat.completion") {
-		t.Fatalf("payload not OpenAI-shaped: %s", resp.Payload)
+	_ = resp.Body.Close()
+
+	if len(receivedUA) != 0 {
+		t.Errorf("expected User-Agent to be completely omitted on wire, got: %v", receivedUA)
 	}
 }
 
-func TestDevinExecuteStreamAgainstLocalServer(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != devinGetChatMessagePath {
+func TestDevinAuthCredentials(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{
+			"session_token": "token-xyz",
+			"base_url":      "https://custom.endpoint.com",
+			"device_seed":   "seed-456",
+		},
+	}
+	apiKey, baseURL, seed := devinAuthCredentials(auth)
+	if apiKey != "token-xyz" {
+		t.Errorf("apiKey = %q, want token-xyz", apiKey)
+	}
+	if baseURL != "https://custom.endpoint.com" {
+		t.Errorf("baseURL = %q, want https://custom.endpoint.com", baseURL)
+	}
+	if seed != "seed-456" {
+		t.Errorf("seed = %q, want seed-456", seed)
+	}
+}
+
+func TestDevinExecutor_GetSensitiveWords(t *testing.T) {
+	eEmpty := &DevinExecutor{}
+	if words := eEmpty.getSensitiveWords(); len(words) != 0 {
+		t.Errorf("words = %v, want empty", words)
+	}
+
+	eWithWords := &DevinExecutor{
+		cfg: &config.Config{
+			Devin: config.DevinConfig{
+				SensitiveWords: []string{"sample-word-1", "sample-word-2"},
+			},
+		},
+	}
+	words := eWithWords.getSensitiveWords()
+	if len(words) != 2 || words[0] != "sample-word-1" || words[1] != "sample-word-2" {
+		t.Errorf("words = %v, want [sample-word-1 sample-word-2]", words)
+	}
+}
+
+func TestParseInteractionsPayload(t *testing.T) {
+	interactionsPayload := []byte(`{
+		"system_instruction": "You are a helpful coding assistant.",
+		"generation_config": {
+			"temperature": 0.8,
+			"max_output_tokens": 16000,
+			"thinking_level": "high"
+		},
+		"previous_interaction_id": "session-uuid-1",
+		"input": [
+			{"type":"user_input","content":[{"type":"text","text":"hello"}]},
+			{"type":"thought","content":[{"type":"text","text":"planning..."}],"signature":"c2VhbGVkLnYxLnRlc3Q="},
+			{"type":"model_output","content":[{"type":"text","text":"I can help with that."}]},
+			{"type":"function_call","name":"read_file","id":"call_1","arguments":{"path":"main.go"}},
+			{"type":"function_result","id":"call_1","result":"package main\n"}
+		],
+		"tools": [
+			{"name":"read_file","description":"Read file content","parameters":{"type":"object"}}
+		]
+	}`)
+
+	sys, prompts, tools, temp, maxTokens, sessID, cascadeID, level, _ := parseInteractionsPayload(interactionsPayload, nil)
+
+	if sys != "You are a helpful coding assistant." {
+		t.Errorf("systemPrompt = %q, want expected", sys)
+	}
+	if temp == nil || *temp != 0.8 {
+		t.Errorf("temperature = %v, want 0.8", temp)
+	}
+	if maxTokens != 16000 {
+		t.Errorf("maxTokens = %d, want 16000", maxTokens)
+	}
+	if level != "high" {
+		t.Errorf("thinkingLevel = %q, want high", level)
+	}
+	if sessID != "session-uuid-1" || cascadeID != "session-uuid-1" {
+		t.Errorf("session/cascade ID = %q / %q, want session-uuid-1", sessID, cascadeID)
+	}
+
+	if len(tools) != 1 || tools[0].Name != "read_file" {
+		t.Fatalf("tools count/name mismatch: %+v", tools)
+	}
+
+	if len(prompts) != 3 {
+		t.Fatalf("expected 3 prompt items (user, assistant-with-thought-and-call, tool-result), got %d: %+v", len(prompts), prompts)
+	}
+
+	// 1. User turn
+	if prompts[0].Source != 1 || prompts[0].Content != "hello" {
+		t.Errorf("prompt[0] user turn mismatch: %+v", prompts[0])
+	}
+
+	// 2. Assistant turn (attached thought + content + function call)
+	if prompts[1].Source != 2 {
+		t.Errorf("prompt[1] source = %d, want 2", prompts[1].Source)
+	}
+	if prompts[1].Thinking != "planning..." {
+		t.Errorf("prompt[1] thinking = %q, want planning...", prompts[1].Thinking)
+	}
+	if string(prompts[1].Signature) != "sealed.v1.test" {
+		t.Errorf("prompt[1] signature = %q, want sealed.v1.test", string(prompts[1].Signature))
+	}
+	if len(prompts[1].ToolCalls) != 1 || prompts[1].ToolCalls[0].Name != "read_file" {
+		t.Errorf("prompt[1] tool calls mismatch: %+v", prompts[1].ToolCalls)
+	}
+
+	// 3. Tool result turn
+	if prompts[2].Source != 4 || prompts[2].ToolCallID != "call_1" || prompts[2].Content != "package main\n" {
+		t.Errorf("prompt[2] tool result mismatch: %+v", prompts[2])
+	}
+}
+
+func TestParseInteractionsPayload_MultipleThoughtsAndZeroTemperature(t *testing.T) {
+	interactionsPayload := []byte(`{
+		"generation_config": {
+			"temperature": 0.0
+		},
+		"input": [
+			{"type": "user_input", "content": [{"type": "text", "text": "hello"}]},
+			{"type": "thought", "text": "Thought part 1"},
+			{"type": "thought", "text": "Thought part 2"},
+			{"type": "model_output", "text": "Hello there!"}
+		]
+	}`)
+
+	_, prompts, _, temp, _, _, _, _, _ := parseInteractionsPayload(interactionsPayload, nil)
+
+	if temp == nil || *temp != 0.0 {
+		t.Fatalf("temperature = %v, want 0.0", temp)
+	}
+
+	if len(prompts) != 2 {
+		t.Fatalf("prompts len = %d, want 2", len(prompts))
+	}
+
+	asst := prompts[1]
+	if asst.Source != 2 {
+		t.Fatalf("assistant source = %d, want 2", asst.Source)
+	}
+	wantThinking := "Thought part 1\n\nThought part 2"
+	if asst.Thinking != wantThinking {
+		t.Fatalf("assistant thinking = %q, want %q", asst.Thinking, wantThinking)
+	}
+	if asst.Content != "Hello there!" {
+		t.Fatalf("assistant content = %q, want Hello there!", asst.Content)
+	}
+}
+
+func TestSupplementSignaturesFromOriginal(t *testing.T) {
+	originalRequest := []byte(`{
+		"messages": [
+			{"role":"user","content":"hello"},
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"let me think","signature":"Q0FRU3Rlc3Q="},
+				{"type":"text","text":"here is the answer"}
+			]}
+		]
+	}`)
+
+	prompts := []helps.DevinPrompt{
+		{Source: 1, Content: "hello"},
+		{Source: 2, Content: "here is the answer"}, // signature missing in interactions
+	}
+
+	supplementSignaturesFromOriginal(originalRequest, prompts)
+
+	if len(prompts[1].Signature) == 0 {
+		t.Fatal("expected signature to be supplemented from original request")
+	}
+	if string(prompts[1].Signature) != "CAQStest" {
+		t.Errorf("signature = %q, want CAQStest", string(prompts[1].Signature))
+	}
+	if prompts[1].SignatureType != "anthropic" {
+		t.Errorf("signatureType = %q, want anthropic", prompts[1].SignatureType)
+	}
+}
+
+func TestDetectSignatureType_GlobalDetectorIntegration(t *testing.T) {
+	tests := []struct {
+		name     string
+		sig      string
+		wantType string
+	}{
+		{
+			name:     "Devin native sealed signature",
+			sig:      "sealed.v1.abcde12345",
+			wantType: "sealed",
+		},
+		{
+			name:     "Anthropic CAQS signature",
+			sig:      "CAQStest12345",
+			wantType: "anthropic",
+		},
+		{
+			name:     "Anthropic with claude# prefix",
+			sig:      "claude#CAQStest12345",
+			wantType: "anthropic",
+		},
+		{
+			name:     "OpenAI gAAAA Fernet signature",
+			sig:      "gAAAAABk1234567890",
+			wantType: "openai",
+		},
+		{
+			name:     "Gemini AY signature",
+			sig:      "AY12345",
+			wantType: "gemini",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectSignatureType(tt.sig)
+			if got != tt.wantType {
+				t.Errorf("detectSignatureType(%q) = %q, want %q", tt.sig, got, tt.wantType)
+			}
+			_, pType := parseSignatureBytes(tt.sig)
+			if pType != tt.wantType {
+				t.Errorf("parseSignatureBytes(%q) type = %q, want %q", tt.sig, pType, tt.wantType)
+			}
+		})
+	}
+}
+
+func TestDevinStatusError_RetryAfter(t *testing.T) {
+	// 1. HTTP 429 with integer Retry-After
+	hdr429 := http.Header{}
+	hdr429.Set("Retry-After", "30")
+	err1 := newDevinStatusError(http.StatusTooManyRequests, hdr429, []byte("rate limited"))
+	if err1.code != 429 {
+		t.Fatalf("expected code 429, got %d", err1.code)
+	}
+	if err1.retryAfter == nil || *err1.retryAfter != 30*time.Second {
+		t.Fatalf("expected retryAfter 30s, got %v", err1.retryAfter)
+	}
+
+	// 2. HTTP 429 with HTTP Date
+	hdrDate := http.Header{}
+	futureTime := time.Now().Add(60 * time.Second).UTC().Format(http.TimeFormat)
+	hdrDate.Set("Retry-After", futureTime)
+	err2 := newDevinStatusError(http.StatusTooManyRequests, hdrDate, []byte("rate limited"))
+	if err2.retryAfter == nil || *err2.retryAfter <= 0 || *err2.retryAfter > 65*time.Second {
+		t.Fatalf("expected retryAfter ~60s, got %v", err2.retryAfter)
+	}
+
+	// 3. HTTP 500 with Retry-After (should not set retryAfter)
+	err3 := newDevinStatusError(http.StatusInternalServerError, hdr429, []byte("server error"))
+	if err3.retryAfter != nil {
+		t.Fatalf("expected nil retryAfter for 500, got %v", err3.retryAfter)
+	}
+}
+
+func TestResolveDevinSessionAndCascadeIDs(t *testing.T) {
+	// 1. Direct UUID preservation
+	rawUUID := "8176cf8a-feff-44c1-8e3e-b10f6d737ae1"
+	sid, cid := resolveDevinSessionAndCascadeIDs(context.Background(), rawUUID, rawUUID, cliproxyexecutor.Options{})
+	if sid != rawUUID || cid != rawUUID {
+		t.Fatalf("sid/cid = %q/%q, want %q", sid, cid, rawUUID)
+	}
+
+	// 2. Non-UUID mapping to deterministic UUID
+	sid1, cid1 := resolveDevinSessionAndCascadeIDs(context.Background(), "lcp:12345678", "", cliproxyexecutor.Options{})
+	sid2, cid2 := resolveDevinSessionAndCascadeIDs(context.Background(), "lcp:12345678", "", cliproxyexecutor.Options{})
+	if sid1 != sid2 || cid1 != cid2 {
+		t.Fatalf("deterministic mapping failed: %q != %q", sid1, sid2)
+	}
+	if _, err := uuid.Parse(sid1); err != nil {
+		t.Fatalf("mapped sid is not a valid UUID: %q", sid1)
+	}
+
+	// 3. Fallback to ctx session
+	ctx := util.WithSessionID(context.Background(), "ctx-session-abc")
+	sidCtx, cidCtx := resolveDevinSessionAndCascadeIDs(ctx, "", "", cliproxyexecutor.Options{})
+	if _, err := uuid.Parse(sidCtx); err != nil {
+		t.Fatalf("sidCtx is not a valid UUID: %q", sidCtx)
+	}
+	if sidCtx != cidCtx {
+		t.Fatalf("sidCtx %q != cidCtx %q", sidCtx, cidCtx)
+	}
+
+	// 4. Fallback to fresh UUID when nothing supplied
+	sidEmpty, cidEmpty := resolveDevinSessionAndCascadeIDs(context.Background(), "", "", cliproxyexecutor.Options{})
+	if _, err := uuid.Parse(sidEmpty); err != nil {
+		t.Fatalf("sidEmpty is not a valid UUID: %q", sidEmpty)
+	}
+	if sidEmpty != cidEmpty {
+		t.Fatalf("sidEmpty %q != cidEmpty %q", sidEmpty, cidEmpty)
+	}
+}
+
+func TestConsumeDevinFramesToInteractions(t *testing.T) {
+	// Synthesize a Connect stream with 2 data frames and 1 EOS trailer
+	var streamBuf bytes.Buffer
+
+	// Frame 1: thinking + content
+	var f1 []byte
+	f1 = appendDevinFieldBytes(f1, 1, []byte("bot-uuid-1"))
+	f1 = appendDevinFieldBytes(f1, 9, []byte("reasoning step"))
+	f1 = appendDevinFieldBytes(f1, 3, []byte("hello response"))
+	f1 = appendDevinFieldBytes(f1, 10, []byte("sealed.v1.sig"))
+	streamBuf.Write(helps.WrapConnectEnvelope(f1))
+
+	// Frame 2: tool call + usage
+	var f2 []byte
+	var tcBytes []byte
+	tcBytes = appendDevinFieldBytes(tcBytes, 1, []byte("toolu_1"))
+	tcBytes = appendDevinFieldBytes(tcBytes, 2, []byte("bash"))
+	tcBytes = appendDevinFieldBytes(tcBytes, 3, []byte(`{"command":"ls"}`))
+	f2 = appendDevinFieldBytes(f2, 6, tcBytes)
+
+	var usageBytes []byte
+	usageBytes = appendVarintField(usageBytes, 2, 100) // prompt
+	usageBytes = appendVarintField(usageBytes, 3, 50)  // completion
+	usageBytes = appendVarintField(usageBytes, 5, 20)  // cached
+	f2 = appendDevinFieldBytes(f2, 7, usageBytes)
+	streamBuf.Write(helps.WrapConnectEnvelope(f2))
+
+	// Frame 3: EOS Trailer flag 0x02
+	trailerJSON := []byte(`{}`)
+	streamBuf.Write(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, trailerJSON))
+
+	interactionsJSON, respLog, err := consumeDevinFramesToInteractions(&streamBuf, "swe-2", "swe-2-high")
+	if err != nil {
+		t.Fatalf("consumeDevinFramesToInteractions failed: %v", err)
+	}
+	if respLog == nil {
+		t.Fatal("expected non-nil respLog")
+	}
+	if respLog.FramesCount != 3 {
+		t.Errorf("FramesCount = %d, want 3", respLog.FramesCount)
+	}
+
+	root := gjson.ParseBytes(interactionsJSON)
+	if root.Get("status").String() != "completed" {
+		t.Errorf("status = %q, want completed", root.Get("status").String())
+	}
+	if root.Get("usage.total_input_tokens").Int() != 120 {
+		t.Errorf("input tokens = %d, want 120", root.Get("usage.total_input_tokens").Int())
+	}
+	if root.Get("usage.total_output_tokens").Int() != 50 {
+		t.Errorf("output tokens = %d, want 50", root.Get("usage.total_output_tokens").Int())
+	}
+	if root.Get("usage.total_cached_tokens").Int() != 20 {
+		t.Errorf("cached tokens = %d, want 20", root.Get("usage.total_cached_tokens").Int())
+	}
+	if root.Get("usage.total_tokens").Int() != 170 {
+		t.Errorf("total tokens = %d, want 170", root.Get("usage.total_tokens").Int())
+	}
+
+	steps := root.Get("steps").Array()
+	if len(steps) != 3 {
+		t.Fatalf("steps count = %d, want 3 (thought, model_output, function_call). Payload: %s", len(steps), string(interactionsJSON))
+	}
+
+	// Thought step has signature
+	if steps[0].Get("type").String() != "thought" {
+		t.Errorf("step[0] type = %q, want thought", steps[0].Get("type").String())
+	}
+	expectedSig := "sealed.v1.sig"
+	if steps[0].Get("signature").String() != expectedSig {
+		t.Errorf("step[0] signature = %q, want %q", steps[0].Get("signature").String(), expectedSig)
+	}
+
+	// Model output step
+	if steps[1].Get("type").String() != "model_output" {
+		t.Errorf("step[1] type = %q, want model_output", steps[1].Get("type").String())
+	}
+	if steps[1].Get("content.0.text").String() != "hello response" {
+		t.Errorf("step[1] text = %q, want 'hello response'", steps[1].Get("content.0.text").String())
+	}
+
+	// Function call step
+	if steps[2].Get("type").String() != "function_call" {
+		t.Errorf("step[2] type = %q, want function_call", steps[2].Get("type").String())
+	}
+	if steps[2].Get("name").String() != "bash" {
+		t.Errorf("step[2] tool name = %q, want bash", steps[2].Get("name").String())
+	}
+}
+
+func appendDevinFieldBytes(dst []byte, fieldNum int, val []byte) []byte {
+	tag := uint64(fieldNum<<3 | 2)
+	dst = appendVarintRaw(dst, tag)
+	dst = appendVarintRaw(dst, uint64(len(val)))
+	dst = append(dst, val...)
+	return dst
+}
+
+func appendVarintField(dst []byte, fieldNum int, v uint64) []byte {
+	tag := uint64(fieldNum<<3 | 0)
+	dst = appendVarintRaw(dst, tag)
+	dst = appendVarintRaw(dst, v)
+	return dst
+}
+
+func appendVarintRaw(dst []byte, v uint64) []byte {
+	for v >= 0x80 {
+		dst = append(dst, byte(v)|0x80)
+		v >>= 7
+	}
+	dst = append(dst, byte(v))
+	return dst
+}
+
+func TestParseInteractionsPayload_WithImages(t *testing.T) {
+	interactionsPayload := []byte(`{
+		"input": [
+			{
+				"type": "user_input",
+				"content": [
+					{"type": "text", "text": "transcribe this"},
+					{"type": "image", "mime_type": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAA"}
+				]
+			}
+		]
+	}`)
+
+	_, prompts, _, _, _, _, _, _, _ := parseInteractionsPayload(interactionsPayload, nil)
+
+	if len(prompts) != 1 {
+		t.Fatalf("expected 1 prompt, got %d", len(prompts))
+	}
+	p := prompts[0]
+	if len(p.Images) != 1 {
+		t.Fatalf("expected 1 image in prompt, got %d", len(p.Images))
+	}
+	if p.Images[0].Base64Data != "iVBORw0KGgoAAAANSUhEUgAA" {
+		t.Errorf("image base64 = %q", p.Images[0].Base64Data)
+	}
+	if p.Images[0].MimeType != "image/png" {
+		t.Errorf("image mime = %q, want image/png", p.Images[0].MimeType)
+	}
+	if !strings.HasPrefix(p.Content, "[Image 1: pasted_image_1.png]\n\ntranscribe this") {
+		t.Errorf("prompt content = %q, want expected prefix", p.Content)
+	}
+}
+
+func TestSupplementImagesFromOriginal(t *testing.T) {
+	origRequest := []byte(`{
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "text", "text": "look at this"},
+					{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD"}}
+				]
+			}
+		]
+	}`)
+
+	prompts := []helps.DevinPrompt{
+		{
+			Source:  1,
+			Content: "look at this",
+		},
+	}
+
+	supplementImagesFromOriginal(origRequest, prompts)
+
+	if len(prompts[0].Images) != 1 {
+		t.Fatalf("expected 1 image supplemented, got %d", len(prompts[0].Images))
+	}
+	if prompts[0].Images[0].MimeType != "image/jpeg" {
+		t.Errorf("mime_type = %q, want image/jpeg", prompts[0].Images[0].MimeType)
+	}
+	if prompts[0].Images[0].Base64Data != "/9j/4AAQSkZJRgABAQEASABIAAD" {
+		t.Errorf("base64 = %q", prompts[0].Images[0].Base64Data)
+	}
+	if !strings.Contains(prompts[0].Content, "[Image 1: pasted_image_1.jpg]") {
+		t.Errorf("content missing image header: %q", prompts[0].Content)
+	}
+}
+
+func TestDevinExecutor_Refresh(t *testing.T) {
+	// Build mock protobuf response
+	var planInfo []byte
+	planInfo = protowire.AppendTag(planInfo, 2, protowire.BytesType)
+	planInfo = protowire.AppendString(planInfo, "Pro")
+
+	var orgInfo []byte
+	orgInfo = protowire.AppendTag(orgInfo, 4, protowire.BytesType)
+	orgInfo = protowire.AppendString(orgInfo, "org-test-devin")
+	orgInfo = protowire.AppendTag(orgInfo, 8, protowire.BytesType)
+	orgInfo = protowire.AppendString(orgInfo, "XCodeCLI")
+	planInfo = protowire.AppendTag(planInfo, 33, protowire.BytesType)
+	planInfo = protowire.AppendBytes(planInfo, orgInfo)
+
+	var planStatus []byte
+	planStatus = protowire.AppendTag(planStatus, 1, protowire.BytesType)
+	planStatus = protowire.AppendBytes(planStatus, planInfo)
+	planStatus = protowire.AppendTag(planStatus, 14, protowire.VarintType)
+	planStatus = protowire.AppendVarint(planStatus, 95)
+	planStatus = protowire.AppendTag(planStatus, 15, protowire.VarintType)
+	planStatus = protowire.AppendVarint(planStatus, 45)
+	planStatus = protowire.AppendTag(planStatus, 17, protowire.VarintType)
+	planStatus = protowire.AppendVarint(planStatus, 1789200000)
+	planStatus = protowire.AppendTag(planStatus, 18, protowire.VarintType)
+	planStatus = protowire.AppendVarint(planStatus, 1789286400)
+
+	var userStatus []byte
+	userStatus = protowire.AppendTag(userStatus, 3, protowire.BytesType)
+	userStatus = protowire.AppendString(userStatus, "refreshuser")
+	userStatus = protowire.AppendTag(userStatus, 5, protowire.BytesType)
+	userStatus = protowire.AppendString(userStatus, "team-xyz")
+	userStatus = protowire.AppendTag(userStatus, 7, protowire.BytesType)
+	userStatus = protowire.AppendString(userStatus, "refreshuser@example.com")
+	userStatus = protowire.AppendTag(userStatus, 13, protowire.BytesType)
+	userStatus = protowire.AppendBytes(userStatus, planStatus)
+	userStatus = protowire.AppendTag(userStatus, 36, protowire.BytesType)
+	userStatus = protowire.AppendString(userStatus, "user-id-999")
+
+	var mockResp []byte
+	mockResp = protowire.AppendTag(mockResp, 1, protowire.BytesType)
+	mockResp = protowire.AppendBytes(mockResp, userStatus)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != devinauth.DevinGetUserStatusPath {
 			http.NotFound(w, r)
 			return
 		}
-		var body []byte
-		body = append(body, devinEnvelope(devinTestFrame("stream "))...)
-		body = append(body, devinEnvelope(devinTestFrame("ok"))...)
-		w.Header().Set("content-type", "application/connect+proto")
-		_, _ = w.Write(body)
+		w.Header().Set("Content-Type", "application/proto")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(mockResp)
 	}))
-	defer srv.Close()
+	defer server.Close()
 
-	auth := devinTestAuth()
-	auth.Attributes["base_url"] = srv.URL
-	ex := &DevinExecutor{client: srv.Client()}
-	res, err := ex.ExecuteStream(context.Background(), auth,
-		cliproxyexecutor.Request{
-			Model:   "swe-1-6-fast",
-			Payload: []byte(`{"model":"swe-1-6-fast","messages":[{"role":"user","content":"hi"}]}`),
-		}, cliproxyexecutor.Options{})
-	if err != nil {
-		t.Fatalf("ExecuteStream: %v", err)
+	cfg := &config.Config{}
+	exec := NewDevinExecutor(cfg)
+
+	auth := &cliproxyauth.Auth{
+		ID:       "devin-refresh.json",
+		Provider: "devin",
+		Attributes: map[string]string{
+			"api_key":  "devin-session-token$test",
+			"base_url": server.URL,
+		},
+		Metadata: map[string]any{
+			"api_key":  "devin-session-token$test",
+			"base_url": server.URL,
+		},
 	}
-	var sb strings.Builder
-	sawDone := false
-	for chunk := range res.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("chunk err: %v", chunk.Err)
+
+	updated, err := exec.Refresh(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("exec.Refresh failed: %v", err)
+	}
+
+	if updated.Metadata["plan"] != "Pro" {
+		t.Errorf("expected plan Pro, got %v", updated.Metadata["plan"])
+	}
+	if updated.Metadata["email"] != "refreshuser@example.com" {
+		t.Errorf("expected email refreshuser@example.com, got %v", updated.Metadata["email"])
+	}
+	if updated.Metadata["user_name"] != "refreshuser" {
+		t.Errorf("expected user_name refreshuser, got %v", updated.Metadata["user_name"])
+	}
+	if updated.Metadata["daily_quota_remaining_percent"] != nil {
+		t.Errorf("expected daily quota to not be in metadata, got %v", updated.Metadata["daily_quota_remaining_percent"])
+	}
+	if updated.Metadata["weekly_quota_remaining_percent"] != nil {
+		t.Errorf("expected weekly quota to not be in metadata, got %v", updated.Metadata["weekly_quota_remaining_percent"])
+	}
+	if updated.Quota.Signals["daily_quota_remaining_percent"] != "95%" {
+		t.Errorf("expected quota signal 95%%, got %q", updated.Quota.Signals["daily_quota_remaining_percent"])
+	}
+	if updated.Quota.Signals["weekly_quota_remaining_percent"] != "45%" {
+		t.Errorf("expected quota signal 45%%, got %q", updated.Quota.Signals["weekly_quota_remaining_percent"])
+	}
+	if updated.Quota.ObservedAt.IsZero() {
+		t.Error("expected non-zero Quota.ObservedAt")
+	}
+}
+
+func TestDevinExecutor_MaxCompletionTokensClamping(t *testing.T) {
+	reg := registry.GetGlobalRegistry()
+	clientID := "test-devin-clamp-client"
+	modelID := "devin/swe-2-clamp-test"
+	reg.RegisterClient(clientID, "devin", []*registry.ModelInfo{
+		{
+			ID:                  modelID,
+			MaxCompletionTokens: 64000,
+			ContextLength:       262000,
+		},
+	})
+	defer reg.UnregisterClient(clientID)
+
+	cfg := &config.Config{}
+	exec := NewDevinExecutor(cfg)
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{
+			"api_key": "test-key",
+		},
+	}
+
+	// 1. When requested max_output_tokens exceeds MaxCompletionTokens (e.g. 100000 > 64000)
+	payloadOversized := []byte(`{
+		"generation_config": {
+			"max_output_tokens": 100000
+		},
+		"input": [{"type":"user_input","content":[{"type":"text","text":"hello"}]}]
+	}`)
+	reqOversized := cliproxyexecutor.Request{
+		Model:   modelID,
+		Payload: payloadOversized,
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatInteractions,
+	}
+
+	httpReq, _, _, err := exec.prepareDevinHTTPRequest(context.Background(), auth, reqOversized, opts)
+	if err != nil {
+		t.Fatalf("prepareDevinHTTPRequest failed: %v", err)
+	}
+
+	// Read body, unwrap 5-byte Connect envelope, and inspect Field 8 Subfield 2 (maxTokens)
+	bodyBytes, err := io.ReadAll(httpReq.Body)
+	if err != nil {
+		t.Fatalf("read body failed: %v", err)
+	}
+	flag, payloadBytes, err := helps.ReadConnectFrame(bytes.NewReader(bodyBytes))
+	if err != nil || flag != 0 {
+		t.Fatalf("unwrap failed: %v", err)
+	}
+
+	maxTokensFound := 0
+	b := payloadBytes
+	for len(b) > 0 {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			break
 		}
-		s := string(chunk.Payload)
-		if strings.Contains(s, "[DONE]") {
-			sawDone = true
-			continue
-		}
-		// Extract content deltas crudely.
-		if i := strings.Index(s, `"content":`); i >= 0 {
-			rest := s[i+len(`"content":`):]
-			if len(rest) > 0 && rest[0] == '"' {
-				end := strings.Index(rest[1:], `"`)
-				if end >= 0 {
-					sb.WriteString(rest[1 : 1+end])
+		b = b[n:]
+		if num == 8 && typ == protowire.BytesType {
+			subBytes, m := protowire.ConsumeBytes(b)
+			if m >= 0 {
+				sb := subBytes
+				for len(sb) > 0 {
+					snum, styp, sn := protowire.ConsumeTag(sb)
+					if sn < 0 {
+						break
+					}
+					sb = sb[sn:]
+					if snum == 2 && styp == protowire.VarintType {
+						val, vn := protowire.ConsumeVarint(sb)
+						if vn >= 0 {
+							maxTokensFound = int(val)
+							break
+						}
+					}
+					skip := protowire.ConsumeFieldValue(snum, styp, sb)
+					if skip < 0 {
+						break
+					}
+					sb = sb[skip:]
 				}
 			}
+			break
+		}
+		skip := protowire.ConsumeFieldValue(num, typ, b)
+		if skip < 0 {
+			break
+		}
+		b = b[skip:]
+	}
+
+	if maxTokensFound != 64000 {
+		t.Errorf("maxTokensFound = %d, want clamped 64000", maxTokensFound)
+	}
+}
+
+func TestConsumeDevinFramesToInteractions_MultiToolCallsNoPanic(t *testing.T) {
+	// Build a stream with multiple tool calls across frames to verify slice growth doesn't panic on strings.Builder
+	var buf bytes.Buffer
+	// Frame 1: tool call 0 start + partial args
+	var tc0 []byte
+	tc0 = protowire.AppendTag(tc0, 1, protowire.BytesType)
+	tc0 = protowire.AppendString(tc0, "call_0")
+	tc0 = protowire.AppendTag(tc0, 2, protowire.BytesType)
+	tc0 = protowire.AppendString(tc0, "tool_0")
+	tc0 = protowire.AppendTag(tc0, 3, protowire.BytesType)
+	tc0 = protowire.AppendString(tc0, `{"a":`)
+	tc0 = protowire.AppendTag(tc0, 4, protowire.VarintType)
+	tc0 = protowire.AppendVarint(tc0, 0) // index 0
+
+	var f1 []byte
+	f1 = protowire.AppendTag(f1, 6, protowire.BytesType)
+	f1 = protowire.AppendBytes(f1, tc0)
+	buf.Write(helps.WrapConnectEnvelope(f1))
+
+	// Frame 2: tool call 1 start + partial args (triggers append(toolBuilders) and slice reallocation)
+	var tc1 []byte
+	tc1 = protowire.AppendTag(tc1, 1, protowire.BytesType)
+	tc1 = protowire.AppendString(tc1, "call_1")
+	tc1 = protowire.AppendTag(tc1, 2, protowire.BytesType)
+	tc1 = protowire.AppendString(tc1, "tool_1")
+	tc1 = protowire.AppendTag(tc1, 3, protowire.BytesType)
+	tc1 = protowire.AppendString(tc1, `{"b": 2}`)
+	tc1 = protowire.AppendTag(tc1, 4, protowire.VarintType)
+	tc1 = protowire.AppendVarint(tc1, 1) // index 1
+
+	var f2 []byte
+	f2 = protowire.AppendTag(f2, 6, protowire.BytesType)
+	f2 = protowire.AppendBytes(f2, tc1)
+	buf.Write(helps.WrapConnectEnvelope(f2))
+
+	// Frame 3: tool call 0 continuation
+	var tc0Cont []byte
+	tc0Cont = protowire.AppendTag(tc0Cont, 3, protowire.BytesType)
+	tc0Cont = protowire.AppendString(tc0Cont, `1}`)
+	tc0Cont = protowire.AppendTag(tc0Cont, 4, protowire.VarintType)
+	tc0Cont = protowire.AppendVarint(tc0Cont, 0) // index 0
+
+	var f3 []byte
+	f3 = protowire.AppendTag(f3, 6, protowire.BytesType)
+	f3 = protowire.AppendBytes(f3, tc0Cont)
+	buf.Write(helps.WrapConnectEnvelope(f3))
+
+	// EOS frame
+	buf.Write(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`)))
+
+	interactionsJSON, respLog, err := consumeDevinFramesToInteractions(&buf, "devin/swe-2", "swe-2-high")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if respLog == nil {
+		t.Fatal("expected non-nil respLog")
+	}
+
+	root := gjson.ParseBytes(interactionsJSON)
+	steps := root.Get("steps").Array()
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 function_call steps, got %d", len(steps))
+	}
+	if steps[0].Get("name").String() != "tool_0" || steps[0].Get("arguments").Raw != `{"a":1}` {
+		t.Errorf("step 0 arguments = %q, want {\"a\":1}", steps[0].Get("arguments").Raw)
+	}
+	if steps[1].Get("name").String() != "tool_1" || steps[1].Get("arguments").Raw != `{"b": 2}` {
+		t.Errorf("step 1 arguments = %q, want {\"b\": 2}", steps[1].Get("arguments").Raw)
+	}
+}
+
+func TestStreamDevinFrames_InterleavedThinkingAndContent(t *testing.T) {
+	// Frame 1: thinking part 1
+	var f1 []byte
+	f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+	f1 = protowire.AppendString(f1, "thought 1")
+
+	// Frame 2: content text
+	var f2 []byte
+	f2 = protowire.AppendTag(f2, 3, protowire.BytesType)
+	f2 = protowire.AppendString(f2, "content 1")
+
+	// Frame 3: thinking part 2 (interleaved after content)
+	var f3 []byte
+	f3 = protowire.AppendTag(f3, 9, protowire.BytesType)
+	f3 = protowire.AppendString(f3, "thought 2")
+
+	// Frame 4: content text 2
+	var f4 []byte
+	f4 = protowire.AppendTag(f4, 3, protowire.BytesType)
+	f4 = protowire.AppendString(f4, "content 2")
+
+	var buf bytes.Buffer
+	buf.Write(helps.WrapConnectEnvelope(f1))
+	buf.Write(helps.WrapConnectEnvelope(f2))
+	buf.Write(helps.WrapConnectEnvelope(f3))
+	buf.Write(helps.WrapConnectEnvelope(f4))
+	buf.Write(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`)))
+
+	e := &DevinExecutor{}
+	out := make(chan cliproxyexecutor.StreamChunk, 50)
+	opts := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatInteractions,
+	}
+
+	go func() {
+		defer close(out)
+		e.streamDevinFrames(
+			context.Background(),
+			&buf,
+			cliproxyexecutor.Request{Model: "devin/swe-2"},
+			opts,
+			"swe-2-high",
+			sdktranslator.FormatInteractions,
+			nil,
+			out,
+		)
+	}()
+
+	var events []gjson.Result
+	for chunk := range out {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		raw := string(chunk.Payload)
+		if strings.HasPrefix(raw, "data: ") && !strings.Contains(raw, "[DONE]") {
+			data := strings.TrimPrefix(raw, "data: ")
+			data = strings.TrimSpace(data)
+			events = append(events, gjson.Parse(data))
 		}
 	}
-	if !sawDone {
-		t.Fatal("stream missing [DONE] terminator")
-	}
-	if sb.String() != "stream ok" {
-		t.Fatalf("streamed text = %q, want %q", sb.String(), "stream ok")
-	}
-}
 
-func TestDevinExecuteMissingKey(t *testing.T) {
-	ex := &DevinExecutor{}
-	_, err := ex.Execute(context.Background(), &cliproxyauth.Auth{Provider: "devin"},
-		cliproxyexecutor.Request{Model: "swe-1-6-fast"}, cliproxyexecutor.Options{})
-	if err == nil {
-		t.Fatal("expected missing-key error")
-	}
-}
-
-func TestDevinAPIKeyResolution(t *testing.T) {
-	cases := []struct {
-		name string
-		auth *cliproxyauth.Auth
-		want string
-	}{
-		{
-			name: "from attributes api_key",
-			auth: &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "k1"}},
-			want: "k1",
-		},
-		{
-			name: "from attributes session_token",
-			auth: &cliproxyauth.Auth{Attributes: map[string]string{"session_token": "s1"}},
-			want: "s1",
-		},
-		{
-			name: "from attributes windsurf_api_key",
-			auth: &cliproxyauth.Auth{Attributes: map[string]string{"windsurf_api_key": "w1"}},
-			want: "w1",
-		},
-		{
-			name: "from metadata api_key",
-			auth: &cliproxyauth.Auth{Metadata: map[string]any{"api_key": "m_k1"}},
-			want: "m_k1",
-		},
-		{
-			name: "from metadata session_token",
-			auth: &cliproxyauth.Auth{Metadata: map[string]any{"session_token": "m_s1"}},
-			want: "m_s1",
-		},
-		{
-			name: "from metadata windsurf_api_key",
-			auth: &cliproxyauth.Auth{Metadata: map[string]any{"windsurf_api_key": "m_w1"}},
-			want: "m_w1",
-		},
-		{
-			name: "from metadata token",
-			auth: &cliproxyauth.Auth{Metadata: map[string]any{"token": "m_t1"}},
-			want: "m_t1",
-		},
-		{
-			name: "from metadata access_token",
-			auth: &cliproxyauth.Auth{Metadata: map[string]any{"access_token": "m_a1"}},
-			want: "m_a1",
-		},
-		{
-			name: "nil auth",
-			auth: nil,
-			want: "",
-		},
+	// Verify step sequence:
+	// 1. step.start (0, thought)
+	// 2. step.stop (0)
+	// 3. step.start (1, model_output)
+	// 4. step.stop (1)
+	// 5. step.start (2, thought)
+	// 6. step.stop (2)
+	// 7. step.start (3, model_output)
+	// 8. step.stop (3)
+	var stepEvents []string
+	for _, ev := range events {
+		eventType := ev.Get("event_type").String()
+		if eventType == "step.start" {
+			stepEvents = append(stepEvents, fmt.Sprintf("start(%d,%s)", ev.Get("index").Int(), ev.Get("step.type").String()))
+		} else if eventType == "step.stop" {
+			stepEvents = append(stepEvents, fmt.Sprintf("stop(%d)", ev.Get("index").Int()))
+		}
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := devinAPIKey(tc.auth)
-			if got != tc.want {
-				t.Fatalf("devinAPIKey() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestDevinServerURLResolution(t *testing.T) {
-	cases := []struct {
-		name string
-		auth *cliproxyauth.Auth
-		want string
-	}{
-		{
-			name: "default",
-			auth: &cliproxyauth.Auth{},
-			want: devinDefaultAPIServerURL,
-		},
-		{
-			name: "from attributes base_url",
-			auth: &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "https://custom.server.com/"}},
-			want: "https://custom.server.com",
-		},
-		{
-			name: "from metadata api_server_url",
-			auth: &cliproxyauth.Auth{Metadata: map[string]any{"api_server_url": "https://meta.server.com"}},
-			want: "https://meta.server.com",
-		},
-		{
-			name: "from metadata base_url",
-			auth: &cliproxyauth.Auth{Metadata: map[string]any{"base_url": "https://meta-base.server.com/"}},
-			want: "https://meta-base.server.com",
-		},
-		{
-			name: "schemeless custom URL gets https",
-			auth: &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "custom.codeium.com"}},
-			want: "https://custom.codeium.com",
-		},
-		{
-			name: "app.devin.ai without scheme falls back to default connect server",
-			auth: &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "app.devin.ai"}},
-			want: devinDefaultAPIServerURL,
-		},
-		{
-			name: "https://app.devin.ai falls back to default connect server",
-			auth: &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "https://app.devin.ai"}},
-			want: devinDefaultAPIServerURL,
-		},
-		{
-			name: "https://api.devin.ai falls back to default connect server",
-			auth: &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "https://api.devin.ai"}},
-			want: devinDefaultAPIServerURL,
-		},
+	expectedEvents := []string{
+		"start(0,thought)",
+		"stop(0)",
+		"start(1,model_output)",
+		"stop(1)",
+		"start(2,thought)",
+		"stop(2)",
+		"start(3,model_output)",
+		"stop(3)",
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := devinServerURL(tc.auth)
-			if got != tc.want {
-				t.Fatalf("devinServerURL() = %q, want %q", got, tc.want)
-			}
-		})
+	if len(stepEvents) != len(expectedEvents) {
+		t.Fatalf("got step events %v, want %v", stepEvents, expectedEvents)
+	}
+	for i := range expectedEvents {
+		if stepEvents[i] != expectedEvents[i] {
+			t.Errorf("step event %d = %s, want %s", i, stepEvents[i], expectedEvents[i])
+		}
 	}
 }
