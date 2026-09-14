@@ -968,6 +968,18 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
 		return nil, errRetained
 	}
 	if retainedOK {
+		if retainedAuth := retained.CloneAuth(); retainedAuth != nil {
+			m.mu.RLock()
+			gateName, gated := m.authGatedByTimeGate(retainedAuth, requestedModel, opts)
+			m.mu.RUnlock()
+			if gated {
+				m.warnLogTimeGateExcluded(ctx, "home", requestedModel, retainedAuth, gateName)
+				if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, retained, "model_time_gate"); errEnd != nil {
+					return nil, errEnd
+				}
+				return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+			}
+		}
 		return retained, nil
 	}
 	if sessionID := homeExecutionSessionIDFromMetadata(opts.Metadata); sessionID != "" {
@@ -1189,6 +1201,16 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
 		}
 	}
 
+	m.mu.RLock()
+	gateName, gated := m.authGatedByTimeGate(&auth, requestedModel, opts)
+	m.mu.RUnlock()
+	if gated {
+		endScope()
+		m.warnLogTimeGateExcluded(ctx, logicalProvider, requestedModel, &auth, gateName)
+		endScope()
+		excludedAuthIDs[strings.TrimSpace(auth.ID)] = struct{}{}
+		return m.pickHomeDispatchSelection(ctx, requestedModel, withHomeExcludedAuthIDs(opts, excludedAuthIDs))
+	}
 	selection, errSelection := newHomeDispatchSelection(auth.Clone(), executor, logicalProvider, scope)
 	if errSelection != nil {
 		endScope()

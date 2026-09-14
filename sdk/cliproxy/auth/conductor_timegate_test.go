@@ -1,10 +1,12 @@
 package auth
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func testTimeGateRules() []internalconfig.ModelTimeGate {
@@ -225,5 +227,56 @@ func TestMatchGlob(t *testing.T) {
 		if err != nil || got != tc.want {
 			t.Errorf("matchGlob(%q, %q) = %v, %v; want %v", tc.pattern, tc.value, got, err, tc.want)
 		}
+	}
+}
+
+// TestModelTimeGateEnforcedOnMixedFastPath reproduces the reported production
+// bypass: a mixed-provider request served through the scheduler fast path
+// (pickNextMixed) must honor an active exclude gate instead of silently
+// selecting the gated credential.
+func TestModelTimeGateEnforcedOnMixedFastPath(t *testing.T) {
+	oldNow := modelTimeGateNow
+	modelTimeGateNow = func() time.Time {
+		return time.Date(2026, 9, 14, 3, 17, 0, 0, time.UTC) // Monday, in 01:00-04:00 UTC window
+	}
+	defer func() { modelTimeGateNow = oldNow }()
+
+	manager := NewManager(nil, nil, nil)
+	manager.executors["ollama-openaicompatible"] = schedulerTestExecutor{}
+	for _, auth := range []*Auth{
+		{ID: "gated-auth", Provider: "openai-compatibility", Attributes: map[string]string{"compat_name": "ollama-openaicompatible"}},
+		{ID: "open-auth", Provider: "openai-compatibility", Attributes: map[string]string{"compat_name": "ollama-openaicompatible"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+		}
+	}
+	registerSchedulerModels(t, "ollama-openaicompatible", "deepseek-v4.1-flash", "gated-auth", "open-auth")
+	manager.runtimeConfig.Store(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			ModelTimeGates: []internalconfig.ModelTimeGate{
+				{
+					Name:     "deepseek-peek-time-1",
+					Schedule: "0 1 * * 1-5",
+					Duration: "3h",
+					AuthID:   "gated-auth",
+					Models:   []string{"*deepseek-v4.1-flash*"},
+				},
+			},
+		},
+	})
+
+	if !manager.useSchedulerFastPath() {
+		t.Skip("scheduler fast path unavailable without built-in selector state")
+	}
+	selected, _, _, errPick := manager.pickNextMixed(context.Background(), []string{"ollama-openaicompatible"}, "deepseek-v4.1-flash", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("pickNextMixed() error = %v", errPick)
+	}
+	if selected == nil {
+		t.Fatal("pickNextMixed() returned no auth")
+	}
+	if selected.ID != "open-auth" {
+		t.Fatalf("pickNextMixed() selected %q, want open-auth (gated-auth must be excluded)", selected.ID)
 	}
 }
