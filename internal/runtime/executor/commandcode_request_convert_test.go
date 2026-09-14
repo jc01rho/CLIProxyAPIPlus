@@ -190,3 +190,38 @@ func contains(xs []string, target string) bool {
 	}
 	return false
 }
+
+// TestCommandCodeRepairsNullTypeToolSchema verifies that a tool whose
+// parameters (or any nested schema node) carry "type": null is repaired to a
+// valid object schema instead of reaching upstream, which rejects it with
+// "Invalid schema for function ...: schema must be a JSON Schema of
+// 'type: \"object\"', got 'type: null'".
+func TestCommandCodeRepairsNullTypeToolSchema(t *testing.T) {
+	tools := []commandCodeOpenAITool{
+		{Function: struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			Parameters  json.RawMessage `json:"parameters"`
+		}{Name: "record_fact", Parameters: json.RawMessage(`{"type":null,"properties":{"fact":{"type":"string"}}}`)}},
+		{Function: struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			Parameters  json.RawMessage `json:"parameters"`
+		}{Name: "empty_params", Parameters: json.RawMessage(`null`)}},
+	}
+	wire := commandCodeConvertTools(tools)
+	if len(wire) != 2 {
+		t.Fatalf("wire tools = %d, want 2", len(wire))
+	}
+	for _, w := range wire {
+		var schema struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(w.InputSchema, &schema); err != nil {
+			t.Fatalf("tool %q schema is not valid JSON: %v", w.Name, err)
+		}
+		if schema.Type != "object" {
+			t.Errorf("tool %q schema type = %q, want %q (schema=%s)", w.Name, schema.Type, "object", w.InputSchema)
+		}
+	}
+}
