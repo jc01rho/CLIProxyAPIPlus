@@ -145,3 +145,8 @@ cpa-usage-keeper/AGENTS.md
 ## Push / PR 규칙
 
 - forked upstream에는 절대 Pull Request를 생성하지 않는다. 모든 push는 `origin`(jc01rho) 브랜치에만 수행한다. upstream remote는 fetch/merge 전용이다.
+
+## 커밋 신원
+
+- 모든 커밋은 **`jc01rho <rkjnice@gmail.com>`** 으로 작성한다. repo-local config(`user.name`/`user.email`)가 이 값으로 고정되어 있으며, 옛 신원 `whrho <whrho@sparrow.im>` 과 그 변형(`노우현 <whrho@sparrow.im>`, `whrho <jc01rho@gmail.com>`, `jc01rho <jc01rho@local>`, `Woohyun Rho <whrho@sparrowfasoo.com>`)은 사용하지 않는다.
+- 2026-09-14 에 이 저장소 이력이 이 신원으로 재작성되었다(upstream 계보는 해시까지 불변). 원격 반영에는 force-push 가 필요하고, 이 경우에도 위 태깅 규칙이 적용된다.

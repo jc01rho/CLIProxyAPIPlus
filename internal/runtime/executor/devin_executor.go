@@ -554,7 +554,8 @@ func (e *DevinExecutor) streamDevinFrames(
 				failedEvent, _ := sjson.SetBytes([]byte(`{"event_type":"response.failed","error":{"message":"","code":""}}`), "error.message", errTrailer.Error())
 				failedEvent, _ = sjson.SetBytes(failedEvent, "error.code", fmt.Sprintf("%d", code))
 				_ = emitInteractionsEvent(failedEvent)
-				emitStreamError(statusErr{code: code, msg: errTrailer.Error()})
+				emitStreamError(devinTrailerStatusErrClass(code, errTrailer.Error()))
+				devinDumpRejectedRequest(payload, errTrailer)
 				return
 			}
 			sawEOS = true
@@ -928,7 +929,7 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 					Usage:         finalUsage,
 					UnknownFields: unknownFields,
 				}
-				return nil, respLog, statusErr{code: code, msg: errTrailer.Error()}
+				return nil, respLog, devinTrailerStatusErrClass(code, errTrailer.Error())
 			}
 			sawEOS = true
 			break
@@ -1843,4 +1844,28 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// devinRequestScopedConnectCodes lists Connect error codes that mark the
+// REQUEST as faulty rather than the credential. invalid_argument in
+// particular arrives intermittently for request shapes reproduced as
+// working; treating it as a credential fault rotates the only devin
+// credential out and every request during the cooldown fails with
+// auth_unavailable. Mapping these to HTTP 400 keeps the cooldown path from
+// claiming the credential.
+var devinRequestScopedConnectCodes = map[int]bool{
+	3:  true, // invalid_argument
+	9:  true, // failed_precondition
+	11: true, // out_of_range
+}
+
+// devinTrailerStatusErrClass maps a Connect trailer code onto statusErr so
+// the cooldown logic can classify the failure: request-scoped codes become
+// HTTP 400; everything else keeps the raw code.
+func devinTrailerStatusErrClass(code int, msg string) statusErr {
+	mapped := int(code)
+	if devinRequestScopedConnectCodes[code] {
+		mapped = http.StatusBadRequest
+	}
+	return statusErr{code: mapped, msg: msg}
 }

@@ -53,15 +53,15 @@ func TestResolveEndpointOverride_DevinModelsAreChatOnly(t *testing.T) {
 		reg.UnregisterClient(clientID)
 	})
 
-	override, ok := resolveEndpointOverride("swe-2-high", openAIResponsesEndpoint)
+	override, ok := resolveEndpointOverride("swe-2", openAIResponsesEndpoint)
 	if !ok {
-		t.Fatal("expected /v1/responses for swe-2-high to be overridden to chat completions")
+		t.Fatal("expected /v1/responses for swe-2 to be overridden to chat completions")
 	}
 	if override != openAIChatEndpoint {
 		t.Fatalf("override endpoint = %q, want %q", override, openAIChatEndpoint)
 	}
 
-	if _, ok = resolveEndpointOverride("swe-2-high", openAIChatEndpoint); ok {
-		t.Fatal("chat completions requests for swe-2-high must not be overridden")
+	if _, ok = resolveEndpointOverride("swe-2", openAIChatEndpoint); ok {
+		t.Fatal("chat completions requests for swe-2 must not be overridden")
 	}
 }

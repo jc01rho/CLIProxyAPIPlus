@@ -38,12 +38,12 @@ func (a nativeConfiguredModelAdapter[T]) GetMaxContextLength() int {
 	return 0
 }
 
-func buildNativeConfigModels[T nativeConfiguredModel](models []T, ownedBy, modelType, metadataChannel string) []*ModelInfo {
+func buildNativeConfigModels[T nativeConfiguredModel](models []T, ownedBy, modelType string) []*ModelInfo {
 	adapted := make([]nativeConfiguredModelAdapter[T], 0, len(models))
 	for _, model := range models {
 		adapted = append(adapted, nativeConfiguredModelAdapter[T]{model: model})
 	}
-	return buildConfigModels(adapted, ownedBy, modelType, metadataChannel)
+	return buildConfigModels(adapted, ownedBy, modelType, ownedBy)
 }
 
 func resolveNativeAPIKeyConfig[T nativeAPIKeyConfig](entries []T, auth *coreauth.Auth) *T {
@@ -150,28 +150,28 @@ func buildCommandCodeConfigModels(entry *config.CommandCodeKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildNativeConfigModels(entry.Models, "commandcode", "commandcode", "commandcode")
+	return buildNativeConfigModels(entry.Models, "commandcode", "commandcode")
 }
 
 func buildMistralConfigModels(entry *config.MistralKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildNativeConfigModels(entry.Models, "mistral", "mistral", "mistral")
+	return buildNativeConfigModels(entry.Models, "mistral", "mistral")
 }
 
 func buildFreebuffConfigModels(entry *config.FreebuffKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildNativeConfigModels(entry.Models, "freebuff", "freebuff", "freebuff")
+	return buildNativeConfigModels(entry.Models, "freebuff", "freebuff")
 }
 
 func buildDevinConfigModels(entry *config.DevinKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	models := buildNativeConfigModels(entry.Models, "devin", "devin", "devin")
+	models := buildNativeConfigModels(entry.Models, "devin", "devin")
 	// Devin speaks a Connect chat RPC only; /v1/responses requests must be
 	// converted to the chat completions shape before execution.
 	for _, m := range models {
