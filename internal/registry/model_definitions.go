@@ -35,6 +35,7 @@ type staticModelsJSON struct {
 	Antigravity []*ModelInfo `json:"antigravity"`
 	XAI         []*ModelInfo `json:"xai"`
 	Mistral     []*ModelInfo `json:"mistral"`
+	Devin       []*ModelInfo `json:"devin"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -1379,20 +1380,4 @@ func GetAmazonQModels() []*ModelInfo {
 	}
 }
 
-// GetDevinModels returns the Devin (Cognition) model definitions.
-func GetDevinModels() []*ModelInfo {
-	models := []*ModelInfo{
-		// Static seed: the SWE-2 router UIDs. The full catalog (420+ configs
-		// including the SWE-1.x, Claude, GPT, Gemini, GLM and Fusion families) is
-		// discovered at runtime through GetCliModelConfigs; this seed only has to
-		// keep a configured Devin provider usable when that discovery fails.
-		// Context and output limits below are the values the live catalog reports.
-		{ID: "swe-2-high", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-2 High", ContextLength: 262000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-2-medium", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-2 Medium", ContextLength: 262000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-		{ID: "swe-2-max", Object: "model", OwnedBy: "devin", Type: "devin", DisplayName: "SWE-2 Max", ContextLength: 262000, MaxCompletionTokens: 128000, Thinking: &ThinkingSupport{Max: 50000, DynamicAllowed: true}},
-	}
-	for _, m := range models {
-		m.SupportedEndpoints = []string{"/chat/completions"}
-	}
-	return models
-}
+// GetDevinModels is defined in devin_models.go (embedded catalog + remote refresh).

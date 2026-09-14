@@ -1359,7 +1359,7 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 	return
 }
 
-func parseDataURL(raw string) (mimeType string, data string, ok bool) {
+func devinParseDataURL(raw string) (mimeType string, data string, ok bool) {
 	raw = strings.TrimSpace(raw)
 	if !strings.HasPrefix(raw, "data:") {
 		return "", "", false
@@ -1416,7 +1416,7 @@ func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinIma
 
 			if base64Data == "" {
 				url := firstNonEmpty(p.Get("image_url.url").String(), p.Get("image_url").String(), p.Get("url").String())
-				if m, d, ok := parseDataURL(url); ok {
+				if m, d, ok := devinParseDataURL(url); ok {
 					base64Data = d
 					if mimeType == "" {
 						mimeType = m
@@ -1513,7 +1513,7 @@ func supplementImagesFromOriginal(original []byte, prompts []helps.DevinPrompt) 
 						mime := strings.TrimSpace(part.Get("source.media_type").String())
 						if data == "" {
 							url := firstNonEmpty(part.Get("image_url.url").String(), part.Get("image_url").String(), part.Get("url").String())
-							if m, d, ok := parseDataURL(url); ok {
+							if m, d, ok := devinParseDataURL(url); ok {
 								data = d
 								mime = m
 							}
