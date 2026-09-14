@@ -5,6 +5,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"strings"
@@ -18,6 +19,11 @@ import (
 
 const (
 	devinGetCliModelConfigsPath = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs"
+	devinDefaultAPIServerURL    = "https://server.codeium.com"
+	devinReqMetadataField       = 1
+	devinMetaAPIKeyField        = 3
+	devinMetaLocaleField        = 4
+	devinMetaOSField            = 5
 
 	devinModelsFetchTimeout = 15 * time.Second
 
@@ -261,4 +267,154 @@ func devinParseModelConfig(buf []byte) *registry.ModelInfo {
 		model.Thinking = &registry.ThinkingSupport{Max: 50000, DynamicAllowed: true}
 	}
 	return model
+}
+
+// devinAPIKey extracts the Devin API key or session token from the auth record.
+// It checks Attributes (from config or file synthesis) and Metadata (from JSON auth files).
+func devinAPIKey(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Attributes != nil {
+		if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
+			return key
+		}
+		if key := strings.TrimSpace(auth.Attributes["session_token"]); key != "" {
+			return key
+		}
+		if key := strings.TrimSpace(auth.Attributes["windsurf_api_key"]); key != "" {
+			return key
+		}
+	}
+	if auth.Metadata != nil {
+		for _, field := range []string{"api_key", "session_token", "windsurf_api_key", "token", "access_token"} {
+			if v, ok := auth.Metadata[field].(string); ok && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	return ""
+}
+
+// devinServerURL resolves the Connect API server URL: per-credential
+// base_url override wins, then the executor default.
+func devinServerURL(auth *cliproxyauth.Auth) string {
+	raw := ""
+	if auth != nil {
+		if auth.Attributes != nil {
+			raw = strings.TrimSpace(auth.Attributes["base_url"])
+		}
+		if raw == "" && auth.Metadata != nil {
+			for _, field := range []string{"api_server_url", "base_url"} {
+				if v, ok := auth.Metadata[field].(string); ok && strings.TrimSpace(v) != "" {
+					raw = strings.TrimSpace(v)
+					break
+				}
+			}
+		}
+	}
+	if raw == "" {
+		return devinDefaultAPIServerURL
+	}
+	clean := strings.TrimRight(raw, "/")
+	if !strings.HasPrefix(clean, "http://") && !strings.HasPrefix(clean, "https://") {
+		clean = "https://" + clean
+	}
+	// app.devin.ai or api.devin.ai is the webapp or REST host, not the Connect RPC API server.
+	if strings.Contains(clean, "devin.ai") {
+		return devinDefaultAPIServerURL
+	}
+	return clean
+}
+
+// devinAuthHeader builds the "Basic <T>-<T>" authorization value Devin CLI
+// sends: the windsurf API key string repeated twice.
+func devinAuthHeader(token string) string {
+	return "Basic " + token + "-" + token
+}
+
+// devinEncodeVarint appends a protobuf varint.
+func devinEncodeVarint(out []byte, v uint64) []byte {
+	for {
+		b := byte(v & 0x7F)
+		v >>= 7
+		if v != 0 {
+			out = append(out, b|0x80)
+		} else {
+			return append(out, b)
+		}
+	}
+}
+
+// devinEncodeField appends one protobuf field (key + raw payload).
+func devinEncodeField(out []byte, num int, wire int, payload []byte) []byte {
+	out = devinEncodeVarint(out, uint64(num<<3|wire))
+	return append(out, payload...)
+}
+
+// devinEncodeString encodes a length-delimited string field payload.
+func devinEncodeString(s string) []byte {
+	b := []byte(s)
+	return append(devinEncodeVarint(nil, uint64(len(b))), b...)
+}
+
+// devinEncodeSubMessage wraps a submessage payload in a length-delimited field.
+func devinEncodeSubMessage(num int, body []byte) []byte {
+	return devinEncodeField(nil, num, 2, append(devinEncodeVarint(nil, uint64(len(body))), body...))
+}
+
+// devinScanFields walks protobuf fields in buf, invoking fn for each.
+// Returning false from fn stops the scan. Malformed input terminates the
+// scan without error (callers treat a short read as end-of-message).
+func devinScanFields(buf []byte, fn func(num int, wire int, varint uint64, data []byte) bool) {
+	pos := 0
+	for pos < len(buf) {
+		key, n := binary.Uvarint(buf[pos:])
+		if n <= 0 {
+			return
+		}
+		pos += n
+		num, wire := int(key>>3), int(key&7)
+		switch wire {
+		case 0:
+			v, vn := binary.Uvarint(buf[pos:])
+			if vn <= 0 {
+				return
+			}
+			pos += vn
+			if !fn(num, wire, v, nil) {
+				return
+			}
+		case 1:
+			if pos+8 > len(buf) {
+				return
+			}
+			raw := buf[pos : pos+8]
+			pos += 8
+			if !fn(num, wire, 0, raw) {
+				return
+			}
+		case 2:
+			ln, ln2 := binary.Uvarint(buf[pos:])
+			if ln2 <= 0 || pos+ln2+int(ln) > len(buf) {
+				return
+			}
+			raw := buf[pos+ln2 : pos+ln2+int(ln)]
+			pos += ln2 + int(ln)
+			if !fn(num, wire, 0, raw) {
+				return
+			}
+		case 5:
+			if pos+4 > len(buf) {
+				return
+			}
+			raw := buf[pos : pos+4]
+			pos += 4
+			if !fn(num, wire, 0, raw) {
+				return
+			}
+		default:
+			return
+		}
+	}
 }

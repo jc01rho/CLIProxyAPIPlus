@@ -245,8 +245,8 @@ func TestGetAuthFileModelsReturnsDevinModels(t *testing.T) {
 	if len(payload.Models) == 0 {
 		t.Fatalf("expected non-empty Devin models for auth file, got 0")
 	}
-	if !containsModelID(rec.Body.String(), "swe-1-6-fast") {
-		t.Fatalf("expected Devin model swe-1-6-fast in response, got %s", rec.Body.String())
+	if !containsModelID(rec.Body.String(), "swe-1-6") {
+		t.Fatalf("expected Devin model swe-1-6 in response, got %s", rec.Body.String())
 	}
 
 	// Also test GetStaticModelDefinitions for channel "devin"

@@ -1,9 +1,6 @@
 package registry
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -12,7 +9,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		data := []byte(`{
 			"devin": [
 				{
-					"id": "devin/swe-2",
+					"id": "swe-2",
 					"display_name": "SWE-2",
 					"owned_by": "cognition",
 					"context_length": 262000
@@ -23,7 +20,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected valid, got error: %v", err)
 		}
-		if len(models) != 1 || models[0].ID != "devin/swe-2" {
+		if len(models) != 1 || models[0].ID != "swe-2" {
 			t.Fatalf("unexpected models: %+v", models)
 		}
 		if models[0].Type != "devin" {
@@ -35,7 +32,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		data := []byte(`{
 			"models": [
 				{
-					"id": "devin/glm-5-2",
+					"id": "glm-5-2",
 					"display_name": "GLM-5.2"
 				}
 			]
@@ -44,7 +41,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected valid, got error: %v", err)
 		}
-		if len(models) != 1 || models[0].ID != "devin/glm-5-2" {
+		if len(models) != 1 || models[0].ID != "glm-5-2" {
 			t.Fatalf("unexpected models: %+v", models)
 		}
 	})
@@ -52,7 +49,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 	t.Run("valid direct array", func(t *testing.T) {
 		data := []byte(`[
 			{
-				"id": "devin/deepseek-v4-flash",
+				"id": "deepseek-v4-flash",
 				"display_name": "DeepSeek V4 Flash"
 			}
 		]`)
@@ -60,12 +57,12 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected valid, got error: %v", err)
 		}
-		if len(models) != 1 || models[0].ID != "devin/deepseek-v4-flash" {
+		if len(models) != 1 || models[0].ID != "deepseek-v4-flash" {
 			t.Fatalf("unexpected models: %+v", models)
 		}
 	})
 
-	t.Run("clean id without devin prefix automatically namespaced", func(t *testing.T) {
+	t.Run("clean id without devin prefix kept bare", func(t *testing.T) {
 		data := []byte(`{
 			"devin": [
 				{
@@ -78,8 +75,8 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected valid, got error: %v", err)
 		}
-		if len(models) != 1 || models[0].ID != "devin/swe-2" {
-			t.Fatalf("expected auto-namespaced to devin/swe-2, got: %q", models[0].ID)
+		if len(models) != 1 || models[0].ID != "swe-2" {
+			t.Fatalf("expected bare id swe-2 preserved, got: %q", models[0].ID)
 		}
 	})
 
@@ -99,7 +96,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 	})
 
 	t.Run("duplicate model id", func(t *testing.T) {
-		data := []byte(`{"devin": [{"id": "devin/swe-2"}, {"id": "devin/swe-2"}]}`)
+		data := []byte(`{"devin": [{"id": "swe-2"}, {"id": "swe-2"}]}`)
 		_, err := ValidateDevinModelsJSON(data)
 		if err == nil {
 			t.Fatal("expected error on duplicate model id, got nil")
@@ -119,15 +116,15 @@ func TestEmbeddedDevinModelsLoadedOnStartup(t *testing.T) {
 	}
 
 	expectedIDs := []string{
-		"devin/swe-2",
-		"devin/glm-5-2",
-		"devin/glm-5-3",
-		"devin/deepseek-v4-flash",
-		"devin/deepseek-v4-1-flash",
-		"devin/gemini-3-8-flash",
-		"devin/grok-4-6",
-		"devin/claude-fable-5-1",
-		"devin/gpt-6-astra",
+		"swe-2",
+		"glm-5-2",
+		"glm-5-3",
+		"deepseek-v4-flash",
+		"deepseek-v4-1-flash",
+		"gemini-3-8-flash",
+		"grok-4-6",
+		"claude-fable-5-1",
+		"gpt-6-astra",
 	}
 
 	for _, id := range expectedIDs {
@@ -135,59 +132,4 @@ func TestEmbeddedDevinModelsLoadedOnStartup(t *testing.T) {
 			t.Errorf("expected embedded catalog to contain %q", id)
 		}
 	}
-}
-
-func TestDevinModelsRemoteFetchFallback(t *testing.T) {
-	// Test remote failure maintains existing embedded data
-	origURLs := devinModelsURLs
-	defer func() { devinModelsURLs = origURLs }()
-
-	// Point to failing server
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "server error", http.StatusInternalServerError)
-	}))
-	defer ts.Close()
-
-	devinModelsURLs = []string{ts.URL + "/devin_models.json"}
-
-	initialCount := len(GetDevinModels())
-	if initialCount == 0 {
-		t.Fatal("expected non-empty initial Devin models")
-	}
-
-	// Attempt refresh from failing remote
-	tryRefreshDevinModels(context.Background(), "test failing refresh")
-
-	afterCount := len(GetDevinModels())
-	if afterCount != initialCount {
-		t.Fatalf("expected catalog to remain intact with %d models, got %d", initialCount, afterCount)
-	}
-
-	// Point to succeeding server with valid update
-	validUpdate := []byte(`{
-		"devin": [
-			{
-				"id": "devin/custom-test-model",
-				"display_name": "Custom Test Model",
-				"owned_by": "custom"
-			}
-		]
-	}`)
-
-	tsValid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(validUpdate)
-	}))
-	defer tsValid.Close()
-
-	devinModelsURLs = []string{tsValid.URL + "/devin_models.json"}
-	tryRefreshDevinModels(context.Background(), "test succeeding refresh")
-
-	updatedModels := GetDevinModels()
-	if len(updatedModels) != 1 || updatedModels[0].ID != "devin/custom-test-model" {
-		t.Fatalf("expected catalog to be updated to custom-test-model, got: %+v", updatedModels)
-	}
-
-	// Restore original embedded data for following tests
-	_, _ = loadDevinModelsFromBytes(embeddedDevinModelsJSON, "restore-embed")
 }

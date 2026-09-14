@@ -554,7 +554,8 @@ func (e *DevinExecutor) streamDevinFrames(
 				failedEvent, _ := sjson.SetBytes([]byte(`{"event_type":"response.failed","error":{"message":"","code":""}}`), "error.message", errTrailer.Error())
 				failedEvent, _ = sjson.SetBytes(failedEvent, "error.code", fmt.Sprintf("%d", code))
 				_ = emitInteractionsEvent(failedEvent)
-				emitStreamError(statusErr{code: code, msg: errTrailer.Error()})
+				emitStreamError(devinTrailerStatusErrClass(code, errTrailer.Error()))
+				devinDumpRejectedRequest(payload, errTrailer)
 				return
 			}
 			sawEOS = true
@@ -568,7 +569,49 @@ func (e *DevinExecutor) streamDevinFrames(
 		}
 
 		if frameRes.Usage != nil {
-			finalUsage = frameRes.Usage
+			if finalUsage == nil {
+				finalUsage = frameRes.Usage
+			} else {
+				if frameRes.Usage.PromptTokens > 0 {
+					finalUsage.PromptTokens = frameRes.Usage.PromptTokens
+				}
+				if frameRes.Usage.CompletionTokens > 0 {
+					finalUsage.CompletionTokens = frameRes.Usage.CompletionTokens
+				}
+				if frameRes.Usage.CachedTokens > 0 {
+					finalUsage.CachedTokens = frameRes.Usage.CachedTokens
+				}
+				if frameRes.Usage.RequestID != "" {
+					finalUsage.RequestID = frameRes.Usage.RequestID
+				}
+				if frameRes.Usage.ModelName != "" {
+					finalUsage.ModelName = frameRes.Usage.ModelName
+				}
+				if len(frameRes.Usage.Headers) > 0 {
+					if finalUsage.Headers == nil {
+						finalUsage.Headers = make(map[string]string, len(frameRes.Usage.Headers))
+					}
+					for hk, hv := range frameRes.Usage.Headers {
+						finalUsage.Headers[hk] = hv
+					}
+				}
+			}
+		}
+		if len(frameRes.ResponseDimensionGroups) > 0 && (finalUsage == nil || finalUsage.PromptTokens == 0 || finalUsage.CompletionTokens == 0 || finalUsage.CachedTokens == 0) {
+			if inTok, outTok, cachedTok, ok := helps.ParseDevinResponseDimensionGroups(frameRes.ResponseDimensionGroups...); ok {
+				if finalUsage == nil {
+					finalUsage = &helps.DevinUsage{}
+				}
+				if finalUsage.PromptTokens == 0 {
+					finalUsage.PromptTokens = inTok
+				}
+				if finalUsage.CompletionTokens == 0 {
+					finalUsage.CompletionTokens = outTok
+				}
+				if finalUsage.CachedTokens == 0 {
+					finalUsage.CachedTokens = cachedTok
+				}
+			}
 		}
 		if len(frameRes.DeltaSignature) > 0 {
 			accumulatedSignature = append(accumulatedSignature, frameRes.DeltaSignature...)
@@ -886,7 +929,7 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 					Usage:         finalUsage,
 					UnknownFields: unknownFields,
 				}
-				return nil, respLog, statusErr{code: code, msg: errTrailer.Error()}
+				return nil, respLog, devinTrailerStatusErrClass(code, errTrailer.Error())
 			}
 			sawEOS = true
 			break
@@ -905,7 +948,49 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 		}
 
 		if frameRes.Usage != nil {
-			finalUsage = frameRes.Usage
+			if finalUsage == nil {
+				finalUsage = frameRes.Usage
+			} else {
+				if frameRes.Usage.PromptTokens > 0 {
+					finalUsage.PromptTokens = frameRes.Usage.PromptTokens
+				}
+				if frameRes.Usage.CompletionTokens > 0 {
+					finalUsage.CompletionTokens = frameRes.Usage.CompletionTokens
+				}
+				if frameRes.Usage.CachedTokens > 0 {
+					finalUsage.CachedTokens = frameRes.Usage.CachedTokens
+				}
+				if frameRes.Usage.RequestID != "" {
+					finalUsage.RequestID = frameRes.Usage.RequestID
+				}
+				if frameRes.Usage.ModelName != "" {
+					finalUsage.ModelName = frameRes.Usage.ModelName
+				}
+				if len(frameRes.Usage.Headers) > 0 {
+					if finalUsage.Headers == nil {
+						finalUsage.Headers = make(map[string]string, len(frameRes.Usage.Headers))
+					}
+					for hk, hv := range frameRes.Usage.Headers {
+						finalUsage.Headers[hk] = hv
+					}
+				}
+			}
+		}
+		if len(frameRes.ResponseDimensionGroups) > 0 && (finalUsage == nil || finalUsage.PromptTokens == 0 || finalUsage.CompletionTokens == 0 || finalUsage.CachedTokens == 0) {
+			if inTok, outTok, cachedTok, ok := helps.ParseDevinResponseDimensionGroups(frameRes.ResponseDimensionGroups...); ok {
+				if finalUsage == nil {
+					finalUsage = &helps.DevinUsage{}
+				}
+				if finalUsage.PromptTokens == 0 {
+					finalUsage.PromptTokens = inTok
+				}
+				if finalUsage.CompletionTokens == 0 {
+					finalUsage.CompletionTokens = outTok
+				}
+				if finalUsage.CachedTokens == 0 {
+					finalUsage.CachedTokens = cachedTok
+				}
+			}
 		}
 		if len(frameRes.DeltaSignature) > 0 {
 			accumulatedSignature = append(accumulatedSignature, frameRes.DeltaSignature...)
@@ -1275,7 +1360,7 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 	return
 }
 
-func parseDataURL(raw string) (mimeType string, data string, ok bool) {
+func devinParseDataURL(raw string) (mimeType string, data string, ok bool) {
 	raw = strings.TrimSpace(raw)
 	if !strings.HasPrefix(raw, "data:") {
 		return "", "", false
@@ -1332,7 +1417,7 @@ func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinIma
 
 			if base64Data == "" {
 				url := firstNonEmpty(p.Get("image_url.url").String(), p.Get("image_url").String(), p.Get("url").String())
-				if m, d, ok := parseDataURL(url); ok {
+				if m, d, ok := devinParseDataURL(url); ok {
 					base64Data = d
 					if mimeType == "" {
 						mimeType = m
@@ -1429,7 +1514,7 @@ func supplementImagesFromOriginal(original []byte, prompts []helps.DevinPrompt) 
 						mime := strings.TrimSpace(part.Get("source.media_type").String())
 						if data == "" {
 							url := firstNonEmpty(part.Get("image_url.url").String(), part.Get("image_url").String(), part.Get("url").String())
-							if m, d, ok := parseDataURL(url); ok {
+							if m, d, ok := devinParseDataURL(url); ok {
 								data = d
 								mime = m
 							}
@@ -1759,4 +1844,28 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// devinRequestScopedConnectCodes lists Connect error codes that mark the
+// REQUEST as faulty rather than the credential. invalid_argument in
+// particular arrives intermittently for request shapes reproduced as
+// working; treating it as a credential fault rotates the only devin
+// credential out and every request during the cooldown fails with
+// auth_unavailable. Mapping these to HTTP 400 keeps the cooldown path from
+// claiming the credential.
+var devinRequestScopedConnectCodes = map[int]bool{
+	3: true, // invalid_argument
+	9: true, // failed_precondition
+	11: true, // out_of_range
+}
+
+// devinTrailerStatusErrClass maps a Connect trailer code onto statusErr so
+// the cooldown logic can classify the failure: request-scoped codes become
+// HTTP 400; everything else keeps the raw code.
+func devinTrailerStatusErrClass(code int, msg string) statusErr {
+	mapped := int(code)
+	if devinRequestScopedConnectCodes[code] {
+		mapped = http.StatusBadRequest
+	}
+	return statusErr{code: mapped, msg: msg}
 }

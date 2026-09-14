@@ -159,10 +159,7 @@ func sanitizeAndValidateDevinModels(models []*ModelInfo) ([]*ModelInfo, error) {
 		if id == "" {
 			return nil, fmt.Errorf("model at index %d has empty id", i)
 		}
-		// Automatically namespace model IDs under devin/ if not already prefixed
-		if !strings.HasPrefix(strings.ToLower(id), "devin/") {
-			id = "devin/" + id
-		}
+		// Keep model IDs as-is (bare or already-prefixed); no forced devin/ namespacing.
 		m.ID = id
 		if _, exists := seen[id]; exists {
 			return nil, fmt.Errorf("duplicate model id: %q", id)
@@ -190,6 +187,12 @@ func sanitizeAndValidateDevinModels(models []*ModelInfo) ([]*ModelInfo, error) {
 		}
 		if len(m.SupportedGenerationMethods) == 0 {
 			m.SupportedGenerationMethods = []string{"generateContent", "countTokens"}
+		}
+		if len(m.SupportedEndpoints) == 0 {
+			// Devin is a chat-only provider upstream; every catalog entry
+			// must declare /chat/completions so management UI and the
+			// endpoint compat guard agree on the surface.
+			m.SupportedEndpoints = []string{"/chat/completions"}
 		}
 		out = append(out, m)
 	}

@@ -597,6 +597,21 @@ func GetCursorModels() []*ModelInfo {
 	}
 }
 
+// LookupStaticModelInfoByChannel searches one provider-specific static section.
+// It does not fall back across providers, so callers can preserve provenance.
+func LookupStaticModelInfoByChannel(modelID, channel string) *ModelInfo {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
+	for _, model := range GetStaticModelDefinitionsByChannel(channel) {
+		if model != nil && model.ID == modelID {
+			return cloneModelInfo(model)
+		}
+	}
+	return nil
+}
+
 // LookupStaticModelInfo searches all static model definitions for a model by ID.
 // Returns nil if no matching model is found.
 func LookupStaticModelInfo(modelID string) *ModelInfo {
@@ -1252,6 +1267,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "SWE-2",
 		ContextLength:       262000,
 		MaxCompletionTokens: 128000,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"medium", "high", "max"},
 		},

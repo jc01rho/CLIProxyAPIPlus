@@ -43,7 +43,7 @@ func buildNativeConfigModels[T nativeConfiguredModel](models []T, ownedBy, model
 	for _, model := range models {
 		adapted = append(adapted, nativeConfiguredModelAdapter[T]{model: model})
 	}
-	return buildConfigModels(adapted, ownedBy, modelType)
+	return buildConfigModels(adapted, ownedBy, modelType, ownedBy)
 }
 
 func resolveNativeAPIKeyConfig[T nativeAPIKeyConfig](entries []T, auth *coreauth.Auth) *T {

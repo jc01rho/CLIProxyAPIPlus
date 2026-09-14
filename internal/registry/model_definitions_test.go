@@ -40,9 +40,7 @@ func TestGetStaticModelDefinitionsByChannelSupportsDevin(t *testing.T) {
 	// live catalog, so asserting them here would pin names the seed no longer
 	// owns.
 	expected := map[string]bool{
-		"swe-2-high":   false,
-		"swe-2-medium": false,
-		"swe-2-max":    false,
+		"swe-2": false,
 	}
 	for _, m := range models {
 		if _, ok := expected[m.ID]; ok {
@@ -55,9 +53,9 @@ func TestGetStaticModelDefinitionsByChannelSupportsDevin(t *testing.T) {
 		}
 	}
 
-	info := LookupStaticModelInfo("swe-2-high")
+	info := LookupStaticModelInfo("swe-2")
 	if info == nil {
-		t.Fatal("LookupStaticModelInfo(\"swe-2-high\") = nil, want valid model")
+		t.Fatal("LookupStaticModelInfo(\"swe-2\") = nil, want valid model")
 	}
 }
 
@@ -217,9 +215,7 @@ func TestGetDevinModelsFallback(t *testing.T) {
 	// the live Devin CLI catalog, so this pins the seed rather than the
 	// discovered catalog.
 	expected := map[string]bool{
-		"swe-2-high":   false,
-		"swe-2-medium": false,
-		"swe-2-max":    false,
+		"swe-2": false,
 	}
 	for _, m := range devinModels {
 		if m == nil {
@@ -247,8 +243,8 @@ func TestGetDevinModelsFallback(t *testing.T) {
 		t.Fatal("GetStaticModelDefinitionsByChannel(\"devin\") returned empty list")
 	}
 
-	info := LookupStaticModelInfo("swe-2-high")
+	info := LookupStaticModelInfo("swe-2")
 	if info == nil {
-		t.Fatal("LookupStaticModelInfo(\"swe-2-high\") = nil, want valid model")
+		t.Fatal("LookupStaticModelInfo(\"swe-2\") = nil, want valid model")
 	}
 }
