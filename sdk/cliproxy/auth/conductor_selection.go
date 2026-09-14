@@ -1844,6 +1844,46 @@ func shouldRetrySchedulerPick(err error) bool {
 	return authErr.Code == "auth_not_found" || authErr.Code == "auth_unavailable"
 }
 
+// timeGateRules loads the live model time-gate rules without taking m.mu.
+// Callers must hold at least m.mu.RLock when invoking authMatchesTimeGate;
+// this helper exists for lock-free paths (scheduler fast paths, Home dispatch)
+// that need to know whether any gate is configured before taking locks.
+func (m *Manager) timeGateRules() []internalconfig.ModelTimeGate {
+	if m == nil {
+		return nil
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Routing.ModelTimeGates
+}
+
+// timeGateActive reports whether any enabled rule has an active UTC window
+// right now, regardless of provider/auth/model scope. Fast paths use this
+// cheap check to decide whether they must fall back to the legacy selection
+// loops where per-candidate gating is enforced.
+func (m *Manager) timeGateActive() bool {
+	now := modelTimeGateNow()
+	for _, rule := range m.timeGateRules() {
+		if rule.Enabled != nil && !*rule.Enabled {
+			continue
+		}
+		if modelTimeGateActiveAt(rule.Schedule, rule.Duration, now) {
+			return true
+		}
+	}
+	return false
+}
+
+// authGatedByTimeGate reports whether the candidate is excluded by an active
+// model time gate. Callers must hold at least m.mu.RLock: modelTimeGatedByConfig
+// consults the live config for alias resolution, and authMatchesTimeGate
+// documents the same locking requirement.
+func (m *Manager) authGatedByTimeGate(candidate *Auth, routeModel string, opts cliproxyexecutor.Options) (string, bool) {
+	return m.authMatchesTimeGate(candidate, routeModel, opts)
+}
+
 func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) bool {
 	if auth == nil || strings.TrimSpace(routeModel) == "" {
 		return false
@@ -2180,6 +2220,10 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 				m.mu.RUnlock()
 				return m.pickNextLegacy(ctx, provider, model, opts, tried)
 			}
+			if _, gated := m.authGatedByTimeGate(candidate, model, opts); gated {
+				m.mu.RUnlock()
+				return m.pickNextLegacy(ctx, provider, model, opts, tried)
+			}
 		}
 		m.mu.RUnlock()
 	}
@@ -2193,12 +2237,29 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		selected, errPick = m.scheduler.pickSingle(ctx, provider, model, opts, tried)
 	}
 	if errPick != nil {
+		if shouldRetrySchedulerPick(errPick) && m.timeGateActive() {
+			return m.pickNextLegacy(ctx, provider, model, opts, tried)
+		}
 		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errPick)
 		return nil, nil, errPick
 	}
 	if selected == nil {
+		if m.timeGateActive() {
+			return m.pickNextLegacy(ctx, provider, model, opts, tried)
+		}
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	m.mu.RLock()
+	if gateName, gated := m.authGatedByTimeGate(selected, model, opts); gated {
+		m.mu.RUnlock()
+		m.warnLogTimeGateExcluded(ctx, provider, model, selected, gateName)
+		if tried == nil {
+			tried = make(map[string]struct{})
+		}
+		tried[selected.ID] = struct{}{}
+		return m.pickNextLegacy(ctx, provider, model, opts, tried)
+	}
+	m.mu.RUnlock()
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()
@@ -2264,6 +2325,10 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			continue
 		}
 		if !m.authMatchesThresholdRule(candidate, model, opts) {
+			continue
+		}
+		if gateName, gated := m.authMatchesTimeGate(candidate, model, opts); gated {
+			m.warnLogTimeGateExcluded(ctx, strings.Join(providers, ","), model, candidate, gateName)
 			continue
 		}
 		providerKey := executorKeyFromAuth(candidate)
@@ -2414,6 +2479,10 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 				m.mu.RUnlock()
 				return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 			}
+			if _, gated := m.authGatedByTimeGate(candidate, model, opts); gated {
+				m.mu.RUnlock()
+				return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
+			}
 		}
 		m.mu.RUnlock()
 	}
@@ -2436,6 +2505,17 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 		}
 		if disallowFreeAuth && isFreeCodexAuth(selected) {
+			if tried == nil {
+				tried = make(map[string]struct{})
+			}
+			tried[selected.ID] = struct{}{}
+			continue
+		}
+		m.mu.RLock()
+		gateName, gated := m.authGatedByTimeGate(selected, model, opts)
+		m.mu.RUnlock()
+		if gated {
+			m.warnLogTimeGateExcluded(ctx, strings.Join(eligibleProviders, ","), model, selected, gateName)
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}
