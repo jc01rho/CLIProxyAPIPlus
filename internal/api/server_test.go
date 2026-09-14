@@ -19,6 +19,7 @@ import (
 	gin "github.com/gin-gonic/gin"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	claudemodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/claude/models"
+	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -3101,5 +3102,132 @@ func TestServerCodexAPIKeyResponsesStreamingRequestLog(t *testing.T) {
 	}
 	if !strings.Contains(apiResponseSection, "response.output_item.added") {
 		t.Fatalf("API RESPONSE section missing response chunk data:\n%s", apiResponseSection)
+	}
+}
+
+func TestModelsForCPAClientSerializesWebSearchCapabilities(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	registrations := []struct {
+		clientID string
+		provider string
+		modelID  string
+	}{
+		{"cpa-web-search-codex", "codex", "cpa-search-codex-model"},
+		{"cpa-web-search-xai", "xai", "cpa-search-xai-model"},
+		{"cpa-web-search-claude", "claude", "cpa-search-claude-model"},
+		{"cpa-web-search-gemini", "gemini", "cpa-no-search-gemini-model"},
+		{"cpa-web-search-mixed-codex", "codex", "cpa-mixed-search-model"},
+		{"cpa-web-search-mixed-gemini", "gemini", "cpa-mixed-search-model"},
+		{"cpa-web-search-prefixed", "codex", "team/cpa-prefixed-search-model"},
+	}
+	webSearch := true
+	for _, registration := range registrations {
+		modelRegistry.RegisterClient(registration.clientID, registration.provider, []*registry.ModelInfo{{
+			ID: registration.modelID,
+			NativeCapabilities: &registry.NativeCapabilities{
+				WebSearch: &webSearch,
+			},
+		}})
+	}
+	t.Cleanup(func() {
+		for _, registration := range registrations {
+			modelRegistry.UnregisterClient(registration.clientID)
+		}
+	})
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models?client_version=cpa", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
+	recorder := httptest.NewRecorder()
+	server.engine.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	var response struct {
+		Models []map[string]any `json:"models"`
+	}
+	if errUnmarshal := json.Unmarshal(recorder.Body.Bytes(), &response); errUnmarshal != nil {
+		t.Fatalf("decode response: %v; body=%s", errUnmarshal, recorder.Body.String())
+	}
+	entries := make(map[string]map[string]any, len(response.Models))
+	for _, model := range response.Models {
+		slug, _ := model["slug"].(string)
+		entries[slug] = model
+	}
+	for _, modelID := range []string{"cpa-search-codex-model", "cpa-search-xai-model", "cpa-search-claude-model", "team/cpa-prefixed-search-model"} {
+		assertSerializedCPAWebSearch(t, entries[modelID], true)
+	}
+	for _, modelID := range []string{"cpa-no-search-gemini-model", "cpa-mixed-search-model"} {
+		assertSerializedCPAWebSearch(t, entries[modelID], false)
+	}
+
+	legacyRequest := httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.153.4", nil)
+	legacyRequest.Header.Set("Authorization", "Bearer test-key")
+	legacyRecorder := httptest.NewRecorder()
+	server.engine.ServeHTTP(legacyRecorder, legacyRequest)
+	if strings.Contains(legacyRecorder.Body.String(), "cpa_capabilities") {
+		t.Fatalf("non-CPA response exposed CPA capability: %s", legacyRecorder.Body.String())
+	}
+}
+
+func TestHomeModelsRequirePerEntryWebSearchCapabilityAndConservativeRoutes(t *testing.T) {
+	entries, errDecode := decodeHomeModels([]byte(`{
+		"codex":[
+			{"id":"home-codex","native_capabilities":{"web_search":true}},
+			{"id":"home-unknown"},
+			{"id":"home-duplicate","native_capabilities":{"web_search":true}},
+			{"id":"home-duplicate","native_capabilities":{"web_search":false}}
+		],
+		"xai":[{"id":"home-xai","native_capabilities":{"web_search":true}}],
+		"claude":[{"id":"gpt-5.5","native_capabilities":{"web_search":true}}],
+		"gemini":[{"id":"home-gemini","native_capabilities":{"web_search":true}}],
+		"custom":[{"id":"home-custom","native_capabilities":{"web_search":true}}]
+	}`))
+	if errDecode != nil {
+		t.Fatalf("decode Home models: %v", errDecode)
+	}
+
+	models := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		models = append(models, formatHomeCodexModel(entry))
+	}
+	response := codexmodels.BuildResponseForClientWithCPACapabilities(models, nil, homeWebSearchCapabilityForModel(entries), false, "cpa")
+	catalog, ok := response["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models = %#v, want []map[string]any", response["models"])
+	}
+	bySlug := make(map[string]map[string]any, len(catalog))
+	for _, model := range catalog {
+		slug, _ := model["slug"].(string)
+		bySlug[slug] = model
+	}
+	for _, modelID := range []string{"home-codex", "home-xai", "gpt-5.5"} {
+		assertSerializedCPAWebSearch(t, bySlug[modelID], true)
+	}
+	if supportsSearchTool, _ := bySlug["gpt-5.5"]["supports_search_tool"].(bool); !supportsSearchTool {
+		t.Fatal("CPA capability metadata changed legacy Home supports_search_tool")
+	}
+	for _, modelID := range []string{"home-gemini", "home-duplicate"} {
+		assertSerializedCPAWebSearch(t, bySlug[modelID], false)
+	}
+	for _, modelID := range []string{"home-unknown", "home-custom"} {
+		if _, exists := bySlug[modelID]["cpa_capabilities"]; exists {
+			t.Fatalf("%s cpa_capabilities = %#v, want omitted", modelID, bySlug[modelID]["cpa_capabilities"])
+		}
+	}
+}
+
+func assertSerializedCPAWebSearch(t *testing.T, model map[string]any, want bool) {
+	t.Helper()
+	if model == nil {
+		t.Fatal("model entry is missing")
+	}
+	capabilities, ok := model["cpa_capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("model %v cpa_capabilities = %#v, want object", model["slug"], model["cpa_capabilities"])
+	}
+	if got, ok := capabilities["web_search"].(bool); !ok || got != want {
+		t.Fatalf("model %v web_search = %#v, want %v", model["slug"], capabilities["web_search"], want)
 	}
 }

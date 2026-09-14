@@ -1,203 +1,256 @@
 package management
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	devinauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/devin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/devin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
-func TestRequestDevinTokenReturnsAuthURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	authDir := t.TempDir()
-	cfg := &config.Config{AuthDir: authDir}
-	h := NewHandlerWithoutConfigFilePath(cfg, nil)
-
-	router := gin.New()
-	router.GET("/v0/management/devin-auth-url", h.RequestDevinToken)
-
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/devin-auth-url", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp struct {
-		URL   string `json:"url"`
-		State string `json:"state"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if resp.URL == "" || !strings.Contains(resp.URL, "https://app.devin.ai/auth/cli/continue") {
-		t.Errorf("unexpected URL: %s", resp.URL)
-	}
-	if resp.State == "" {
-		t.Errorf("state should not be empty")
-	}
-	if !strings.Contains(resp.URL, "state="+resp.State) {
-		t.Errorf("auth URL missing state param: %s", resp.URL)
-	}
-	if !strings.Contains(resp.URL, "cli_pkce_marker=1") {
-		t.Errorf("auth URL missing cli_pkce_marker: %s", resp.URL)
-	}
-
-	// Clean up session
-	CompleteOAuthSession(resp.State)
+type fakeDevinOAuthService struct {
+	exchange func(context.Context, string, string) (string, error)
+	create   func(context.Context, string) (*coreauth.Auth, error)
 }
 
-func TestPostOAuthCallbackPersistsDevinCode(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+func (f *fakeDevinOAuthService) BuildAuthorizationURL(redirectURI, challenge, state string) string {
+	return devin.NewDevinAuthService(nil).BuildAuthorizationURL(redirectURI, challenge, state)
+}
+
+func (f *fakeDevinOAuthService) ExchangeCodeForToken(ctx context.Context, code, verifier string) (string, error) {
+	if f.exchange != nil {
+		return f.exchange(ctx, code, verifier)
+	}
+	return "eyJ.test.token", nil
+}
+
+func (f *fakeDevinOAuthService) CreateAuthRecord(ctx context.Context, token string) (*coreauth.Auth, error) {
+	if f.create != nil {
+		return f.create(ctx, token)
+	}
+	return &coreauth.Auth{
+		ID: "devin-test.json", FileName: "devin-test.json", Provider: "devin",
+		Metadata: map[string]any{"type": "devin", "api_key": devin.FormatSessionToken(token), "auth_kind": "oauth"},
+	}, nil
+}
+
+func TestDevinRemoteOAuthFlow(t *testing.T) {
 	authDir := t.TempDir()
-	state := "test-devin-state-123"
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir, Port: 8317}, nil)
+	exchanged := make(chan string, 1)
+	service := &fakeDevinOAuthService{exchange: func(ctx context.Context, code, verifier string) (string, error) {
+		if code != "remote-code" {
+			t.Errorf("code = %q", code)
+		}
+		if ctx.Err() != nil {
+			t.Error("login inherited completed HTTP request cancellation")
+		}
+		exchanged <- verifier
+		return "eyJ.test.token", nil
+	}}
+	originalFactory := newDevinOAuthService
+	newDevinOAuthService = func(*config.Config) devinOAuthService { return service }
+	t.Cleanup(func() { newDevinOAuthService = originalFactory })
+
+	router := gin.New()
+	router.GET("/devin-auth-url", h.RequestDevinToken)
+	router.POST("/oauth-callback", h.PostOAuthCallback)
+	router.GET("/get-auth-status", h.GetAuthStatus)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	defer cancelRequest()
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/devin-auth-url?is_webui=true", nil).WithContext(requestCtx))
+	cancelRequest()
+	if w.Code != http.StatusOK {
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
+	}
+	var start struct{ State, URL, Status string }
+	if errDecode := json.Unmarshal(w.Body.Bytes(), &start); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	t.Cleanup(func() { CancelOAuthSession(start.State) })
+	u, errParse := url.Parse(start.URL)
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+	query := u.Query()
+	if start.Status != "ok" || start.State == "" || query.Get("state") != start.State || query.Get("code_challenge_method") != "S256" {
+		t.Fatalf("invalid authorization response: %s", w.Body.String())
+	}
+	if got := query.Get("redirect_uri"); got != "http://127.0.0.1:8317/callback" {
+		t.Fatalf("redirect_uri = %q", got)
+	}
+	if query.Get("code_verifier") != "" {
+		t.Fatal("PKCE verifier exposed")
+	}
+
+	secondState := start.State + "-second"
+	RegisterOAuthSession(secondState, "devin")
+	defer CancelOAuthSession(secondState)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/get-auth-status?state="+start.State, nil))
+	if !strings.Contains(w.Body.String(), `"status":"wait"`) {
+		t.Fatalf("pending: %s", w.Body.String())
+	}
+
+	redirect := query.Get("redirect_uri") + "?code=remote-code&state=" + start.State
+	body, errMarshal := json.Marshal(map[string]string{"provider": "cognition", "redirect_url": redirect})
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/oauth-callback", strings.NewReader(string(body))))
+	if w.Code != http.StatusOK {
+		t.Fatalf("callback: %d %s", w.Code, w.Body.String())
+	}
+	select {
+	case verifier := <-exchanged:
+		digest := sha256.Sum256([]byte(verifier))
+		if base64.RawURLEncoding.EncodeToString(digest[:]) != query.Get("code_challenge") {
+			t.Fatal("PKCE challenge does not match verifier")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("token exchange did not start")
+	}
+
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/get-auth-status?state="+start.State, nil))
+		var status map[string]string
+		if errDecode := json.Unmarshal(w.Body.Bytes(), &status); errDecode != nil {
+			t.Fatal(errDecode)
+		}
+		if status["status"] == "ok" {
+			break
+		}
+		if status["status"] == "error" {
+			t.Fatalf("login failed: %v", status)
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("login did not complete")
+		case <-ticker.C:
+		}
+	}
+	if !IsOAuthSessionPending(secondState, "devin") {
+		t.Fatal("completed another login session")
+	}
+	data, errRead := os.ReadFile(filepath.Join(authDir, "devin-test.json"))
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	var record map[string]any
+	if errDecode := json.Unmarshal(data, &record); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if record["api_key"] != "devin-session-token$eyJ.test.token" || record["type"] != "devin" || record["auth_kind"] != "oauth" {
+		t.Fatalf("unexpected credential: %v", record)
+	}
+
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/oauth-callback", strings.NewReader(string(body))))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("replay: %d", w.Code)
+	}
+}
+
+func TestCompleteDevinOAuthFailures(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		payload            string
+		exchangeErr        bool
+		emptyToken         bool
+		cancelDuringCreate bool
+		saveErr            bool
+		want               string
+	}{
+		{name: "denied", payload: `{"state":"test-state","error":"access_denied"}`, want: "Devin authorization denied"},
+		{name: "mismatched state", payload: `{"state":"wrong","code":"code"}`, want: "State code error"},
+		{name: "missing code", payload: `{"state":"test-state"}`, want: "Missing authorization code"},
+		{name: "malformed callback", payload: `{`, want: "Invalid OAuth callback"},
+		{name: "exchange error", exchangeErr: true, want: "Failed to exchange authorization code for tokens"},
+		{name: "empty token", emptyToken: true, want: "Failed to exchange authorization code for tokens"},
+		{name: "cancel during profile", cancelDuringCreate: true},
+		{name: "save error", saveErr: true, want: "Failed to save authentication tokens"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const state = "test-state"
+			authDir := t.TempDir()
+			h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+			RegisterOAuthSession(state, "devin")
+			defer CompleteOAuthSession(state)
+			payload := test.payload
+			if payload == "" {
+				payload = `{"state":"test-state","code":"code"}`
+			}
+			path := filepath.Join(authDir, ".oauth-devin-"+state+".oauth")
+			if errWrite := os.WriteFile(path, []byte(payload), 0o600); errWrite != nil {
+				t.Fatal(errWrite)
+			}
+			service := &fakeDevinOAuthService{}
+			if test.exchangeErr {
+				service.exchange = func(context.Context, string, string) (string, error) { return "", errors.New("secret-upstream-token") }
+			}
+			if test.emptyToken {
+				service.exchange = func(context.Context, string, string) (string, error) { return "", nil }
+			}
+			if test.cancelDuringCreate {
+				service.create = func(context.Context, string) (*coreauth.Auth, error) {
+					CancelOAuthSession(state)
+					return &coreauth.Auth{}, nil
+				}
+			}
+			if test.saveErr {
+				h.postAuthHook = func(context.Context, *coreauth.Auth) error { return errors.New("save failed") }
+			}
+			h.completeDevinOAuth(context.Background(), authDir, state, "verifier", service)
+			_, status, ok := GetOAuthSession(state)
+			if test.cancelDuringCreate {
+				if ok {
+					t.Fatal("cancelled session was recreated")
+				}
+			} else if !ok || status != test.want {
+				t.Fatalf("status = %q, exists = %v; want %q", status, ok, test.want)
+			}
+			if _, errStat := os.Stat(path); !errors.Is(errStat, os.ErrNotExist) {
+				t.Fatalf("callback file not removed: %v", errStat)
+			}
+			entries, errRead := os.ReadDir(authDir)
+			if errRead != nil {
+				t.Fatal(errRead)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("credentials saved for failed/cancelled flow: %v", entries)
+			}
+		})
+	}
+}
+
+func TestWaitDevinOAuthCallbackExpiredContext(t *testing.T) {
+	const state = "devin-expired-context"
 	RegisterOAuthSession(state, "devin")
 	defer CompleteOAuthSession(state)
-
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
-	router := gin.New()
-	router.POST("/v0/management/oauth-callback", h.PostOAuthCallback)
-
-	body := `{"provider":"devin","code":"wspkce$test-auth-code-456","state":"test-devin-state-123"}`
-	req := httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	callbackPath := filepath.Join(authDir, ".oauth-devin-"+state+".oauth")
-	data, errRead := os.ReadFile(callbackPath)
-	if errRead != nil {
-		t.Fatalf("expected callback file to be written: %v", errRead)
-	}
-
-	var payload oauthCallbackFilePayload
-	if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
-		t.Fatalf("failed to decode callback payload: %v", errUnmarshal)
-	}
-	if payload.State != state || payload.Code != "wspkce$test-auth-code-456" {
-		t.Fatalf("unexpected callback payload: %+v", payload)
-	}
-}
-
-func TestNormalizeOAuthProviderDevin(t *testing.T) {
-	norm, err := NormalizeOAuthProvider("devin")
-	if err != nil {
-		t.Fatalf("NormalizeOAuthProvider(devin) failed: %v", err)
-	}
-	if norm != "devin" {
-		t.Errorf("expected devin, got %s", norm)
-	}
-
-	normUpper, err := NormalizeOAuthProvider("DEVIN")
-	if err != nil {
-		t.Fatalf("NormalizeOAuthProvider(DEVIN) failed: %v", err)
-	}
-	if normUpper != "devin" {
-		t.Errorf("expected devin, got %s", normUpper)
-	}
-}
-
-func TestDevinOAuthLifecycleEndToEnd(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	authDir := t.TempDir()
-	cfg := &config.Config{AuthDir: authDir}
-	h := NewHandlerWithoutConfigFilePath(cfg, nil)
-
-	router := gin.New()
-	router.GET("/v0/management/devin-auth-url", h.RequestDevinToken)
-	router.GET("/v0/management/get-auth-status", h.GetAuthStatus)
-	router.POST("/v0/management/oauth-callback", h.PostOAuthCallback)
-
-	// Step 1: UI requests start auth
-	reqStart := httptest.NewRequest(http.MethodGet, "/v0/management/devin-auth-url", nil)
-	wStart := httptest.NewRecorder()
-	router.ServeHTTP(wStart, reqStart)
-
-	if wStart.Code != http.StatusOK {
-		t.Fatalf("start auth failed: %d %s", wStart.Code, wStart.Body.String())
-	}
-
-	var startResp struct {
-		URL   string `json:"url"`
-		State string `json:"state"`
-	}
-	_ = json.Unmarshal(wStart.Body.Bytes(), &startResp)
-	state := startResp.State
-
-	// Step 2: UI polls status -> should be "wait"
-	reqStatus := httptest.NewRequest(http.MethodGet, "/v0/management/get-auth-status?state="+state, nil)
-	wStatus := httptest.NewRecorder()
-	router.ServeHTTP(wStatus, reqStatus)
-
-	var statusResp struct {
-		Status string `json:"status"`
-	}
-	_ = json.Unmarshal(wStatus.Body.Bytes(), &statusResp)
-	if statusResp.Status != "wait" {
-		t.Fatalf("expected status wait, got %s", statusResp.Status)
-	}
-
-	// Step 3: Simulate callback file with valid mock tokens by setting up a callback write
-	// In the real flow, the background goroutine in RequestDevinToken calls ExchangeCode.
-	// We verify that submitting callback persists the callback file correctly for that session.
-	callbackBody := `{"provider":"devin","redirect_url":"http://localhost/oauth-callback?code=mock-code-xyz","state":"` + state + `"}`
-	reqCb := httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", strings.NewReader(callbackBody))
-	reqCb.Header.Set("Content-Type", "application/json")
-	wCb := httptest.NewRecorder()
-	router.ServeHTTP(wCb, reqCb)
-
-	if wCb.Code != http.StatusOK {
-		t.Fatalf("callback submission failed: %d %s", wCb.Code, wCb.Body.String())
-	}
-
-	// Verify session can be completed and status becomes "ok"
-	CompleteOAuthSession(state)
-
-	reqStatusFinal := httptest.NewRequest(http.MethodGet, "/v0/management/get-auth-status?state="+state, nil)
-	wStatusFinal := httptest.NewRecorder()
-	router.ServeHTTP(wStatusFinal, reqStatusFinal)
-
-	_ = json.Unmarshal(wStatusFinal.Body.Bytes(), &statusResp)
-	if statusResp.Status != "ok" {
-		t.Fatalf("expected status ok after completion, got %s", statusResp.Status)
-	}
-
-	// Verify token record builder directly creates valid file structure in AuthDir
-	mockTokens := &devinauth.TokenResponse{
-		APIKey:          "live-api-key-test-abc",
-		APIServerURL:    "https://server.codeium.com",
-		DevinAPIURL:     "https://api.devin.ai",
-		DevinWebappHost: "https://app.devin.ai",
-		SessionToken:    "session-tok-123",
-	}
-	record := devinauth.BuildAuthRecord(mockTokens, "lifecycle")
-	savedPath, errSave := h.saveTokenRecord(t.Context(), record)
-	if errSave != nil {
-		t.Fatalf("saveTokenRecord failed: %v", errSave)
-	}
-
-	if _, errStat := os.Stat(savedPath); errStat != nil {
-		t.Fatalf("saved auth file does not exist at %s: %v", savedPath, errStat)
-	}
-
-	data, _ := os.ReadFile(savedPath)
-	if !strings.Contains(string(data), "live-api-key-test-abc") {
-		t.Errorf("saved file does not contain api_key: %s", string(data))
-	}
-	if !strings.Contains(string(data), "https://api.devin.ai") {
-		t.Errorf("saved file does not contain devin_api_url: %s", string(data))
+	ctx, cancel := context.WithDeadline(context.Background(), time.Unix(1, 0))
+	defer cancel()
+	_, errWait := waitDevinOAuthCallback(ctx, filepath.Join(t.TempDir(), "missing.oauth"), state)
+	if errWait == nil || errWait.Error() != "Timeout waiting for OAuth callback" {
+		t.Fatalf("error = %v", errWait)
 	}
 }
