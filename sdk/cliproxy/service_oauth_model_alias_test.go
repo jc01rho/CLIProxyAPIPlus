@@ -3,6 +3,7 @@ package cliproxy
 import (
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
@@ -277,9 +278,10 @@ func TestApplyOAuthModelAlias_PreservesMetadataModelID(t *testing.T) {
 }
 
 func TestApplyModelPrefixes_PreservesMetadataModelID(t *testing.T) {
+	webSearch := true
 	models := []*ModelInfo{
 		{ID: "gpt-6-astra"},
-		{ID: "codex-main", MetadataModelID: "gpt-6-astra"},
+		{ID: "codex-main", MetadataModelID: "gpt-6-astra", NativeCapabilities: &registry.NativeCapabilities{WebSearch: &webSearch}},
 	}
 
 	out := applyModelPrefixes(models, "1", false)
@@ -302,5 +304,12 @@ func TestApplyModelPrefixes_PreservesMetadataModelID(t *testing.T) {
 		t.Fatal("missing 1/codex-main")
 	} else if m.MetadataModelID != "gpt-6-astra" {
 		t.Fatalf("1/codex-main MetadataModelID = %q, want gpt-6-astra", m.MetadataModelID)
+	} else if m.NativeCapabilities == nil || m.NativeCapabilities.WebSearch == nil || !*m.NativeCapabilities.WebSearch {
+		t.Fatalf("1/codex-main did not inherit native capabilities: %+v", m)
+	} else {
+		*m.NativeCapabilities.WebSearch = false
+		if !*entryMap["codex-main"].NativeCapabilities.WebSearch {
+			t.Fatal("prefixed capability metadata aliases the source model")
+		}
 	}
 }
