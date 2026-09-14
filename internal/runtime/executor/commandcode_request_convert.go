@@ -171,16 +171,17 @@ func commandCodeTextContent(msg commandCodeOpenAIMessage) (string, error) {
 
 // commandCodeConvertTools converts OpenAI function tools to the CommandCode
 // {name, description, input_schema} wire shape without the type:"function" wrapper.
+// Schemas with a JSON null type ("type":null at any depth, produced by some
+// clients for tools like record_fact) are repaired to "object": upstream
+// rejects them with "Invalid schema for function ...: schema must be a JSON
+// Schema of 'type: \"object\"', got 'type: null'".
 func commandCodeConvertTools(tools []commandCodeOpenAITool) []commandCodeWireTool {
 	if len(tools) == 0 {
 		return nil
 	}
 	wire := make([]commandCodeWireTool, 0, len(tools))
 	for _, tool := range tools {
-		parameters := tool.Function.Parameters
-		if len(parameters) == 0 || string(parameters) == "null" {
-			parameters = json.RawMessage(`{"type":"object","properties":{}}`)
-		}
+		parameters := commandCodeRepairNullTypeSchema(tool.Function.Parameters)
 		wire = append(wire, commandCodeWireTool{
 			Name:        tool.Function.Name,
 			Description: tool.Function.Description,
@@ -188,4 +189,71 @@ func commandCodeConvertTools(tools []commandCodeOpenAITool) []commandCodeWireToo
 		})
 	}
 	return wire
+}
+
+// commandCodeRepairNullTypeSchema returns a valid object schema for the wire.
+// Empty, null, or unparsable parameters become {"type":"object","properties":{}};
+// a top-level or nested "type":null is repaired to "object" recursively.
+func commandCodeRepairNullTypeSchema(parameters json.RawMessage) json.RawMessage {
+	if len(parameters) == 0 || string(parameters) == "null" {
+		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	var schema any
+	if err := json.Unmarshal(parameters, &schema); err != nil {
+		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	if repairJSONSchemaNullType(schema) {
+		if fixed, err := json.Marshal(schema); err == nil {
+			return fixed
+		}
+		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	return parameters
+}
+
+// repairJSONSchemaNullType replaces "type":null with "object" at every depth.
+// It reports whether anything was repaired. Non-object schemas and unknown
+// shapes are left untouched.
+func repairJSONSchemaNullType(node any) bool {
+	obj, ok := node.(map[string]any)
+	if !ok {
+		return false
+	}
+	repaired := false
+	if typ, exists := obj["type"]; exists && typ == nil {
+		obj["type"] = "object"
+		repaired = true
+	}
+	if _, exists := obj["properties"]; !exists {
+		if typ, _ := obj["type"].(string); typ == "object" {
+			obj["properties"] = map[string]any{}
+			repaired = true
+		}
+	}
+	for _, key := range []string{"properties", "definitions", "$defs", "patternProperties"} {
+		if sub, ok := obj[key].(map[string]any); ok {
+			for _, child := range sub {
+				if repairJSONSchemaNullType(child) {
+					repaired = true
+				}
+			}
+		}
+	}
+	for _, key := range []string{"items", "additionalProperties", "unevaluatedProperties", "contains", "not", "if", "then", "else"} {
+		if child, ok := obj[key]; ok {
+			if repairJSONSchemaNullType(child) {
+				repaired = true
+			}
+		}
+	}
+	for _, key := range []string{"anyOf", "oneOf", "allOf", "prefixItems"} {
+		if arr, ok := obj[key].([]any); ok {
+			for _, child := range arr {
+				if repairJSONSchemaNullType(child) {
+					repaired = true
+				}
+			}
+		}
+	}
+	return repaired
 }
