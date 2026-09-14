@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -539,4 +540,24 @@ func WriteOAuthCallbackFileForPendingSession(authDir, provider, state, code, err
 		return "", errOAuthSessionNotPending
 	}
 	return writeOAuthCallbackFile(authDir, canonicalProvider, state, code, errorMessage)
+}
+
+// watchOAuthSessionCancel cancels pollCtx once the OAuth session is no longer pending.
+func watchOAuthSessionCancel(pollCtx context.Context, cancel context.CancelFunc, state, provider string) {
+	if cancel == nil {
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-pollCtx.Done():
+			return
+		case <-ticker.C:
+			if !IsOAuthSessionPending(state, provider) {
+				cancel()
+				return
+			}
+		}
+	}
 }

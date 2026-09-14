@@ -67,6 +67,24 @@ func GeneratePKCE() (*PKCECodes, error) {
 	}, nil
 }
 
+// upstreamPKCECodes adapts the local PKCECodes to the upstream pkce.go shape
+// (CodeVerifier/CodeChallenge) expected by management handlers restored from
+// upstream. New code should use GeneratePKCE directly.
+type upstreamPKCECodes struct {
+	CodeVerifier  string
+	CodeChallenge string
+}
+
+// GeneratePKCECodes mirrors upstream's pkce.go helper on top of the local
+// GeneratePKCE so upstream-restored callers keep compiling.
+func GeneratePKCECodes() (*upstreamPKCECodes, error) {
+	codes, err := GeneratePKCE()
+	if err != nil {
+		return nil, err
+	}
+	return &upstreamPKCECodes{CodeVerifier: codes.Verifier, CodeChallenge: codes.Challenge}, nil
+}
+
 // GenerateAuthURL builds the browser continue URL for Devin CLI login.
 func GenerateAuthURL(state string, pkce *PKCECodes) (string, error) {
 	if pkce == nil || pkce.Challenge == "" {
