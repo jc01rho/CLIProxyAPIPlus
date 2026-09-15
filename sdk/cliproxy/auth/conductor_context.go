@@ -48,11 +48,38 @@ func SetFallbackInfoInContext(ctx context.Context, requestedModel, actualModel s
 	if requestedModel == "" || actualModel == "" || requestedModel == actualModel {
 		return ctx
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Pin the first client-facing requested model. Route-model fallback writes
+	// (original, fallback-alias), then alias/upstream mapping writes
+	// (fallback-alias, real-id). Overwriting would make gin's 200 line look
+	// like a native alias call and hide the original request.
+	if existingRequested, existingActual := fallbackInfoFromContextOrGin(ctx); existingRequested != "" {
+		requestedModel = existingRequested
+		if actualModel == existingRequested {
+			actualModel = existingActual
+		}
+	}
 	info := map[string]string{"requested_model": requestedModel, "actual_model": actualModel}
 	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
 		ginCtx.Set(GinFallbackInfoKey, info)
 	}
 	return context.WithValue(ctx, fallbackInfoContextKey, info)
+}
+
+func fallbackInfoFromContextOrGin(ctx context.Context) (requestedModel, actualModel string) {
+	if requestedModel, actualModel = GetFallbackInfoFromContext(ctx); requestedModel != "" {
+		return requestedModel, actualModel
+	}
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
+		if value, exists := ginCtx.Get(GinFallbackInfoKey); exists {
+			if info, ok := value.(map[string]string); ok {
+				return info["requested_model"], info["actual_model"]
+			}
+		}
+	}
+	return "", ""
 }
 
 func GetFallbackInfoFromContext(ctx context.Context) (requestedModel, actualModel string) {

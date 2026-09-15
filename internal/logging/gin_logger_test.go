@@ -434,3 +434,38 @@ func TestGinLogrusLoggerHealthProbeStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestGinLogrusLoggerKeepsOriginalModelAfterTimedGateFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var logBuffer bytes.Buffer
+	log.SetOutput(&logBuffer)
+	log.SetLevel(log.InfoLevel)
+
+	engine := gin.New()
+	engine.Use(GinLogrusLogger(&config.Config{}))
+	engine.POST("/v1/responses", func(c *gin.Context) {
+		// Alias mapping overwrote route-fallback info the way production does
+		// after a time-gate auth_not_found hops to lower-coding -> glm-5.3.
+		c.Set(ginFallbackInfoKey, map[string]string{
+			"requested_model": "lower-coding",
+			"actual_model":    "glm-5.3",
+		})
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"command-deepseek-v4.1-flash"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	logOutput := logBuffer.String()
+	if !bytes.Contains([]byte(logOutput), []byte("glm-5.3 (command-deepseek-v4.1-flash)")) {
+		t.Fatalf("expected gin 200 to keep the original requested model, got: %s", logOutput)
+	}
+	if bytes.Contains([]byte(logOutput), []byte("glm-5.3 (lower-coding)")) {
+		t.Fatalf("gin 200 hid the original model behind the fallback alias, got: %s", logOutput)
+	}
+}
+

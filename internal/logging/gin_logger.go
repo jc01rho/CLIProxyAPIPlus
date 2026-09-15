@@ -340,7 +340,14 @@ func GinLogrusLogger(configs ...*config.Config) gin.HandlerFunc {
 		if isAIAPIPath(path) && (modelName != "" || providerInfo != "" || authKeyName != "") {
 			displayModelName := modelName
 			if requestedModel != "" && actualModel != "" && requestedModel != actualModel && modelName != actualModel {
-				displayModelName = fmt.Sprintf("%s (%s)", actualModel, requestedModel)
+				shownRequested := requestedModel
+				// Body model is the client's original id. After time-gate
+				// route fallback, alias mapping may overwrite fallback info to
+				// (alias, upstream); keep the original id on the 200 line.
+				if modelName != "" && modelName != requestedModel {
+					shownRequested = modelName
+				}
+				displayModelName = fmt.Sprintf("%s (%s)", actualModel, shownRequested)
 				if upstreamModel != "" && actualModel != upstreamModel && modelName != upstreamModel {
 					displayModelName = fmt.Sprintf("%s → %s", displayModelName, upstreamModel)
 				}
