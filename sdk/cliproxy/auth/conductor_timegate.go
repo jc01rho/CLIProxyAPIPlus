@@ -350,20 +350,29 @@ func parseCronWeekday(field string) (int, error) {
 }
 
 // warnLogTimeGateExcluded records an excluded candidate with the rule name,
-// auth, provider, and route model for traceability.
+// auth, provider, and route model for traceability. This is informational and
+// expected on every request when a time gate is configured; emitted at Debug
+// so it does not flood INFO logs. Provider lists passed in by callers can be
+// the comma-joined set of every eligible provider, so the field is truncated
+// to keep each line readable when Debug is enabled.
 func (m *Manager) warnLogTimeGateExcluded(ctx context.Context, provider, routeModel string, auth *Auth, ruleName string) {
 	authID := ""
 	if auth != nil {
 		authID = auth.ID
 	}
+	const maxProviderFieldLen = 256
+	providerField := provider
+	if len(providerField) > maxProviderFieldLen {
+		providerField = providerField[:maxProviderFieldLen] + "..."
+	}
 	entry := log.WithField("rule", ruleName).
-		WithField("provider", provider).
+		WithField("provider", providerField).
 		WithField("auth_id", authID).
 		WithField("model", routeModel)
 	if reqID, ok := ctx.Value("request_id").(string); ok && reqID != "" {
 		entry = entry.WithField("request_id", reqID)
 	}
-	entry.Info("auth excluded by model time gate")
+	entry.Debug("auth excluded by model time gate")
 }
 
 // authMatchesTimeGate is the Manager-facing wrapper: it reads the live
