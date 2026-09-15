@@ -621,6 +621,10 @@ type HostModelExecutionRequest struct {
 	Query url.Values `json:"query"`
 	// Alt carries an alternate route or mode suffix when present.
 	Alt string `json:"alt"`
+	// ForcedProvider optionally restricts execution to a specific provider.
+	ForcedProvider string `json:"forced_provider,omitempty"`
+	// AuthID optionally locks execution to an exact credential ID.
+	AuthID string `json:"auth_id,omitempty"`
 }
 
 // HostModelExecutionResponse describes a non-streaming host model execution response.

@@ -176,21 +176,23 @@ func TestHostInjectedHTTPClientIsNotEncodedInPluginJSON(t *testing.T) {
 
 func TestHostModelTypesPreserveFields(t *testing.T) {
 	request := HostModelExecutionRequest{
-		EntryProtocol: "openai",
-		ExitProtocol:  "claude",
-		Model:         "gpt-test",
-		Stream:        true,
-		Body:          []byte(`{"input":"hello"}`),
-		Headers:       http.Header{"X-Test": []string{"one", "two"}},
-		Query:         url.Values{"alt": []string{"beta"}},
-		Alt:           "chat",
+		EntryProtocol:  "openai",
+		ExitProtocol:   "claude",
+		Model:          "gpt-test",
+		Stream:         true,
+		Body:           []byte(`{"input":"hello"}`),
+		Headers:        http.Header{"X-Test": []string{"one", "two"}},
+		Query:          url.Values{"alt": []string{"beta"}},
+		Alt:            "chat",
+		ForcedProvider: "gemini",
+		AuthID:         "exact-auth-123",
 	}
 	rawRequest, errMarshalRequest := json.Marshal(request)
 	if errMarshalRequest != nil {
 		t.Fatalf("marshal HostModelExecutionRequest: %v", errMarshalRequest)
 	}
 	requestJSON := string(rawRequest)
-	for _, field := range []string{"entry_protocol", "exit_protocol", "model", "stream", "body", "headers", "query", "alt"} {
+	for _, field := range []string{"entry_protocol", "exit_protocol", "model", "stream", "body", "headers", "query", "alt", "forced_provider", "auth_id"} {
 		if !strings.Contains(requestJSON, `"`+field+`"`) {
 			t.Fatalf("HostModelExecutionRequest JSON missing field %q: %s", field, requestJSON)
 		}
@@ -206,7 +208,9 @@ func TestHostModelTypesPreserveFields(t *testing.T) {
 		string(decodedRequest.Body) != string(request.Body) ||
 		decodedRequest.Headers.Get("X-Test") != "one" ||
 		decodedRequest.Query.Get("alt") != "beta" ||
-		decodedRequest.Alt != request.Alt {
+		decodedRequest.Alt != request.Alt ||
+		decodedRequest.ForcedProvider != request.ForcedProvider ||
+		decodedRequest.AuthID != request.AuthID {
 		t.Fatalf("HostModelExecutionRequest round trip = %#v", decodedRequest)
 	}
 	if got := decodedRequest.Headers.Values("X-Test"); len(got) != 2 || got[1] != "two" {

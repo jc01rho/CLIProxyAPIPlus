@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,7 +86,37 @@ func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode,
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
-	fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+	if len(os.Args) > 1 && os.Args[1] == "discover" {
+		discoverFlags := flag.NewFlagSet("discover", flag.ExitOnError)
+		timeoutSec := discoverFlags.Int("timeout", 3, "Discovery timeout in seconds")
+		jsonOut := discoverFlags.Bool("json", false, "Output in JSON format")
+		serviceType := discoverFlags.String("service-type", "", "DNS-SD service type (default _ai-gateway._tcp)")
+		configPathFlag := discoverFlags.String("config", DefaultConfigPath, "Configure File Path")
+		var include, exclude []string
+		discoverFlags.Func("include", "Comma-separated interface names to scan (overrides default physical LAN filter)", appendCSV(&include))
+		discoverFlags.Func("exclude", "Comma-separated interface names to skip", appendCSV(&exclude))
+		_ = discoverFlags.Parse(os.Args[2:])
+		if !*jsonOut {
+			fmt.Fprintf(os.Stderr, "CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+		}
+		cfgInclude, cfgExclude := cmd.LoadDiscoveryScanFilters(*configPathFlag)
+		include, exclude = cmd.ResolveDiscoveryInterfaceFilters(include, exclude, cfgInclude, cfgExclude)
+		code := cmd.DoDiscoverWithOptions(cmd.DiscoverOptions{
+			Timeout:     time.Duration(*timeoutSec) * time.Second,
+			JSONOutput:  *jsonOut,
+			ServiceType: *serviceType,
+			Include:     include,
+			Exclude:     exclude,
+		})
+		os.Exit(code)
+	}
+
+	// For legacy --discover-json flag or JSON requests, keep stdout clean
+	isJSONDiscover := argvEnablesBoolFlag(os.Args[1:], "discover-json")
+	isDiscoverMode := isJSONDiscover || argvEnablesBoolFlag(os.Args[1:], "discover")
+	if !isJSONDiscover {
+		fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+	}
 
 	// Command-line flags to control the application's behavior.
 	var login bool
@@ -119,6 +150,13 @@ func main() {
 	var clineLogin bool
 	var codeBuddyLogin bool
 	var projectID string
+	var devinLogin bool
+	var discoverGateways bool
+	var discoverTimeout int
+	var discoverJSON bool
+	var discoverServiceType string
+	var discoverInclude []string
+	var discoverExclude []string
 	var vertexImport string
 	var vertexImportPrefix string
 	var configPath string
@@ -165,6 +203,13 @@ func main() {
 	flag.BoolVar(&clineLogin, "cline-login", false, "Login to Cline using OAuth")
 	flag.BoolVar(&codeBuddyLogin, "codebuddy-login", false, "Login to CodeBuddy using browser OAuth flow")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
+	flag.BoolVar(&devinLogin, "devin-login", false, "Login to Devin using OAuth")
+	flag.BoolVar(&discoverGateways, "discover", false, "Discover local AI gateways and CPA instances on the LAN")
+	flag.IntVar(&discoverTimeout, "discover-timeout", 3, "Timeout in seconds for LAN discovery (default 3s)")
+	flag.BoolVar(&discoverJSON, "discover-json", false, "Output discovered gateways in JSON format")
+	flag.StringVar(&discoverServiceType, "discover-service-type", "", "DNS-SD service type for LAN discovery (default _ai-gateway._tcp)")
+	flag.Func("discover-include", "Comma-separated interface names to scan during LAN discovery", appendCSV(&discoverInclude))
+	flag.Func("discover-exclude", "Comma-separated interface names to skip during LAN discovery", appendCSV(&discoverExclude))
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
 	flag.StringVar(&vertexImportPrefix, "vertex-import-prefix", "", "Prefix for Vertex model namespacing (use with -vertex-import)")
@@ -203,13 +248,28 @@ func main() {
 	}
 
 	pluginHost := pluginhost.New()
-	if bootstrapCfg := loadPluginBootstrapConfig(pluginBootstrapConfigPath(os.Args[1:], DefaultConfigPath)); bootstrapCfg != nil {
-		pluginHost.ApplyConfig(context.Background(), bootstrapCfg)
-		pluginHost.RegisterCommandLineFlags(context.Background(), flag.CommandLine)
+	if !isDiscoverMode {
+		if bootstrapCfg := loadPluginBootstrapConfig(pluginBootstrapConfigPath(os.Args[1:], DefaultConfigPath)); bootstrapCfg != nil {
+			pluginHost.ApplyConfig(context.Background(), bootstrapCfg)
+			pluginHost.RegisterCommandLineFlags(context.Background(), flag.CommandLine)
+		}
 	}
 
 	// Parse the command-line flags.
 	flag.Parse()
+
+	if discoverGateways || discoverJSON {
+		cfgInclude, cfgExclude := cmd.LoadDiscoveryScanFilters(configPath)
+		include, exclude := cmd.ResolveDiscoveryInterfaceFilters(discoverInclude, discoverExclude, cfgInclude, cfgExclude)
+		code := cmd.DoDiscoverWithOptions(cmd.DiscoverOptions{
+			Timeout:     time.Duration(discoverTimeout) * time.Second,
+			JSONOutput:  discoverJSON,
+			ServiceType: discoverServiceType,
+			Include:     include,
+			Exclude:     exclude,
+		})
+		os.Exit(code)
+	}
 
 	// Core application variables.
 	var err error
@@ -966,4 +1026,60 @@ func loadPluginBootstrapConfig(path string) *config.Config {
 		return cfg
 	}
 	return cfg
+}
+
+func appendCSV(dst *[]string) func(string) error {
+	return func(raw string) error {
+		*dst = append(*dst, cmd.ParseInterfaceList(raw)...)
+		return nil
+	}
+}
+
+func argvEnablesBoolFlag(args []string, name string) bool {
+	enabled := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			break
+		}
+		if arg == "-" || !strings.HasPrefix(arg, "-") {
+			break
+		}
+		flagName, value, hasValue := splitArgvFlag(arg)
+		if flagName == name {
+			if !hasValue {
+				enabled = true
+			} else if parsed, errParse := strconv.ParseBool(value); errParse == nil {
+				enabled = parsed
+			}
+		}
+		if !hasValue && argvFlagConsumesValue(flagName) {
+			if i+1 < len(args) && args[i+1] != "--" {
+				i++
+			}
+		}
+	}
+	return enabled
+}
+
+func argvFlagConsumesValue(name string) bool {
+	switch name {
+	case "codex-login", "codex-device-login", "claude-login", "no-browser",
+		"antigravity-login", "kimi-login", "xai-login", "devin-login",
+		"discover", "discover-json", "home-disable-cluster-discovery",
+		"tui", "standalone", "local-model":
+		return false
+	default:
+		return name != ""
+	}
+}
+
+func splitArgvFlag(arg string) (name, value string, hasValue bool) {
+	if !strings.HasPrefix(arg, "-") {
+		return "", "", false
+	}
+	arg = strings.TrimPrefix(arg, "-")
+	arg = strings.TrimPrefix(arg, "-")
+	name, value, hasValue = strings.Cut(arg, "=")
+	return name, value, hasValue
 }

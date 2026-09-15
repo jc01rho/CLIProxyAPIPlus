@@ -30,8 +30,18 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		return
 	}
 	if a.Disabled {
+		if s != nil && s.coreManager != nil {
+			if current, ok := s.coreManager.GetByID(a.ID); ok && current != nil && !current.Disabled {
+				return
+			}
+		}
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
+	}
+	if s != nil && s.coreManager != nil {
+		if current, ok := s.coreManager.GetByID(a.ID); !ok || current == nil || current.Disabled {
+			return
+		}
 	}
 	authKind := a.AuthKind()
 	// Unregister legacy client ID (if present) to avoid double counting

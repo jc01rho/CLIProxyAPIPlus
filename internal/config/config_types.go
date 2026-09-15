@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
@@ -173,14 +176,31 @@ type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
-	// StreamBootstrapBuffering holds back initial handshake events (response.created,
-	// response.in_progress and the websocket metadata frames) until the first generated event
-	// arrives. The upstream delivers server_is_overloaded rejections inside an HTTP 200 stream
-	// right after those handshake events instead of returning 503 on the wire, so buffering them
-	// keeps the downstream response headers uncommitted long enough to retry on another credential.
-	// Trade-off: the response headers are delayed until the upstream starts generating, which can
-	// trip client or reverse-proxy read timeouts. Default is false.
+	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
+	// which the client has seen anything from - the handshake (response.created, response.in_progress,
+	// the websocket metadata frames), keepalive heartbeats, and the *.added announcements of an item
+	// or part that is still empty - until the first generated event arrives. The upstream delivers
+	// server_is_overloaded rejections inside an HTTP 200 stream right after those frames instead of
+	// returning 503 on the wire, so buffering them keeps the downstream response headers uncommitted
+	// long enough to retry on another credential. Trade-off: the response headers are delayed until
+	// the upstream starts generating, which on a slow reasoning turn now means several heartbeat
+	// intervals rather than one, and can trip client or reverse-proxy read timeouts. The hold is
+	// bounded by a frame and a byte budget, not by wall-clock time, and neither budget is advanced
+	// by a websocket peer that sends only control frames or by an upstream that never terminates an
+	// SSE line. Only overload and rate-limit rejections fail over deliberately. A stream that ends
+	// while the bootstrap is still holding ends the attempt rather than reaching the client, and
+	// what follows is pre-existing but now far more likely, since the hold can span the whole
+	// reasoning phase instead of ending at the first keepalive: a clean end with no terminal event
+	// is request-scoped on SSE and stops there, while a websocket close or a transport error on
+	// either transport is not, so the request may be retried on another credential.
+	// Default is false.
 	StreamBootstrapBuffering bool `yaml:"stream-bootstrap-buffering" json:"stream-bootstrap-buffering"`
+	// StreamBootstrapTimeout specifies an optional maximum duration to hold back uncommitted response
+	// headers during bootstrap buffering before releasing the stream to the client.
+	// Defaults to "0" (unlimited time, relying purely on the 48-frame and 1MB byte bounds).
+	// When set (e.g. "20s"), the stream is released once the time ceiling is reached, avoiding
+	// reverse-proxy timeouts (e.g. Nginx 60s proxy_read_timeout).
+	StreamBootstrapTimeout string `yaml:"stream-bootstrap-timeout,omitempty" json:"stream-bootstrap-timeout,omitempty"`
 	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests.
 	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
 	// OrphanDelegationCompatibility enables opt-in compatibility for orphan Codex delegation outputs.
@@ -190,6 +210,36 @@ type CodexConfig struct {
 	ModelLevelCooling bool `yaml:"model-level-cooling" json:"model-level-cooling"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
+}
+
+// DefaultCodexStreamBootstrapTimeout is the default maximum duration to buffer bootstrap events.
+// By default, it is 0 (unlimited time, relying purely on the 48-frame and 1MB byte bounds).
+const DefaultCodexStreamBootstrapTimeout = 0
+
+const maxBootstrapTimeoutSeconds = int64(math.MaxInt64 / time.Second)
+
+// StreamBootstrapTimeoutDuration returns the maximum duration to buffer bootstrap events.
+// Defaults to 0 (unlimited time, relying purely on the 48-frame and 1MB byte bounds).
+// If explicitly set to a positive duration (e.g. "10s", "500ms", "15"), returns that duration.
+// If set to "0", "0s", "none", "unlimited", "disabled", "off", "never", or invalid strings, returns 0.
+func (c *CodexConfig) StreamBootstrapTimeoutDuration() time.Duration {
+	if c == nil {
+		return DefaultCodexStreamBootstrapTimeout
+	}
+	raw := strings.TrimSpace(c.StreamBootstrapTimeout)
+	if raw == "" || raw == "0" || strings.EqualFold(raw, "none") || strings.EqualFold(raw, "unlimited") || strings.EqualFold(raw, "disabled") || strings.EqualFold(raw, "off") || strings.EqualFold(raw, "never") {
+		return 0
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d >= 0 {
+		return d
+	}
+	if secs, err := strconv.Atoi(raw); err == nil && secs >= 0 && int64(secs) <= maxBootstrapTimeoutSeconds {
+		d := time.Duration(secs) * time.Second
+		if d >= 0 {
+			return d
+		}
+	}
+	return DefaultCodexStreamBootstrapTimeout
 }
 
 // CodexLiveMediaRelayConfig configures the in-process Codex Live WebRTC gateway.
@@ -226,6 +276,36 @@ type PprofConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
 	// Addr is the host:port address for the pprof HTTP server.
 	Addr string `yaml:"addr" json:"addr"`
+}
+
+// DiscoveryInterfacesConfig specifies interface inclusion and exclusion rules.
+type DiscoveryInterfacesConfig struct {
+	Include []string `yaml:"include" json:"include"`
+	Exclude []string `yaml:"exclude" json:"exclude"`
+}
+
+// DiscoveryConfig controls local network mDNS / DNS-SD service advertising.
+type DiscoveryConfig struct {
+	// Enabled toggles mDNS service advertising on the local network (default: false).
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// ServiceName is the optional custom instance name. When empty, defaults to CPA-<ShortID>.
+	ServiceName string `yaml:"service-name" json:"service-name"`
+
+	// ServiceType is the DNS-SD service type (default: _ai-gateway._tcp).
+	ServiceType string `yaml:"service-type" json:"service-type"`
+
+	// Subtypes specifies DNS-SD API protocol subtypes to advertise (e.g. _responses, _messages, _generate-content).
+	Subtypes []string `yaml:"subtypes" json:"subtypes"`
+
+	// Interfaces specifies network interface filtering rules.
+	Interfaces DiscoveryInterfacesConfig `yaml:"interfaces" json:"interfaces"`
+
+	// AuthRequired indicates whether authentication is required for client calls (default: true).
+	AuthRequired *bool `yaml:"auth-required" json:"auth-required"`
+
+	// AdvertiseManagement explicitly controls whether management endpoints are exposed (default: false).
+	AdvertiseManagement bool `yaml:"advertise-management" json:"advertise-management"`
 }
 
 // RemoteManagement holds management API configuration under 'remote-management'.
@@ -305,53 +385,6 @@ type RoutingConfig struct {
 	// Excluded requests fall through to the normal failover path, so another
 	// provider serves them quietly. Empty means no time gating.
 	ModelTimeGates []ModelTimeGate `yaml:"model-time-gates,omitempty" json:"model-time-gates,omitempty"`
-}
-
-// ModelTimeGate excludes one provider/auth/model slice from selection while
-// its cron window is active.
-type ModelTimeGate struct {
-	// Name identifies the rule in logs and the management UI.
-	Name string `yaml:"name" json:"name"`
-	// Schedule is a cron expression "minute hour dom month dow" in UTC.
-	Schedule string `yaml:"schedule" json:"schedule"`
-	// Duration keeps the gate active after the schedule start (e.g. "3h").
-	Duration string `yaml:"duration" json:"duration"`
-	// Provider limits the gate to one provider (empty = all providers).
-	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
-	// AuthID limits the gate to one credential ID (empty = all credentials).
-	AuthID string `yaml:"auth-id,omitempty" json:"auth-id,omitempty"`
-	// Models limits the gate to matching route models, glob-style ("deepseek-*").
-	// Empty matches all models under "exclude" mode (see Mode); "allow" mode
-	// requires at least one pattern, since an empty allowlist would block
-	// every model for the whole window.
-	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
-	// Mode selects the gate's polarity while its schedule window is active:
-	//   - "exclude" (default, empty also means this): candidates matching
-	//     Models are blocked; everything else is unaffected by this rule.
-	//   - "allow": candidates matching Models pass through; every other
-	//     candidate within the rule's Provider/AuthID scope is blocked. This
-	//     turns Models into a time-boxed whitelist (e.g. "only deepseek-v3.2
-	//     may be used 01:00-04:00 UTC").
-	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
-	// Enabled defaults to true; explicit false disables the rule.
-	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-}
-
-// BillingClass identifies how a credential or provider is billed for routing policy.
-type BillingClass string
-
-const (
-	BillingClassMetered    BillingClass = "metered"
-	BillingClassPerRequest BillingClass = "per-request"
-)
-
-// TokenThresholdRule selects a billing class for matching models and token ranges.
-type TokenThresholdRule struct {
-	ModelPattern string       `yaml:"model-pattern,omitempty" json:"model-pattern,omitempty"`
-	MinTokens    int          `yaml:"min-tokens,omitempty" json:"min-tokens,omitempty"`
-	MaxTokens    int          `yaml:"max-tokens,omitempty" json:"max-tokens,omitempty"`
-	BillingClass BillingClass `yaml:"billing-class" json:"billing-class"`
-	Enabled      bool         `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -602,11 +635,11 @@ type CodexKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
+
 	// DisableImageGeneration overrides the global disable-image-generation for this
 	// credential when set. Nil inherits the global value, and the field accepts the
 	// same four states as the global key: false, true, "chat", and "passthrough".
 	DisableImageGeneration *DisableImageGenerationMode `yaml:"disable-image-generation,omitempty" json:"disable-image-generation,omitempty"`
-
 	// DisableCooling overrides the global cooling policy for this credential when set.
 	// True disables auth/model cooldowns; false explicitly enables them.
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
@@ -666,7 +699,62 @@ func (m CodexModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m CodexModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
-// CommandCodeKey represents a CommandCode API credential.
+// Fork-local API key models preserved from the pre-merge fork. Upstream
+// splits or relocates these provider types; keep them in this legacy
+// location so existing config keys keep compiling and parsing.
+
+// BillingClass identifies how a credential or provider is billed for routing policy.
+type BillingClass string
+
+const (
+	BillingClassMetered    BillingClass = "metered"
+	BillingClassPerRequest BillingClass = "per-request"
+)
+
+// TokenThresholdRule selects a billing class for matching models and token ranges.
+
+// ModelTimeGate excludes one provider/auth/model slice from selection while
+// its cron window is active.
+type ModelTimeGate struct {
+	// Name identifies the rule in logs and the management UI.
+	Name string `yaml:"name" json:"name"`
+	// Schedule is a cron expression "minute hour dom month dow" in UTC.
+	Schedule string `yaml:"schedule" json:"schedule"`
+	// Duration keeps the gate active after the schedule start (e.g. "3h").
+	Duration string `yaml:"duration" json:"duration"`
+	// Provider limits the gate to one provider (empty = all providers).
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	// AuthID limits the gate to one credential ID (empty = all credentials).
+	AuthID string `yaml:"auth-id,omitempty" json:"auth-id,omitempty"`
+	// Models limits the gate to matching route models, glob-style ("deepseek-*").
+	// Empty matches all models under "exclude" mode (see Mode); "allow" mode
+	// requires at least one pattern, since an empty allowlist would block
+	// every model for the whole window.
+	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
+	// Mode selects the gate's polarity while its schedule window is active:
+	//   - "exclude" (default, empty also means this): candidates matching
+	//     Models are blocked; everything else is unaffected by this rule.
+	//   - "allow": candidates matching Models pass through; every other
+	//     candidate within the rule's Provider/AuthID scope is blocked. This
+	//     turns Models into a time-boxed whitelist (e.g. "only deepseek-v3.2
+	//     may be used 01:00-04:00 UTC").
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// Enabled defaults to true; explicit false disables the rule.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+}
+
+type TokenThresholdRule struct {
+	ModelPattern string       `yaml:"model-pattern,omitempty" json:"model-pattern,omitempty"`
+	MinTokens    int          `yaml:"min-tokens,omitempty" json:"min-tokens,omitempty"`
+	MaxTokens    int          `yaml:"max-tokens,omitempty" json:"max-tokens,omitempty"`
+	BillingClass BillingClass `yaml:"billing-class" json:"billing-class"`
+	Enabled      bool         `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+}
+
+// OAuthModelAlias defines a model ID alias for a specific channel.
+// It maps the upstream model name (Name) to the client-visible alias (Alias).
+// When Fork is true, the alias is added as an additional model in listings while
+
 type CommandCodeKey struct {
 	APIKey         string             `yaml:"api-key,omitempty" json:"api-key,omitempty"`
 	Comment        string             `yaml:"comment,omitempty" json:"comment,omitempty"`
@@ -895,6 +983,7 @@ func (m MistralModel) GetAlias() string       { return m.Alias }
 func (m MistralModel) GetDisplayName() string { return "" }
 func (m MistralModel) GetForceMapping() bool  { return m.ForceMapping }
 
+
 // XAIKey uses the Codex API key structure for native xAI execution.
 type XAIKey = CodexKey
 
@@ -924,8 +1013,8 @@ type GeminiKey struct {
 	// ProxyURL optionally overrides the global proxy for this API key.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
 
-	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
 
+	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
 	// Models defines upstream model names and aliases for request routing.
 	Models []GeminiModel `yaml:"models,omitempty" json:"models,omitempty"`
 
@@ -1041,12 +1130,12 @@ type OpenAICompatibilityAPIKey struct {
 	// APIKey is the authentication key for accessing the external API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
-	// Comment is an optional human-readable note for this credential.
-	Comment string `yaml:"comment,omitempty" json:"comment,omitempty"`
-
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
+
+	// Comment is an optional human-readable note for this credential.
+	Comment string `yaml:"comment,omitempty" json:"comment,omitempty"`
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`

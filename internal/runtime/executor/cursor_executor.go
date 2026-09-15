@@ -23,6 +23,7 @@ import (
 	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	helps "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -1700,7 +1701,7 @@ func buildCursorRootPromptMessages(parsed *parsedOpenAIRequest) [][]byte {
 			}
 			item := map[string]any{
 				"type":       "tool-result",
-				"toolName":   toolName,
+				"toolName":   helps.WireNameForCursorClientTool("", toolName),
 				"toolCallId": toolCallID,
 				"result":     extractTextContent(message.Get("content")),
 			}
@@ -1817,7 +1818,7 @@ func buildCursorRootAssistantContent(message gjson.Result, toolNames map[string]
 		content = append(content, map[string]any{
 			"type":       "tool-call",
 			"toolCallId": toolCallID,
-			"toolName":   toolName,
+			"toolName":   helps.WireNameForCursorClientTool("", toolName),
 			"args":       args,
 		})
 	}

@@ -40,6 +40,9 @@ type Config struct {
 	// Pprof config controls the optional pprof HTTP debug server.
 	Pprof PprofConfig `yaml:"pprof" json:"pprof"`
 
+	// Discovery configures local network mDNS / DNS-SD service advertising.
+	Discovery DiscoveryConfig `yaml:"discovery" json:"discovery"`
+
 	// CommercialMode disables high-overhead request logging and HTTP middleware features to minimize per-request memory usage.
 	CommercialMode bool `yaml:"commercial-mode" json:"commercial-mode"`
 

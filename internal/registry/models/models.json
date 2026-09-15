@@ -3770,8 +3770,38 @@
       "supportedOutputModalities": [
         "text"
       ]
+    },
+    {
+      "id": "gemini-3.5-flash-lite",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3.5 Flash Lite",
+      "name": "gemini-3.5-flash-lite",
+      "description": "Gemini 3.5 Flash Lite",
+      "context_length": 1048576,
+      "max_completion_tokens": 65535,
+      "thinking": {
+        "min": 1,
+        "max": 65535,
+        "dynamic_allowed": true,
+        "levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "supportedInputModalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "supportedOutputModalities": [
+        "text"
+      ]
     }
-
   ],
   "xai": [
     {
