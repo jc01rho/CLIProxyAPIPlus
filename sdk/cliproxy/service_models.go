@@ -279,6 +279,17 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case "meta":
+		models = registry.GetMetaModels()
+		if entry := s.resolveConfigMetaKey(a); entry != nil {
+			if len(entry.Models) > 0 {
+				models = buildMetaConfigModels(entry)
+			}
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
 	default:
 		models = applyExcludedModels(registry.GetStaticModelDefinitionsByChannel(provider), excluded)
 		if len(models) > 0 {
@@ -623,6 +634,13 @@ func (s *Service) resolveConfigXAIKey(auth *coreauth.Auth) *config.XAIKey {
 		return nil
 	}
 	return resolveConfigCodexStyleKey(auth, s.cfg.XAIKey, false)
+}
+
+func (s *Service) resolveConfigMetaKey(auth *coreauth.Auth) *config.MetaKey {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	return resolveConfigCodexStyleKey(auth, s.cfg.MetaKey, false)
 }
 
 func resolveConfigCodexStyleKey(auth *coreauth.Auth, entries []config.CodexKey, validateIndexCredentials bool) *config.CodexKey {
@@ -1036,6 +1054,13 @@ func buildXAIConfigModels(entry *config.XAIKey) []*ModelInfo {
 		return nil
 	}
 	return buildConfigModels(entry.Models, "xai", "xai", "xai")
+}
+
+func buildMetaConfigModels(entry *config.MetaKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "meta", "meta", "meta")
 }
 
 func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {

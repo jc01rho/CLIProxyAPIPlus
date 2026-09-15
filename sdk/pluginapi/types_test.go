@@ -666,6 +666,10 @@ func TestQuotaPayloadJSON(t *testing.T) {
 	// Test camelCase input
 	camelJSON := []byte(`{
 		"subscription": {"plan":"Pro","tierName":"Tier 1","tierId":"t-1"},
+		"summary": [
+			{"key":"credits_used","label":"Credits used","value":1740.28,"unit":"credits","format":"number"},
+			{"key":"charged","label":"Charged","value":29.61,"format":"currency","currency":"USD"}
+		],
 		"serverTimeOffsetMs": 100,
 		"groups": [
 			{
@@ -683,6 +687,9 @@ func TestQuotaPayloadJSON(t *testing.T) {
 	}
 	if respCamel.Subscription == nil || respCamel.Subscription.TierName != "Tier 1" || respCamel.Subscription.TierID != "t-1" {
 		t.Fatalf("unexpected camel subscription: %+v", respCamel.Subscription)
+	}
+	if len(respCamel.Summary) != 2 || respCamel.Summary[0].Key != "credits_used" || respCamel.Summary[0].Value != 1740.28 || respCamel.Summary[1].Currency != "USD" {
+		t.Fatalf("unexpected camel summary: %+v", respCamel.Summary)
 	}
 	if respCamel.ServerTimeOffsetMs != 100 {
 		t.Fatalf("unexpected server time offset: %d", respCamel.ServerTimeOffsetMs)

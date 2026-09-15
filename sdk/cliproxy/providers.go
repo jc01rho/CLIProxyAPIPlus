@@ -29,7 +29,7 @@ func NewAPIKeyClientProvider() APIKeyClientProvider {
 type apiKeyClientProvider struct{}
 
 func (p *apiKeyClientProvider) Load(ctx context.Context, cfg *config.Config) (*APIKeyClientResult, error) {
-	geminiCount, vertexCompatCount, claudeCount, codexCount, xaiCount, openAICompat, commandCodeCount, freebuffCount, mistralCount := watcher.BuildAPIKeyClients(cfg)
+	geminiCount, vertexCompatCount, claudeCount, codexCount, xaiCount, metaCount, openAICompat, commandCodeCount, freebuffCount, mistralCount := watcher.BuildAPIKeyClients(cfg)
 
 	if ctx != nil {
 		select {
@@ -44,6 +44,7 @@ func (p *apiKeyClientProvider) Load(ctx context.Context, cfg *config.Config) (*A
 		ClaudeKeyCount:       claudeCount,
 		CodexKeyCount:        codexCount,
 		XAIKeyCount:          xaiCount,
+		MetaKeyCount:         metaCount,
 		OpenAICompatCount:    openAICompat,
 		CommandCodeKeyCount:  commandCodeCount,
 		FreebuffKeyCount:     freebuffCount,

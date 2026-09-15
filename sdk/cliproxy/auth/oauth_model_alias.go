@@ -861,9 +861,8 @@ func modelAliasChannel(auth *Auth) string {
 // and auth kind. Returns empty string if the provider/authKind combination doesn't support
 // OAuth model alias (e.g., API key authentication).
 //
-// Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, iflow, kiro, github-copilot, kimi, xai.
-
-// Built-in channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi.
+// Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, iflow, kiro, github-copilot, kimi, xai, meta.
+// Built-in channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi, xai, meta.
 // Plugin OAuth providers use their normalized provider key as the channel.
 
 func OAuthModelAliasChannel(provider, authKind string) string {
@@ -883,7 +882,7 @@ func OAuthModelAliasChannel(provider, authKind string) string {
 		return "claude"
 	case "codex":
 		return "codex"
-	case "gemini-cli", "aistudio", "antigravity", "iflow", "kiro", "github-copilot", "kimi", "xai":
+	case "gemini-cli", "aistudio", "antigravity", "iflow", "kiro", "github-copilot", "kimi", "xai", "meta":
 		return provider
 	default:
 		return provider

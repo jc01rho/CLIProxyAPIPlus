@@ -29,6 +29,7 @@ var oauthProviders = []oauthProvider{
 	{"Kilo", "kilo-auth-url", "🟨", true},
 	{"Alysis", "alysis-auth-url", "🟩", true},
 	{"Kiro", "kiro-auth-url", "🟦", true},
+	{"Meta", "meta-auth-url", "🔵", true},
 }
 
 // oauthTabModel handles OAuth login flows.
@@ -364,6 +365,8 @@ func (m oauthTabModel) submitCallback(callbackURL string) tea.Cmd {
 					providerKey = "xai"
 				case "cursor-auth-url":
 					providerKey = "cursor"
+				case "meta-auth-url":
+					providerKey = "meta"
 				}
 				break
 			}

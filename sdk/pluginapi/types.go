@@ -1605,9 +1605,21 @@ func (b *QuotaBucket) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// QuotaMetric is a provider-defined, bounded numeric account summary for management UI rendering.
+// Format is "number" or "currency"; Currency is an ISO 4217 code when Format is "currency".
+type QuotaMetric struct {
+	Key      string  `json:"key"`
+	Label    string  `json:"label"`
+	Value    float64 `json:"value"`
+	Unit     string  `json:"unit,omitempty"`
+	Format   string  `json:"format,omitempty"`
+	Currency string  `json:"currency,omitempty"`
+}
+
 // QuotaFetchResponse carries normalized quota information for management UI rendering.
 type QuotaFetchResponse struct {
 	Subscription       *QuotaSubscription `json:"subscription,omitempty"`
+	Summary            []QuotaMetric      `json:"summary,omitempty"`
 	ServerTimeOffsetMs int64              `json:"serverTimeOffsetMs,omitempty"`
 	Groups             []QuotaGroup       `json:"groups,omitempty"`
 }

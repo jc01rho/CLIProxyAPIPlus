@@ -215,6 +215,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"cline",
 		"kilo",
 		"kilo-gateway",
+		"devin",
 		"openai-compatibility",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))

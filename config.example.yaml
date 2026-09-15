@@ -631,6 +631,22 @@ nonstream-keepalive-interval: 0
 #     excluded-models:
 #       - "grok-4.1"             # exclude specific models (exact match)
 #       - "grok-3-*"             # wildcard matching prefix
+#
+# Meta API keys (Muse Code)
+# Uses the native Meta executor targeting https://api.meta.ai/v1.
+# meta-api-key:
+#   - api-key: "..."
+#     weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#     prefix: "meta" # optional: require calls like "meta/muse-spark-1.3" to target this credential
+#     disable-cooling: false # optional override: true disables cooling, false enables it; omit to inherit global
+#     request-retry: 3 # optional per-auth override; 0 disables additional rounds; omit or set < 0 to inherit global
+#     base-url: "https://api.meta.ai/v1" # optional: defaults to https://api.meta.ai/v1
+#     proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
+#     models:
+#       - name: "muse-spark-1.3" # upstream model name
+#         alias: "muse-latest"   # client alias mapped to the upstream model
+#     excluded-models:
+#       - "muse-spark-1.1"
 
 # Claude API keys
 # claude-api-key:
@@ -874,8 +890,8 @@ nonstream-keepalive-interval: 0
 
 # Global OAuth model name aliases (per channel)
 # These aliases rename model IDs for both model listing and request routing.
-# Supported channels: vertex, aistudio, antigravity, claude, codex, kimi, xai.
-# NOTE: Aliases do not apply to gemini-api-key, interactions-api-key, codex-api-key, xai-api-key, claude-api-key, openai-compatibility, or vertex-api-key.
+# Supported channels: vertex, aistudio, antigravity, claude, codex, kimi, xai, meta.
+# NOTE: Aliases do not apply to gemini-api-key, interactions-api-key, codex-api-key, xai-api-key, meta-api-key, claude-api-key, openai-compatibility, or vertex-api-key.
 # NOTE: Because aliases affect the merged /v1 model list and merged request routing, overlapping
 # client-visible names can become ambiguous across providers. For strict backend pinning, use
 # unique aliases/prefixes or avoid overlapping names.
@@ -921,6 +937,9 @@ nonstream-keepalive-interval: 0
 #   xai:
 #     - name: "grok-4.3"
 #       alias: "grok-latest"
+#   meta:
+#     - name: "muse-spark-1.3"
+#       alias: "muse-latest"
 #   sample-provider:                  # plugin provider keys are supported for OAuth plugins
 #     - name: "sample-model-latest"
 #       alias: "sample-latest"
@@ -941,6 +960,8 @@ nonstream-keepalive-interval: 0
 #     - "kimi-k2-thinking"
 #   xai:
 #     - "grok-3-mini"
+#   meta:
+#     - "muse-spark-1.1"
 
 # OAuth provider request-scoped error rules (custom error classification for OAuth credentials)
 # oauth-request-scoped-errors:
@@ -982,6 +1003,11 @@ nonstream-keepalive-interval: 0
 #     - status: 400
 #       match:
 #         - "max_tokens_exceeded"
+#       action: "stop"
+#   meta:
+#     - status: 400
+#       match:
+#         - "context_length_exceeded"
 #       action: "stop"
 
 # Optional payload configuration

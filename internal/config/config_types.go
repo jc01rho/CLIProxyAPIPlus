@@ -635,7 +635,6 @@ type CodexKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
-
 	// DisableImageGeneration overrides the global disable-image-generation for this
 	// credential when set. Nil inherits the global value, and the field accepts the
 	// same four states as the global key: false, true, "chat", and "passthrough".
@@ -983,12 +982,17 @@ func (m MistralModel) GetAlias() string       { return m.Alias }
 func (m MistralModel) GetDisplayName() string { return "" }
 func (m MistralModel) GetForceMapping() bool  { return m.ForceMapping }
 
-
 // XAIKey uses the Codex API key structure for native xAI execution.
 type XAIKey = CodexKey
 
 // XAIModel uses the Codex model mapping structure for xAI models.
 type XAIModel = CodexModel
+
+// MetaKey uses the Codex API key structure for native Meta Muse execution.
+type MetaKey = CodexKey
+
+// MetaModel uses the Codex model mapping structure for Meta Muse models.
+type MetaModel = CodexModel
 
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
@@ -1012,7 +1016,6 @@ type GeminiKey struct {
 
 	// ProxyURL optionally overrides the global proxy for this API key.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
-
 
 	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
 	// Models defines upstream model names and aliases for request routing.
