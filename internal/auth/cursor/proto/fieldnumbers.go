@@ -95,6 +95,7 @@ const (
 	MD_DisplayModelId   = 3 // string
 	MD_DisplayName      = 4 // string
 	MD_DisplayNameShort = 5 // string
+	MD_Aliases          = 6 // repeated string
 	MD_MaxMode          = 7 // optional bool
 )
 
@@ -149,6 +150,8 @@ const (
 // ConversationStep (msg 53) oneof "message"
 const (
 	CS_AssistantMessage = 1 // AssistantMessage
+	CS_ToolCall         = 2 // ToolCall
+	CS_ThinkingMessage  = 3 // ThinkingMessage
 )
 
 // AssistantMessage
@@ -216,7 +219,9 @@ const (
 
 // McpToolCall
 const (
-	MTC_Args = 1 // McpArgs
+	MTC_Args        = 1 // McpArgs
+	MTC_Result      = 2 // McpToolResult
+	MTC_Description = 3 // optional string
 )
 
 // TextDeltaUpdate (msg 92)
@@ -427,7 +432,14 @@ const (
 
 // McpToolResultContentItem oneof "content"
 const (
-	MTRCI_Text = 1 // McpTextContent
+	MTRCI_Text  = 1 // McpTextContent
+	MTRCI_Image = 2 // McpImageContent
+)
+
+// McpImageContent (msg 288)
+const (
+	MIC_Data     = 1 // bytes
+	MIC_MimeType = 2 // string
 )
 
 // McpTextContent (msg 287)

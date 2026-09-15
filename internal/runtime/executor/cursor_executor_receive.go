@@ -127,13 +127,15 @@ func processH2SessionFrames(
 	stall cursorStallWatchdog,
 ) error {
 	var buf bytes.Buffer
-	var pendingMcp *cursorPendingMcp
+	pendingMcps := make(map[string]*cursorPendingMcp)
 	turnEndedSeen := false
 	streamedTools := make(map[string]*cursorStreamedToolState)
 
 	stopPendingHeartbeat := func() {
-		if pendingMcp != nil && pendingMcp.stopPulse != nil {
-			pendingMcp.stopPulse()
+		for _, pending := range pendingMcps {
+			if pending != nil && pending.stopPulse != nil {
+				pending.stopPulse()
+			}
 		}
 	}
 	defer stopPendingHeartbeat()
@@ -142,7 +144,7 @@ func processH2SessionFrames(
 	log.Debugf("cursor: processH2SessionFrames started for streamID=%s, waiting for data...", stream.ID())
 	for {
 		var resultsCh <-chan []toolResultInfo
-		if pendingMcp != nil {
+		if len(pendingMcps) > 0 {
 			resultsCh = toolResultCh
 		}
 
@@ -166,29 +168,24 @@ func processH2SessionFrames(
 			if !ok {
 				return nil
 			}
-			matched := false
+			returned := make(map[string]toolResultInfo, len(toolResults))
 			for _, tr := range toolResults {
-				if tr.ToolCallId != pendingMcp.exec.ToolCallId {
-					continue
+				if tr.ToolCallId != "" {
+					returned[tr.ToolCallId] = tr
 				}
-				matched = true
-				result := cursorproto.EncodeExecMcpResult(pendingMcp.exec.ExecMsgId, pendingMcp.exec.ExecId, tr.Content, false)
-				if err := cursorWriteClientMessage(stream, result); err != nil {
+			}
+			for id, pending := range pendingMcps {
+				var payload []byte
+				if tr, ok := returned[id]; ok {
+					payload = cursorproto.EncodeExecMcpResultParts(pending.exec.ExecMsgId, pending.exec.ExecId, mcpResultPartsFromTool(tr), false)
+				} else {
+					payload = cursorproto.EncodeExecMcpError(pending.exec.ExecMsgId, pending.exec.ExecId, "MCP tool result was not returned by the proxy client")
+				}
+				if err := completeCursorPendingMcp(stream, pending, payload); err != nil {
 					return err
 				}
-				break
+				delete(pendingMcps, id)
 			}
-			if !matched {
-				result := cursorproto.EncodeExecMcpError(pendingMcp.exec.ExecMsgId, pendingMcp.exec.ExecId, "MCP tool result was not returned by the proxy client")
-				if err := cursorWriteClientMessage(stream, result); err != nil {
-					return err
-				}
-			}
-			stopPendingHeartbeat()
-			if err := cursorWriteClientMessage(stream, cursorproto.EncodeExecControlStreamClose(pendingMcp.exec.ExecMsgId)); err != nil {
-				return err
-			}
-			pendingMcp = nil
 			if turnEndedSeen {
 				return nil
 			}
@@ -275,7 +272,7 @@ func processH2SessionFrames(
 					if tokenUsage != nil {
 						tokenUsage.applyBilledTurnEndedUsage(msg.TurnEndedInput, msg.TurnEndedOutput, msg.TurnEndedCacheRead, msg.TurnEndedCacheWrite)
 					}
-					if pendingMcp == nil {
+					if len(pendingMcps) == 0 {
 						return nil
 					}
 				default:
@@ -284,15 +281,6 @@ func processH2SessionFrames(
 						continue
 					}
 					if req.caseNum == cursorproto.ESM_McpArgs {
-						if pendingMcp != nil {
-							if err := cursorWriteClientMessage(stream, cursorproto.EncodeExecControlThrow(msg.ExecMsgId, "Concurrent MCP exec frames are not supported by this proxy", "exec_dispatch_failed")); err != nil {
-								return err
-							}
-							if err := cursorWriteClientMessage(stream, cursorproto.EncodeExecControlStreamClose(msg.ExecMsgId)); err != nil {
-								return err
-							}
-							continue
-						}
 						if onMcpExec == nil {
 							if err := cursorWriteClientMessage(stream, cursorproto.EncodeExecMcpError(msg.ExecMsgId, msg.ExecId, "MCP relay is unavailable for this request")); err != nil {
 								return err
@@ -318,7 +306,10 @@ func processH2SessionFrames(
 						if toolResultCh == nil {
 							return nil
 						}
-						pendingMcp = &cursorPendingMcp{
+						if prev := pendingMcps[toolCallID]; prev != nil && prev.stopPulse != nil {
+							prev.stopPulse()
+						}
+						pendingMcps[toolCallID] = &cursorPendingMcp{
 							exec:      exec,
 							stopPulse: startCursorExecHeartbeat(ctx, stream, msg.ExecMsgId),
 						}
@@ -589,6 +580,29 @@ func dispatchCursorExec(
 		return err
 	}
 	return cursorWriteClientMessage(stream, cursorproto.EncodeExecControlStreamClose(msg.ExecMsgId))
+}
+
+func mcpResultPartsFromTool(tr toolResultInfo) []cursorproto.McpResultPart {
+	var parts []cursorproto.McpResultPart
+	if tr.Content != "" || len(tr.Images) == 0 {
+		parts = append(parts, cursorproto.McpResultPart{Text: tr.Content})
+	}
+	for i := range tr.Images {
+		img := tr.Images[i]
+		parts = append(parts, cursorproto.McpResultPart{Image: &img})
+	}
+	return parts
+}
+
+func completeCursorPendingMcp(stream cursorStreamConn, pending *cursorPendingMcp, result []byte) error {
+	if pending != nil && pending.stopPulse != nil {
+		pending.stopPulse()
+		pending.stopPulse = nil
+	}
+	if err := cursorWriteClientMessage(stream, result); err != nil {
+		return err
+	}
+	return cursorWriteClientMessage(stream, cursorproto.EncodeExecControlStreamClose(pending.exec.ExecMsgId))
 }
 
 func startCursorExecHeartbeat(ctx context.Context, stream cursorStreamConn, execMsgID uint32) func() {

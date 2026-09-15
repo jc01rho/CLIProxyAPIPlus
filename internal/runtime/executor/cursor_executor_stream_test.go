@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -678,5 +679,57 @@ func TestCursorProcessH2SessionFramesCleanEndBeforeTurnEndedIsTypedRetryableErro
 				t.Fatalf("processH2SessionFrames() = %v, want the transport error passthrough", err)
 			}
 		})
+	}
+}
+
+
+// Given two mcpArgs frames on the same Run stream,
+// When the dispatcher parks both execs,
+// Then neither is thrown as concurrent-unsupported, and a single tool-result
+// batch completes both execs.
+func TestCursorProcessH2SessionFramesAcceptsConcurrentMcpExecs(t *testing.T) {
+	stream := newFakeCursorStream()
+	seen := make(chan pendingMcpExec, 2)
+	toolResultCh := make(chan []toolResultInfo, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- processH2SessionFrames(context.Background(), stream, nil, nil, nil, nil,
+			func(exec pendingMcpExec) { seen <- exec },
+			toolResultCh, &cursorTokenUsage{}, nil, cursorStallWatchdog{})
+	}()
+
+	stream.dataCh <- cursorproto.FrameConnectMessage(mcpExecFrame(1, "exec-1", "tool-a", "call-a"), 0)
+	stream.dataCh <- cursorproto.FrameConnectMessage(mcpExecFrame(2, "exec-2", "tool-b", "call-b"), 0)
+
+	first := <-seen
+	second := <-seen
+	ids := map[string]struct{}{first.ToolCallId: {}, second.ToolCallId: {}}
+	if _, ok := ids["call-a"]; !ok {
+		t.Fatalf("concurrent execs = %q, %q, want call-a", first.ToolCallId, second.ToolCallId)
+	}
+	if _, ok := ids["call-b"]; !ok {
+		t.Fatalf("concurrent execs = %q, %q, want call-b", first.ToolCallId, second.ToolCallId)
+	}
+
+	toolResultCh <- []toolResultInfo{
+		{ToolCallId: "call-a", Content: "ra"},
+		{ToolCallId: "call-b", Content: "rb"},
+	}
+	stream.dataCh <- cursorproto.FrameConnectMessage(billedTurnEndedFrame(nil), 0)
+	close(stream.dataCh)
+
+	if err := <-done; err != nil {
+		t.Fatalf("processH2SessionFrames() = %v, want nil after concurrent MCP results + turnEnded", err)
+	}
+
+	stream.mu.Lock()
+	var combined []byte
+	for _, w := range stream.writes {
+		combined = append(combined, w...)
+	}
+	stream.mu.Unlock()
+	if bytes.Contains(combined, []byte("Concurrent MCP exec frames are not supported")) {
+		t.Fatal("second mcpArgs was thrown as unsupported concurrency")
 	}
 }

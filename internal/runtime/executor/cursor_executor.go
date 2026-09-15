@@ -14,6 +14,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +24,6 @@ import (
 	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	helps "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -43,6 +43,14 @@ const (
 	cursorHeartbeatInterval = 5 * time.Second
 	cursorSessionTTL        = 5 * time.Minute
 	cursorCheckpointTTL     = 30 * time.Minute
+)
+
+// senpi catalog-grouping.ts / cursor-agent.ts GetUsableModels mapping.
+var (
+	cursor1MNamePattern         = regexp.MustCompile(`(?i)\b1m\b`)
+	cursorMaxMode1MIDPattern    = regexp.MustCompile(`(?i)claude|gemini`)
+	cursorMultimodalIDPattern   = regexp.MustCompile(`(?i)claude|gemini|gpt-|codex`)
+	cursorMaxModeByID           sync.Map // lowercased model id / alias -> bool
 )
 
 // CursorExecutor handles requests to the Cursor API via Connect+Protobuf protocol.
@@ -838,6 +846,27 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 		streamedToolCalls := make(map[string]*streamedToolCall)
 
+		var mcpFlushMu sync.Mutex
+		var mcpFlushTimer *time.Timer
+		flushMcpHTTP := func() {
+			sendChunkSwitchable(`{}`, `"tool_calls"`)
+			sendDoneSwitchable()
+			outMu.Lock()
+			if currentOut != nil {
+				close(currentOut)
+				currentOut = nil
+			}
+			outMu.Unlock()
+		}
+		scheduleMcpHTTPFlush := func() {
+			mcpFlushMu.Lock()
+			defer mcpFlushMu.Unlock()
+			if mcpFlushTimer != nil {
+				mcpFlushTimer.Stop()
+			}
+			mcpFlushTimer = time.AfterFunc(50*time.Millisecond, flushMcpHTTP)
+		}
+
 		// attemptSawCheckpoint flips when the running attempt persisted a
 		// server checkpoint - the retry loop then forces a Resume action so the
 		// retried Run continues from the checkpoint instead of re-sending the
@@ -904,48 +933,40 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 						toolCallIndex++
 						sendChunkSwitchable(toolCallJSON, "")
 					}
-					sendChunkSwitchable(`{}`, `"tool_calls"`)
-					sendDoneSwitchable()
 
-					// Close current output to end the current HTTP SSE response
-					outMu.Lock()
-					if currentOut != nil {
-						close(currentOut)
-						currentOut = nil
-					}
-					outMu.Unlock()
-
-					// Create new resume output channel, reuse the same toolResultCh
-					resumeOut := make(chan cliproxyexecutor.StreamChunk, 64)
 					log.Debugf("cursor: saving session %s for MCP tool resume (tool=%s)", sessionKey, exec.ToolName)
 					e.mu.Lock()
-					e.sessions[sessionKey] = &cursorSession{
-						stream:       stream,
-						blobStore:    params.BlobStore,
-						mcpTools:     params.McpTools,
-						pending:      []pendingMcpExec{exec},
-						cancel:       sessionCancel,
-						createdAt:    time.Now(),
-						authID:       authID,
-						toolResultCh: toolResultCh, // reuse same channel across rounds
-						resumeOutCh:  resumeOut,
-						switchOutput: func(ch chan cliproxyexecutor.StreamChunk) {
-							outMu.Lock()
-							currentOut = ch
-							// Reset translator state so the new HTTP response gets
-							// a fresh message_start, content_block_start, etc.
-							streamParam = nil
-							// New response needs its own message ID
-							chatId = "chatcmpl-" + uuid.New().String()[:28]
-							created = time.Now().Unix()
-							outMu.Unlock()
-						},
+					if sess, ok := e.sessions[sessionKey]; ok {
+						sess.pending = append(sess.pending, exec)
+						sess.stream = stream
+						sess.blobStore = params.BlobStore
+						sess.mcpTools = params.McpTools
+						resumeOutCh = sess.resumeOutCh
+					} else {
+						resumeOut := make(chan cliproxyexecutor.StreamChunk, 64)
+						e.sessions[sessionKey] = &cursorSession{
+							stream:       stream,
+							blobStore:    params.BlobStore,
+							mcpTools:     params.McpTools,
+							pending:      []pendingMcpExec{exec},
+							cancel:       sessionCancel,
+							createdAt:    time.Now(),
+							authID:       authID,
+							toolResultCh: toolResultCh,
+							resumeOutCh:  resumeOut,
+							switchOutput: func(ch chan cliproxyexecutor.StreamChunk) {
+								outMu.Lock()
+								currentOut = ch
+								streamParam = nil
+								chatId = "chatcmpl-" + uuid.New().String()[:28]
+								created = time.Now().Unix()
+								outMu.Unlock()
+							},
+						}
+						resumeOutCh = resumeOut
 					}
 					e.mu.Unlock()
-					resumeOutCh = resumeOut
-
-					// processH2SessionFrames will now block on toolResultCh (inline wait loop)
-					// while continuing to handle KV messages
+					scheduleMcpHTTPFlush()
 				},
 				toolResultCh,
 				usage,
@@ -1360,6 +1381,7 @@ type parsedOpenAIRequest struct {
 type toolResultInfo struct {
 	ToolCallId string
 	Content    string
+	Images     []cursorproto.ImageData
 }
 
 func parseOpenAIRequest(payload []byte) *parsedOpenAIRequest {
@@ -1404,18 +1426,19 @@ func parseOpenAIRequest(payload []byte) *parsedOpenAIRequest {
 	// pending MCP round. Older tool messages remain history and must not trigger
 	// a stale H2 session resume.
 	for i := len(messages) - 1; i >= 0 && messages[i].Get("role").String() == "tool"; i-- {
+		content := messages[i].Get("content")
 		p.ToolResults = append(p.ToolResults, toolResultInfo{
 			ToolCallId: messages[i].Get("tool_call_id").String(),
-			Content:    extractTextContent(messages[i].Get("content")),
+			Content:    extractTextContent(content),
+			Images:     extractImages(content),
 		})
 	}
 	for left, right := 0, len(p.ToolResults)-1; left < right; left, right = left+1, right-1 {
 		p.ToolResults[left], p.ToolResults[right] = p.ToolResults[right], p.ToolResults[left]
 	}
 
-	// Rebuild prior user/assistant turns for ConversationStateStructure.turns.
-	// Root prompt blobs below carry the richer tool/image history used for the
-	// actual model prompt.
+	// Rebuild prior user/assistant turns for ConversationStateStructure.turns,
+	// including MCP tool-call steps like senpi buildConversationTurns.
 	historyEnd := len(messages)
 	if p.ActiveUserIndex >= 0 {
 		historyEnd = p.ActiveUserIndex
@@ -1429,25 +1452,37 @@ func parseOpenAIRequest(payload []byte) *parsedOpenAIRequest {
 				p.Turns = append(p.Turns, *pending)
 			}
 			text := strings.TrimSpace(extractTextContent(msg.Get("content")))
-			if text == "" {
+			images := extractImages(msg.Get("content"))
+			if text == "" && len(images) == 0 {
 				pending = nil
 			} else {
 				pending = &cursorproto.TurnData{UserText: text}
 			}
 		case "assistant":
+			if pending == nil {
+				continue
+			}
 			assistantText := extractTextContent(msg.Get("content"))
-			if pending != nil {
-				pending.AssistantText = assistantText
-				p.Turns = append(p.Turns, *pending)
-				pending = nil
-			} else if assistantText != "" && len(p.Turns) > 0 {
-				last := &p.Turns[len(p.Turns)-1]
-				if last.AssistantText == "" {
-					last.AssistantText = assistantText
+			if assistantText != "" {
+				pending.Steps = append(pending.Steps, cursorproto.TurnStep{AssistantText: assistantText})
+				if pending.AssistantText == "" {
+					pending.AssistantText = assistantText
 				} else {
-					last.AssistantText += "\n" + assistantText
+					pending.AssistantText += "\n" + assistantText
 				}
 			}
+			for _, call := range msg.Get("tool_calls").Array() {
+				pending.Steps = append(pending.Steps, cursorproto.TurnStep{
+					ToolName:     call.Get("function.name").String(),
+					ToolCallId:   call.Get("id").String(),
+					ToolArgsJSON: call.Get("function.arguments").String(),
+				})
+			}
+		case "tool":
+			if pending == nil {
+				continue
+			}
+			fillCursorTurnToolResult(pending, msg)
 		}
 	}
 	if pending != nil {
@@ -1625,11 +1660,13 @@ func decodeCursorBase64(encoded string) ([]byte, bool) {
 }
 
 func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string, forceResume bool) *cursorproto.RunRequestParams {
+	resolvedID, _ := cursorproto.ResolveRequestedModel(parsed.Model, parsed.ReasoningEffort)
 	params := &cursorproto.RunRequestParams{
 		ModelId:         parsed.Model,
 		ReasoningEffort: parsed.ReasoningEffort,
 		DisplayModelId:  parsed.Model,
 		DisplayName:     parsed.Model,
+		MaxMode:         lookupCursorMaxMode(parsed.Model, resolvedID),
 		SystemPrompt:    parsed.SystemPrompt,
 		UserText:        parsed.UserText,
 		MessageId:       uuid.New().String(),
@@ -1649,8 +1686,12 @@ func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string, f
 	// AgentRunRequest.mcp_tools like senpi.
 	for _, tool := range parsed.Tools {
 		fn := tool.Get("function")
+		name := fn.Get("name").String()
+		if name == "" || isCursorNativeToolName(name) {
+			continue
+		}
 		params.McpTools = append(params.McpTools, cursorproto.McpToolDef{
-			Name:        fn.Get("name").String(),
+			Name:        name,
 			Description: fn.Get("description").String(),
 			// Cursor's gateway rejects tools whose input schema carries
 			// oneOf/anyOf/allOf (resource_exhausted); strip them before the
@@ -1701,7 +1742,7 @@ func buildCursorRootPromptMessages(parsed *parsedOpenAIRequest) [][]byte {
 			}
 			item := map[string]any{
 				"type":       "tool-result",
-				"toolName":   helps.WireNameForCursorClientTool("", toolName),
+				"toolName":   toolName,
 				"toolCallId": toolCallID,
 				"result":     extractTextContent(message.Get("content")),
 			}
@@ -1818,7 +1859,7 @@ func buildCursorRootAssistantContent(message gjson.Result, toolNames map[string]
 		content = append(content, map[string]any{
 			"type":       "tool-call",
 			"toolCallId": toolCallID,
-			"toolName":   helps.WireNameForCursorClientTool("", toolName),
+			"toolName":   toolName,
 			"args":       args,
 		})
 	}
@@ -2089,7 +2130,7 @@ func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	}
 	accessToken = normalizeCursorAccessToken(accessToken)
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// GetUsableModels is a unary RPC call (not streaming)
@@ -2132,7 +2173,7 @@ func FetchCursorModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	if len(models) == 0 {
 		return FilterCursorModels(GetCursorFallbackModels())
 	}
-	return FilterCursorModels(models)
+	return models
 }
 
 func parseModelsResponse(data []byte) []*registry.ModelInfo {
@@ -2185,7 +2226,8 @@ func parseModelsResponse(data []byte) []*registry.ModelInfo {
 
 func parseModelEntry(data []byte) *registry.ModelInfo {
 	var modelId, displayName string
-	var hasThinking bool
+	var aliases []string
+	var hasThinking, maxMode bool
 
 	for len(data) > 0 {
 		num, typ, n := consumeTag(data)
@@ -2216,13 +2258,18 @@ func parseModelEntry(data []byte) *registry.ModelInfo {
 				if displayName == "" {
 					displayName = string(val)
 				}
+			case 6: // aliases
+				aliases = append(aliases, string(val))
 			}
 		case 0: // VarintType
-			_, n := consumeVarint(data)
+			v, n := consumeVarint(data)
 			if n < 0 {
 				return nil
 			}
 			data = data[n:]
+			if num == 7 {
+				maxMode = v != 0
+			}
 		default:
 			n := consumeFieldValue(num, typ, data)
 			if n < 0 {
@@ -2238,6 +2285,7 @@ func parseModelEntry(data []byte) *registry.ModelInfo {
 	if displayName == "" {
 		displayName = modelId
 	}
+	rememberCursorMaxMode(append([]string{modelId}, aliases...), maxMode)
 
 	info := &registry.ModelInfo{
 		ID:                  modelId,
@@ -2246,8 +2294,11 @@ func parseModelEntry(data []byte) *registry.ModelInfo {
 		OwnedBy:             "cursor",
 		Type:                cursorAuthType,
 		DisplayName:         displayName,
-		ContextLength:       200000,
+		ContextLength:       cursorCatalogContextLength(modelId, displayName, aliases, maxMode),
 		MaxCompletionTokens: 64000,
+	}
+	if cursorMultimodalIDPattern.MatchString(modelId) {
+		info.SupportedInputModalities = []string{"text", "image"}
 	}
 	if hasThinking {
 		info.Thinking = &registry.ThinkingSupport{
@@ -2256,6 +2307,82 @@ func parseModelEntry(data []byte) *registry.ModelInfo {
 		}
 	}
 	return info
+}
+
+func fillCursorTurnToolResult(turn *cursorproto.TurnData, msg gjson.Result) {
+	id := msg.Get("tool_call_id").String()
+	content := msg.Get("content")
+	text := extractTextContent(content)
+	images := extractImages(content)
+	for i := range turn.Steps {
+		step := &turn.Steps[i]
+		if step.ToolCallId != id {
+			continue
+		}
+		if step.ToolResult != "" || len(step.ToolResultImages) > 0 {
+			continue
+		}
+		step.ToolResult = text
+		step.ToolResultImages = images
+		return
+	}
+	if text == "" && len(images) == 0 {
+		return
+	}
+	prefixed := text
+	if prefixed != "" {
+		prefixed = "[Tool Result]\n" + prefixed
+	}
+	turn.Steps = append(turn.Steps, cursorproto.TurnStep{AssistantText: prefixed})
+}
+
+func isCursorNativeToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "bash", "read", "write", "delete", "ls", "grep", "todo":
+		return true
+	}
+	return false
+}
+
+func rememberCursorMaxMode(ids []string, maxMode bool) {
+	if !maxMode {
+		return
+	}
+	for _, id := range ids {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" {
+			continue
+		}
+		cursorMaxModeByID.Store(id, true)
+	}
+}
+
+func lookupCursorMaxMode(requested, resolved string) bool {
+	for _, id := range []string{resolved, requested} {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" {
+			continue
+		}
+		if v, ok := cursorMaxModeByID.Load(id); ok {
+			return v.(bool)
+		}
+	}
+	return false
+}
+
+func cursorCatalogContextLength(id, display string, aliases []string, maxMode bool) int {
+	if cursor1MNamePattern.MatchString(id) || cursor1MNamePattern.MatchString(display) {
+		return 1_000_000
+	}
+	for _, alias := range aliases {
+		if cursor1MNamePattern.MatchString(alias) {
+			return 1_000_000
+		}
+	}
+	if maxMode && cursorMaxMode1MIDPattern.MatchString(id) {
+		return 1_000_000
+	}
+	return 200_000
 }
 
 func extractCursorReasoningEffort(payload []byte) string {

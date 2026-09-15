@@ -236,15 +236,15 @@ func TestResolveRequestedModel(t *testing.T) {
 		{"composer-2.5-fast", "composer-2.5-fast", nil},
 		{"composer-2-5-fast", "composer-2.5-fast", nil},
 		{"claude-sonnet-4.6-high", "claude-4.6-sonnet-medium", nil},
-		{"claude-4.6-opus", "claude-4.6-opus-max", nil},
+		{"claude-4.6-opus", "claude-4.6-opus-high", nil},
 		{"claude-4.6-opus-high", "claude-4.6-opus-high", nil},
 		{"gpt-5.2-xhigh", "gpt-5.2-xhigh", nil},
-		{"gpt-5.2", "gpt-5.2-xhigh", nil},
-		{"grok-4.5", "cursor-grok-4.5-high", nil},
+		{"gpt-5.2", "gpt-5.2-low", nil},
+		{"grok-4.5", "cursor-grok-4.5-medium", nil},
 		// senpi's catalog serves the fast grok identities as suffix variants with
 		// `-fast` last and zero parameters; a bare `grok-4.5` + {effort,fast}
 		// parameter pair is not an id Cursor's catalog serves.
-		{"grok-4.5-fast", "cursor-grok-4.5-high-fast", nil},
+		{"grok-4.5-fast", "cursor-grok-4.5-medium-fast", nil},
 		{"some-custom-model", "some-custom-model", nil},
 	}
 	for _, c := range cases {
@@ -409,11 +409,12 @@ func TestResolveRequestedModelVariantAliasFileEntries(t *testing.T) {
 // TestResolveRequestedModelStaticTiersStillPromoteBareIds guards the row 10
 // non-regression requirement: bare ids that are self-referential passthrough
 // entries in the alias table (no level) must still fall through to the static
-// tier promotion, not be short-circuited by the alias probe.
+// representative-tier pick (medium, then low, …), not be short-circuited by
+// the alias probe.
 func TestResolveRequestedModelStaticTiersStillPromoteBareIds(t *testing.T) {
 	gotID, gotParams := ResolveRequestedModel("gpt-5.2", "")
-	if gotID != "gpt-5.2-xhigh" {
-		t.Errorf("ResolveRequestedModel(%q) id = %q, want gpt-5.2-xhigh", "gpt-5.2", gotID)
+	if gotID != "gpt-5.2-low" {
+		t.Errorf("ResolveRequestedModel(%q) id = %q, want gpt-5.2-low", "gpt-5.2", gotID)
 	}
 	if len(gotParams) != 0 {
 		t.Errorf("ResolveRequestedModel(%q) params = %v, want none", "gpt-5.2", gotParams)
@@ -436,5 +437,74 @@ func TestEncodeRunRequestIncludesBothModelSelectors(t *testing.T) {
 	}
 	if _, ok := paramARR[9]; !ok {
 		t.Fatal("parameterized request must include AgentRunRequest.requested_model")
+	}
+}
+
+
+func TestEncodeRunRequestConversationTurnIncludesMcpToolCallStep(t *testing.T) {
+	p := &RunRequestParams{
+		ModelId:  "composer-2.5",
+		UserText: "now",
+		Turns: []TurnData{{
+			UserText: "prior",
+			Steps: []TurnStep{{
+				ToolName:     "search",
+				ToolCallId:   "call-1",
+				ToolArgsJSON: `{"q":"hi"}`,
+				ToolResult:   "found",
+			}},
+		}},
+	}
+	buf := EncodeRunRequest(p)
+	arr := parseFields(t, parseFields(t, buf)[1][0].data)
+	css := parseFields(t, arr[1][0].data)
+	turnID := css[8][0].data
+	turnBytes, ok := p.BlobStore[hex.EncodeToString(turnID)]
+	if !ok {
+		t.Fatal("conversation turn blob missing")
+	}
+	agentTurn := parseFields(t, parseFields(t, turnBytes)[1][0].data)
+	stepID := agentTurn[2][0].data
+	stepBytes, ok := p.BlobStore[hex.EncodeToString(stepID)]
+	if !ok {
+		t.Fatal("conversation step blob missing")
+	}
+	step := parseFields(t, stepBytes)
+	if _, ok := step[CS_ToolCall]; !ok {
+		t.Fatalf("ConversationStep fields = %v, want tool_call (field 2)", step)
+	}
+	toolCall := parseFields(t, step[CS_ToolCall][0].data)
+	if _, ok := toolCall[TC_McpToolCall]; !ok {
+		t.Fatal("ToolCall missing mcp_tool_call")
+	}
+	if got := string(toolCall[TC_ToolCallId][0].data); got != "call-1" {
+		t.Fatalf("tool_call_id = %q, want call-1", got)
+	}
+	mcpCall := parseFields(t, toolCall[TC_McpToolCall][0].data)
+	args := parseFields(t, mcpCall[MTC_Args][0].data)
+	if got := string(args[MCA_Name][0].data); got != "search" {
+		t.Fatalf("mcp args name = %q, want search", got)
+	}
+	if got := string(args[MCA_ProviderIdentifier][0].data); got != "proxy" {
+		t.Fatalf("provider_identifier = %q, want proxy", got)
+	}
+	if _, ok := mcpCall[MTC_Result]; !ok {
+		t.Fatal("McpToolCall missing result")
+	}
+}
+
+func TestEncodeExecMcpResultPartsIncludesImageContent(t *testing.T) {
+	buf := EncodeExecMcpResultParts(1, "exec-1", []McpResultPart{
+		{Text: "ok"},
+		{Image: &ImageData{MimeType: "image/png", Data: []byte{0x89, 0x50, 0x4e}}},
+	}, false)
+	if !bytes.Contains(buf, []byte("ok")) {
+		t.Fatal("text content missing from MCP result")
+	}
+	if !bytes.Contains(buf, []byte("image/png")) {
+		t.Fatal("image mime type missing from MCP result")
+	}
+	if !bytes.Contains(buf, []byte{0x89, 0x50, 0x4e}) {
+		t.Fatal("image bytes missing from MCP result")
 	}
 }

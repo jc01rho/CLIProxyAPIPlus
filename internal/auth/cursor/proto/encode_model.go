@@ -31,7 +31,7 @@ var cursorRoutingLevels = []string{"cost", "balance", "intelligence"}
 var cursorEffortSuffixesLongestFirst = []string{"xhigh", "medium", "high", "max", "low", "none"}
 
 // cursorModelEffortTiers mirrors opencodex CURSOR_MODEL_EFFORT_TIERS.
-// Bare ids in this map receive the last (highest) tier as a wire suffix.
+// Bare ids in this map receive senpi's representative tier (medium, then low, …).
 var cursorModelEffortTiers = map[string][]string{
 	"claude-4.5-opus":    {"high"},
 	"claude-4.6-opus":    {"high", "max"},
@@ -118,10 +118,8 @@ func normalizeCursorModelID(modelID string) string {
 // Bare ids (no level suffix) that are also present in the static effort-tier
 // table are left to the static path: senpi's catalog lists those bases as
 // self-referential passthrough aliases (targetId == key, no level), which carry
-// no tier information, while the static table's bare-id behavior is to promote
-// to the highest tier (mirroring senpi's own "no explicit selection" default of
-// the representative variant). Only ids the static table has no opinion on, or
-// aliases that actually carry a level/suffix, are resolved here.
+// no tier information. The static table then picks senpi's representative
+// variant (medium, then low, minimal, high, …) rather than the highest tier.
 func resolveCursorVariantAlias(id string) (string, bool) {
 	alias, ok := cursorVariantAliases[strings.ToLower(id)]
 	if !ok {
@@ -229,11 +227,23 @@ func mapReasoningToCursorTier(reasoning string, tiers []string) string {
 		return tiers[0]
 	case "high", "xhigh", "extra_high", "extra-high", "max", "highest":
 		return tiers[len(tiers)-1]
-	case "medium", "mid", "default":
-		return tiers[(len(tiers)-1)/2]
 	default:
-		return tiers[len(tiers)-1]
+		// Empty / "medium" / unknown: senpi pickRepresentative order
+		// (catalog-grouping.ts), not the highest tier.
+		return pickRepresentativeCursorTier(tiers)
 	}
+}
+
+// pickRepresentativeCursorTier mirrors senpi catalog-grouping.ts pickRepresentative:
+// medium → low → minimal → high → xhigh → extra-high → max → none.
+func pickRepresentativeCursorTier(tiers []string) string {
+	order := []string{"medium", "low", "minimal", "high", "xhigh", "extra-high", "max", "none"}
+	for _, want := range order {
+		if containsString(tiers, want) {
+			return want
+		}
+	}
+	return tiers[0]
 }
 
 // cursorGrokCapabilityBases are the grok families whose cursor catalog identity

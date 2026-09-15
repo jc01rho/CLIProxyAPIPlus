@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -46,9 +47,29 @@ type ImageData struct {
 	Data     []byte
 }
 
+// TurnStep is one ConversationStep inside an agent turn. Empty ToolCallId
+// means an assistant text step; otherwise it is an MCP tool-call step,
+// matching senpi's createCursorToolCallStep.
+type TurnStep struct {
+	AssistantText     string
+	ToolName          string
+	ToolCallId        string
+	ToolArgsJSON      string
+	ToolResult        string
+	ToolResultImages  []ImageData
+	ToolIsError       bool
+}
+
 type TurnData struct {
 	UserText      string
 	AssistantText string
+	Steps         []TurnStep
+}
+
+// McpResultPart is one text or image item in an MCP success payload.
+type McpResultPart struct {
+	Text  string
+	Image *ImageData
 }
 
 type McpToolDef struct {
@@ -252,7 +273,13 @@ func buildConversationStateBytes(p *RunRequestParams) []byte {
 		userBlobID := storeBlob(p.BlobStore, umBytes)
 
 		var stepBlobIDs [][]byte
-		if turn.AssistantText != "" {
+		if len(turn.Steps) > 0 {
+			for _, step := range turn.Steps {
+				if stepBytes := marshalConversationStep(step); len(stepBytes) > 0 {
+					stepBlobIDs = append(stepBlobIDs, storeBlob(p.BlobStore, stepBytes))
+				}
+			}
+		} else if turn.AssistantText != "" {
 			am := newMsg("AssistantMessage")
 			setStr(am, "text", turn.AssistantText)
 			step := newMsg("ConversationStep")
@@ -427,18 +454,23 @@ func EncodeExecRequestContextResult(execMsgId uint32, execId string, tools []Mcp
 	return encodeExecClientMsg(execMsgId, execId, "request_context_result", rcr)
 }
 
-// EncodeExecMcpResult responds with MCP tool result.
+// EncodeExecMcpResult responds with a text-only MCP tool result.
 func EncodeExecMcpResult(execMsgId uint32, execId string, content string, isError bool) []byte {
-	textContent := newMsg("McpTextContent")
-	setStr(textContent, "text", content)
+	return EncodeExecMcpResultParts(execMsgId, execId, []McpResultPart{{Text: content}}, isError)
+}
 
-	contentItem := newMsg("McpToolResultContentItem")
-	setMsg(contentItem, "text", textContent)
-
+// EncodeExecMcpResultParts responds with MCP success content items (text and/or image),
+// matching senpi's createCursorMcpResult.
+func EncodeExecMcpResultParts(execMsgId uint32, execId string, parts []McpResultPart, isError bool) []byte {
+	if len(parts) == 0 {
+		parts = []McpResultPart{{Text: ""}}
+	}
 	success := newMsg("McpSuccess")
 	contentField := field(success, "content")
 	contentList := success.Mutable(contentField).List()
-	contentList.Append(protoreflect.ValueOfMessage(contentItem.ProtoReflect()))
+	for _, part := range parts {
+		contentList.Append(protoreflect.ValueOfMessage(mcpResultContentItem(part).ProtoReflect()))
+	}
 	setBool(success, "is_error", isError)
 
 	result := newMsg("McpResult")
@@ -993,6 +1025,94 @@ func ProtobufValueBytesToJSON(data []byte) (interface{}, error) {
 		return nil, err
 	}
 	return val.AsInterface(), nil
+}
+
+func marshalConversationStep(step TurnStep) []byte {
+	conv := newMsg("ConversationStep")
+	if step.ToolCallId != "" {
+		mcpCall := newMsg("McpToolCall")
+		args := newMsg("McpArgs")
+		setStr(args, "name", step.ToolName)
+		setMcpArgsMap(args, step.ToolArgsJSON)
+		setStr(args, "tool_call_id", step.ToolCallId)
+		setStr(args, "provider_identifier", "proxy")
+		setStr(args, "tool_name", step.ToolName)
+		setMsg(mcpCall, "args", args)
+		if step.ToolIsError || step.ToolResult != "" || len(step.ToolResultImages) > 0 {
+			setMsg(mcpCall, "result", buildHistoryMcpToolResult(step))
+		}
+		tc := newMsg("ToolCall")
+		setMsg(tc, "mcp_tool_call", mcpCall)
+		tcBytes := marshal(tc)
+		// ToolCall.tool_call_id is field 57; older embedded descriptors omit it,
+		// so append it on the wire after the oneof variant.
+		tcBytes = pwStr(tcBytes, TC_ToolCallId, step.ToolCallId)
+		return pwBytes(nil, CS_ToolCall, tcBytes)
+	}
+	if step.AssistantText == "" {
+		return nil
+	}
+	am := newMsg("AssistantMessage")
+	setStr(am, "text", step.AssistantText)
+	setMsg(conv, "assistant_message", am)
+	return marshal(conv)
+}
+
+func setMcpArgsMap(argsMsg *dynamicpb.Message, jsonArgs string) {
+	jsonArgs = strings.TrimSpace(jsonArgs)
+	if jsonArgs == "" {
+		return
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(jsonArgs), &obj); err != nil {
+		return
+	}
+	f := field(argsMsg, "args")
+	m := argsMsg.Mutable(f).Map()
+	for k, v := range obj {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			continue
+		}
+		m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfBytes(jsonToProtobufValueBytes(raw)))
+	}
+}
+
+func buildHistoryMcpToolResult(step TurnStep) *dynamicpb.Message {
+	result := newMsg("McpToolResult")
+	if step.ToolIsError {
+		errMsg := newMsg("McpToolError")
+		setStr(errMsg, "error", step.ToolResult)
+		setMsg(result, "error", errMsg)
+		return result
+	}
+	success := newMsg("McpSuccess")
+	contentField := field(success, "content")
+	contentList := success.Mutable(contentField).List()
+	if step.ToolResult != "" || len(step.ToolResultImages) == 0 {
+		contentList.Append(protoreflect.ValueOfMessage(mcpResultContentItem(McpResultPart{Text: step.ToolResult}).ProtoReflect()))
+	}
+	for i := range step.ToolResultImages {
+		img := step.ToolResultImages[i]
+		contentList.Append(protoreflect.ValueOfMessage(mcpResultContentItem(McpResultPart{Image: &img}).ProtoReflect()))
+	}
+	setMsg(result, "success", success)
+	return result
+}
+
+func mcpResultContentItem(part McpResultPart) *dynamicpb.Message {
+	contentItem := newMsg("McpToolResultContentItem")
+	if part.Image != nil && len(part.Image.Data) > 0 {
+		img := newMsg("McpImageContent")
+		setBytes(img, "data", part.Image.Data)
+		setStr(img, "mime_type", part.Image.MimeType)
+		setMsg(contentItem, "image", img)
+		return contentItem
+	}
+	textContent := newMsg("McpTextContent")
+	setStr(textContent, "text", part.Text)
+	setMsg(contentItem, "text", textContent)
+	return contentItem
 }
 
 func sha256Sum(data []byte) []byte {
