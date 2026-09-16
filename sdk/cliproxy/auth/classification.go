@@ -124,14 +124,18 @@ func authHasOAuthMetadata(auth *Auth) bool {
 	return false
 }
 
-// authHasCustomBaseURL reports whether the credential pins a non-default API
-// base URL (for example a third-party Claude-compatible mirror such as
-// https://claude.nekos.me). Custom-base credentials must not trigger token
-// refresh: the refresh exchange targets the official Anthropic OAuth token
-// endpoint, which neither knows the mirror's credentials nor returns tokens
-// the mirror would accept.
+// authHasCustomBaseURL reports whether a Claude credential pins a non-default
+// API base URL (for example a third-party Claude-compatible mirror such as
+// https://claude.nekos.me). Only Claude is gated: its refresh exchange targets
+// the official Anthropic OAuth token endpoint, which neither knows the
+// mirror's credentials nor returns tokens the mirror would accept. Other
+// providers (xAI, Codex, GitLab, ...) store an official or provider-native
+// base_url and must still refresh.
 func authHasCustomBaseURL(a *Auth) bool {
 	if a == nil || a.Attributes == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(a.Provider), "claude") {
 		return false
 	}
 	raw := strings.TrimSpace(a.Attributes["base_url"])
