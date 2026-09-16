@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -100,29 +99,51 @@ func TestFetchClineModelsFiltersFreeSuffixWhenConfigured(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"data": [
-				{"id":"openrouter/paid-model","name":"Paid model"},
+				{"id":"openrouter/paid-model","name":"Paid model","pricing":{"prompt":"0.001","completion":"0.002"}},
 				{"id":"openrouter/free-model:free","name":"Free model"},
-				{"id":"openrouter/another:free-preview","name":"Free preview"}
+				{"id":"openrouter/another:free-preview","name":"Free preview"},
+				{"id":"stealth/union-alpha","name":"Union Alpha","pricing":{"prompt":"0","completion":"0"}}
 			]
 		}`))
 	}))
 	t.Cleanup(server.Close)
 
 	allModels := fetchClineModels(context.Background(), nil, &config.Config{}, server.URL)
-	if len(allModels) != 3 {
-		t.Fatalf("unfiltered models = %d, want 3", len(allModels))
+	if len(allModels) != 4 {
+		t.Fatalf("unfiltered models = %d, want 4", len(allModels))
 	}
 
 	freeModels := fetchClineModels(context.Background(), nil, &config.Config{
 		ClineFreeModelsOnly: true,
 	}, server.URL)
-	if len(freeModels) != 2 {
-		t.Fatalf("free-only models = %d, want 2", len(freeModels))
+	if len(freeModels) != 3 {
+		t.Fatalf("free-only models = %d, want 3 (both :free IDs plus zero-cost upstream pricing)", len(freeModels))
 	}
+	seen := map[string]bool{}
 	for _, model := range freeModels {
-		if !strings.Contains(model.ID, ":free") {
-			t.Fatalf("free-only result contains %q without :free", model.ID)
+		seen[model.ID] = true
+	}
+	for _, want := range []string{"openrouter/free-model:free", "openrouter/another:free-preview", "stealth/union-alpha"} {
+		if !seen[want] {
+			t.Errorf("expected %q in free-only results", want)
 		}
+	}
+	if seen["openrouter/paid-model"] {
+		t.Error("paid model must not appear in free-only results")
+	}
+}
+
+func TestFilterClineModelsHonorsUpstreamZeroCostFlag(t *testing.T) {
+	// Zero-cost upstream pricing must survive free-only even when the ID
+	// carries no ":free" marker (e.g. stealth/union-alpha).
+	models := []*registry.ModelInfo{
+		{ID: "provider/paid"},
+		{ID: "stealth/union-alpha", IsFree: true},
+	}
+
+	filtered := FilterClineModels(models, true)
+	if len(filtered) != 1 || filtered[0].ID != "stealth/union-alpha" {
+		t.Fatalf("filtered models = %#v, want only stealth/union-alpha", filtered)
 	}
 }
 

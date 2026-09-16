@@ -819,6 +819,11 @@ func fetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 			Type:                "cline",
 			Object:              "model",
 			Created:             now,
+			// Carry the upstream list pricing verdict into the listing so
+			// the free-only filter can honor genuinely zero-cost models
+			// (e.g. stealth/union-alpha) whose IDs carry no ":free"
+			// marker and are not part of the curated UI picks.
+			IsFree: clineIsFreeModel(m),
 		})
 	}
 
@@ -843,8 +848,9 @@ var clineCuratedFreeModels = map[string]bool{
 }
 
 // FilterClineModels limits a Cline catalog to free models when enabled: IDs
-// containing ":free" plus the curated zero-cost picks the Cline UI
-// advertises as FREE despite nonzero list pricing.
+// containing ":free", the curated zero-cost picks the Cline UI advertises as
+// FREE despite nonzero list pricing, and any model the upstream catalog marks
+// as zero-cost (prompt and completion both parse as 0).
 func FilterClineModels(models []*registry.ModelInfo, freeOnly bool) []*registry.ModelInfo {
 	if !freeOnly {
 		return models
@@ -854,7 +860,7 @@ func FilterClineModels(models []*registry.ModelInfo, freeOnly bool) []*registry.
 		if model == nil {
 			continue
 		}
-		if strings.Contains(model.ID, ":free") || clineCuratedFreeModels[strings.ToLower(strings.TrimSpace(model.ID))] {
+		if strings.Contains(model.ID, ":free") || clineCuratedFreeModels[strings.ToLower(strings.TrimSpace(model.ID))] || model.IsFree {
 			filtered = append(filtered, model)
 		}
 	}
