@@ -192,7 +192,7 @@ func (e *WorkBuddyExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if !isHTTPSuccess(httpResp.StatusCode) {
 		b, _ := io.ReadAll(httpResp.Body)
 		appendAPIResponseChunk(ctx, e.cfg, b)
-		return resp, statusErr{code: httpResp.StatusCode, msg: string(b)}
+		return resp, statusErr{code: httpResp.StatusCode, msg: summarizeErrorBody(httpResp.Header.Get("Content-Type"), b)}
 	}
 
 	body, err := io.ReadAll(httpResp.Body)
@@ -248,7 +248,7 @@ func (e *WorkBuddyExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 		body, _ := io.ReadAll(httpResp.Body)
 		_ = httpResp.Body.Close()
 		appendAPIResponseChunk(ctx, e.cfg, body)
-		return nil, statusErr{code: httpResp.StatusCode, msg: string(body)}
+		return nil, statusErr{code: httpResp.StatusCode, msg: summarizeErrorBody(httpResp.Header.Get("Content-Type"), body)}
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
