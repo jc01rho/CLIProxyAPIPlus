@@ -303,11 +303,13 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.EnsurePublished(ctx)
-	// MiniMax-M3 embeds reasoning in content tags instead of reasoning_content.
-	// Extract it before reverse translation so downstream clients receive the
-	// reasoning and answer separately.
+	// MiniMax-M3 and Grok use their provider-specific tag protocol, while
+	// other OpenAI-compatible upstreams can still emit standard
+	// <thinking>...</thinking> blocks in content.
 	if isMiniMaxThinkingTagModel(baseModel) {
 		body = normalizeMiniMaxThinkingBody(body)
+	} else {
+		body = normalizeStandardThinkingBody(body)
 	}
 	// Translate response back to source format when needed
 	var param any
@@ -709,9 +711,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		var streamAborted bool
 		var upstreamEvent string
 		var frameData [][]byte
-		var miniMaxStreamState *minimaxThinkingStreamState
-		if isMiniMaxThinkingTagModel(baseModel) {
-			miniMaxStreamState = &minimaxThinkingStreamState{}
+		miniMaxStreamState := &minimaxThinkingStreamState{}
+		if !isMiniMaxThinkingTagModel(baseModel) {
+			miniMaxStreamState.tagPairs = standardThinkingTagPairs[:]
 		}
 		defer streamUsage.Publish(ctx, reporter)
 

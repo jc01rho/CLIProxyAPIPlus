@@ -97,6 +97,42 @@ func TestNormalizeMiniMaxThinkingBodySeparatesThinkTags(t *testing.T) {
 	}
 }
 
+func TestNormalizeMiniMaxThinkingBodySeparatesStandardThinkingTagsForUnknownModel(t *testing.T) {
+	body := []byte(`{"model":"muse-spark-1.3-contributor","choices":[{"message":{"role":"assistant","content":"<thinking>The user wants a YAML update.</thinking></thinking>Done."}}]}`)
+
+	out := normalizeMiniMaxThinkingBody(body)
+
+	if got := gjson.GetBytes(out, "choices.0.message.reasoning_content").String(); got != "The user wants a YAML update." {
+		t.Fatalf("reasoning_content = %q, want hidden thinking; body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "choices.0.message.content").String(); got != "Done." {
+		t.Fatalf("content = %q, want answer without leaked thinking tags; body=%s", got, out)
+	}
+}
+
+func TestNormalizeStandardThinkingBodyStripsResponsesOutputText(t *testing.T) {
+	body := []byte(`{"object":"response","output":[{"type":"message","content":[{"type":"output_text","text":"<thinking>Hidden plan.</thinking></thinking>Visible answer."}]}]}`)
+
+	out := normalizeStandardThinkingBody(body)
+
+	if got := gjson.GetBytes(out, "output.0.content.0.text").String(); got != "Visible answer." {
+		t.Fatalf("Responses output_text = %q, want cleaned answer; body=%s", got, out)
+	}
+}
+
+func TestNormalizeThinkingStreamStripsResponsesOutputTextTags(t *testing.T) {
+	state := &minimaxThinkingStreamState{tagPairs: standardThinkingTagPairs[:]}
+	first := normalizeMiniMaxThinkingStream(state, []byte(`{"type":"response.output_text.delta","delta":"<thinking>Hidden "}`))
+	second := normalizeMiniMaxThinkingStream(state, []byte(`{"type":"response.output_text.delta","delta":"plan.</thinking></thinking>Visible answer."}`))
+
+	if got := gjson.GetBytes(first, "delta").String(); got != "" {
+		t.Fatalf("first Responses delta = %q, want hidden thinking removed", got)
+	}
+	if got := gjson.GetBytes(second, "delta").String(); got != "Visible answer." {
+		t.Fatalf("second Responses delta = %q, want cleaned answer", got)
+	}
+}
+
 func TestOpenAICompatExecutorSeparatesMiniMaxM3ThinkTags(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -130,6 +166,56 @@ func TestOpenAICompatExecutorSeparatesMiniMaxM3ThinkTags(t *testing.T) {
 	}
 	if got := gjson.GetBytes(response.Payload, "choices.0.message.content").String(); got != "\n\nHi there!" {
 		t.Fatalf("content = %q, want answer without think block; body=%s", got, response.Payload)
+	}
+}
+
+func TestOpenAICompatExecutorStreamSeparatesUnknownModelThinkingTags(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"muse-spark-1.3-contributor\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"<thinking>The user wants \"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"muse-spark-1.3-contributor\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a YAML update.</thinking></thinking>Done.\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	openAICompat := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider: "openai-compatibility",
+		Attributes: map[string]string{
+			"base_url": upstream.URL,
+			"api_key":  "test-key",
+		},
+	}
+	request := cliproxyexecutor.Request{
+		Model:   "muse-spark-1.3-contributor",
+		Payload: []byte(`{"model":"muse-spark-1.3-contributor","stream":true,"messages":[{"role":"user","content":"Hello"}]}`),
+	}
+	options := cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAI,
+		ResponseFormat: sdktranslator.FormatOpenAI,
+		Stream:         true,
+	}
+
+	response, err := openAICompat.ExecuteStream(context.Background(), auth, request, options)
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	var output strings.Builder
+	for chunk := range response.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+		output.Write(chunk.Payload)
+	}
+	got := output.String()
+	if strings.Contains(got, "<thinking>") || strings.Contains(got, "</thinking>") {
+		t.Fatalf("stream leaked thinking tags: %s", got)
+	}
+	if !strings.Contains(got, `"reasoning_content":"The user wants a YAML update."`) {
+		t.Fatalf("stream missing separated reasoning_content: %s", got)
+	}
+	if !strings.Contains(got, `"content":"Done."`) {
+		t.Fatalf("stream missing cleaned answer content: %s", got)
 	}
 }
 
