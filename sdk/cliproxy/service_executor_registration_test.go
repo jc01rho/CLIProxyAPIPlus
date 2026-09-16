@@ -89,6 +89,7 @@ func TestRegisterAvailableExecutors(t *testing.T) {
 		"antigravity",
 		"kimi",
 		"xai",
+		"workbuddy",
 		"openai-compatibility",
 		"plugin-provider",
 	}
@@ -177,6 +178,26 @@ func TestRegisterExecutorForAuth_OpenAICompatUsesNamespacedProviderKey(t *testin
 				t.Fatalf("compat executor type = %T, want *executor.OpenAICompatExecutor", compatExecutor)
 			}
 		})
+	}
+}
+
+func TestRegisterExecutorForAuth_WorkBuddyUsesNativeExecutor(t *testing.T) {
+	service := &Service{
+		cfg:         &config.Config{},
+		coreManager: coreauth.NewManager(nil, nil, nil),
+	}
+
+	service.registerExecutorForAuth(&coreauth.Auth{ID: "workbuddy-oauth", Provider: "workbuddy"}, true)
+
+	resolved, ok := service.coreManager.Executor("workbuddy")
+	if !ok || resolved == nil {
+		t.Fatal("expected native workbuddy executor")
+	}
+	if _, okWorkBuddy := resolved.(*runtimeexecutor.WorkBuddyExecutor); !okWorkBuddy {
+		t.Fatalf("executor type = %T, want *executor.WorkBuddyExecutor", resolved)
+	}
+	if _, isOpenAICompat := resolved.(*runtimeexecutor.OpenAICompatExecutor); isOpenAICompat {
+		t.Fatalf("workbuddy executor type = %T, must not use OpenAICompatExecutor", resolved)
 	}
 }
 

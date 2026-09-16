@@ -149,6 +149,7 @@ func main() {
 	var githubCopilotLogin bool
 	var clineLogin bool
 	var codeBuddyLogin bool
+	var workBuddyLogin bool
 	var projectID string
 	var devinLogin bool
 	var discoverGateways bool
@@ -202,6 +203,7 @@ func main() {
 	flag.BoolVar(&githubCopilotLogin, "github-copilot-login", false, "Login to GitHub Copilot using device flow")
 	flag.BoolVar(&clineLogin, "cline-login", false, "Login to Cline using OAuth")
 	flag.BoolVar(&codeBuddyLogin, "codebuddy-login", false, "Login to CodeBuddy using browser OAuth flow")
+	flag.BoolVar(&workBuddyLogin, "workbuddy-login", false, "Login to WorkBuddy global using browser OAuth flow")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.BoolVar(&devinLogin, "devin-login", false, "Login to Devin using OAuth")
 	flag.BoolVar(&discoverGateways, "discover", false, "Discover local AI gateways and CPA instances on the LAN")
@@ -783,6 +785,9 @@ func main() {
 	} else if codeBuddyLogin {
 		// Handle CodeBuddy login
 		cmd.DoCodeBuddyLogin(cfg, options)
+	} else if workBuddyLogin {
+		// Handle WorkBuddy global login
+		cmd.DoWorkBuddyLogin(cfg, options)
 	} else if codexLogin {
 		// Handle Codex login
 		cmd.DoCodexLogin(cfg, options)

@@ -129,6 +129,26 @@ func GetMistralModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Mistral)
 }
 
+// GetWorkBuddyModels returns the static fallback catalog for WorkBuddy global accounts.
+func GetWorkBuddyModels() []*ModelInfo {
+	now := int64(1789516800) // 2026-09-16
+	ids := []string{
+		"default-model", "fast-model", "balanced-model", "primary-model", "hy4-preview",
+		"gpt-5.6-sol", "gpt-5.6-terra", "deep-model", "deepseek-v4.1-flash", "gpt-6-astra",
+		"hy4-preview-f", "hy3", "glm-5.2", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4",
+		"gpt-5.3-codex", "gemini-3.5-flash", "glm-5.3", "kimi-k3", "kimi-k2.6",
+	}
+	models := make([]*ModelInfo, 0, len(ids))
+	for _, id := range ids {
+		models = append(models, &ModelInfo{
+			ID: id, Object: "model", Created: now, OwnedBy: "workbuddy", Type: "workbuddy",
+			DisplayName: id, Name: id, ContextLength: 200000, MaxCompletionTokens: 32768,
+			SupportedEndpoints: []string{"/chat/completions"},
+		})
+	}
+	return models
+}
+
 // GetCodeBuddyModels returns the available models for CodeBuddy (Tencent).
 // These models are served through the copilot.tencent.com API.
 func GetCodeBuddyModels() []*ModelInfo {
@@ -561,6 +581,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAntigravityModels()
 	case "codebuddy":
 		return GetCodeBuddyModels()
+	case "workbuddy":
+		return GetWorkBuddyModels()
 	case "cursor":
 		return GetCursorModels()
 	case "cline":

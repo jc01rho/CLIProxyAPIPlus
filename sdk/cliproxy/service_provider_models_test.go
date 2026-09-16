@@ -79,6 +79,7 @@ func TestRegisterModelsForAuth_AllStaticProviderCatalogsAppearInOpenAIList(t *te
 		{provider: "kilo", modelID: "openrouter/free"},
 		{provider: "amazonq", modelID: internalregistry.GetAmazonQModels()[0].ID},
 		{provider: "codebuddy", modelID: internalregistry.GetCodeBuddyModels()[0].ID},
+		{provider: "workbuddy", modelID: internalregistry.GetWorkBuddyModels()[0].ID},
 		{provider: "cursor", modelID: internalregistry.GetCursorModels()[0].ID},
 		{provider: "mistral", modelID: internalregistry.GetMistralModels()[0].ID},
 		{provider: "commandcode", modelID: internalregistry.GetCommandCodeModels()[0].ID},

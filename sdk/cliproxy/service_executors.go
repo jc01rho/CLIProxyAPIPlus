@@ -213,6 +213,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"kimi",
 		"xai",
 		"cline",
+		"workbuddy",
 		"kilo",
 		"kilo-gateway",
 		"devin",
@@ -350,6 +351,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewXAIAutoExecutor(cfg))
 	case "cline":
 		s.coreManager.RegisterExecutor(executor.NewClineExecutor(cfg))
+	case "workbuddy":
+		s.coreManager.RegisterExecutor(executor.NewWorkBuddyExecutor(cfg))
 	case "kilo", "kilocode":
 		s.coreManager.RegisterExecutor(executor.NewKiloExecutor(cfg))
 	case "alysis":

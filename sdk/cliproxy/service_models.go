@@ -161,6 +161,12 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		}
 		models = executor.FilterClineModels(models, s.cfg != nil && s.cfg.ClineFreeModelsOnly)
 		models = applyExcludedModels(models, excluded)
+	case "workbuddy":
+		models = executor.FetchWorkBuddyModels(ctx, a, s.cfg)
+		if len(models) == 0 {
+			models = registry.GetWorkBuddyModels()
+		}
+		models = applyExcludedModels(models, excluded)
 	case "kilo", "kilocode":
 		models = executor.FetchKiloModels(ctx, a, s.cfg)
 		if len(models) == 0 {
