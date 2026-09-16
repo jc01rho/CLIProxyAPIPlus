@@ -492,6 +492,9 @@ jobs:
       TARGET_GOARCH: ${{ matrix.goarch }}
       ASSET_ARCH: ${{ matrix.asset_arch }}
       ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+      # Pin the FreeBSD sysroot used by the CGO cross-build. go-cross/cgo-actions@v1
+      # hardcodes 14.3-RELEASE, which download.freebsd.org removed (HTTP 404).
+      FREEBSD_RELEASE: '14.4'
     strategy:
       fail-fast: false
       matrix:
@@ -554,18 +557,39 @@ jobs:
       - name: Build FreeBSD binary with CGO
         if: ${{ matrix.cgo_enabled }}
         timeout-minutes: 45
-        uses: go-cross/cgo-actions@v1
-        with:
-          dir: .
-          packages: ./cmd/server/
-          targets: ${{ env.TARGET }}
-          out-dir: dist/${{ env.TARGET }}/bin
-          output: cli-proxy-api
-          flags: >-
-            -ldflags=-s -w
-            -X main.Version=${{ steps.metadata.outputs.release_version }}
-            -X main.Commit=${{ steps.metadata.outputs.commit }}
-            -X main.BuildDate=${{ steps.metadata.outputs.build_date }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${TARGET_GOARCH}" in
+            amd64)
+              os_arch=amd64
+              clang_target="x86_64-unknown-freebsd${FREEBSD_RELEASE}"
+              ;;
+            arm64)
+              os_arch=arm64
+              clang_target="aarch64-unknown-freebsd${FREEBSD_RELEASE}"
+              ;;
+            *)
+              printf 'unsupported TARGET_GOARCH=%s for FreeBSD CGO\n' "${TARGET_GOARCH}" >&2
+              exit 1
+              ;;
+          esac
+
+          sysroot_dir="${PWD}/${os_arch}"
+          base_txz="${PWD}/base.txz"
+          base_url="https://download.freebsd.org/releases/${os_arch}/${FREEBSD_RELEASE}-RELEASE/base.txz"
+          wget -q -O "${base_txz}" "${base_url}"
+          mkdir -p "${sysroot_dir}"
+          sudo tar -xf "${base_txz}" -C "${sysroot_dir}"
+          rm -f "${base_txz}"
+
+          mkdir -p "dist/${TARGET}/bin"
+          CGO_ENABLED=1 GOOS=freebsd GOARCH="${TARGET_GOARCH}" \
+            CGO_LDFLAGS='-fuse-ld=lld' \
+            CC="clang --target=${clang_target} --sysroot=${sysroot_dir}" \
+            go build -buildvcs=false \
+              -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
+              -o "dist/${TARGET}/bin/cli-proxy-api" ./cmd/server/
       - name: Build FreeBSD no-plugin binary
         if: ${{ !matrix.cgo_enabled }}
         shell: bash
