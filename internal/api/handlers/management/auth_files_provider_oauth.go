@@ -27,6 +27,7 @@ import (
 	kiro "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/meta"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
+	workbuddyauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/zcode"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
@@ -1653,6 +1654,114 @@ func (h *Handler) RequestZcodeToken(c *gin.Context) {
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": flow.AuthorizeURL, "state": state})
+}
+
+// RequestWorkBuddyToken implements GET /v0/management/workbuddy-auth-url.
+// It starts the WorkBuddy device authorization flow (FetchAuthState →
+// PollForToken) and persists the resulting auth file in the background.
+func (h *Handler) RequestWorkBuddyToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	state := fmt.Sprintf("workbuddy-%d", time.Now().UnixNano())
+	authSvc := workbuddyauth.NewWorkBuddyAuth(h.cfg)
+
+	authState, errFetchState := authSvc.FetchAuthState(ctx)
+	if errFetchState != nil {
+		log.Errorf("Failed to start WorkBuddy auth flow: %v", errFetchState)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start device authorization flow"})
+		return
+	}
+
+	authURL := strings.TrimSpace(authState.AuthURL)
+
+	RegisterOAuthSession(state, "workbuddy")
+
+	go func() {
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		defer cancelPoll()
+		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "workbuddy")
+
+		log.Info("Waiting for WorkBuddy authentication...")
+		storage, errPoll := authSvc.PollForToken(pollCtx, authState.State)
+		if errPoll != nil {
+			if !IsOAuthSessionPending(state, "workbuddy") {
+				return
+			}
+			log.Errorf("WorkBuddy authentication failed: %v", errPoll)
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Authentication failed", errPoll))
+			return
+		}
+		if !IsOAuthSessionPending(state, "workbuddy") {
+			return
+		}
+
+		// Resolve account identity for request headers. Non-fatal on failure.
+		if account, errAccount := authSvc.FetchAccountIdentity(pollCtx, authState.State, storage.AccessToken); errAccount != nil {
+			log.Warnf("WorkBuddy: failed to fetch account identity: %v", errAccount)
+		} else {
+			storage.UserID = account.UserID
+			storage.EnterpriseID = account.EnterpriseID
+			storage.Nickname = account.Nickname
+		}
+		if storage.UserID == "" {
+			storage.UserID, _ = authSvc.DecodeUserID(storage.AccessToken)
+		}
+
+		fileName := fmt.Sprintf("workbuddy-%s.json", storage.UserID)
+		if storage.UserID == "" {
+			fileName = fmt.Sprintf("workbuddy-%d.json", time.Now().UnixNano())
+		}
+
+		label := strings.TrimSpace(storage.Nickname)
+		if label == "" {
+			label = strings.TrimSpace(storage.UserID)
+		}
+		if label == "" {
+			label = "workbuddy-user"
+		}
+
+		metadata := map[string]any{
+			"type":           "workbuddy",
+			"access_token":   storage.AccessToken,
+			"refresh_token":  storage.RefreshToken,
+			"uid":            storage.UserID,
+			"domain":         storage.Domain,
+			"realm":          storage.Realm,
+			"expires_at":     storage.ExpiresAt,
+			"enterprise_id":  storage.EnterpriseID,
+			"nickname":       storage.Nickname,
+			"device_token":   storage.DeviceToken,
+			"auth_kind":      "oauth",
+		}
+
+		record := &coreauth.Auth{
+			ID:         fileName,
+			Provider:   "workbuddy",
+			FileName:   fileName,
+			Label:      label,
+			Storage:    storage,
+			Metadata:   metadata,
+			Attributes: map[string]string{"auth_kind": "oauth"},
+		}
+
+		if errGuard := guardOAuthSessionPendingForSave(state, "workbuddy"); errGuard != nil {
+			return
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save WorkBuddy token to file: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save token to file")
+			return
+		}
+
+		CompleteOAuthSession(state)
+		log.Infof("WorkBuddy authentication successful! Token saved to %s", savedPath)
+	}()
+
+	response := gin.H{"status": "ok", "url": authURL, "state": state, "flow": "device"}
+	response["expires_in"] = 300 // 5 minutes, matching workbuddy maxPollDuration
+	c.JSON(200, response)
 }
 
 // sanitizeZcodeIdentifier sanitizes an email for use in a filename.

@@ -240,6 +240,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/kiro-auth-url", s.mgmt.RequestKiroToken)
 		mgmt.GET("/zcode-auth-url", s.mgmt.RequestZcodeToken)
 		mgmt.GET("/devin-auth-url", s.mgmt.RequestDevinToken)
+	mgmt.GET("/workbuddy-auth-url", s.mgmt.RequestWorkBuddyToken)
 		mgmt.POST("/gitlab-pat", s.mgmt.RequestGitLabPATToken)
 		mgmt.GET("/copilot-quota", s.mgmt.GetCopilotQuota)
 		mgmt.GET("/zcode-quota", s.mgmt.GetZcodeQuota)
