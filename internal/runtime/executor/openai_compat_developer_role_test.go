@@ -33,6 +33,9 @@ func TestOpenAICompatDeveloperRoleRetryRequiresStructuredSpecificEvidence(t *tes
 	if _, retry := executor.developerRoleRetryPayload(key, payload, []byte(`{"error":{"message":"unsupported role: developer","type":"invalid_request_error"}}`), http.StatusBadRequest); !retry {
 		t.Fatal("expected retry for structured unsupported developer role")
 	}
+	if _, retry := executor.developerRoleRetryPayload(key, payload, []byte(openAICompatUnknownVariantDeveloperRoleError), http.StatusBadRequest); !retry {
+		t.Fatal("expected retry for DeepSeek unknown-variant developer role")
+	}
 	if strings.Contains(key.baseURL, "secret") || strings.Contains(key.baseURL, "api_key") {
 		t.Fatalf("capability base URL retained credentials or query: %q", key.baseURL)
 	}
