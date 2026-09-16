@@ -977,7 +977,7 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
 				if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, retained, "model_time_gate"); errEnd != nil {
 					return nil, errEnd
 				}
-				return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+				return nil, authNotFoundAfterSelection(true)
 			}
 		}
 		return retained, nil

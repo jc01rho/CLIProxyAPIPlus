@@ -1931,6 +1931,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		}
 	}
 	registryRef := registry.GetGlobalRegistry()
+	timeGateExcluded := false
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
 			continue
@@ -1955,6 +1956,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		// for traceability.
 		if gateName, gated := m.authMatchesTimeGate(candidate, model, opts); gated {
 			m.warnLogTimeGateExcluded(ctx, provider, model, candidate, gateName)
+			timeGateExcluded = true
 			continue
 		}
 		if _, used := tried[candidate.ID]; used {
@@ -1968,7 +1970,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	if len(candidates) == 0 {
 		m.annotateThresholdDecisionNoMatch(ctx, model, opts, "result=no_matching_auth_for_billing_class")
 		m.mu.RUnlock()
-		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+		return nil, nil, authNotFoundAfterSelection(timeGateExcluded)
 	}
 	var available []*Auth
 	var selectorAuths []*Auth
@@ -2321,6 +2323,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		}
 	}
 	registryRef := registry.GetGlobalRegistry()
+	timeGateExcluded := false
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
 			continue
@@ -2336,6 +2339,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		}
 		if gateName, gated := m.authMatchesTimeGate(candidate, model, opts); gated {
 			m.warnLogTimeGateExcluded(ctx, strings.Join(providers, ","), model, candidate, gateName)
+			timeGateExcluded = true
 			continue
 		}
 		providerKey := executorKeyFromAuth(candidate)
@@ -2362,7 +2366,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	if len(candidates) == 0 {
 		m.annotateThresholdDecisionNoMatch(ctx, model, opts, "result=no_matching_auth_for_billing_class")
 		m.mu.RUnlock()
-		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+		return nil, nil, "", authNotFoundAfterSelection(timeGateExcluded)
 	}
 	var available []*Auth
 	var selectorAuths []*Auth

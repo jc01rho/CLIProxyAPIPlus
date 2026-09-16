@@ -373,6 +373,15 @@ func routeFallbackErrorSummary(err error) string {
 	return ExtractUpstreamErrorSummary(raw)
 }
 
+type timeGateExclusionError interface {
+	TimeGateExcluded() bool
+}
+
+func errorHasTimeGateExclusion(err error) bool {
+	var marker timeGateExclusionError
+	return errors.As(err, &marker) && marker.TimeGateExcluded()
+}
+
 func routeModelFallbackLogFields(originalModel, triggerModel, fallbackModel, source string, triggerErr error) log.Fields {
 	fields := log.Fields{
 		"requested_model":         strings.TrimSpace(originalModel),
@@ -385,6 +394,9 @@ func routeModelFallbackLogFields(originalModel, triggerModel, fallbackModel, sou
 	}
 	if triggerErr != nil {
 		fields["fallback_trigger_error"] = routeFallbackErrorSummary(triggerErr)
+	}
+	if errorHasTimeGateExclusion(triggerErr) {
+		fields["time_gate_excluded"] = "true"
 	}
 	return fields
 }

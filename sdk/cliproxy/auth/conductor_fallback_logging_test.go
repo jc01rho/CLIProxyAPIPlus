@@ -54,7 +54,7 @@ func captureFallbackLogOutput(t *testing.T, level log.Level) *fallbackLogOutput 
 	return buffer
 }
 
-var fallbackLogFieldPattern = regexp.MustCompile(`([a-z_]+)=("(?:\\.|[^"\\])*"|[0-9]+)`)
+var fallbackLogFieldPattern = regexp.MustCompile(`([a-z_]+)=("(?:\\.|[^"\\])*"|[0-9]+|true|false)`)
 
 func fallbackLogRecords(t *testing.T, output, requestID string) []map[string]string {
 	t.Helper()
@@ -257,6 +257,47 @@ func TestRouteFallbackNoActivationFormattedLogs(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestRouteFallbackLogIncludesTimeGateExclusionReason(t *testing.T) {
+	output := captureFallbackLogOutput(t, log.InfoLevel)
+	manager := NewManager(nil, nil, nil)
+	manager.SetRetryConfig(0, 0, 0)
+	manager.SetFallbackChain([]string{"fallback"}, 1)
+	triggerErr := authNotFoundAfterSelection(true)
+	if !errorHasTimeGateExclusion(triggerErr) {
+		t.Fatal("time gate exclusion marker was not detected")
+	}
+	if got := routeModelFallbackLogFields("original", "original", "fallback", "fallback-chain", triggerErr)["time_gate_excluded"]; got != "true" {
+		t.Fatalf("direct fallback fields time_gate_excluded = %#v, want true", got)
+	}
+
+	err := runFallbackLogRequest(logging.WithRequestID(context.Background(), "time-gate-fallback"), manager, false, "original", func(_ context.Context, model string) error {
+		switch model {
+		case "original":
+			return triggerErr
+		case "fallback":
+			return nil
+		default:
+			t.Fatalf("unexpected model %q", model)
+			return nil
+		}
+	})
+	if err != nil {
+		t.Fatalf("fallback request failed: %v", err)
+	}
+	records := fallbackLogRecords(t, output.String(), "time-gate-fallback")
+	if len(records) != 2 {
+		t.Fatalf("records = %v, want activation and success", records)
+	}
+	if !strings.Contains(output.String(), `time_gate_excluded="true"`) {
+		t.Fatalf("fallback log omitted time gate exclusion: %s", output.String())
+	}
+	assertFallbackLogFields(t, records[0], map[string]string{
+		"fallback_trigger_error": "auth_not_found: no auth available",
+		"time_gate_excluded":     "true",
+		"outcome":                "attempt",
+	})
 }
 
 func TestRouteFallbackFormattedLogSafety(t *testing.T) {

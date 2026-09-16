@@ -6,6 +6,7 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
@@ -112,13 +113,18 @@ func TestModelTimeGateMatchesConfigAlias(t *testing.T) {
 	cfg := &internalconfig.Config{
 		CommandCodeKey: []internalconfig.CommandCodeKey{
 			{
+				APIKey: "commandcode-test-key",
 				Models: []internalconfig.CommandCodeModel{
 					{Name: "deepseek-v4.1-flash", Alias: "command-deepseek41-flash"},
 				},
 			},
 		},
 	}
-	auth := &Auth{ID: "commandcode-apikey", Provider: "commandcode"}
+	auth := &Auth{
+		ID:         "commandcode-apikey",
+		Provider:   "commandcode",
+		Attributes: map[string]string{AttributeAPIKey: "commandcode-test-key"},
+	}
 
 	if _, gated := modelTimeGatedByConfig(cfg, rules, auth, "command-deepseek41-flash"); !gated {
 		t.Error("request using the config alias must be gated by a rule written against the real model name")
@@ -131,6 +137,112 @@ func TestModelTimeGateMatchesConfigAlias(t *testing.T) {
 	}
 	if _, gated := modelTimeGatedByConfig(cfg, rules, auth, "some-other-alias"); gated {
 		t.Error("an unrelated alias must not be gated")
+	}
+}
+
+func TestModelTimeGatePreservesUngatedModelInSharedAliasPool(t *testing.T) {
+	oldNow := modelTimeGateNow
+	modelTimeGateNow = func() time.Time {
+		return time.Date(2026, 9, 14, 2, 0, 0, 0, time.UTC)
+	}
+	defer func() { modelTimeGateNow = oldNow }()
+
+	const (
+		aliasModel   = "higher-coding"
+		gatedModel   = "deepseek-v4.1-flash"
+		allowedModel = "gemini-3-pro-preview"
+		apiKey       = "test-gemini-key"
+	)
+	cfg := &internalconfig.Config{
+		GeminiKey: []internalconfig.GeminiKey{{
+			APIKey: apiKey,
+			Models: []internalconfig.GeminiModel{
+				{Name: gatedModel, Alias: aliasModel},
+				{Name: allowedModel, Alias: aliasModel},
+			},
+		}},
+		Routing: internalconfig.RoutingConfig{
+			ModelTimeGates: []internalconfig.ModelTimeGate{{
+				Name:     "deepseek-peek-time",
+				Schedule: "0 1 * * 1-5",
+				Duration: "3h",
+				Models:   []string{"*deepseek-v4.1-flash*"},
+			}},
+		},
+	}
+	auth := &Auth{
+		ID:         "gemini-key",
+		Provider:   "gemini",
+		Attributes: map[string]string{AttributeAPIKey: apiKey},
+	}
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.SetConfig(cfg)
+	executor := &aliasModelPoolExecutor{provider: "gemini", failFor: map[string]error{}}
+	manager.RegisterExecutor(executor)
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "gemini", []*registry.ModelInfo{{ID: aliasModel}, {ID: gatedModel}, {ID: allowedModel}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+
+	if _, gated := manager.authMatchesTimeGate(auth, aliasModel, cliproxyexecutor.Options{}); gated {
+		t.Fatal("an alias with an allowed upstream model must remain eligible")
+	}
+	models, pooled := manager.preparedExecutionModels(auth, aliasModel)
+	if !pooled {
+		t.Fatal("shared alias should be treated as a model pool")
+	}
+	if len(models) != 1 || models[0] != allowedModel {
+		t.Fatalf("execution models = %v, want [%s]", models, allowedModel)
+	}
+	resp, errExecute := manager.Execute(context.Background(), []string{"gemini"}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{})
+	if errExecute != nil {
+		t.Fatalf("execute shared alias pool: %v", errExecute)
+	}
+	if got, want := string(resp.Payload), auth.ID+":"+allowedModel; got != want {
+		t.Fatalf("response payload = %q, want %q", got, want)
+	}
+}
+
+func TestPickNextMixedMarksTimeGateExcludedAuthNotFound(t *testing.T) {
+	oldNow := modelTimeGateNow
+	modelTimeGateNow = func() time.Time {
+		return time.Date(2026, 9, 14, 2, 0, 0, 0, time.UTC)
+	}
+	defer func() { modelTimeGateNow = oldNow }()
+
+	const model = "deepseek-v4.1-flash"
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.RegisterExecutor(schedulerTestExecutor{provider: "gate-provider"})
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			ModelTimeGates: []internalconfig.ModelTimeGate{{
+				Name:     "deepseek-peek-time",
+				Schedule: "0 1 * * 1-5",
+				Duration: "3h",
+				Models:   []string{"*deepseek-v4.1-flash*"},
+			}},
+		},
+	})
+	auth := &Auth{ID: "gated-auth", Provider: "gate-provider", Status: StatusActive}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+
+	_, _, _, errPick := manager.pickNextMixedLegacy(context.Background(), []string{"gate-provider"}, model, cliproxyexecutor.Options{}, nil)
+	if errPick == nil || errPick.Error() != "auth_not_found: no auth available" {
+		t.Fatalf("pick error = %v, want auth_not_found", errPick)
+	}
+	if !errorHasTimeGateExclusion(errPick) {
+		t.Fatal("auth_not_found must retain the time gate exclusion cause")
 	}
 }
 

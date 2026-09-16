@@ -43,7 +43,7 @@ var logFieldOrder = []string{
 var routeFallbackFieldOrder = []string{
 	"requested_model", "fallback_trigger_model", "selected_fallback_model", "fallback_source",
 	"fallback_trigger_status", "fallback_trigger_error", "fallback_result_status", "fallback_result_error",
-	"outcome", "elapsed_ms",
+	"time_gate_excluded", "outcome", "elapsed_ms",
 }
 
 var quotedLogFields = map[string]struct{}{
@@ -62,6 +62,7 @@ var quotedLogFields = map[string]struct{}{
 	"fallback_source":         {},
 	"fallback_trigger_error":  {},
 	"fallback_result_error":   {},
+	"time_gate_excluded":      {},
 	"outcome":                 {},
 }
 

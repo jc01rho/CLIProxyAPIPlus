@@ -418,8 +418,17 @@ func (m *Manager) filterExecutionModels(auth *Auth, routeModel string, candidate
 		return nil
 	}
 	now := time.Now()
+	var timeGateRules []internalconfig.ModelTimeGate
+	if m != nil {
+		if cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config); cfg != nil {
+			timeGateRules = cfg.Routing.ModelTimeGates
+		}
+	}
 	out := make([]string, 0, len(candidates))
 	for _, upstreamModel := range candidates {
+		if _, gated := modelTimeGatedByCandidates(timeGateRules, auth, []string{routeModel, upstreamModel}); gated {
+			continue
+		}
 		stateModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 		blocked, _, _ := isAuthBlockedForModel(auth, stateModel, now)
 		if blocked {
