@@ -336,7 +336,7 @@ func (e *ClineExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 func (e *ClineExecutor) prepareAuth(ctx context.Context, auth *cliproxyauth.Auth) error {
 	if e.shouldRefresh(auth) {
 		if err := e.refreshBeforeExpiry(ctx, auth, false); err != nil {
-			log.Warnf("cline: pre-request expiry-aware refresh failed: %v", err)
+			log.Debugf("cline: pre-request expiry-aware refresh failed: %v", err)
 		}
 	}
 	return nil
