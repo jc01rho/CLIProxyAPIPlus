@@ -1955,13 +1955,18 @@ func isCloudflareChallengeErrorMessage(message string) bool {
 	return strings.Contains(lower, "challenge-platform") ||
 		strings.Contains(lower, "cf-mitigated") ||
 		strings.Contains(lower, "cloudflare challenge") ||
-		(strings.Contains(lower, "just a moment") && strings.Contains(lower, "cloudflare"))
+		(strings.Contains(lower, "just a moment") && strings.Contains(lower, "cloudflare")) ||
+		// Tencent Cloud WAF block pages (e.g. workbuddy upstream) carry the same
+		// challenge semantics: a fixed block page with a feedback endpoint.
+		strings.Contains(lower, "waf block page") ||
+		strings.Contains(lower, "waf-intl.qq.com")
 }
 
 // isCloudflareChallengeError checks whether err is a Cloudflare bot/waf challenge.
 // Cloudflare challenges are served with HTTP 403. HTTP status >= 500 indicates an
 // upstream gateway/origin failure (such as 520-526 origin errors) and takes precedence
-// over challenge classification.
+// over challenge classification. Tencent Cloud WAF block pages are classified the
+// same way: they serve HTTP 403 with a fixed block-page body.
 func isCloudflareChallengeError(err error) bool {
 	if err == nil {
 		return false

@@ -26,6 +26,9 @@ func TestIsCloudflareChallengeErrorMessage_ExcludesOriginErrors(t *testing.T) {
 		"cloudflare challenge required",
 		// Isolated "Just a moment..." challenge page test without "cloudflare challenge" phrase
 		`<html><head><title>Just a moment...</title></head><body>Checking your browser... cloudflare</body></html>`,
+		// Tencent Cloud WAF block page (workbuddy upstream serves these on HTTP 403).
+		"<!DOCTYPE html><html lang=\"en\"><head><title>WAF Block Page</title></head><body>Your request has been interrupted</body></html>",
+		"blocked by tencent cloud waf: https://api.waf-intl.qq.com/waf-attack-feedback/0695fe28",
 	}
 	for _, ch := range challenges {
 		if !isCloudflareChallengeErrorMessage(ch) {
@@ -132,6 +135,51 @@ func TestManager_MarkResult_Cloudflare520_CustomTransientCooldown(t *testing.T) 
 	diff := time.Until(state.NextRetryAfter)
 	if diff < 3*time.Second || diff > 7*time.Second {
 		t.Fatalf("expected custom transient cooldown of ~5s, got %v", diff)
+	}
+}
+
+func TestManager_MarkResult_TencentWAFBlockPage_TreatedAsChallenge(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-test-tencent-waf",
+		Provider: "workbuddy",
+		Status:   StatusActive,
+	}
+	m.Register(context.Background(), auth)
+
+	wafPage := `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" /><title>WAF Block Page</title></head><body><div class="wrapper"><p class="title">Your request has been interrupted</p><p>Request UUID: 0695fe28</p><div class="submit-btn">Submit feedback</div></div></body></html>`
+
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: "workbuddy",
+		Model:    "deepseek-v4.1-flash",
+		Success:  false,
+		Error: &Error{
+			HTTPStatus: http.StatusForbidden,
+			Message:    wafPage,
+		},
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to be found")
+	}
+	state := updated.ModelStates["deepseek-v4.1-flash"]
+	if state == nil {
+		t.Fatalf("expected model state to be present")
+	}
+
+	// The WAF block must be classified as a challenge with exponential backoff,
+	// not the generic 403 payment_required-style 30-minute cooldown.
+	if state.Quota.Reason != "cloudflare challenge" {
+		t.Fatalf("expected quota reason 'cloudflare challenge', got %q", state.Quota.Reason)
+	}
+	if state.StatusMessage != "cloudflare challenge" {
+		t.Fatalf("expected StatusMessage 'cloudflare challenge', got %q", state.StatusMessage)
+	}
+	diff := time.Until(state.NextRetryAfter)
+	if diff < 4*time.Minute || diff > 6*time.Minute {
+		t.Fatalf("expected challenge backoff cooldown of ~5m, got %v", diff)
 	}
 }
 
