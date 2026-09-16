@@ -12,6 +12,36 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+var openAICompatUnknownVariantDeveloperRoleError = `{"error":{"message":"The request is invalid: Failed to deserialize the JSON body into the target type: messages[0].role: unknown variant ` + "`developer`" + `, expected one of ` + "`system`" + `, ` + "`user`" + `, ` + "`assistant`" + `, ` + "`tool`" + `, ` + "`latest_reminder`" + ` at line 1 column 60. Please check the request body, required fields, and request format."}}`
+
+func TestOpenAICompatExecutorRetriesHTTP400UnknownVariantDeveloperRole(t *testing.T) {
+	var roles []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		roles = append(roles, gjson.GetBytes(body, "messages.0.role").String())
+		w.Header().Set("Content-Type", "application/json")
+		if len(roles) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(openAICompatUnknownVariantDeveloperRoleError))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	executor, auth := newDeveloperRoleTestExecutor(server.URL)
+	resp, err := executor.Execute(context.Background(), auth, developerRoleTestRequest(), cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if len(roles) != 2 || roles[0] != "developer" || roles[1] != "system" {
+		t.Fatalf("roles = %v, want [developer system]", roles)
+	}
+	if got := gjson.GetBytes(resp.Payload, "choices.0.message.content").String(); got != "ok" {
+		t.Fatalf("content = %q, want ok", got)
+	}
+}
+
 func TestOpenAICompatExecutorRetriesHTTP200DeveloperRoleError(t *testing.T) {
 	var roles []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
