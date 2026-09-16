@@ -28,6 +28,38 @@ func TestOverlayStaticMetadataKeepsLiveIDsOnly(t *testing.T) {
 	}
 }
 
+func TestOverlayStaticMetadataWithRequiredIDsAppendsSelectedStaticIDs(t *testing.T) {
+	dynamic := []*ModelInfo{{ID: "live-model", DisplayName: "Live"}}
+	static := []*ModelInfo{
+		{ID: "live-model", DisplayName: "Static"},
+		{ID: "required-model", DisplayName: "Required"},
+		{ID: "unrequired-model", DisplayName: "Unrequired"},
+	}
+
+	merged := OverlayStaticMetadataWithRequiredIDs(dynamic, static, []string{"required-model"})
+	if len(merged) != 2 {
+		t.Fatalf("merged len = %d, want 2", len(merged))
+	}
+	if merged[0].ID != "live-model" || merged[1].ID != "required-model" {
+		t.Fatalf("merged IDs = [%s, %s], want [live-model, required-model]", merged[0].ID, merged[1].ID)
+	}
+	if merged[0].DisplayName != "Live" {
+		t.Fatalf("overlaid display name = %q, want Live", merged[0].DisplayName)
+	}
+}
+
+func TestGetWorkBuddyModelsIncludesAliasBaseIDs(t *testing.T) {
+	got := map[string]bool{}
+	for _, model := range GetWorkBuddyModels() {
+		got[model.ID] = true
+	}
+	for _, id := range []string{"deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"} {
+		if !got[id] {
+			t.Errorf("workbuddy static catalog missing alias base id %s", id)
+		}
+	}
+}
+
 func TestGetKiroModelsIncludesOmniRouteVerifiedIDs(t *testing.T) {
 	want := []string{
 		"kiro-claude-sonnet-5",

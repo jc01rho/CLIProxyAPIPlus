@@ -216,6 +216,16 @@ func MergeWithStaticMetadata(dynamicModels, staticModels []*ModelInfo) []*ModelI
 // without appending static-only IDs. Live success therefore reflects the
 // per-account entitlement and does not reintroduce fabricated catalog entries.
 func OverlayStaticMetadata(dynamicModels, staticModels []*ModelInfo) []*ModelInfo {
+	return overlayStaticMetadata(dynamicModels, staticModels, nil)
+}
+
+// OverlayStaticMetadataWithRequiredIDs preserves live IDs and appends selected
+// static IDs required by provider-specific alias configuration.
+func OverlayStaticMetadataWithRequiredIDs(dynamicModels, staticModels []*ModelInfo, requiredIDs []string) []*ModelInfo {
+	return overlayStaticMetadata(dynamicModels, staticModels, requiredIDs)
+}
+
+func overlayStaticMetadata(dynamicModels, staticModels []*ModelInfo, requiredIDs []string) []*ModelInfo {
 	if len(dynamicModels) == 0 {
 		return nil
 	}
@@ -228,7 +238,7 @@ func OverlayStaticMetadata(dynamicModels, staticModels []*ModelInfo) []*ModelInf
 	}
 
 	seenIDs := make(map[string]struct{})
-	result := make([]*ModelInfo, 0, len(dynamicModels))
+	result := make([]*ModelInfo, 0, len(dynamicModels)+len(requiredIDs))
 	for _, dm := range dynamicModels {
 		if dm == nil || dm.ID == "" {
 			continue
@@ -253,6 +263,21 @@ func OverlayStaticMetadata(dynamicModels, staticModels []*ModelInfo) []*ModelInf
 			continue
 		}
 		result = append(result, dm)
+	}
+	for _, requiredID := range requiredIDs {
+		requiredID = strings.TrimSpace(requiredID)
+		if requiredID == "" {
+			continue
+		}
+		if _, seen := seenIDs[requiredID]; seen {
+			continue
+		}
+		if sm, exists := staticMap[requiredID]; exists {
+			if overlaid := cloneModelInfo(sm); overlaid != nil {
+				seenIDs[requiredID] = struct{}{}
+				result = append(result, overlaid)
+			}
+		}
 	}
 	return result
 }

@@ -134,7 +134,7 @@ func GetWorkBuddyModels() []*ModelInfo {
 	now := int64(1789516800) // 2026-09-16
 	ids := []string{
 		"default-model", "fast-model", "balanced-model", "primary-model", "hy4-preview",
-		"gpt-5.6-sol", "gpt-5.6-terra", "deep-model", "deepseek-v4.1-flash", "gpt-6-astra",
+		"gpt-5.6-sol", "gpt-5.6-terra", "deep-model", "deepseek-v4.1-flash", "deepseek-v4.1-flash-sg", "gpt-6-astra",
 		"hy4-preview-f", "hy3", "glm-5.2", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4",
 		"gpt-5.3-codex", "gemini-3.5-flash", "glm-5.3", "kimi-k3", "kimi-k2.6",
 	}

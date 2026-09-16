@@ -63,7 +63,7 @@ func FetchWorkBuddyModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *con
 		}
 		models := parseWorkBuddyModels(body)
 		if len(models) > 0 {
-			return registry.OverlayStaticMetadata(models, fallback)
+			return registry.OverlayStaticMetadataWithRequiredIDs(models, fallback, workBuddyAliasBaseModelIDs(cfg))
 		}
 		lastErr = fmt.Errorf("empty or malformed catalog")
 	}
@@ -77,7 +77,6 @@ type workBuddyModelEntry struct {
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
 	Description     string   `json:"descriptionZh"`
-	Vendor          string   `json:"vendor"`
 	Disabled        bool     `json:"disabled"`
 	MaxInputTokens  int      `json:"maxInputTokens"`
 	MaxOutputTokens int      `json:"maxOutputTokens"`
@@ -86,6 +85,34 @@ type workBuddyModelEntry struct {
 	Reasoning       struct {
 		SupportedEfforts []string `json:"supportedEfforts"`
 	} `json:"reasoning"`
+}
+
+func workBuddyAliasBaseModelIDs(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	aliases := cfg.OAuthModelAlias["workbuddy"]
+	if len(aliases) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(aliases))
+	seen := make(map[string]struct{}, len(aliases))
+	for _, alias := range aliases {
+		if !alias.Fork {
+			continue
+		}
+		id := strings.TrimSpace(alias.Name)
+		key := strings.ToLower(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func parseWorkBuddyModels(body []byte) []*registry.ModelInfo {
@@ -131,15 +158,11 @@ func parseWorkBuddyModels(body []byte) []*registry.ModelInfo {
 			if displayName == "" {
 				displayName = id
 			}
-			ownedBy := strings.TrimSpace(entry.Vendor)
-			if ownedBy == "" {
-				ownedBy = "workbuddy"
-			}
 			model := &registry.ModelInfo{
 				ID:                  id,
 				Object:              "model",
 				Created:             time.Now().Unix(),
-				OwnedBy:             ownedBy,
+				OwnedBy:             "workbuddy",
 				Type:                "workbuddy",
 				DisplayName:         displayName,
 				Name:                id,

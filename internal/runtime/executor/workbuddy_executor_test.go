@@ -75,6 +75,32 @@ func TestWorkBuddyExecutorUsesConsolePathThenV2Fallback(t *testing.T) {
 	}
 }
 
+func TestParseWorkBuddyModelsNormalizesOwnedBy(t *testing.T) {
+	models := parseWorkBuddyModels([]byte(`{"code":0,"data":{"models":[{"id":"model-a","vendor":"f"},{"id":"model-b","vendor":"workbuddy"}]}}`))
+	if len(models) != 2 {
+		t.Fatalf("models = %#v, want 2 entries", models)
+	}
+	for _, model := range models {
+		if model.OwnedBy != "workbuddy" {
+			t.Errorf("model %q owned_by = %q, want workbuddy", model.ID, model.OwnedBy)
+		}
+	}
+}
+
+func TestWorkBuddyAliasBaseModelIDs(t *testing.T) {
+	cfg := &config.Config{OAuthModelAlias: map[string][]config.OAuthModelAlias{
+		"workbuddy": {
+			{Name: "deepseek-v4.1-flash", Alias: "wb1", Fork: true},
+			{Name: "ignored", Alias: "no-fork"},
+			{Name: "deepseek-v4.1-flash", Alias: "wb1-copy", Fork: true},
+		},
+	}}
+	got := workBuddyAliasBaseModelIDs(cfg)
+	if len(got) != 1 || got[0] != "deepseek-v4.1-flash" {
+		t.Fatalf("required alias base IDs = %#v, want [deepseek-v4.1-flash]", got)
+	}
+}
+
 func TestFetchWorkBuddyModelsUsesLiveCatalogAndFallsBack(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != workBuddyModelPaths[0] {
@@ -90,9 +116,15 @@ func TestFetchWorkBuddyModelsUsesLiveCatalogAndFallsBack(t *testing.T) {
 		server.Close()
 	})
 
-	models := FetchWorkBuddyModels(context.Background(), workBuddyTestAuth(), &config.Config{})
-	if len(models) != 1 || models[0].ID != "live-workbuddy" || models[0].Type != "workbuddy" {
+	cfg := &config.Config{OAuthModelAlias: map[string][]config.OAuthModelAlias{
+		"workbuddy": {{Name: "deepseek-v4.1-flash", Alias: "wb1", Fork: true}},
+	}}
+	models := FetchWorkBuddyModels(context.Background(), workBuddyTestAuth(), cfg)
+	if len(models) != 2 || models[0].ID != "live-workbuddy" || models[1].ID != "deepseek-v4.1-flash" {
 		t.Fatalf("live models = %#v", models)
+	}
+	if models[0].Type != "workbuddy" || models[1].Type != "workbuddy" {
+		t.Fatalf("live model types = %#v", models)
 	}
 	if models[0].Thinking == nil || len(models[0].Thinking.Levels) != 2 {
 		t.Fatalf("live thinking metadata = %#v", models[0].Thinking)
