@@ -106,7 +106,7 @@ func TestCursorProcessH2SessionFramesAppliesBilledTurnEndedUsageOnNormalPath(t *
 			usage := &cursorTokenUsage{}
 			stream.deliverAndEnd(billedTurnEndedFrame(tt.fields))
 
-			err := processH2SessionFrames(context.Background(), stream, nil, nil, nil, nil, nil, nil, usage, nil, cursorStallWatchdog{})
+			err := processH2SessionFrames(context.Background(), stream, nil, nil, nil, nil, nil, nil, nil, nil, usage, nil, cursorStallWatchdog{})
 			if err != nil {
 				t.Fatalf("processH2SessionFrames() error = %v, want nil (turnEnded ends the normal path)", err)
 			}
@@ -204,7 +204,7 @@ func TestCursorProcessH2SessionFramesStallFailsSilentStream(t *testing.T) {
 			}
 			go arm()
 
-			err := processH2SessionFrames(context.Background(), stream, nil, nil, nil, nil, nil, nil, &cursorTokenUsage{}, nil, wd)
+			err := processH2SessionFrames(context.Background(), stream, nil, nil, nil, nil, nil, nil, nil, nil, &cursorTokenUsage{}, nil, wd)
 			var retry *cursorRetryableStreamError
 			if !errors.As(err, &retry) {
 				t.Fatalf("processH2SessionFrames() = %T (%v), want the typed stall error", err, err)
@@ -228,7 +228,7 @@ func TestCursorProcessH2SessionFramesInboundFrameResetsStallDeadline(t *testing.
 	wd, _, kicks := manualStallWatchdog()
 	stream.deliverAndEnd(heartbeatFrame(), billedTurnEndedFrame(nil))
 
-	err := processH2SessionFrames(context.Background(), stream, nil, nil, nil, nil, nil, nil, &cursorTokenUsage{}, nil, wd)
+	err := processH2SessionFrames(context.Background(), stream, nil, nil, nil, nil, nil, nil, nil, nil, &cursorTokenUsage{}, nil, wd)
 	if err != nil {
 		t.Fatalf("processH2SessionFrames() = %v, want nil (turnEnded ends the turn)", err)
 	}
@@ -262,7 +262,12 @@ func TestCursorProcessH2SessionFramesStallFireIgnoredAfterTurnEnded(t *testing.T
 				}
 			},
 			nil,
-			func(exec pendingMcpExec) { mcpSeen <- exec },
+			func(exec pendingMcpExec) error {
+				mcpSeen <- exec
+				return nil
+			},
+			nil,
+			nil,
 			toolResultCh,
 			&cursorTokenUsage{},
 			nil,
@@ -658,7 +663,7 @@ func TestCursorProcessH2SessionFramesCleanEndBeforeTurnEndedIsTypedRetryableErro
 				stream.deliverAndEnd(tt.frames...)
 			}
 
-			err := processH2SessionFrames(context.Background(), stream, nil, nil, nil, nil, nil, nil, &cursorTokenUsage{}, nil, cursorStallWatchdog{})
+			err := processH2SessionFrames(context.Background(), stream, nil, nil, nil, nil, nil, nil, nil, nil, &cursorTokenUsage{}, nil, cursorStallWatchdog{})
 			if err == nil {
 				t.Fatal("processH2SessionFrames() = nil for a stream that ended before turnEnded; a truncated turn must not be a success")
 			}
@@ -682,7 +687,6 @@ func TestCursorProcessH2SessionFramesCleanEndBeforeTurnEndedIsTypedRetryableErro
 	}
 }
 
-
 // Given two mcpArgs frames on the same Run stream,
 // When the dispatcher parks both execs,
 // Then neither is thrown as concurrent-unsupported, and a single tool-result
@@ -695,7 +699,12 @@ func TestCursorProcessH2SessionFramesAcceptsConcurrentMcpExecs(t *testing.T) {
 
 	go func() {
 		done <- processH2SessionFrames(context.Background(), stream, nil, nil, nil, nil,
-			func(exec pendingMcpExec) { seen <- exec },
+			func(exec pendingMcpExec) error {
+				seen <- exec
+				return nil
+			},
+			nil,
+			nil,
 			toolResultCh, &cursorTokenUsage{}, nil, cursorStallWatchdog{})
 	}()
 

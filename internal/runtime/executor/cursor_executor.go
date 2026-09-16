@@ -45,12 +45,48 @@ const (
 	cursorCheckpointTTL     = 30 * time.Minute
 )
 
+// cursorComposerPrompt is the pinned system prefix senpi prepends for Cursor
+// Composer models (composer-prompt.ts). It runs ahead of the host prompt.
+const cursorComposerPrompt = `You are running in this client, not in Cursor. Your tools on this surface are read, ls, grep, write, delete, diagnostics, and shell. Tool names from other harnesses are unavailable here.
+
+Reach for repository files through the native tools: read for file contents, ls for directory entries, grep for content and filename search, write to create or modify, delete to remove, diagnostics for a file's current errors. These carry line anchors and result metadata that shell output does not.
+
+Keep shell for terminal work: tests, builds, package scripts, git, and process control. Put only the command in the command string.
+
+Tool arguments are the schema object the tool declares. Keep explanation and markdown in your message text, where it belongs.
+
+Read a file before you edit it, and read it again after any write before relying on its contents. Copy line anchors from the most recent tool output rather than computing or adjusting them; when an anchor is rejected, re-read and use the anchors that come back.
+
+Run independent searches and reads together in one batch. Keep dependent steps in sequence, and let a step that needs the previous result wait for it.
+
+A task is finished when the requested behavior is in place and you have watched it work: the relevant test, build, or command run, and its output read. Until you have that, keep going. If something remains unproven or broken, say which part and why.
+
+When asked a question, answer it from the code and stop there. Edit when a change was requested or when a fix is confirmed.`
+
+// isCursorComposerModel reports whether the model id belongs to Cursor's
+// Composer family, which needs the pinned Composer operating prefix.
+func isCursorComposerModel(id string) bool {
+	return strings.Contains(strings.ToLower(id), "composer")
+}
+
+// cursorNativeToolCall represents a server-resolved native Cursor tool call
+// (connect_scm, todo, etc.) that has no corresponding OpenAI function-call
+// shape. These are emitted as a resolved cursor_tool_calls extension in
+// non-stream responses so clients can record them without re-executing.
+type cursorNativeToolCall struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+	Result    string         `json:"result"`
+	Resolved  bool           `json:"resolved"`
+}
+
 // senpi catalog-grouping.ts / cursor-agent.ts GetUsableModels mapping.
 var (
-	cursor1MNamePattern         = regexp.MustCompile(`(?i)\b1m\b`)
-	cursorMaxMode1MIDPattern    = regexp.MustCompile(`(?i)claude|gemini`)
-	cursorMultimodalIDPattern   = regexp.MustCompile(`(?i)claude|gemini|gpt-|codex`)
-	cursorMaxModeByID           sync.Map // lowercased model id / alias -> bool
+	cursor1MNamePattern       = regexp.MustCompile(`(?i)\b1m\b`)
+	cursorMaxMode1MIDPattern  = regexp.MustCompile(`(?i)claude|gemini`)
+	cursorMultimodalIDPattern = regexp.MustCompile(`(?i)claude|gemini|gpt-|codex`)
+	cursorMaxModeByID         sync.Map // lowercased model id / alias -> bool
 )
 
 // CursorExecutor handles requests to the Cursor API via Connect+Protobuf protocol.
@@ -92,7 +128,7 @@ type savedCheckpoint struct {
 }
 
 type cursorSession struct {
-	stream       *cursorproto.H2Stream
+	stream       cursorSessionStream
 	blobStore    map[string][]byte
 	mcpTools     []cursorproto.McpToolDef
 	pending      []pendingMcpExec
@@ -109,7 +145,19 @@ type pendingMcpExec struct {
 	ExecId     string
 	ToolCallId string
 	ToolName   string
-	Args       string // JSON-encoded args
+	Args       string // authoritative JSON-encoded args from mcpArgs
+}
+
+// cursorSessionStream is the full-duplex transport retained across an MCP
+// round. The package-level opener is replaceable in tests so Execute can be
+// exercised against an httptest server through the real response dispatcher.
+type cursorSessionStream interface {
+	cursorStreamConn
+	Close()
+}
+
+var cursorH2StreamOpener = func(accessToken string) (cursorSessionStream, error) {
+	return cursorproto.DialH2Stream(cursorAgentHost, cursorRunHeaders(accessToken))
 }
 
 // NewCursorExecutor constructs a new executor instance.
@@ -523,6 +571,8 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// resource_exhausted (poisoned conversation or oversized payload) flows
 	// through the rotation store.
 	var fullText strings.Builder
+	var pendingMCPs []pendingMcpExec
+	var nativeCalls []cursorNativeToolCall
 	usage := &cursorTokenUsage{}
 	usage.setInputEstimate(len(payload))
 	poisoned := false
@@ -548,6 +598,14 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 					fullText.WriteString(text)
 				},
 				nil,
+				func(exec pendingMcpExec) error {
+					pendingMCPs = append(pendingMCPs, exec)
+					return nil
+				},
+				func(call cursorNativeToolCall) error {
+					nativeCalls = append(nativeCalls, call)
+					return nil
+				},
 				nil,
 				nil,
 				usage,
@@ -570,6 +628,8 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 				params.ConversationId = rotated
 				usage.resetLiveWindow()
 				fullText.Reset()
+				pendingMCPs = nil
+				nativeCalls = nil
 				return true
 			case cursorRotationPoisoned:
 				if fullText.Len() == 0 {
@@ -590,11 +650,10 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	id := "chatcmpl-" + uuid.New().String()[:28]
 	created := time.Now().Unix()
-	openaiResp := fmt.Sprintf(`{"id":"%s","object":"chat.completion","created":%d,"model":"%s","choices":[{"index":0,"message":{"role":"assistant","content":%s},"finish_reason":"stop"}],"usage":%s}`,
-		id, created, parsed.Model, jsonString(fullText.String()), cursorOpenAIUsageJSON(usage))
+	openaiResp := buildCursorNonStreamResponse(id, created, parsed.Model, fullText.String(), pendingMCPs, nativeCalls, usage)
 
 	// Translate response back to source format if needed
-	result := []byte(openaiResp)
+	result := openaiResp
 	if from.String() != "" && from.String() != "openai" {
 		var param any
 		result = sdktranslator.TranslateNonStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), payload, result, &param)
@@ -846,8 +905,6 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 		streamedToolCalls := make(map[string]*streamedToolCall)
 
-		var mcpFlushMu sync.Mutex
-		var mcpFlushTimer *time.Timer
 		flushMcpHTTP := func() {
 			sendChunkSwitchable(`{}`, `"tool_calls"`)
 			sendDoneSwitchable()
@@ -857,14 +914,6 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				currentOut = nil
 			}
 			outMu.Unlock()
-		}
-		scheduleMcpHTTPFlush := func() {
-			mcpFlushMu.Lock()
-			defer mcpFlushMu.Unlock()
-			if mcpFlushTimer != nil {
-				mcpFlushTimer.Stop()
-			}
-			mcpFlushTimer = time.AfterFunc(50*time.Millisecond, flushMcpHTTP)
 		}
 
 		// attemptSawCheckpoint flips when the running attempt persisted a
@@ -910,22 +959,15 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 							return
 						}
 						call.args += update.ArgumentsDelta
-						toolCallJSON := fmt.Sprintf(`{"tool_calls":[{"index":%d,"function":{"arguments":%s}}]}`,
-							call.index, jsonString(update.ArgumentsDelta))
-						sendChunkSwitchable(toolCallJSON, "")
 					}
 				},
-				func(exec pendingMcpExec) {
+				func(exec pendingMcpExec) error {
 					if call := streamedToolCalls[exec.ToolCallId]; call != nil {
-						missing := exec.Args
-						if strings.HasPrefix(exec.Args, call.args) {
-							missing = strings.TrimPrefix(exec.Args, call.args)
-						}
-						if missing != "" {
+						if exec.Args != "" {
 							toolCallJSON := fmt.Sprintf(`{"tool_calls":[{"index":%d,"function":{"arguments":%s}}]}`,
-								call.index, jsonString(missing))
+								call.index, jsonString(exec.Args))
 							sendChunkSwitchable(toolCallJSON, "")
-							call.args += missing
+							call.args = exec.Args
 						}
 					} else {
 						toolCallJSON := fmt.Sprintf(`{"tool_calls":[{"index":%d,"id":%s,"type":"function","function":{"name":%s,"arguments":%s}}]}`,
@@ -966,7 +1008,14 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 						resumeOutCh = resumeOut
 					}
 					e.mu.Unlock()
-					scheduleMcpHTTPFlush()
+					return nil
+				},
+				nil,
+				func(pendingMCPs int) error {
+					if pendingMCPs > 0 {
+						flushMcpHTTP()
+					}
+					return nil
 				},
 				toolResultCh,
 				usage,
@@ -1171,9 +1220,8 @@ func (e *CursorExecutor) resumeWithToolResults(
 
 // --- H2Stream helpers ---
 
-func openCursorH2Stream(accessToken string) (*cursorproto.H2Stream, error) {
-	headers := cursorRunHeaders(accessToken)
-	return cursorproto.DialH2Stream(cursorAgentHost, headers)
+func openCursorH2Stream(accessToken string) (cursorSessionStream, error) {
+	return cursorH2StreamOpener(accessToken)
 }
 
 func cursorRunHeaders(accessToken string) map[string]string {
@@ -1201,7 +1249,7 @@ func normalizeCursorAccessToken(accessToken string) string {
 	return accessToken
 }
 
-func cursorH2Heartbeat(ctx context.Context, stream *cursorproto.H2Stream) {
+func cursorH2Heartbeat(ctx context.Context, stream cursorStreamConn) {
 	ticker := time.NewTicker(cursorHeartbeatInterval)
 	defer ticker.Stop()
 	for {
@@ -1382,6 +1430,7 @@ type toolResultInfo struct {
 	ToolCallId string
 	Content    string
 	Images     []cursorproto.ImageData
+	IsError    bool
 }
 
 func parseOpenAIRequest(payload []byte) *parsedOpenAIRequest {
@@ -1431,6 +1480,7 @@ func parseOpenAIRequest(payload []byte) *parsedOpenAIRequest {
 			ToolCallId: messages[i].Get("tool_call_id").String(),
 			Content:    extractTextContent(content),
 			Images:     extractImages(content),
+			IsError:    messages[i].Get("is_error").Bool(),
 		})
 	}
 	for left, right := 0, len(p.ToolResults)-1; left < right; left, right = left+1, right-1 {
@@ -1661,13 +1711,25 @@ func decodeCursorBase64(encoded string) ([]byte, bool) {
 
 func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string, forceResume bool) *cursorproto.RunRequestParams {
 	resolvedID, _ := cursorproto.ResolveRequestedModel(parsed.Model, parsed.ReasoningEffort)
+
+	// Composer models receive the pinned Composer operating prefix as their
+	// system prompt, with the original host prompt prepended as the first
+	// root-prompt blob (mirroring senpi buildCursorSystemPromptJsons).
+	systemPrompt := parsed.SystemPrompt
+	rootPromptMessages := buildCursorRootPromptMessages(parsed)
+	if isCursorComposerModel(parsed.Model) {
+		hostJSON, _ := json.Marshal(map[string]string{"role": "system", "content": systemPrompt})
+		rootPromptMessages = append([][]byte{hostJSON}, rootPromptMessages...)
+		systemPrompt = cursorComposerPrompt
+	}
+
 	params := &cursorproto.RunRequestParams{
 		ModelId:         parsed.Model,
 		ReasoningEffort: parsed.ReasoningEffort,
 		DisplayModelId:  parsed.Model,
 		DisplayName:     parsed.Model,
 		MaxMode:         lookupCursorMaxMode(parsed.Model, resolvedID),
-		SystemPrompt:    parsed.SystemPrompt,
+		SystemPrompt:    systemPrompt,
 		UserText:        parsed.UserText,
 		MessageId:       uuid.New().String(),
 		ConversationId:  conversationId,
@@ -1677,7 +1739,7 @@ func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId string, f
 		Resume:             forceResume || parsed.ActiveUserIndex < 0 || (parsed.UserText == "" && len(parsed.Images) == 0),
 		Images:             parsed.Images,
 		Turns:              parsed.Turns,
-		RootPromptMessages: buildCursorRootPromptMessages(parsed),
+		RootPromptMessages: rootPromptMessages,
 		BlobStore:          make(map[string][]byte),
 	}
 
@@ -1745,6 +1807,9 @@ func buildCursorRootPromptMessages(parsed *parsedOpenAIRequest) [][]byte {
 				"toolName":   toolName,
 				"toolCallId": toolCallID,
 				"result":     extractTextContent(message.Get("content")),
+			}
+			if message.Get("is_error").Bool() {
+				item["isError"] = true
 			}
 			appendJSON(map[string]any{
 				"role":    "tool",
@@ -2314,6 +2379,7 @@ func fillCursorTurnToolResult(turn *cursorproto.TurnData, msg gjson.Result) {
 	content := msg.Get("content")
 	text := extractTextContent(content)
 	images := extractImages(content)
+	isError := msg.Get("is_error").Bool()
 	for i := range turn.Steps {
 		step := &turn.Steps[i]
 		if step.ToolCallId != id {
@@ -2324,6 +2390,7 @@ func fillCursorTurnToolResult(turn *cursorproto.TurnData, msg gjson.Result) {
 		}
 		step.ToolResult = text
 		step.ToolResultImages = images
+		step.ToolIsError = isError
 		return
 	}
 	if text == "" && len(images) == 0 {
@@ -2383,6 +2450,59 @@ func cursorCatalogContextLength(id, display string, aliases []string, maxMode bo
 		return 1_000_000
 	}
 	return 200_000
+}
+
+// buildCursorNonStreamResponse assembles an OpenAI chat-completion payload
+// that includes pending MCP execs as executable tool_calls and
+// server-resolved native calls as a resolved cursor_tool_calls extension.
+// The extension must never be treated as executable: those calls completed
+// server-side and exist only for transcript bookkeeping.
+func buildCursorNonStreamResponse(chatID string, created int64, model string, content string, pendingMCPs []pendingMcpExec, nativeCalls []cursorNativeToolCall, usage *cursorTokenUsage) []byte {
+	message := map[string]any{
+		"role":    "assistant",
+		"content": content,
+	}
+	if len(pendingMCPs) > 0 {
+		toolCalls := make([]any, 0, len(pendingMCPs))
+		for _, mcp := range pendingMCPs {
+			toolCalls = append(toolCalls, map[string]any{
+				"id":   mcp.ToolCallId,
+				"type": "function",
+				"function": map[string]any{
+					"name":      mcp.ToolName,
+					"arguments": mcp.Args,
+				},
+			})
+		}
+		message["tool_calls"] = toolCalls
+	}
+	if len(nativeCalls) > 0 {
+		for i := range nativeCalls {
+			nativeCalls[i].Resolved = true
+		}
+		message["cursor_tool_calls"] = nativeCalls
+	}
+	finishReason := "stop"
+	if len(pendingMCPs) > 0 {
+		finishReason = "tool_calls"
+	}
+	resp := map[string]any{
+		"id":      chatID,
+		"object":  "chat.completion",
+		"created": created,
+		"model":   model,
+		"choices": []any{map[string]any{
+			"index":         0,
+			"message":       message,
+			"finish_reason": finishReason,
+		}},
+		"usage": json.RawMessage(cursorOpenAIUsageJSON(usage)),
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 func extractCursorReasoningEffort(payload []byte) string {

@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +12,10 @@ import (
 	"github.com/google/uuid"
 	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
 	log "github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 const (
@@ -120,7 +125,9 @@ func processH2SessionFrames(
 	mcpTools []cursorproto.McpToolDef,
 	onText func(text string, isThinking bool),
 	onToolCall func(update cursorToolCallUpdate),
-	onMcpExec func(exec pendingMcpExec),
+	onMcpExec func(exec pendingMcpExec) error,
+	onNativeToolCall func(call cursorNativeToolCall) error,
+	onTurnEnded func(pendingMCPs int) error,
 	toolResultCh <-chan []toolResultInfo,
 	tokenUsage *cursorTokenUsage,
 	onCheckpoint func(data []byte),
@@ -237,6 +244,14 @@ func processH2SessionFrames(
 				case cursorproto.ServerMsgToolCallStarted, cursorproto.ServerMsgPartialToolCall,
 					cursorproto.ServerMsgToolCallDelta, cursorproto.ServerMsgToolCallCompleted:
 					handleCursorToolCallUpdate(payload, msg, streamedTools, onToolCall)
+					if msg.Type == cursorproto.ServerMsgToolCallCompleted && msg.ToolCallCase != cursorproto.TC_McpToolCall && onNativeToolCall != nil {
+						call, ok := cursorNativeToolCallFromServerPayload(payload, msg)
+						if ok {
+							if err := onNativeToolCall(call); err != nil {
+								return err
+							}
+						}
+					}
 				case cursorproto.ServerMsgTokenDelta:
 					if tokenUsage != nil {
 						tokenUsage.addOutput(msg.TokenDelta)
@@ -272,6 +287,11 @@ func processH2SessionFrames(
 					if tokenUsage != nil {
 						tokenUsage.applyBilledTurnEndedUsage(msg.TurnEndedInput, msg.TurnEndedOutput, msg.TurnEndedCacheRead, msg.TurnEndedCacheWrite)
 					}
+					if onTurnEnded != nil {
+						if err := onTurnEnded(len(pendingMcps)); err != nil {
+							return err
+						}
+					}
 					if len(pendingMcps) == 0 {
 						return nil
 					}
@@ -302,7 +322,9 @@ func processH2SessionFrames(
 							ToolName:   msg.McpToolName,
 							Args:       decodeMcpArgsToJSON(msg.McpArgs),
 						}
-						onMcpExec(exec)
+						if err := onMcpExec(exec); err != nil {
+							return err
+						}
 						if toolResultCh == nil {
 							return nil
 						}
@@ -434,6 +456,71 @@ func handleCursorToolCallUpdate(
 			ToolName:   state.toolName,
 		})
 	}
+}
+
+func cursorNativeToolCallFromServerPayload(payload []byte, msg *cursorproto.DecodedServerMessage) (cursorNativeToolCall, bool) {
+	interaction, ok := cursorBytesField(payload, cursorproto.ASM_InteractionUpdate)
+	if !ok {
+		return cursorNativeToolCall{}, false
+	}
+	update, ok := cursorBytesField(interaction, cursorproto.IU_ToolCallCompleted)
+	if !ok {
+		return cursorNativeToolCall{}, false
+	}
+	toolCall, ok := cursorBytesField(update, cursorproto.TCU_ToolCall)
+	if !ok {
+		return cursorNativeToolCall{}, false
+	}
+	variant, ok := cursorBytesField(toolCall, msg.ToolCallCase)
+	if !ok {
+		return cursorNativeToolCall{}, false
+	}
+
+	toolCallDescriptor := cursorproto.AgentFileDescriptor().Messages().ByName("ToolCall")
+	if toolCallDescriptor == nil {
+		return cursorNativeToolCall{}, false
+	}
+	field := toolCallDescriptor.Fields().ByNumber(protoreflect.FieldNumber(msg.ToolCallCase))
+	if field == nil || field.Message() == nil {
+		return cursorNativeToolCall{}, false
+	}
+	dynamic := dynamicpb.NewMessage(field.Message())
+	if err := proto.Unmarshal(variant, dynamic); err != nil {
+		return cursorNativeToolCall{}, false
+	}
+	encoded, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(dynamic)
+	if err != nil {
+		return cursorNativeToolCall{}, false
+	}
+	var envelope struct {
+		Arguments map[string]any `json:"args"`
+		Result    any            `json:"result"`
+	}
+	if err := json.Unmarshal(encoded, &envelope); err != nil {
+		return cursorNativeToolCall{}, false
+	}
+	result := ""
+	if envelope.Result != nil {
+		if b, marshalErr := json.Marshal(envelope.Result); marshalErr == nil {
+			result = string(b)
+		}
+	}
+	id := msg.ToolCallId
+	if id == "" {
+		id = msg.CallId
+	}
+	name := strings.TrimSuffix(string(field.Name()), "_tool_call")
+	switch name {
+	case "update_todos", "read_todos":
+		name = "todo"
+	}
+	return cursorNativeToolCall{
+		ID:        id,
+		Name:      name,
+		Arguments: envelope.Arguments,
+		Result:    result,
+		Resolved:  true,
+	}, true
 }
 
 func cursorMcpToolNameFromServerPayload(payload []byte, messageType cursorproto.ServerMessageType) string {

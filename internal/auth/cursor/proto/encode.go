@@ -51,13 +51,13 @@ type ImageData struct {
 // means an assistant text step; otherwise it is an MCP tool-call step,
 // matching senpi's createCursorToolCallStep.
 type TurnStep struct {
-	AssistantText     string
-	ToolName          string
-	ToolCallId        string
-	ToolArgsJSON      string
-	ToolResult        string
-	ToolResultImages  []ImageData
-	ToolIsError       bool
+	AssistantText    string
+	ToolName         string
+	ToolCallId       string
+	ToolArgsJSON     string
+	ToolResult       string
+	ToolResultImages []ImageData
+	ToolIsError      bool
 }
 
 type TurnData struct {
@@ -437,7 +437,7 @@ func EncodeExecRequestContextResult(execMsgId uint32, execId string, tools []Mcp
 			if len(tool.InputSchema) > 0 {
 				setBytes(td, "input_schema", jsonToProtobufValueBytes(tool.InputSchema))
 			}
-			setStr(td, "provider_identifier", "proxy")
+			setStr(td, "provider_identifier", "pi-agent")
 			setStr(td, "tool_name", tool.Name)
 			toolsList.Append(protoreflect.ValueOfMessage(td.ProtoReflect()))
 		}
@@ -678,11 +678,11 @@ func EncodeExecSubagentAwaitNotFound(execMsgId uint32, execId, agentId string) [
 // tools regrouped under their synthetic provider identifier, mirroring senpi's
 // buildMcpStateResult().
 func EncodeExecMcpStateResult(execMsgId uint32, execId string, tools []McpToolDef) []byte {
-	// All tools are advertised under one synthetic provider ("proxy"), the same
+	// All tools are advertised under one synthetic provider ("pi-agent"), the same
 	// identifier EncodeExecRequestContextResult stamps on each definition.
 	var server []byte
-	server = pwStr(server, MSTS_ServerName, "proxy")
-	server = pwStr(server, MSTS_ServerIdentifier, "proxy")
+	server = pwStr(server, MSTS_ServerName, "pi-agent")
+	server = pwStr(server, MSTS_ServerIdentifier, "pi-agent")
 	for _, tool := range tools {
 		server = pwBytes(server, MSTS_Tools, encodeMcpToolDefinitionBytes(tool))
 	}
@@ -701,7 +701,7 @@ func encodeMcpToolDefinitionBytes(tool McpToolDef) []byte {
 	if len(tool.InputSchema) > 0 {
 		td = pwBytes(td, MTD_InputSchema, jsonToProtobufValueBytes(tool.InputSchema))
 	}
-	td = pwStr(td, MTD_ProviderIdentifier, "proxy")
+	td = pwStr(td, MTD_ProviderIdentifier, "pi-agent")
 	td = pwStr(td, MTD_ToolName, tool.Name)
 	return td
 }
