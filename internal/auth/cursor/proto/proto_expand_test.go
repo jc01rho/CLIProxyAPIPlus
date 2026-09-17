@@ -196,8 +196,8 @@ func TestEncodeExecMcpStateResultGroupsToolsUnderOneServer(t *testing.T) {
 		t.Fatalf("McpStateSuccess.servers count = %d, want 1", len(servers))
 	}
 	server := parseFields(t, servers[0].data)
-	if got := string(server[MSTS_ServerIdentifier][0].data); got != "proxy" {
-		t.Fatalf("McpStateServer.server_identifier = %q, want proxy", got)
+	if got := string(server[MSTS_ServerIdentifier][0].data); got != "pi-agent" {
+		t.Fatalf("McpStateServer.server_identifier = %q, want pi-agent", got)
 	}
 	tools := server[MSTS_Tools]
 	if len(tools) != 1 {
