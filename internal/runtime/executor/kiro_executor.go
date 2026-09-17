@@ -1422,8 +1422,17 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				// (auth, model) pair deprioritizes it without removing it.
 				kiroRecordEndpointFailure(endpointConfig.Key, cooldownDuration)
 
+				// Prefer the upstream's own Retry-After hint over the locally
+				// computed backoff when present, and mark this 429 as
+				// credential-scoped so the conductor fails over to the next
+				// credential with the right cooldown instead of blind retry.
+				retryAfter := kiroRetryAfterFromHeader(httpResp.Header.Get("Retry-After"), time.Now())
+				if retryAfter == nil {
+					retryAfter = &cooldownDuration
+				}
+
 				// Preserve last 429 so callers can correctly backoff when all endpoints are exhausted
-				last429Err = statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+				last429Err = statusErr{code: httpResp.StatusCode, msg: string(respBody), retryAfter: retryAfter, credentialScoped: true}
 
 				log.Warnf("kiro: stream %s endpoint quota exhausted (429), will try next endpoint, body: %s",
 					endpointConfig.Name, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
@@ -1520,10 +1529,18 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				_ = httpResp.Body.Close()
 				appendAPIResponseChunk(ctx, e.cfg, respBody)
 
-				log.Warnf("kiro: stream received 402 (monthly limit). Upstream body: %s", string(respBody))
+				log.Warnf("kiro: stream received 402 (monthly limit), token %s set to cooldown for %v, body: %s",
+					tokenKey, kiroMonthlyQuotaCooldown, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
 
-				// Return upstream error body directly
-				return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+				// Ported from kiro-lb's classify_error: 402 is always RECOVERABLE
+				// (account-specific quota exhaustion), so apply a quota cooldown and
+				// return a credential-scoped error so the conductor rotates to the
+				// next credential instead of treating this as a fatal request error.
+				rateLimiter.MarkTokenFailed(tokenKey)
+				cooldownMgr.SetCooldown(tokenKey, kiroMonthlyQuotaCooldown, kiroCooldownReasonMonthlyQuota)
+
+				retryAfter := kiroMonthlyQuotaCooldown
+				return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody), retryAfter: &retryAfter, credentialScoped: true}
 			}
 
 			// Handle 403 errors - Access Denied / Token Expired
@@ -1538,13 +1555,15 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 
 				respBodyStr := string(respBody)
 
-				// Check for SUSPENDED status - return immediately without retry
-				if strings.Contains(respBodyStr, "SUSPENDED") || strings.Contains(respBodyStr, "TEMPORARILY_SUSPENDED") {
+				// Check for SUSPENDED status - return immediately without retry.
+				// isKiroSuspendedBody centralizes the bare "SUSPENDED" check together
+				// with kiro-lb's reason code and message-wording markers.
+				if isKiroSuspendedBody(respBody) {
 					// Set long cooldown for suspended accounts
 					rateLimiter.CheckAndMarkSuspended(tokenKey, respBodyStr)
 					cooldownMgr.SetCooldown(tokenKey, kiroauth.LongCooldown, kiroauth.CooldownReasonSuspended)
 					log.Errorf("kiro: stream account is suspended, token %s set to cooldown for %v", tokenKey, kiroauth.LongCooldown)
-					return nil, statusErr{code: httpResp.StatusCode, msg: "account suspended: " + string(respBody)}
+					return nil, statusErr{code: httpResp.StatusCode, msg: "account suspended: " + string(respBody), credentialScoped: true}
 				}
 
 				if shouldRefreshKiroForbidden(respBody) && attempt < maxRetries {
@@ -1581,6 +1600,32 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				b, _ := io.ReadAll(httpResp.Body)
 				appendAPIResponseChunk(ctx, e.cfg, b)
 				log.Debugf("kiro stream error, status: %d, body: %s", httpResp.StatusCode, string(b))
+
+				// Ported from kiro-lb's classify_error: a 400 with
+				// reason=MONTHLY_REQUEST_COUNT or reason=INVALID_MODEL_ID is
+				// account-specific (RECOVERABLE), not a malformed request, so
+				// fail over to the next credential instead of returning fatal.
+				// CONTENT_LENGTH_EXCEEDS_THRESHOLD and any other 400/422/5xx
+				// stay on the existing fatal path below.
+				if httpResp.StatusCode == http.StatusBadRequest && classifyKiroUpstreamError(httpResp.StatusCode, b) == KiroErrorRecoverable {
+					reason := kiroErrorReasonFromBody(b)
+					if errClose := httpResp.Body.Close(); errClose != nil {
+						log.Errorf("response body close error: %v", errClose)
+					}
+					if reason == "MONTHLY_REQUEST_COUNT" {
+						log.Warnf("kiro: stream received 400 (%s), token %s set to cooldown for %v", reason, tokenKey, kiroMonthlyQuotaCooldown)
+						rateLimiter.MarkTokenFailed(tokenKey)
+						cooldownMgr.SetCooldown(tokenKey, kiroMonthlyQuotaCooldown, kiroCooldownReasonMonthlyQuota)
+						retryAfter := kiroMonthlyQuotaCooldown
+						return nil, statusErr{code: httpResp.StatusCode, msg: string(b), retryAfter: &retryAfter, credentialScoped: true}
+					}
+					// INVALID_MODEL_ID: this account/subscription cannot serve the
+					// requested model. No long cooldown - just move on to the next
+					// credential without penalizing this token's rate limit state.
+					log.Warnf("kiro: stream received 400 (%s), trying next credential", reason)
+					return nil, statusErr{code: httpResp.StatusCode, msg: string(b), credentialScoped: true}
+				}
+
 				if errClose := httpResp.Body.Close(); errClose != nil {
 					log.Errorf("response body close error: %v", errClose)
 				}
