@@ -373,6 +373,7 @@ type kiroEndpointConfig struct {
 	Origin    string // Request Origin: "CLI" for Amazon Q quota, "AI_EDITOR" for Kiro IDE quota
 	AmzTarget string // X-Amz-Target header value
 	Name      string // Endpoint name for logging
+	Key       string // Stable rotation key: "runtime" | "codewhisperer" | "amazonq" (see kiro_endpoint_rotation.go)
 }
 
 // kiroDefaultRegion is the default AWS region for Kiro API endpoints.
@@ -393,17 +394,54 @@ func extractRegionFromProfileARN(profileArn string) string {
 	return ""
 }
 
-// buildKiroEndpointConfigsForAuth builds the Kiro CLI 2.19.1 generation route.
-// All credential kinds use the regional runtime root; Q remains a model-list
-// concern only and must not be used as a generation fallback.
+// kiroRuntimeGenerateTarget is what Kiro IDE 1.0.437+ sends to
+// runtime.{region}.kiro.dev. Captured on the wire; kept distinct from the
+// legacy CodeWhisperer target used by the amazonaws.com hosts.
+// Ported from kiro-lb's endpoints.py (AGPL-3.0, minpeter/jc01rho fork of
+// jwadow/kiro-gateway): RUNTIME_GENERATE_TARGET.
+const kiroRuntimeGenerateTarget = "KiroRuntimeService.GenerateAssistantResponse"
+
+// kiroLegacyGenerateTarget is the CodeWhisperer streaming target used by the
+// codewhisperer.{region}.amazonaws.com host.
+const kiroLegacyGenerateTarget = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
+
+// kiroAmazonQGenerateTarget is the Amazon Q Developer streaming target used
+// by the q.{region}.amazonaws.com host.
+const kiroAmazonQGenerateTarget = "AmazonQDeveloperStreamingService.SendMessage"
+
+// buildKiroEndpointConfigsForAuth builds the Kiro CLI generation endpoints in
+// declared attempt order: runtime (primary, matches current Kiro CLI/IDE
+// clients), then codewhisperer and amazonq as rotation fallbacks. Actual
+// attempt order per request is resolved by kiroEndpointAttemptOrder, which
+// applies affinity and cooldown state on top of this declared order; nothing
+// here is removed for a given account, only reordered.
+// Ported behavior from kiro-lb's endpoints.py (AGPL-3.0, minpeter/jc01rho
+// fork of jwadow/kiro-gateway): KIRO_ENDPOINTS declared order.
 func buildKiroEndpointConfigsForAuth(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	region := resolveKiroAPIRegion(auth)
-	return []kiroEndpointConfig{{
-		URL:       fmt.Sprintf("https://runtime.%s.kiro.dev/", region),
-		Origin:    "AI_EDITOR",
-		AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
-		Name:      "KiroRuntime",
-	}}
+	return []kiroEndpointConfig{
+		{
+			Key:       "runtime",
+			URL:       fmt.Sprintf("https://runtime.%s.kiro.dev/", region),
+			Origin:    "AI_EDITOR",
+			AmzTarget: kiroRuntimeGenerateTarget,
+			Name:      "KiroRuntime",
+		},
+		{
+			Key:       "codewhisperer",
+			URL:       fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/", region),
+			Origin:    "AI_EDITOR",
+			AmzTarget: kiroLegacyGenerateTarget,
+			Name:      "CodeWhisperer",
+		},
+		{
+			Key:       "amazonq",
+			URL:       fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", region),
+			Origin:    "CLI",
+			AmzTarget: kiroAmazonQGenerateTarget,
+			Name:      "AmazonQ",
+		},
+	}
 }
 
 // resolveKiroAPIRegion determines the AWS region for Kiro API calls.
@@ -450,8 +488,9 @@ func resolveKiroAPIRegion(auth *cliproxyauth.Auth) string {
 	return kiroDefaultRegion
 }
 
-// getKiroEndpointConfigs returns the Kiro CLI 2.19.1 generation endpoint.
-// Generation always targets the regional runtime root.
+// getKiroEndpointConfigs returns the Kiro CLI generation endpoints (runtime,
+// codewhisperer, amazonq) in declared order for the given auth's region.
+// Callers select the actual attempt order via kiroEndpointAttemptOrder.
 //
 // Region priority:
 // 1. auth.Metadata["api_region"] - explicit API region override
@@ -713,17 +752,20 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 }
 
 // executeWithRetry performs the actual HTTP request with automatic retry on auth errors.
-// Supports automatic fallback between endpoints with different quotas:
-// - Amazon Q endpoint (CLI origin) uses Amazon Q Developer quota
-// - CodeWhisperer endpoint (AI_EDITOR origin) uses Kiro IDE quota
-// Also supports multi-endpoint fallback similar to Antigravity implementation.
+// Endpoints (runtime, codewhisperer, amazonq) are attempted in the order
+// returned by kiroEndpointAttemptOrder: affinity-first for this (auth, model)
+// pair, then declared order, with cooling endpoints (recent 429) moved to the
+// back but never dropped. A 429 records a per-endpoint cooldown and moves on
+// to the next endpoint regardless of which one it was; the last 429 seen is
+// only returned once every endpoint has been exhausted. A success records
+// affinity for this (auth, model) pair and clears that endpoint's cooldown.
 // tokenKey is used for rate limiting and cooldown tracking.
 func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, accessToken, profileArn string, kiroPayload, body []byte, from, to sdktranslator.Format, reporter *usageReporter, currentOrigin, kiroModelID string, isAgentic, isChatOnly bool, tokenKey string) (cliproxyexecutor.Response, error) {
 	var resp cliproxyexecutor.Response
 	maxRetries := 2 // Allow retries for token refresh + endpoint fallback
 	rateLimiter := kiroauth.GetGlobalRateLimiter()
 	cooldownMgr := kiroauth.GetGlobalCooldownManager()
-	endpointConfigs := getKiroEndpointConfigs(auth)
+	endpointConfigs := kiroEndpointAttemptOrder(getKiroEndpointConfigs(auth), auth, kiroModelID)
 	var last429Err error
 
 	for endpointIdx := 0; endpointIdx < len(endpointConfigs); endpointIdx++ {
@@ -845,8 +887,10 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				httpResp.Body = io.NopCloser(bytes.NewReader(respBody))
 			}
 
-			// Handle 429 errors (quota exhausted) - try next endpoint
-			// Each endpoint has its own quota pool, so we can try different endpoints
+			// Handle 429 errors (quota exhausted) - cool this endpoint down and
+			// try the next one in attempt order. Every endpoint (including
+			// runtime) rotates here; only the account-level token cooldown
+			// below is shared across endpoints.
 			if httpResp.StatusCode == 429 {
 				respBody, _ := io.ReadAll(httpResp.Body)
 				_ = httpResp.Body.Close()
@@ -858,11 +902,21 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				cooldownMgr.SetCooldown(tokenKey, cooldownDuration, kiroauth.CooldownReason429)
 				log.Warnf("kiro: rate limit hit (429), token %s set to cooldown for %v", tokenKey, cooldownDuration)
 
-				// Preserve last 429 so callers can correctly backoff when all endpoints are exhausted
-				last429Err = statusErr{code: httpResp.StatusCode, msg: string(respBody)}
-				if endpointConfig.Name == "KiroRuntime" {
-					return resp, last429Err
+				// Cool down this endpoint specifically so the next attempt for this
+				// (auth, model) pair deprioritizes it without removing it.
+				kiroRecordEndpointFailure(endpointConfig.Key, cooldownDuration)
+
+				// Prefer the upstream's own Retry-After hint over the locally
+				// computed backoff when present, and mark this 429 as
+				// credential-scoped so the conductor fails over to the next
+				// credential with the right cooldown instead of blind retry.
+				retryAfter := kiroRetryAfterFromHeader(httpResp.Header.Get("Retry-After"), time.Now())
+				if retryAfter == nil {
+					retryAfter = &cooldownDuration
 				}
+
+				// Preserve last 429 so callers can correctly backoff when all endpoints are exhausted
+				last429Err = statusErr{code: httpResp.StatusCode, msg: string(respBody), retryAfter: retryAfter, credentialScoped: true}
 
 				log.Warnf("kiro: %s endpoint quota exhausted (429), will try next endpoint, body: %s",
 					endpointConfig.Name, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
@@ -940,16 +994,25 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				return resp, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
 			}
 
-			// Handle 402 errors - Monthly Limit Reached
+			// Handle 402 errors - Monthly Limit Reached.
+			// Ported from kiro-lb's classify_error: 402 is always RECOVERABLE
+			// (account-specific quota exhaustion), so mark this credential's
+			// token as failed, apply a quota cooldown, and return a
+			// credential-scoped error so the conductor rotates to the next
+			// credential instead of treating this as a fatal request error.
 			if httpResp.StatusCode == 402 {
 				respBody, _ := io.ReadAll(httpResp.Body)
 				_ = httpResp.Body.Close()
 				appendAPIResponseChunk(ctx, e.cfg, respBody)
 
-				log.Warnf("kiro: received 402 (monthly limit). Upstream body: %s", string(respBody))
+				log.Warnf("kiro: received 402 (monthly limit), token %s set to cooldown for %v, body: %s",
+					tokenKey, kiroMonthlyQuotaCooldown, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
 
-				// Return upstream error body directly
-				return resp, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+				rateLimiter.MarkTokenFailed(tokenKey)
+				cooldownMgr.SetCooldown(tokenKey, kiroMonthlyQuotaCooldown, kiroCooldownReasonMonthlyQuota)
+
+				retryAfter := kiroMonthlyQuotaCooldown
+				return resp, statusErr{code: httpResp.StatusCode, msg: string(respBody), retryAfter: &retryAfter, credentialScoped: true}
 			}
 
 			// Handle 403 errors - Access Denied / Token Expired
@@ -964,13 +1027,17 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 
 				respBodyStr := string(respBody)
 
-				// Check for SUSPENDED status - return immediately without retry
-				if strings.Contains(respBodyStr, "SUSPENDED") || strings.Contains(respBodyStr, "TEMPORARILY_SUSPENDED") {
+				// Check for SUSPENDED status - return immediately without retry.
+				// isKiroSuspendedBody centralizes the bare "SUSPENDED" check together
+				// with kiro-lb's reason code and message-wording markers (ported
+				// from kiro-lb's kiro/kiro_errors.py SUSPENSION_REASON /
+				// _SUSPENSION_MARKERS).
+				if isKiroSuspendedBody(respBody) {
 					// Set long cooldown for suspended accounts
 					rateLimiter.CheckAndMarkSuspended(tokenKey, respBodyStr)
 					cooldownMgr.SetCooldown(tokenKey, kiroauth.LongCooldown, kiroauth.CooldownReasonSuspended)
 					log.Errorf("kiro: account is suspended, token %s set to cooldown for %v", tokenKey, kiroauth.LongCooldown)
-					return resp, statusErr{code: httpResp.StatusCode, msg: "account suspended: " + string(respBody)}
+					return resp, statusErr{code: httpResp.StatusCode, msg: "account suspended: " + string(respBody), credentialScoped: true}
 				}
 
 				if shouldRefreshKiroForbidden(respBody) && attempt < maxRetries {
@@ -1007,6 +1074,35 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				b, _ := io.ReadAll(httpResp.Body)
 				appendAPIResponseChunk(ctx, e.cfg, b)
 				log.Debugf("kiro request error, status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+
+				// Ported from kiro-lb's classify_error: a 400 with
+				// reason=MONTHLY_REQUEST_COUNT or reason=INVALID_MODEL_ID is
+				// account-specific (RECOVERABLE), not a malformed request, so
+				// fail over to the next credential instead of returning fatal.
+				// CONTENT_LENGTH_EXCEEDS_THRESHOLD and any other 400/422/5xx
+				// stay on the existing fatal path below.
+				if httpResp.StatusCode == http.StatusBadRequest && classifyKiroUpstreamError(httpResp.StatusCode, b) == KiroErrorRecoverable {
+					reason := kiroErrorReasonFromBody(b)
+					if reason == "MONTHLY_REQUEST_COUNT" {
+						log.Warnf("kiro: received 400 (%s), token %s set to cooldown for %v", reason, tokenKey, kiroMonthlyQuotaCooldown)
+						rateLimiter.MarkTokenFailed(tokenKey)
+						cooldownMgr.SetCooldown(tokenKey, kiroMonthlyQuotaCooldown, kiroCooldownReasonMonthlyQuota)
+						retryAfter := kiroMonthlyQuotaCooldown
+						if errClose := httpResp.Body.Close(); errClose != nil {
+							log.Errorf("response body close error: %v", errClose)
+						}
+						return resp, statusErr{code: httpResp.StatusCode, msg: string(b), retryAfter: &retryAfter, credentialScoped: true}
+					}
+					// INVALID_MODEL_ID: this account/subscription cannot serve the
+					// requested model. No long cooldown - just move on to the next
+					// credential without penalizing this token's rate limit state.
+					log.Warnf("kiro: received 400 (%s), trying next credential", reason)
+					if errClose := httpResp.Body.Close(); errClose != nil {
+						log.Errorf("response body close error: %v", errClose)
+					}
+					return resp, statusErr{code: httpResp.StatusCode, msg: string(b), credentialScoped: true}
+				}
+
 				err = statusErr{code: httpResp.StatusCode, msg: string(b)}
 				if errClose := httpResp.Body.Close(); errClose != nil {
 					log.Errorf("response body close error: %v", errClose)
@@ -1063,6 +1159,9 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			// Record success for rate limiting
 			rateLimiter.MarkTokenSuccess(tokenKey)
 			log.Debugf("kiro: request successful, token %s marked as success", tokenKey)
+
+			// Record endpoint affinity for this (auth, model) pair and clear its cooldown
+			kiroRecordEndpointSuccess(auth, kiroModelID, endpointConfig.Key)
 
 			// Build response in Claude format for Kiro translator
 			// stopReason is extracted from upstream response by parseEventStream
@@ -1183,16 +1282,19 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 }
 
 // executeStreamWithRetry performs the streaming HTTP request with automatic retry on auth errors.
-// Supports automatic fallback between endpoints with different quotas:
-// - Amazon Q endpoint (CLI origin) uses Amazon Q Developer quota
-// - CodeWhisperer endpoint (AI_EDITOR origin) uses Kiro IDE quota
-// Also supports multi-endpoint fallback similar to Antigravity implementation.
+// Endpoints (runtime, codewhisperer, amazonq) are attempted in the order
+// returned by kiroEndpointAttemptOrder: affinity-first for this (auth, model)
+// pair, then declared order, with cooling endpoints (recent 429) moved to the
+// back but never dropped. A 429 records a per-endpoint cooldown and moves on
+// to the next endpoint regardless of which one it was; the last 429 seen is
+// only returned once every endpoint has been exhausted. A success records
+// affinity for this (auth, model) pair and clears that endpoint's cooldown.
 // tokenKey is used for rate limiting and cooldown tracking.
 func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, accessToken, profileArn string, kiroPayload, body []byte, from sdktranslator.Format, reporter *usageReporter, currentOrigin, kiroModelID string, isAgentic, isChatOnly bool, tokenKey string) (<-chan cliproxyexecutor.StreamChunk, error) {
 	maxRetries := 2 // Allow retries for token refresh + endpoint fallback
 	rateLimiter := kiroauth.GetGlobalRateLimiter()
 	cooldownMgr := kiroauth.GetGlobalCooldownManager()
-	endpointConfigs := getKiroEndpointConfigs(auth)
+	endpointConfigs := kiroEndpointAttemptOrder(getKiroEndpointConfigs(auth), auth, kiroModelID)
 	var last429Err error
 
 	for endpointIdx := 0; endpointIdx < len(endpointConfigs); endpointIdx++ {
@@ -1301,8 +1403,10 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				httpResp.Body = io.NopCloser(bytes.NewReader(respBody))
 			}
 
-			// Handle 429 errors (quota exhausted) - try next endpoint
-			// Each endpoint has its own quota pool, so we can try different endpoints
+			// Handle 429 errors (quota exhausted) - cool this endpoint down and
+			// try the next one in attempt order. Every endpoint (including
+			// runtime) rotates here; only the account-level token cooldown
+			// below is shared across endpoints.
 			if httpResp.StatusCode == 429 {
 				respBody, _ := io.ReadAll(httpResp.Body)
 				_ = httpResp.Body.Close()
@@ -1314,11 +1418,12 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				cooldownMgr.SetCooldown(tokenKey, cooldownDuration, kiroauth.CooldownReason429)
 				log.Warnf("kiro: stream rate limit hit (429), token %s set to cooldown for %v", tokenKey, cooldownDuration)
 
+				// Cool down this endpoint specifically so the next attempt for this
+				// (auth, model) pair deprioritizes it without removing it.
+				kiroRecordEndpointFailure(endpointConfig.Key, cooldownDuration)
+
 				// Preserve last 429 so callers can correctly backoff when all endpoints are exhausted
 				last429Err = statusErr{code: httpResp.StatusCode, msg: string(respBody)}
-				if endpointConfig.Name == "KiroRuntime" {
-					return nil, last429Err
-				}
 
 				log.Warnf("kiro: stream %s endpoint quota exhausted (429), will try next endpoint, body: %s",
 					endpointConfig.Name, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
@@ -1507,6 +1612,9 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 			// Streaming errors will be handled separately
 			rateLimiter.MarkTokenSuccess(tokenKey)
 			log.Debugf("kiro: stream request successful, token %s marked as success", tokenKey)
+
+			// Record endpoint affinity for this (auth, model) pair and clear its cooldown
+			kiroRecordEndpointSuccess(auth, kiroModelID, endpointConfig.Key)
 
 			go func(resp *http.Response, thinkingEnabled bool) {
 				defer close(out)

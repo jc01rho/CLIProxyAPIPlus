@@ -43,8 +43,10 @@ func TestBuildKiroEndpointConfigsRuntimeCredentialUsesRuntimePrimary(t *testing.
 	}
 
 	configs := buildKiroEndpointConfigsForAuth(auth)
-	if len(configs) != 1 {
-		t.Fatalf("endpoint configs = %#v, want runtime root only", configs)
+	// runtime, codewhisperer, amazonq in declared order; runtime stays
+	// primary (index 0) regardless of credential kind.
+	if len(configs) != 3 {
+		t.Fatalf("endpoint configs = %#v, want 3 endpoints with runtime primary", configs)
 	}
 	if got, want := configs[0].Name, "KiroRuntime"; got != want {
 		t.Fatalf("primary endpoint name = %q, want %q", got, want)
@@ -69,8 +71,10 @@ func TestBuildKiroEndpointConfigsBuilderIDUsesRuntimeRoot(t *testing.T) {
 	}
 
 	configs := buildKiroEndpointConfigsForAuth(auth)
-	if len(configs) != 1 {
-		t.Fatalf("endpoint configs = %#v, want only the runtime generation endpoint", configs)
+	// runtime, codewhisperer, amazonq in declared order; runtime stays
+	// primary (index 0) for Builder ID as well.
+	if len(configs) != 3 {
+		t.Fatalf("endpoint configs = %#v, want 3 endpoints with the runtime generation endpoint first", configs)
 	}
 	if got, want := configs[0].Name, "KiroRuntime"; got != want {
 		t.Fatalf("endpoint name = %q, want %q", got, want)

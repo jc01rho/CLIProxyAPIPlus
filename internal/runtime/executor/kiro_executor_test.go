@@ -24,8 +24,10 @@ func TestKiroExecutorDoesNotLogTokenRefreshFailuresAtErrorLevel(t *testing.T) {
 func TestGetKiroEndpointConfigs_NilAuth(t *testing.T) {
 	configs := getKiroEndpointConfigs(nil)
 
-	if len(configs) != 1 {
-		t.Fatalf("expected 1 endpoint config, got %d", len(configs))
+	// runtime, codewhisperer, amazonq in declared order (see
+	// buildKiroEndpointConfigsForAuth / kiro_endpoint_rotation.go).
+	if len(configs) != 3 {
+		t.Fatalf("expected 3 endpoint configs, got %d", len(configs))
 	}
 
 	if configs[0].Name != "KiroRuntime" {
@@ -46,8 +48,8 @@ func TestGetKiroEndpointConfigs_WithRegionFromProfileArn(t *testing.T) {
 
 	configs := getKiroEndpointConfigs(auth)
 
-	if len(configs) != 1 {
-		t.Fatalf("expected 1 endpoint config, got %d", len(configs))
+	if len(configs) != 3 {
+		t.Fatalf("expected 3 endpoint configs, got %d", len(configs))
 	}
 
 	expectedURL := "https://runtime.ap-southeast-1.kiro.dev/"
