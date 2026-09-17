@@ -395,10 +395,14 @@ func extractRegionFromProfileARN(profileArn string) string {
 }
 
 // kiroRuntimeGenerateTarget is what Kiro IDE 1.0.437+ sends to
-// runtime.{region}.kiro.dev. Captured on the wire; kept distinct from the
-// legacy CodeWhisperer target used by the amazonaws.com hosts.
+// runtime.{region}.kiro.dev. Captured on the wire by kiro-lb; kept distinct
+// from the legacy CodeWhisperer target used by the amazonaws.com hosts.
 // Ported from kiro-lb's endpoints.py (AGPL-3.0, minpeter/jc01rho fork of
 // jwadow/kiro-gateway): RUNTIME_GENERATE_TARGET.
+//
+// Every generation endpoint carries Origin "AI_EDITOR" in the request body:
+// that is the only origin kiro-lb ever sends (converters_core.py), and the
+// earlier multi-endpoint code in this repo used it for all hosts as well.
 const kiroRuntimeGenerateTarget = "KiroRuntimeService.GenerateAssistantResponse"
 
 // kiroLegacyGenerateTarget is the CodeWhisperer streaming target used by the
@@ -437,7 +441,7 @@ func buildKiroEndpointConfigsForAuth(auth *cliproxyauth.Auth) []kiroEndpointConf
 		{
 			Key:       "amazonq",
 			URL:       fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", region),
-			Origin:    "CLI",
+			Origin:    "AI_EDITOR",
 			AmzTarget: kiroAmazonQGenerateTarget,
 			Name:      "AmazonQ",
 		},
