@@ -29,6 +29,25 @@ cli-proxy/
 | Management UI API calls | `Cli-Proxy-API-Management-Center/src/services/api/` | Browser components do not call endpoints directly. |
 | Usage tracking | `cpa-usage-keeper/internal/poller/`, `cpa-usage-keeper/internal/service/` | Redis queue polling + SQLite persistence. |
 
+### CLIProxyAPIPlus internal architecture (upstream detail)
+- `cmd/server/` — Server entrypoint
+- `internal/api/` — Gin HTTP API (routes, middleware, modules)
+- `internal/api/modules/amp/` — Amp integration (Amp-style routes + reverse proxy)
+- `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Do not break this "canonical representation → per-provider translation" architecture.
+- `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket)
+- `internal/translator/` — Provider protocol translators (and shared `common`)
+- `internal/registry/` — Model registry + remote updater (`StartModelsUpdater`); `--local-model` disables remote updates
+- `internal/store/` — Storage implementations and secret resolution
+- `internal/managementasset/` — Config snapshots and management assets
+- `internal/cache/` — Request signature caching
+- `internal/watcher/` — Config hot-reload and watchers
+- `internal/wsrelay/` — WebSocket relay sessions
+- `internal/usage/` — Usage and token accounting
+- `internal/home/` — CLIProxyAPIHome control plane integration (bootstrap, RESP communication, dispatch coordination)
+- `internal/tui/` — Bubbletea terminal UI (`--tui`, `--standalone`)
+- `sdk/cliproxy/` — Embeddable SDK entry (service/builder/watchers/pipeline)
+- `test/` — Cross-module integration tests
+
 ## CODE MAP
 
 | Symbol / Entry | Type | Location | Role |
@@ -150,3 +169,4 @@ cpa-usage-keeper/AGENTS.md
 
 - 모든 커밋은 **`jc01rho <rkjnice@gmail.com>`** 으로 작성한다. repo-local config(`user.name`/`user.email`)가 이 값으로 고정되어 있으며, 옛 신원 `whrho <whrho@sparrow.im>` 과 그 변형(`노우현 <whrho@sparrow.im>`, `whrho <jc01rho@gmail.com>`, `jc01rho <jc01rho@local>`, `Woohyun Rho <whrho@sparrowfasoo.com>`)은 사용하지 않는다.
 - 2026-09-14 에 이 저장소 이력이 이 신원으로 재작성되었다(upstream 계보는 해시까지 불변). 원격 반영에는 force-push 가 필요하고, 이 경우에도 위 태깅 규칙이 적용된다.
+- Note: if modifying features that involve CLIProxyAPIHome, check if corresponding updates are needed in the CLIProxyAPIHome repository.

@@ -152,7 +152,7 @@ func TestParseInteractionsPayload(t *testing.T) {
 			{"type":"thought","content":[{"type":"text","text":"planning..."}],"signature":"c2VhbGVkLnYxLnRlc3Q="},
 			{"type":"model_output","content":[{"type":"text","text":"I can help with that."}]},
 			{"type":"function_call","name":"read_file","id":"call_1","arguments":{"path":"main.go"}},
-			{"type":"function_result","id":"call_1","result":"package main\n"}
+			{"type":"function_result","call_id":"call_1","result":"package main\n"}
 		],
 		"tools": [
 			{"name":"read_file","description":"Read file content","parameters":{"type":"object"}}
@@ -1224,5 +1224,947 @@ func TestStreamDevinFrames_SameIDDoesNotDuplicateStart(t *testing.T) {
 	}
 	if startCount != 1 {
 		t.Fatalf("step.start should only be emitted once for the same tool call, got %d", startCount)
+	}
+}
+
+func TestDevinExecutorClaudeToolUseAndResultViaInteractions(t *testing.T) {
+	claudePayload := []byte(`{
+		"model": "devin/swe-2",
+		"messages": [
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_abc_123", "name": "bash", "input": {"command": "ls"}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_abc_123", "content": "file.txt"}]}
+		]
+	}`)
+	interactionsJSON := sdktranslator.TranslateRequest(sdktranslator.FormatClaude, sdktranslator.FormatInteractions, "devin/swe-2", claudePayload, false)
+	_, prompts, _, _, _, _, _, _, _ := parseInteractionsPayload(interactionsJSON, nil)
+	if len(prompts) != 2 {
+		t.Fatalf("prompts len = %d, want 2", len(prompts))
+	}
+	if len(prompts[0].ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(prompts[0].ToolCalls))
+	}
+	if got := prompts[0].ToolCalls[0].ID; got != "toolu_abc_123" {
+		t.Fatalf("tool call id = %q, want toolu_abc_123", got)
+	}
+	if got := prompts[1].ToolCallID; got != "toolu_abc_123" {
+		t.Fatalf("tool result id = %q, want toolu_abc_123", got)
+	}
+	if got := prompts[1].Content; got != "file.txt" {
+		t.Fatalf("tool result content = %q, want file.txt", got)
+	}
+}
+
+func TestDevinExecutorOpenAIToolCallAndResultViaInteractions(t *testing.T) {
+	openAIPayload := []byte(`{
+		"model": "devin/swe-2",
+		"messages": [
+			{"role": "assistant", "tool_calls": [{"id": "call_xyz_456", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"main.go\"}"}}]},
+			{"role": "tool", "tool_call_id": "call_xyz_456", "content": "package main"}
+		]
+	}`)
+	interactionsJSON := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAI, sdktranslator.FormatInteractions, "devin/swe-2", openAIPayload, false)
+	_, prompts, _, _, _, _, _, _, _ := parseInteractionsPayload(interactionsJSON, nil)
+	if len(prompts) != 2 {
+		t.Fatalf("prompts len = %d, want 2", len(prompts))
+	}
+	if len(prompts[0].ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(prompts[0].ToolCalls))
+	}
+	if got := prompts[0].ToolCalls[0].ID; got != "call_xyz_456" {
+		t.Fatalf("tool call id = %q, want call_xyz_456", got)
+	}
+	if got := prompts[1].ToolCallID; got != "call_xyz_456" {
+		t.Fatalf("tool result id = %q, want call_xyz_456", got)
+	}
+	if got := prompts[1].Content; got != "package main" {
+		t.Fatalf("tool result content = %q, want package main", got)
+	}
+}
+
+func TestStreamDevinFrames_StopReasonMaxTokens(t *testing.T) {
+	// Frame with StopReason = 3 (MAX_TOKENS) and partial content
+	var f1 []byte
+	f1 = protowire.AppendTag(f1, 3, protowire.BytesType)
+	f1 = protowire.AppendString(f1, "cut short")
+	f1 = protowire.AppendTag(f1, 5, protowire.VarintType)
+	f1 = protowire.AppendVarint(f1, 3)
+
+	var buf bytes.Buffer
+	buf.Write(helps.WrapConnectEnvelope(f1))
+	buf.Write(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`)))
+
+	e := &DevinExecutor{}
+	out := make(chan cliproxyexecutor.StreamChunk, 20)
+	opts := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatInteractions,
+	}
+
+	go func() {
+		defer close(out)
+		e.streamDevinFrames(
+			context.Background(),
+			&buf,
+			cliproxyexecutor.Request{Model: "devin/swe-2"},
+			opts,
+			"swe-2-high",
+			sdktranslator.FormatInteractions,
+			nil,
+			out,
+		)
+	}()
+
+	var completedEvent gjson.Result
+	for chunk := range out {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		raw := string(chunk.Payload)
+		if strings.HasPrefix(raw, "data: ") && !strings.Contains(raw, "[DONE]") {
+			data := strings.TrimPrefix(raw, "data: ")
+			data = strings.TrimSpace(data)
+			parsed := gjson.Parse(data)
+			if parsed.Get("event_type").String() == "interaction.completed" {
+				completedEvent = parsed
+			}
+		}
+	}
+
+	if !completedEvent.Exists() {
+		t.Fatalf("interaction.completed event not found")
+	}
+	if got := completedEvent.Get("interaction.status").String(); got != "incomplete" {
+		t.Fatalf("interaction.status = %q, want incomplete. Event: %s", got, completedEvent.Raw)
+	}
+	if got := completedEvent.Get("interaction.finish_reason").String(); got != "length" {
+		t.Fatalf("interaction.finish_reason = %q, want length. Event: %s", got, completedEvent.Raw)
+	}
+}
+
+func TestConsumeDevinFramesToInteractions_StopReasonMaxTokens(t *testing.T) {
+	// Frame with StopReason = 3 (MAX_TOKENS) and partial content
+	var f1 []byte
+	f1 = protowire.AppendTag(f1, 3, protowire.BytesType)
+	f1 = protowire.AppendString(f1, "cut short")
+	f1 = protowire.AppendTag(f1, 5, protowire.VarintType)
+	f1 = protowire.AppendVarint(f1, 3)
+
+	var buf bytes.Buffer
+	buf.Write(helps.WrapConnectEnvelope(f1))
+	buf.Write(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`)))
+
+	out, _, err := consumeDevinFramesToInteractions(&buf, "devin/swe-2", "swe-2-high")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	parsed := gjson.ParseBytes(out)
+	if got := parsed.Get("status").String(); got != "incomplete" {
+		t.Fatalf("status = %q, want incomplete. Output: %s", got, string(out))
+	}
+	if got := parsed.Get("finish_reason").String(); got != "length" {
+		t.Fatalf("finish_reason = %q, want length. Output: %s", got, string(out))
+	}
+}
+
+func TestStreamDevinFrames_StopReasonContentFilter(t *testing.T) {
+	// Frame with StopReason = 11 (CONTENT_FILTER)
+	var f1 []byte
+	f1 = protowire.AppendTag(f1, 3, protowire.BytesType)
+	f1 = protowire.AppendString(f1, "blocked")
+	f1 = protowire.AppendTag(f1, 5, protowire.VarintType)
+	f1 = protowire.AppendVarint(f1, 11)
+
+	var buf bytes.Buffer
+	buf.Write(helps.WrapConnectEnvelope(f1))
+	buf.Write(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`)))
+
+	e := &DevinExecutor{}
+	out := make(chan cliproxyexecutor.StreamChunk, 20)
+	opts := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatInteractions,
+	}
+
+	go func() {
+		defer close(out)
+		e.streamDevinFrames(
+			context.Background(),
+			&buf,
+			cliproxyexecutor.Request{Model: "devin/swe-2"},
+			opts,
+			"swe-2-high",
+			sdktranslator.FormatInteractions,
+			nil,
+			out,
+		)
+	}()
+
+	var completedEvent gjson.Result
+	for chunk := range out {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		raw := string(chunk.Payload)
+		if strings.HasPrefix(raw, "data: ") && !strings.Contains(raw, "[DONE]") {
+			data := strings.TrimPrefix(raw, "data: ")
+			data = strings.TrimSpace(data)
+			parsed := gjson.Parse(data)
+			if parsed.Get("event_type").String() == "interaction.completed" {
+				completedEvent = parsed
+			}
+		}
+	}
+
+	if !completedEvent.Exists() {
+		t.Fatalf("interaction.completed event not found")
+	}
+	if got := completedEvent.Get("interaction.status").String(); got != "incomplete" {
+		t.Fatalf("interaction.status = %q, want incomplete", got)
+	}
+	if got := completedEvent.Get("interaction.finish_reason").String(); got != "content_filter" {
+		t.Fatalf("interaction.finish_reason = %q, want content_filter", got)
+	}
+}
+
+func TestConsumeDevinFramesToInteractions_StopReasonContentFilter(t *testing.T) {
+	// Frame with StopReason = 11 (CONTENT_FILTER)
+	var f1 []byte
+	f1 = protowire.AppendTag(f1, 3, protowire.BytesType)
+	f1 = protowire.AppendString(f1, "blocked")
+	f1 = protowire.AppendTag(f1, 5, protowire.VarintType)
+	f1 = protowire.AppendVarint(f1, 11)
+
+	var buf bytes.Buffer
+	buf.Write(helps.WrapConnectEnvelope(f1))
+	buf.Write(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`)))
+
+	out, _, err := consumeDevinFramesToInteractions(&buf, "devin/swe-2", "swe-2-high")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	parsed := gjson.ParseBytes(out)
+	if got := parsed.Get("status").String(); got != "incomplete" {
+		t.Fatalf("status = %q, want incomplete. Output: %s", got, string(out))
+	}
+	if got := parsed.Get("finish_reason").String(); got != "content_filter" {
+		t.Fatalf("finish_reason = %q, want content_filter. Output: %s", got, string(out))
+	}
+}
+
+func TestStreamDevinFrames_LateThinkingSignaturesToClaudeStreaming(t *testing.T) {
+	tests := []struct {
+		name          string
+		buildFrames   func() [][]byte
+		wantSignature string
+		wantText      string
+		wantToolID    string
+		wantToolName  string
+		wantToolArgs  string
+	}{
+		{
+			name: "Summary_Signature_Text",
+			buildFrames: func() [][]byte {
+				// Frame 1: thinking summary
+				var f1 []byte
+				f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+				f1 = protowire.AppendString(f1, "thought text")
+
+				// Frame 2: signature
+				var f2 []byte
+				f2 = protowire.AppendTag(f2, 10, protowire.BytesType)
+				f2 = protowire.AppendString(f2, "CAQS-early-sig-19B")
+				f2 = protowire.AppendTag(f2, 21, protowire.BytesType)
+				f2 = protowire.AppendString(f2, "anthropic")
+
+				// Frame 3: text content
+				var f3 []byte
+				f3 = protowire.AppendTag(f3, 3, protowire.BytesType)
+				f3 = protowire.AppendString(f3, "answer text")
+
+				return [][]byte{f1, f2, f3}
+			},
+			wantSignature: "CAQS-early-sig-19B",
+			wantText:      "answer text",
+		},
+		{
+			name: "Summary_Text_Signature_Same_Frame",
+			buildFrames: func() [][]byte {
+				// Frame 1: thinking summary
+				var f1 []byte
+				f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+				f1 = protowire.AppendString(f1, "thought text")
+
+				// Frame 2: text content + signature in same frame
+				var f2 []byte
+				f2 = protowire.AppendTag(f2, 3, protowire.BytesType)
+				f2 = protowire.AppendString(f2, "answer text")
+				f2 = protowire.AppendTag(f2, 10, protowire.BytesType)
+				f2 = protowire.AppendString(f2, "CAQS-sameframe-sig-")
+				f2 = protowire.AppendTag(f2, 21, protowire.BytesType)
+				f2 = protowire.AppendString(f2, "anthropic")
+
+				return [][]byte{f1, f2}
+			},
+			wantSignature: "CAQS-sameframe-sig-",
+			wantText:      "answer text",
+		},
+		{
+			name: "Summary_Text_Signature",
+			buildFrames: func() [][]byte {
+				// Frame 1: thinking summary
+				var f1 []byte
+				f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+				f1 = protowire.AppendString(f1, "thought text")
+
+				// Frame 2: text content
+				var f2 []byte
+				f2 = protowire.AppendTag(f2, 3, protowire.BytesType)
+				f2 = protowire.AppendString(f2, "answer text")
+
+				// Frame 3: late signature
+				var f3 []byte
+				f3 = protowire.AppendTag(f3, 10, protowire.BytesType)
+				f3 = protowire.AppendString(f3, "CAQS-late-signature-19B")
+				f3 = protowire.AppendTag(f3, 21, protowire.BytesType)
+				f3 = protowire.AppendString(f3, "anthropic")
+
+				return [][]byte{f1, f2, f3}
+			},
+			wantSignature: "CAQS-late-signature-19B",
+			wantText:      "answer text",
+		},
+		{
+			name: "Summary_ToolCall_Signature",
+			buildFrames: func() [][]byte {
+				// Frame 1: thinking summary
+				var f1 []byte
+				f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+				f1 = protowire.AppendString(f1, "thinking about tools")
+
+				// Frame 2: tool call delta
+				var tc0 []byte
+				tc0 = protowire.AppendTag(tc0, 1, protowire.BytesType)
+				tc0 = protowire.AppendString(tc0, "call_1")
+				tc0 = protowire.AppendTag(tc0, 2, protowire.BytesType)
+				tc0 = protowire.AppendString(tc0, "bash")
+				tc0 = protowire.AppendTag(tc0, 3, protowire.BytesType)
+				tc0 = protowire.AppendString(tc0, `{"cmd":"ls"}`)
+				tc0 = protowire.AppendTag(tc0, 4, protowire.VarintType)
+				tc0 = protowire.AppendVarint(tc0, 0)
+
+				var f2 []byte
+				f2 = protowire.AppendTag(f2, 6, protowire.BytesType)
+				f2 = protowire.AppendBytes(f2, tc0)
+
+				// Frame 3: late signature
+				var f3 []byte
+				f3 = protowire.AppendTag(f3, 10, protowire.BytesType)
+				f3 = protowire.AppendString(f3, "CAQS-tool-signature-19B")
+				f3 = protowire.AppendTag(f3, 21, protowire.BytesType)
+				f3 = protowire.AppendString(f3, "anthropic")
+
+				return [][]byte{f1, f2, f3}
+			},
+			wantSignature: "CAQS-tool-signature-19B",
+			wantToolID:    "call_1",
+			wantToolName:  "bash",
+			wantToolArgs:  `{"cmd":"ls"}`,
+		},
+		{
+			name: "Summary_SplitSignature_Across_Text",
+			buildFrames: func() [][]byte {
+				// Frame 1: thinking summary
+				var f1 []byte
+				f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+				f1 = protowire.AppendString(f1, "thought text")
+
+				// Frame 2: signature fragment 1 + text content
+				var f2 []byte
+				f2 = protowire.AppendTag(f2, 10, protowire.BytesType)
+				f2 = protowire.AppendString(f2, "CAQS-part1-")
+				f2 = protowire.AppendTag(f2, 3, protowire.BytesType)
+				f2 = protowire.AppendString(f2, "answer text")
+
+				// Frame 3: signature fragment 2
+				var f3 []byte
+				f3 = protowire.AppendTag(f3, 10, protowire.BytesType)
+				f3 = protowire.AppendString(f3, "part2-done")
+				f3 = protowire.AppendTag(f3, 21, protowire.BytesType)
+				f3 = protowire.AppendString(f3, "anthropic")
+
+				return [][]byte{f1, f2, f3}
+			},
+			wantSignature: "CAQS-part1-part2-done",
+			wantText:      "answer text",
+		},
+		{
+			name: "Summary_SignatureFragment1_Text_SignatureFragment2_IndependentFrames",
+			buildFrames: func() [][]byte {
+				// Frame 1: thinking summary
+				var f1 []byte
+				f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+				f1 = protowire.AppendString(f1, "thought text")
+
+				// Frame 2: signature fragment 1
+				var f2 []byte
+				f2 = protowire.AppendTag(f2, 10, protowire.BytesType)
+				f2 = protowire.AppendString(f2, "CAQS-seg1-")
+
+				// Frame 3: independent text frame without signature
+				var f3 []byte
+				f3 = protowire.AppendTag(f3, 3, protowire.BytesType)
+				f3 = protowire.AppendString(f3, "interleaving text")
+
+				// Frame 4: signature fragment 2
+				var f4 []byte
+				f4 = protowire.AppendTag(f4, 10, protowire.BytesType)
+				f4 = protowire.AppendString(f4, "seg2-done")
+				f4 = protowire.AppendTag(f4, 21, protowire.BytesType)
+				f4 = protowire.AppendString(f4, "anthropic")
+
+				// Frame 5: subsequent text
+				var f5 []byte
+				f5 = protowire.AppendTag(f5, 3, protowire.BytesType)
+				f5 = protowire.AppendString(f5, " final text")
+
+				return [][]byte{f1, f2, f3, f4, f5}
+			},
+			wantSignature: "CAQS-seg1-seg2-done",
+			wantText:      "interleaving text final text",
+		},
+		{
+			name: "Summary_ManyTextFrames_LateSignature",
+			buildFrames: func() [][]byte {
+				// Frame 1: thinking summary
+				var f1 []byte
+				f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+				f1 = protowire.AppendString(f1, "thought text")
+
+				// 6 consecutive text frames with no signature
+				var frames [][]byte
+				frames = append(frames, f1)
+				for i := 1; i <= 6; i++ {
+					var ft []byte
+					ft = protowire.AppendTag(ft, 3, protowire.BytesType)
+					ft = protowire.AppendString(ft, fmt.Sprintf("text-%d ", i))
+					frames = append(frames, ft)
+				}
+
+				// Late signature arriving on frame 8
+				var fsig []byte
+				fsig = protowire.AppendTag(fsig, 10, protowire.BytesType)
+				fsig = protowire.AppendString(fsig, "CAQS-late-after-6-frames")
+				fsig = protowire.AppendTag(fsig, 21, protowire.BytesType)
+				fsig = protowire.AppendString(fsig, "anthropic")
+				frames = append(frames, fsig)
+
+				return frames
+			},
+			wantSignature: "CAQS-late-after-6-frames",
+			wantText:      "text-1 text-2 text-3 text-4 text-5 text-6 ",
+		},
+		{
+			name: "Summary_ToolCall_Signature_ToolCallContinuation",
+			buildFrames: func() [][]byte {
+				// Frame 1: thinking summary
+				var f1 []byte
+				f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+				f1 = protowire.AppendString(f1, "planning tool call")
+
+				// Frame 2: tool call 0 partial args
+				var tc0 []byte
+				tc0 = protowire.AppendTag(tc0, 1, protowire.BytesType)
+				tc0 = protowire.AppendString(tc0, "call_1")
+				tc0 = protowire.AppendTag(tc0, 2, protowire.BytesType)
+				tc0 = protowire.AppendString(tc0, "bash")
+				tc0 = protowire.AppendTag(tc0, 3, protowire.BytesType)
+				tc0 = protowire.AppendString(tc0, `{"command": "git`)
+				tc0 = protowire.AppendTag(tc0, 4, protowire.VarintType)
+				tc0 = protowire.AppendVarint(tc0, 0)
+				var f2 []byte
+				f2 = protowire.AppendTag(f2, 6, protowire.BytesType)
+				f2 = protowire.AppendBytes(f2, tc0)
+
+				// Frame 3: signature arriving between tool deltas
+				var f3 []byte
+				f3 = protowire.AppendTag(f3, 10, protowire.BytesType)
+				f3 = protowire.AppendString(f3, "CAQS-interleaved-tool-sig")
+				f3 = protowire.AppendTag(f3, 21, protowire.BytesType)
+				f3 = protowire.AppendString(f3, "anthropic")
+
+				// Frame 4: tool call 0 continuation
+				var tc0Cont []byte
+				tc0Cont = protowire.AppendTag(tc0Cont, 3, protowire.BytesType)
+				tc0Cont = protowire.AppendString(tc0Cont, ` status"}`)
+				tc0Cont = protowire.AppendTag(tc0Cont, 4, protowire.VarintType)
+				tc0Cont = protowire.AppendVarint(tc0Cont, 0)
+				var f4 []byte
+				f4 = protowire.AppendTag(f4, 6, protowire.BytesType)
+				f4 = protowire.AppendBytes(f4, tc0Cont)
+
+				return [][]byte{f1, f2, f3, f4}
+			},
+			wantSignature: "CAQS-interleaved-tool-sig",
+			wantToolID:    "call_1",
+			wantToolName:  "bash",
+			wantToolArgs:  `{"command": "git status"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frames := tt.buildFrames()
+			var buf bytes.Buffer
+			for _, f := range frames {
+				buf.Write(helps.WrapConnectEnvelope(f))
+			}
+			buf.Write(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`)))
+
+			e := &DevinExecutor{}
+			out := make(chan cliproxyexecutor.StreamChunk, 50)
+			opts := cliproxyexecutor.Options{
+				SourceFormat:    sdktranslator.FormatClaude,
+				OriginalRequest: []byte(`{"model":"devin/swe-2","stream":true,"messages":[{"role":"user","content":"hi"}]}`),
+			}
+
+			go func() {
+				defer close(out)
+				e.streamDevinFrames(
+					context.Background(),
+					&buf,
+					cliproxyexecutor.Request{Model: "devin/swe-2", Payload: opts.OriginalRequest},
+					opts,
+					"swe-2-high",
+					sdktranslator.FormatClaude,
+					nil,
+					out,
+				)
+			}()
+
+			var accumulatedSig strings.Builder
+			var accumulatedThinking strings.Builder
+			var accumulatedText strings.Builder
+			var gotToolID string
+			var gotToolName string
+			var gotToolArgs strings.Builder
+
+			startedBlocks := make(map[int]string)
+			stoppedBlocks := make(map[int]bool)
+			activeBlock := -1
+
+			for chunk := range out {
+				if chunk.Err != nil {
+					t.Fatalf("unexpected chunk error: %v", chunk.Err)
+				}
+				lines := strings.Split(string(chunk.Payload), "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						data := strings.TrimPrefix(line, "data: ")
+						data = strings.TrimSpace(data)
+						if data == "" || data == "[DONE]" {
+							continue
+						}
+						parsed := gjson.Parse(data)
+						eventType := parsed.Get("type").String()
+						switch eventType {
+						case "content_block_start":
+							idx := int(parsed.Get("index").Int())
+							bType := parsed.Get("content_block.type").String()
+							if _, exists := startedBlocks[idx]; exists {
+								t.Errorf("content_block_start for index %d duplicated", idx)
+							}
+							startedBlocks[idx] = bType
+							activeBlock = idx
+							if bType == "tool_use" {
+								gotToolID = parsed.Get("content_block.id").String()
+								gotToolName = parsed.Get("content_block.name").String()
+							}
+						case "content_block_delta":
+							idx := int(parsed.Get("index").Int())
+							if idx != activeBlock {
+								t.Errorf("delta index %d received while active block is %d", idx, activeBlock)
+							}
+							if stoppedBlocks[idx] {
+								t.Errorf("delta index %d received after block was stopped", idx)
+							}
+							deltaType := parsed.Get("delta.type").String()
+							switch deltaType {
+							case "thinking_delta":
+								accumulatedThinking.WriteString(parsed.Get("delta.thinking").String())
+							case "signature_delta":
+								sig := parsed.Get("delta.signature").String()
+								accumulatedSig.WriteString(sig)
+							case "text_delta":
+								accumulatedText.WriteString(parsed.Get("delta.text").String())
+							case "input_json_delta":
+								gotToolArgs.WriteString(parsed.Get("delta.partial_json").String())
+							}
+						case "content_block_stop":
+							idx := int(parsed.Get("index").Int())
+							if idx != activeBlock {
+								t.Errorf("content_block_stop index %d does not match active block %d", idx, activeBlock)
+							}
+							if stoppedBlocks[idx] {
+								t.Errorf("content_block_stop index %d duplicated", idx)
+							}
+							stoppedBlocks[idx] = true
+							activeBlock = -1
+						}
+					}
+				}
+			}
+
+			// Verify thinking
+			if accumulatedThinking.Len() == 0 {
+				t.Errorf("accumulated thinking is empty")
+			}
+
+			// Verify signature
+			if got := accumulatedSig.String(); got != tt.wantSignature {
+				t.Errorf("accumulated signature = %q, want %q", got, tt.wantSignature)
+			}
+
+			// Verify text if expected
+			if tt.wantText != "" {
+				if got := accumulatedText.String(); got != tt.wantText {
+					t.Errorf("accumulated text = %q, want %q", got, tt.wantText)
+				}
+			}
+
+			// Verify tool call if expected
+			if tt.wantToolID != "" {
+				if gotToolID != tt.wantToolID {
+					t.Errorf("tool ID = %q, want %q", gotToolID, tt.wantToolID)
+				}
+				if gotToolName != tt.wantToolName {
+					t.Errorf("tool name = %q, want %q", gotToolName, tt.wantToolName)
+				}
+				if got := gotToolArgs.String(); got != tt.wantToolArgs {
+					t.Errorf("tool args = %q, want %q", got, tt.wantToolArgs)
+				}
+			}
+
+			// Verify block closure integrity: every started block must be stopped
+			for idx, bType := range startedBlocks {
+				if !stoppedBlocks[idx] {
+					t.Errorf("block %d (type: %s) was started but never stopped", idx, bType)
+				}
+			}
+		})
+	}
+}
+
+func TestStreamDevinFrames_LateThinkingSignatures_TrailerErrorClosesBlocks(t *testing.T) {
+	tests := []struct {
+		name        string
+		buildFrames func() [][]byte
+		wantBlocks  map[int]string // expected started block types
+	}{
+		{
+			name: "TrailerError_WithBufferedText",
+			buildFrames: func() [][]byte {
+				// Frame 1: thinking summary
+				var f1 []byte
+				f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+				f1 = protowire.AppendString(f1, "thought text")
+
+				// Frame 2: text content
+				var f2 []byte
+				f2 = protowire.AppendTag(f2, 3, protowire.BytesType)
+				f2 = protowire.AppendString(f2, "answer text")
+
+				return [][]byte{f1, f2}
+			},
+			wantBlocks: map[int]string{
+				0: "thinking",
+				1: "text",
+			},
+		},
+		{
+			name: "TrailerError_WithBufferedToolCall",
+			buildFrames: func() [][]byte {
+				// Frame 1: thinking summary
+				var f1 []byte
+				f1 = protowire.AppendTag(f1, 9, protowire.BytesType)
+				f1 = protowire.AppendString(f1, "planning tool call")
+
+				// Frame 2: tool call delta
+				var tc0 []byte
+				tc0 = protowire.AppendTag(tc0, 1, protowire.BytesType)
+				tc0 = protowire.AppendString(tc0, "call_err")
+				tc0 = protowire.AppendTag(tc0, 2, protowire.BytesType)
+				tc0 = protowire.AppendString(tc0, "bash")
+				tc0 = protowire.AppendTag(tc0, 3, protowire.BytesType)
+				tc0 = protowire.AppendString(tc0, `{"cmd":"err"}`)
+				tc0 = protowire.AppendTag(tc0, 4, protowire.VarintType)
+				tc0 = protowire.AppendVarint(tc0, 0)
+
+				var f2 []byte
+				f2 = protowire.AppendTag(f2, 6, protowire.BytesType)
+				f2 = protowire.AppendBytes(f2, tc0)
+
+				return [][]byte{f1, f2}
+			},
+			wantBlocks: map[int]string{
+				0: "thinking",
+				1: "tool_use",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frames := tt.buildFrames()
+			var buf bytes.Buffer
+			for _, f := range frames {
+				buf.Write(helps.WrapConnectEnvelope(f))
+			}
+			// Connect trailer with error code 14 (UNAVAILABLE)
+			buf.Write(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{"error":{"code":"unavailable","message":"server overload"}}`)))
+
+			e := &DevinExecutor{}
+			out := make(chan cliproxyexecutor.StreamChunk, 50)
+			opts := cliproxyexecutor.Options{
+				SourceFormat:    sdktranslator.FormatClaude,
+				OriginalRequest: []byte(`{"model":"devin/swe-2","stream":true,"messages":[{"role":"user","content":"hi"}]}`),
+			}
+
+			go func() {
+				defer close(out)
+				e.streamDevinFrames(
+					context.Background(),
+					&buf,
+					cliproxyexecutor.Request{Model: "devin/swe-2", Payload: opts.OriginalRequest},
+					opts,
+					"swe-2-high",
+					sdktranslator.FormatClaude,
+					nil,
+					out,
+				)
+			}()
+
+			var sawChunkErr bool
+			startedBlocks := make(map[int]string)
+			stoppedBlocks := make(map[int]bool)
+
+			for chunk := range out {
+				if chunk.Err != nil {
+					// Verify that all started blocks were already stopped before the error chunk
+					for idx, bType := range startedBlocks {
+						if !stoppedBlocks[idx] {
+							t.Errorf("block %d (%s) was not stopped before stream error", idx, bType)
+						}
+					}
+					sawChunkErr = true
+					continue
+				}
+				lines := strings.Split(string(chunk.Payload), "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						data := strings.TrimPrefix(line, "data: ")
+						data = strings.TrimSpace(data)
+						if data == "" || data == "[DONE]" {
+							continue
+						}
+						parsed := gjson.Parse(data)
+						eventType := parsed.Get("type").String()
+						if eventType == "content_block_start" {
+							idx := int(parsed.Get("index").Int())
+							startedBlocks[idx] = parsed.Get("content_block.type").String()
+						} else if eventType == "content_block_stop" {
+							idx := int(parsed.Get("index").Int())
+							stoppedBlocks[idx] = true
+						}
+					}
+				}
+			}
+
+			if !sawChunkErr {
+				t.Errorf("expected chunk error from trailer error, got none")
+			}
+
+			// Verify all expected blocks were started
+			for idx, wantType := range tt.wantBlocks {
+				if gotType := startedBlocks[idx]; gotType != wantType {
+					t.Errorf("block %d type = %q, want %q", idx, gotType, wantType)
+				}
+			}
+
+			// Verify that every block that was started was properly stopped
+			for idx, bType := range startedBlocks {
+				if !stoppedBlocks[idx] {
+					t.Errorf("block %d (type: %s) was started but NOT closed with content_block_stop before error exit", idx, bType)
+				}
+			}
+		})
+	}
+}
+
+func TestDevinExecutor_ResponsesNamespaceToolsFlattenedInUpstreamRequest(t *testing.T) {
+	responsesPayload := []byte(`{
+		"model": "devin/gemini-3-7-flash",
+		"tools": [
+			{
+				"type": "function",
+				"name": "exec_command",
+				"description": "Execute a command",
+				"parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}}
+			},
+			{
+				"type": "namespace",
+				"name": "multi_agent_v1",
+				"description": "Multi agent tools",
+				"tools": [
+					{
+						"type": "function",
+						"name": "close_agent",
+						"description": "Close an agent",
+						"parameters": {"type": "object", "properties": {"target": {"type": "string"}}}
+					},
+					{
+						"type": "function",
+						"name": "resume_agent",
+						"description": "Resume an agent",
+						"parameters": {"type": "object", "properties": {"id": {"type": "string"}}}
+					}
+				]
+			}
+		],
+		"input": [
+			{"type": "message", "role": "user", "content": "hello"}
+		]
+	}`)
+
+	interactionsJSON := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatInteractions, "devin/gemini-3-7-flash", responsesPayload, false)
+	systemPrompt, prompts, tools, temp, maxTokens, sessionID, cascadeID, _, _ := parseInteractionsPayload(interactionsJSON, responsesPayload)
+
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(tools))
+	}
+
+	for i, tool := range tools {
+		if tool.Name == "" {
+			t.Fatalf("tool %d has empty Name", i)
+		}
+	}
+
+	logBody := helps.BuildDevinUpstreamLogBody(
+		interactionsJSON,
+		false,
+		"gemini-3-7-flash",
+		systemPrompt,
+		prompts,
+		tools,
+		temp,
+		maxTokens,
+		sessionID,
+		cascadeID,
+	)
+
+	logBodyStr := string(logBody)
+	if strings.Contains(logBodyStr, `"name": ""`) {
+		t.Fatalf("devin upstream log body contains empty tool name: %s", logBodyStr)
+	}
+}
+
+func TestDevinExecutor_ResponsesToolsFilterAndObfuscate(t *testing.T) {
+	responsesPayload := []byte(`{
+		"model": "devin/swe-2",
+		"tools": [
+			{
+				"type": "namespace",
+				"name": "mcp__codex_app",
+				"description": "Codex App tools",
+				"tools": [
+					{
+						"type": "function",
+						"name": "automation_update",
+						"description": "Recurring automations",
+						"parameters": {"type": "object", "properties": {"id": {"type": "string"}}}
+					},
+					{
+						"type": "function",
+						"name": "read_resource",
+						"description": "Read a resource",
+						"parameters": {"type": "object", "properties": {"uri": {"type": "string"}}}
+					}
+				]
+			},
+			{
+				"type": "function",
+				"name": "exec_command",
+				"description": "Runs a command in a bash shell, returning output or a session ID for ongoing interaction.",
+				"parameters": {
+					"type": "object",
+					"properties": {"cmd": {"type": "string"}},
+					"required": ["cmd"]
+				}
+			},
+			{
+				"type": "function",
+				"name": "write_stdin",
+				"description": "Writes characters to an existing unified exec session and returns recent output.",
+				"parameters": {
+					"type": "object",
+					"properties": {"session_id": {"type": "string"}},
+					"required": ["session_id"]
+				}
+			}
+		],
+		"input": [
+			{"type": "message", "role": "user", "content": "hello"}
+		]
+	}`)
+
+	interactionsJSON := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatInteractions, "devin/swe-2", responsesPayload, false)
+	systemPrompt, prompts, tools, temp, maxTokens, sessionID, cascadeID, _, _ := parseInteractionsPayload(interactionsJSON, responsesPayload)
+
+	// 1. automation_update must be filtered out, leaving read_resource, exec_command, write_stdin
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(tools))
+	}
+
+	for _, tool := range tools {
+		if strings.Contains(tool.Name, "automation_update") {
+			t.Fatalf("unexpected automation_update tool in Devin tools: %s", tool.Name)
+		}
+		if tool.Name == "exec_command" {
+			want := "Runs a command in a bash shell, returning output or an session ID for ongoing interaction."
+			if tool.Description != want {
+				t.Fatalf("exec_command description = %q, want %q", tool.Description, want)
+			}
+		}
+		if tool.Name == "write_stdin" {
+			want := "Writes characters to a existing unified exec session and returns recent output."
+			if tool.Description != want {
+				t.Fatalf("write_stdin description = %q, want %q", tool.Description, want)
+			}
+		}
+	}
+
+	logBody := helps.BuildDevinUpstreamLogBody(
+		interactionsJSON,
+		false,
+		"swe-2",
+		systemPrompt,
+		prompts,
+		tools,
+		temp,
+		maxTokens,
+		sessionID,
+		cascadeID,
+	)
+
+	logBodyStr := string(logBody)
+	if strings.Contains(logBodyStr, "automation_update") {
+		t.Fatalf("upstream log body should not contain automation_update: %s", logBodyStr)
+	}
+	if !strings.Contains(logBodyStr, "an session ID") {
+		t.Fatalf("upstream log body should contain 'an session ID': %s", logBodyStr)
+	}
+	if !strings.Contains(logBodyStr, "to a existing") {
+		t.Fatalf("upstream log body should contain 'to a existing': %s", logBodyStr)
 	}
 }
