@@ -433,7 +433,7 @@ func buildKiroEndpointConfigsForAuth(auth *cliproxyauth.Auth) []kiroEndpointConf
 		},
 		{
 			Key:       "codewhisperer",
-			URL:       fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/", region),
+			URL:       fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", region),
 			Origin:    "AI_EDITOR",
 			AmzTarget: kiroLegacyGenerateTarget,
 			Name:      "CodeWhisperer",

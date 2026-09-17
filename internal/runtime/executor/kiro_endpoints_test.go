@@ -210,3 +210,50 @@ func TestKiroEndpointConfigsForAuth_ReturnsThreeEndpointsInDeclaredOrder(t *test
 		}
 	}
 }
+
+// TestKiroEndpointConfigsForAuth_PinsWireContract pins the exact URL, Origin,
+// and X-Amz-Target of every generation endpoint. These are wire values taken
+// from kiro-lb's endpoints.py KIRO_ENDPOINTS table and this repo's earlier
+// multi-endpoint code; a typo here silently sends the request to the wrong
+// host or operation path, which no other test in this package would catch.
+func TestKiroEndpointConfigsForAuth_PinsWireContract(t *testing.T) {
+	auth := &cliproxyauth.Auth{ID: "auth-1"}
+
+	want := map[string]struct {
+		url       string
+		origin    string
+		amzTarget string
+	}{
+		"runtime": {
+			url:       "https://runtime.us-east-1.kiro.dev/",
+			origin:    "AI_EDITOR",
+			amzTarget: "KiroRuntimeService.GenerateAssistantResponse",
+		},
+		"codewhisperer": {
+			url:       "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
+			origin:    "AI_EDITOR",
+			amzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+		},
+		"amazonq": {
+			url:       "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
+			origin:    "AI_EDITOR",
+			amzTarget: "AmazonQDeveloperStreamingService.SendMessage",
+		},
+	}
+
+	for _, c := range buildKiroEndpointConfigsForAuth(auth) {
+		expected, ok := want[c.Key]
+		if !ok {
+			t.Fatalf("unexpected endpoint key %q", c.Key)
+		}
+		if c.URL != expected.url {
+			t.Errorf("endpoint %q URL = %q, want %q", c.Key, c.URL, expected.url)
+		}
+		if c.Origin != expected.origin {
+			t.Errorf("endpoint %q Origin = %q, want %q", c.Key, c.Origin, expected.origin)
+		}
+		if c.AmzTarget != expected.amzTarget {
+			t.Errorf("endpoint %q AmzTarget = %q, want %q", c.Key, c.AmzTarget, expected.amzTarget)
+		}
+	}
+}
