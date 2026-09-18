@@ -5,8 +5,11 @@ package executor
 // minpeter/jc01rho fork of jwadow/kiro-gateway.
 
 import (
+	"net/http"
 	"testing"
 	"time"
+
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 func TestClassifyKiroUpstreamError(t *testing.T) {
@@ -102,6 +105,48 @@ func TestIsKiroSuspendedBody(t *testing.T) {
 			got := isKiroSuspendedBody(tc.body)
 			if got != tc.want {
 				t.Errorf("isKiroSuspendedBody(%q) = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestKiroMonthlyQuotaCooldownUsesReportedResetWithinBounds(t *testing.T) {
+	now := parseTestTime(t, "2026-09-17T00:00:00Z")
+	tests := []struct {
+		name    string
+		auth    *cliproxyauth.Auth
+		body    []byte
+		headers http.Header
+		want    time.Duration
+	}{
+		{name: "unknown reset uses one hour floor", want: time.Hour},
+		{
+			name: "body reset waits through reset margin",
+			body: []byte(`{"reason":"MONTHLY_REQUEST_COUNT","nextDateReset":1789862400000}`),
+			want: 3*24*time.Hour + 5*time.Minute,
+		},
+		{
+			name: "quota signal reset waits past old six hour window",
+			auth: &cliproxyauth.Auth{Quota: cliproxyauth.QuotaState{Signals: map[string]string{
+				"monthly_quota_reset_at": "2026-09-19T00:00:00Z",
+			}}},
+			want: 2*24*time.Hour + 5*time.Minute,
+		},
+		{
+			name: "past reset is bounded by floor",
+			body: []byte(`{"resetAt":"2026-09-01T00:00:00Z"}`),
+			want: time.Hour,
+		},
+		{
+			name: "distant reset is bounded by ceiling",
+			body: []byte(`{"resetAt":"2027-09-17T00:00:00Z"}`),
+			want: 7 * 24 * time.Hour,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := kiroMonthlyQuotaCooldown(test.auth, test.body, test.headers, now); got != test.want {
+				t.Fatalf("cooldown = %v, want %v", got, test.want)
 			}
 		})
 	}

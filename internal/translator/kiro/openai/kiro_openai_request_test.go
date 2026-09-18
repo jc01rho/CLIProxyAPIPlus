@@ -406,9 +406,9 @@ func TestAssistantEndsConversation(t *testing.T) {
 		t.Fatalf("Failed to unmarshal result: %v", err)
 	}
 
-	// When assistant is last, a "Continue" user message should be created
-	if payload.ConversationState.CurrentMessage.UserInputMessage.Content == "" {
-		t.Error("Expected a 'Continue' message to be created when assistant is last")
+	// When assistant is last, Kiro receives an empty continuation turn.
+	if payload.ConversationState.CurrentMessage.UserInputMessage.Content != "" {
+		t.Errorf("Expected an empty continuation message, got %q", payload.ConversationState.CurrentMessage.UserInputMessage.Content)
 	}
 }
 
@@ -451,7 +451,7 @@ func TestFilterOrphanedToolResults_RemovesHistoryAndCurrentOrphans(t *testing.T)
 		{ToolUseID: "orphan-3", Status: "success", Content: []KiroTextContent{{Text: "bad"}}},
 	}
 
-	filteredHistory, _, filteredCurrent := filterOrphanedToolResults(history, currentUserMsg, currentToolResults)
+	filteredHistory, filteredCurrentMsg, filteredCurrent := filterOrphanedToolResults(history, currentUserMsg, currentToolResults)
 
 	ctx1 := filteredHistory[1].UserInputMessage.UserInputMessageContext
 	if ctx1 == nil || len(ctx1.ToolResults) != 1 || ctx1.ToolResults[0].ToolUseID != "keep-1" {
@@ -462,8 +462,11 @@ func TestFilterOrphanedToolResults_RemovesHistoryAndCurrentOrphans(t *testing.T)
 		t.Fatalf("expected orphan-only history context to be removed")
 	}
 
-	if len(filteredCurrent) != 1 || filteredCurrent[0].ToolUseID != "keep-1" {
-		t.Fatalf("expected current tool results to keep only keep-1, got: %+v", filteredCurrent)
+	if len(filteredCurrent) != 0 {
+		t.Fatalf("expected current tool results to be converted without an adjacent assistant, got: %+v", filteredCurrent)
+	}
+	if !strings.Contains(filteredCurrentMsg.Content, "ok") || !strings.Contains(filteredCurrentMsg.Content, "bad") {
+		t.Fatalf("expected converted current results in text, got: %q", filteredCurrentMsg.Content)
 	}
 }
 func TestBuildKiroPayloadFromOpenAIAdaptiveAndNativeFields(t *testing.T) {

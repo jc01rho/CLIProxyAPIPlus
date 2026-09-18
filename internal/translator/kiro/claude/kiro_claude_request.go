@@ -283,6 +283,18 @@ func BuildKiroPayload(claudeBody []byte, modelID, profileArn, origin string, isA
 	// structured tool blocks stay allowed here.
 	history, currentUserMsg, currentToolResults := processMessages(messages, modelID, origin, true)
 
+	// Historical conversations carry the system prompt on their first user turn.
+	// Only a single-turn request places it on the current message.
+	if len(history) > 0 && systemPrompt != "" {
+		for i := range history {
+			if history[i].UserInputMessage != nil {
+				history[i].UserInputMessage.Content = buildFinalContent(history[i].UserInputMessage.Content, systemPrompt, nil)
+				systemPrompt = ""
+				break
+			}
+		}
+	}
+
 	// Build content with system prompt.
 	// Keep thinking tags on subsequent turns so multi-turn Claude sessions
 	// continue to emit reasoning events.
@@ -677,7 +689,7 @@ func processMessages(messages gjson.Result, modelID, origin string, allowStructu
 	// which is valid for the Claude API but causes "Improperly formed request" on Kiro.
 	// Prepend a placeholder user message so the history alternation is correct.
 	if len(messagesArray) > 0 && messagesArray[0].Get("role").String() == "assistant" {
-		placeholder := `{"role":"user","content":"."}`
+		placeholder := `{"role":"user","content":""}`
 		messagesArray = append([]gjson.Result{gjson.Parse(placeholder)}, messagesArray...)
 		log.Infof("kiro: messages started with assistant role, prepended placeholder user message for Kiro API compatibility")
 	}
@@ -691,18 +703,6 @@ func processMessages(messages gjson.Result, modelID, origin string, allowStructu
 
 		if role == "user" {
 			userMsg, toolResults := BuildUserMessageStruct(msg, modelID, origin, allowStructuredTools)
-			// CRITICAL: Kiro API requires content to be non-empty for ALL user messages
-			// This includes both history messages and the current message.
-			// When user message contains only tool_result (no text), content will be empty.
-			// This commonly happens in compaction requests from OpenCode.
-			if strings.TrimSpace(userMsg.Content) == "" {
-				if len(toolResults) > 0 {
-					userMsg.Content = kirocommon.DefaultUserContentWithToolResults
-				} else {
-					userMsg.Content = kirocommon.DefaultUserContent
-				}
-				log.Debugf("kiro: user content was empty, using default: %s", userMsg.Content)
-			}
 			if isLastMessage {
 				currentUserMsg = &userMsg
 				currentToolResults = toolResults
@@ -742,25 +742,13 @@ func processMessages(messages gjson.Result, modelID, origin string, allowStructu
 	// entries; normalizeRoles above can create them from unknown roles.
 	history = ensureAlternatingHistory(history)
 
-	// POST-PROCESSING: Remove orphaned tool_results that have no matching tool_use
-	// in any assistant message. This happens when Claude Code compaction truncates
-	// the conversation and removes the assistant message containing the tool_use,
-	// but keeps the user message with the corresponding tool_result.
-	// Without this fix, Kiro API returns "Improperly formed request".
-	validToolUseIDs := make(map[string]bool)
-	for _, h := range history {
-		if h.AssistantResponseMessage != nil {
-			for _, tu := range h.AssistantResponseMessage.ToolUses {
-				validToolUseIDs[tu.ToolUseID] = true
-			}
-		}
-	}
-
-	// Filter orphaned tool results from history user messages
+	// Tool results are valid only against the immediately preceding contiguous
+	// assistant run. An older matching ID is still structurally orphaned.
 	for i, h := range history {
 		if h.UserInputMessage != nil && h.UserInputMessage.UserInputMessageContext != nil {
 			ctx := h.UserInputMessage.UserInputMessageContext
 			if len(ctx.ToolResults) > 0 {
+				validToolUseIDs := precedingAssistantToolUseIDs(history, i)
 				var filtered []KiroToolResult
 				var orphanTexts []string
 				for _, tr := range ctx.ToolResults {
@@ -782,8 +770,9 @@ func processMessages(messages gjson.Result, modelID, origin string, allowStructu
 		}
 	}
 
-	// Filter orphaned tool results from current message
+	// Filter orphaned tool results from current message.
 	if len(currentToolResults) > 0 {
+		validToolUseIDs := precedingAssistantToolUseIDs(history, len(history))
 		var filtered []KiroToolResult
 		var orphanTexts []string
 		for _, tr := range currentToolResults {
@@ -804,6 +793,20 @@ func processMessages(messages gjson.Result, modelID, origin string, allowStructu
 	}
 
 	return history, currentUserMsg, currentToolResults
+}
+
+func precedingAssistantToolUseIDs(history []KiroHistoryMessage, before int) map[string]bool {
+	valid := make(map[string]bool)
+	for i := before - 1; i >= 0; i-- {
+		assistant := history[i].AssistantResponseMessage
+		if assistant == nil {
+			break
+		}
+		for _, toolUse := range assistant.ToolUses {
+			valid[toolUse.ToolUseID] = true
+		}
+	}
+	return valid
 }
 
 // stripAllToolContent converts tool_use/tool_result content blocks to plain
@@ -962,7 +965,7 @@ func ensureAlternatingHistory(history []KiroHistoryMessage) []KiroHistoryMessage
 		if len(out) > 0 && h.UserInputMessage != nil && out[len(out)-1].UserInputMessage != nil {
 			out = append(out, KiroHistoryMessage{
 				AssistantResponseMessage: &KiroAssistantResponseMessage{
-					Content: ".",
+					Content: "",
 				},
 			})
 		}

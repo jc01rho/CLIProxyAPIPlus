@@ -288,6 +288,18 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 	// structured tool blocks stay allowed here.
 	history, currentUserMsg, currentToolResults := processOpenAIMessages(messages, modelID, origin, true)
 
+	// Historical conversations carry the system prompt on their first user turn.
+	// Only a single-turn request places it on the current message.
+	if len(history) > 0 && systemPrompt != "" {
+		for i := range history {
+			if history[i].UserInputMessage != nil {
+				history[i].UserInputMessage.Content = buildFinalContent(history[i].UserInputMessage.Content, systemPrompt, nil)
+				systemPrompt = ""
+				break
+			}
+		}
+	}
+
 	// Build content with system prompt
 	if currentUserMsg != nil {
 		currentUserMsg.Content = buildFinalContent(currentUserMsg.Content, systemPrompt, currentToolResults)
@@ -571,14 +583,6 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string, allowS
 				currentUserMsg = &userMsg
 				currentToolResults = toolResults
 			} else {
-				// CRITICAL: Kiro API requires content to be non-empty for history messages
-				if strings.TrimSpace(userMsg.Content) == "" {
-					if len(toolResults) > 0 {
-						userMsg.Content = "Tool results provided."
-					} else {
-						userMsg.Content = "Continue"
-					}
-				}
 				// For history messages, embed tool results in context
 				if len(toolResults) > 0 {
 					userMsg.UserInputMessageContext = &KiroUserInputMessageContext{
@@ -597,7 +601,7 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string, allowS
 			// before this assistant message to maintain proper conversation structure
 			if len(pendingToolResults) > 0 {
 				syntheticUserMsg := KiroUserInputMessage{
-					Content: "Tool results provided.",
+					Content: "",
 					ModelID: modelID,
 					Origin:  origin,
 					UserInputMessageContext: &KiroUserInputMessageContext{
@@ -616,9 +620,9 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string, allowS
 				history = append(history, KiroHistoryMessage{
 					AssistantResponseMessage: &assistantMsg,
 				})
-				// Create a "Continue" user message as currentMessage
+				// Create an empty continuation turn as currentMessage.
 				currentUserMsg = &KiroUserInputMessage{
-					Content: "Continue",
+					Content: "",
 					ModelID: modelID,
 					Origin:  origin,
 				}
@@ -676,7 +680,7 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string, allowS
 		// If there's no current user message, create a synthetic one for the tool results
 		if currentUserMsg == nil {
 			currentUserMsg = &KiroUserInputMessage{
-				Content: "Tool results provided.",
+				Content: "",
 				ModelID: modelID,
 				Origin:  origin,
 			}
@@ -747,7 +751,7 @@ func ensureFirstMessageIsUserHistory(history []KiroHistoryMessage, modelID, orig
 		log.Debugf("kiro-openai: history started with assistant, prepending placeholder user message")
 		placeholder := KiroHistoryMessage{
 			UserInputMessage: &KiroUserInputMessage{
-				Content: ".",
+				Content: "",
 				ModelID: modelID,
 				Origin:  origin,
 			},
@@ -771,7 +775,7 @@ func ensureAlternatingHistory(history []KiroHistoryMessage) []KiroHistoryMessage
 		if len(out) > 0 && h.UserInputMessage != nil && out[len(out)-1].UserInputMessage != nil {
 			out = append(out, KiroHistoryMessage{
 				AssistantResponseMessage: &KiroAssistantResponseMessage{
-					Content: ".",
+					Content: "",
 				},
 			})
 		}
@@ -795,19 +799,6 @@ func truncateHistoryIfNeeded(history []KiroHistoryMessage) []KiroHistoryMessage 
 // orphaned-tool-result repair). currentUserMsg is passed in so orphaned
 // current-message tool results can also be preserved as text.
 func filterOrphanedToolResults(history []KiroHistoryMessage, currentUserMsg *KiroUserInputMessage, currentToolResults []KiroToolResult) ([]KiroHistoryMessage, *KiroUserInputMessage, []KiroToolResult) {
-	// Remove tool results with no matching tool_use in retained history.
-	// This happens after truncation when the assistant turn that produced tool_use
-	// is dropped but a later user/tool_result survives.
-	validToolUseIDs := make(map[string]bool)
-	for _, h := range history {
-		if h.AssistantResponseMessage == nil {
-			continue
-		}
-		for _, tu := range h.AssistantResponseMessage.ToolUses {
-			validToolUseIDs[tu.ToolUseID] = true
-		}
-	}
-
 	for i, h := range history {
 		if h.UserInputMessage == nil || h.UserInputMessage.UserInputMessageContext == nil {
 			continue
@@ -817,6 +808,7 @@ func filterOrphanedToolResults(history []KiroHistoryMessage, currentUserMsg *Kir
 			continue
 		}
 
+		validToolUseIDs := precedingAssistantToolUseIDs(history, i)
 		var filtered []KiroToolResult
 		var orphanTexts []string
 		for _, tr := range ctx.ToolResults {
@@ -837,6 +829,7 @@ func filterOrphanedToolResults(history []KiroHistoryMessage, currentUserMsg *Kir
 	}
 
 	if len(currentToolResults) > 0 {
+		validToolUseIDs := precedingAssistantToolUseIDs(history, len(history))
 		var filtered []KiroToolResult
 		var orphanTexts []string
 		for _, tr := range currentToolResults {
@@ -857,6 +850,20 @@ func filterOrphanedToolResults(history []KiroHistoryMessage, currentUserMsg *Kir
 	}
 
 	return history, currentUserMsg, currentToolResults
+}
+
+func precedingAssistantToolUseIDs(history []KiroHistoryMessage, before int) map[string]bool {
+	valid := make(map[string]bool)
+	for i := before - 1; i >= 0; i-- {
+		assistant := history[i].AssistantResponseMessage
+		if assistant == nil {
+			break
+		}
+		for _, toolUse := range assistant.ToolUses {
+			valid[toolUse.ToolUseID] = true
+		}
+	}
+	return valid
 }
 
 // kiroToolResultToText renders a KiroToolResult as a human-readable text

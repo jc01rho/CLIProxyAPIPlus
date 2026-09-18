@@ -100,13 +100,13 @@ func Test_isKiroRuntimeEndpoint(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "builder-id leftover profile still lists",
+			name: "profiled builder credential uses runtime",
 			meta: map[string]any{
 				"access_token": "tok",
 				"auth_method":  "builder-id",
 				"profile_arn":  "arn:aws:codewhisperer:us-east-1:123:profile/abc",
 			},
-			want: false,
+			want: true,
 		},
 		{
 			name: "aws_sso_oidc without profile is builder-id",

@@ -103,8 +103,8 @@ func TestAlternatingRolesInsertsSyntheticAssistant(t *testing.T) {
 		t.Fatalf("Failed to unmarshal result: %v", err)
 	}
 
-	// History contains the first 4 (all user after normalize) plus synthetic
-	// assistants. CurrentMessage is the last user "Last".
+	// Adjacent source users merge before history construction. If any user
+	// entries remain adjacent, synthetic assistants must separate them.
 	var roles []string
 	for _, h := range payload.ConversationState.History {
 		switch {
@@ -113,10 +113,6 @@ func TestAlternatingRolesInsertsSyntheticAssistant(t *testing.T) {
 		case h.AssistantResponseMessage != nil:
 			roles = append(roles, "assistant")
 		}
-	}
-
-	if len(roles) < 4 {
-		t.Fatalf("Expected at least 4 history entries (with synthetic assistants), got %d: %v", len(roles), roles)
 	}
 
 	// No two consecutive users in history.

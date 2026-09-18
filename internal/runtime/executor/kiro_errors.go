@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // kiroErrorDecision mirrors kiro-lb's ErrorType enum.
@@ -31,13 +33,148 @@ const (
 	KiroErrorRecoverable
 )
 
-// kiroMonthlyQuotaCooldown is the fallback cooldown applied when a 402 or a
-// 400+MONTHLY_REQUEST_COUNT response gives no better signal for when the
-// account's monthly quota resets. kiro-lb derives an exact quarantine window
-// from the reported quota reset date; this port has no equivalent quota
-// metadata available at this call site, so a fixed conservative window is
-// used instead of guessing a reset date.
-const kiroMonthlyQuotaCooldown = 6 * time.Hour
+const (
+	kiroMonthlyQuotaCooldownFloor   = time.Hour
+	kiroMonthlyQuotaCooldownCeiling = 7 * 24 * time.Hour
+	kiroMonthlyQuotaResetMargin     = 5 * time.Minute
+)
+
+// kiroMonthlyQuotaCooldown waits for the reported monthly reset when one is
+// available. Stale or malformed reset data cannot shorten the quarantine below
+// one hour or extend it beyond seven days.
+func kiroMonthlyQuotaCooldown(auth *cliproxyauth.Auth, body []byte, headers http.Header, now time.Time) time.Duration {
+	resetAt, ok := kiroMonthlyQuotaResetAt(auth, body, headers)
+	if !ok {
+		return kiroMonthlyQuotaCooldownFloor
+	}
+	cooldown := resetAt.Add(kiroMonthlyQuotaResetMargin).Sub(now)
+	if cooldown < kiroMonthlyQuotaCooldownFloor {
+		return kiroMonthlyQuotaCooldownFloor
+	}
+	if cooldown > kiroMonthlyQuotaCooldownCeiling {
+		return kiroMonthlyQuotaCooldownCeiling
+	}
+	return cooldown
+}
+
+func kiroMonthlyQuotaResetAt(auth *cliproxyauth.Auth, body []byte, headers http.Header) (time.Time, bool) {
+	if resetAt, ok := kiroResetTimeFromJSON(body); ok {
+		return resetAt, true
+	}
+	for key, values := range headers {
+		if !kiroQuotaResetKey(key) {
+			continue
+		}
+		for _, value := range values {
+			if resetAt, ok := parseKiroResetTime(value); ok {
+				return resetAt, true
+			}
+		}
+	}
+	if auth == nil {
+		return time.Time{}, false
+	}
+	for key, value := range auth.Quota.Signals {
+		if kiroQuotaResetKey(key) {
+			if resetAt, ok := parseKiroResetTime(value); ok {
+				return resetAt, true
+			}
+		}
+	}
+	for key, value := range auth.Metadata {
+		if kiroQuotaResetKey(key) {
+			if resetAt, ok := parseKiroResetTime(value); ok {
+				return resetAt, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+func kiroResetTimeFromJSON(body []byte) (time.Time, bool) {
+	if len(body) == 0 {
+		return time.Time{}, false
+	}
+	var value any
+	if json.Unmarshal(body, &value) != nil {
+		return time.Time{}, false
+	}
+	return findKiroResetTime(value)
+}
+
+func findKiroResetTime(value any) (time.Time, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, candidate := range typed {
+			if kiroQuotaResetKey(key) {
+				if resetAt, ok := parseKiroResetTime(candidate); ok {
+					return resetAt, true
+				}
+			}
+		}
+		for _, candidate := range typed {
+			if resetAt, ok := findKiroResetTime(candidate); ok {
+				return resetAt, true
+			}
+		}
+	case []any:
+		for _, candidate := range typed {
+			if resetAt, ok := findKiroResetTime(candidate); ok {
+				return resetAt, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+func kiroQuotaResetKey(key string) bool {
+	normalized := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+	switch normalized {
+	case "nextreset", "nextdatereset", "quotaresetat", "quotaresetsat", "monthlyquotaresetat", "monthlyquotaresetsat", "monthlyresetat", "monthlyresetsat", "resetat", "resetsat":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseKiroResetTime(value any) (time.Time, bool) {
+	switch typed := value.(type) {
+	case string:
+		raw := strings.TrimSpace(typed)
+		if raw == "" {
+			return time.Time{}, false
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return parsed, true
+		}
+		if number, err := strconv.ParseFloat(raw, 64); err == nil {
+			return kiroResetTimeFromEpoch(number)
+		}
+	case float64:
+		return kiroResetTimeFromEpoch(typed)
+	case float32:
+		return kiroResetTimeFromEpoch(float64(typed))
+	case int:
+		return kiroResetTimeFromEpoch(float64(typed))
+	case int64:
+		return kiroResetTimeFromEpoch(float64(typed))
+	case json.Number:
+		if number, err := typed.Float64(); err == nil {
+			return kiroResetTimeFromEpoch(number)
+		}
+	}
+	return time.Time{}, false
+}
+
+func kiroResetTimeFromEpoch(value float64) (time.Time, bool) {
+	if value <= 0 {
+		return time.Time{}, false
+	}
+	if value >= 1e12 {
+		return time.UnixMilli(int64(value)).UTC(), true
+	}
+	return time.Unix(int64(value), 0).UTC(), true
+}
 
 // kiroCooldownReasonMonthlyQuota is a Kiro-specific cooldown reason distinct
 // from kiroauth.CooldownReason429: a monthly quota exhaustion is a different

@@ -100,24 +100,20 @@ func isKiroRuntimeEndpoint(auth *cliproxyauth.Auth) bool {
 	return !isKiroBuilderIDAuth(auth)
 }
 
-// isKiroBuilderIDAuth matches kiro-lb: AWS_SSO_OIDC and not profile_arn.
-// Explicit auth_method=builder-id wins even if a leftover profileArn is stored.
+// isKiroBuilderIDAuth matches kiro-lb: AWS SSO OIDC without a profile ARN.
 func isKiroBuilderIDAuth(auth *cliproxyauth.Auth) bool {
-	if auth == nil {
+	if auth == nil || kiroHasProfileArn(auth) {
 		return false
 	}
 	switch kiroAuthMethod(auth) {
 	case "builder-id", "builderid", "builder_id", "aws-builder-id", "aws_builder_id":
 		return true
-	case "social", "idc", "desktop", "google", "github":
+	case "social", "desktop", "google", "github":
 		return false
 	}
 	authType := getAuthValue(auth, "auth_type")
 	if authType == "aws_sso_oidc" || authType == "aws-sso-oidc" {
 		return !kiroHasProfileArn(auth)
-	}
-	if kiroHasProfileArn(auth) {
-		return false
 	}
 	return getAuthValue(auth, "client_id") != "" && getAuthValue(auth, "client_secret") != ""
 }

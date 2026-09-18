@@ -1,11 +1,17 @@
 package executor
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -55,6 +61,59 @@ func TestGetKiroEndpointConfigs_WithRegionFromProfileArn(t *testing.T) {
 	expectedURL := "https://runtime.ap-southeast-1.kiro.dev/"
 	if configs[0].URL != expectedURL {
 		t.Errorf("primary URL = %q, want %q", configs[0].URL, expectedURL)
+	}
+}
+
+func TestBuildKiroEndpointConfigsForAuthSelectsHostByCredentialKind(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata map[string]any
+		wantName string
+		wantURL  string
+	}{
+		{
+			name: "builder id without profile uses Amazon Q",
+			metadata: map[string]any{
+				"auth_method":   "builder-id",
+				"client_id":     "client",
+				"client_secret": "secret",
+				"api_region":    "eu-west-1",
+			},
+			wantName: "AmazonQ",
+			wantURL:  "https://q.eu-west-1.amazonaws.com/generateAssistantResponse",
+		},
+		{
+			name: "profiled OIDC uses Kiro Runtime",
+			metadata: map[string]any{
+				"auth_method":   "builder-id",
+				"client_id":     "client",
+				"client_secret": "secret",
+				"profile_arn":   "arn:aws:codewhisperer:ap-southeast-1:123:profile/abc",
+			},
+			wantName: "KiroRuntime",
+			wantURL:  "https://runtime.ap-southeast-1.kiro.dev/",
+		},
+		{
+			name: "social desktop uses Kiro Runtime",
+			metadata: map[string]any{
+				"auth_method": "social",
+				"api_region":  "us-west-2",
+			},
+			wantName: "KiroRuntime",
+			wantURL:  "https://runtime.us-west-2.kiro.dev/",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configs := buildKiroEndpointConfigsForAuth(&cliproxyauth.Auth{Metadata: test.metadata})
+			if len(configs) != 3 {
+				t.Fatalf("endpoint count = %d, want 3", len(configs))
+			}
+			if configs[0].Name != test.wantName || configs[0].URL != test.wantURL {
+				t.Fatalf("primary endpoint = %s %s, want %s %s", configs[0].Name, configs[0].URL, test.wantName, test.wantURL)
+			}
+		})
 	}
 }
 
@@ -252,6 +311,71 @@ func TestGetAuthValue(t *testing.T) {
 				t.Errorf("getAuthValue() = %q, want %q", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestKiroRefreshReloadsRawFileOnceAndRetainsRefreshToken(t *testing.T) {
+	var refreshTokens []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			http.NotFound(w, r)
+			return
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode refresh request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		refreshToken, _ := request["refreshToken"].(string)
+		refreshTokens = append(refreshTokens, refreshToken)
+		if refreshToken == "stale-refresh" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accessToken":"new-access","expiresIn":3600}`))
+	}))
+	defer server.Close()
+
+	authPath := filepath.Join(t.TempDir(), "kiro.json")
+	if err := os.WriteFile(authPath, []byte(`{
+		"refreshToken":"fresh-refresh",
+		"clientId":"client",
+		"clientSecret":"secret",
+		"authMethod":"builder-id"
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewKiroExecutor(&config.Config{
+		OAuthEndpointOverrides: map[string]config.OAuthEndpointConfig{
+			"kiro": {ApiBaseURL: server.URL},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{"path": authPath},
+		Metadata: map[string]any{
+			"refresh_token": "stale-refresh",
+			"client_id":     "client",
+			"client_secret": "secret",
+			"auth_method":   "builder-id",
+		},
+	}
+
+	updated, err := executor.Refresh(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	if len(refreshTokens) != 2 || refreshTokens[0] != "stale-refresh" || refreshTokens[1] != "fresh-refresh" {
+		t.Fatalf("refresh attempts = %#v, want [stale-refresh fresh-refresh]", refreshTokens)
+	}
+	if got := updated.Metadata["access_token"]; got != "new-access" {
+		t.Fatalf("access_token = %#v, want new-access", got)
+	}
+	if got := updated.Metadata["refresh_token"]; got != "fresh-refresh" {
+		t.Fatalf("refresh_token = %#v, want retained fresh-refresh", got)
 	}
 }
 

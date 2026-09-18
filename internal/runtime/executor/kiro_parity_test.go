@@ -59,7 +59,7 @@ func TestBuildKiroEndpointConfigsRuntimeCredentialUsesRuntimePrimary(t *testing.
 	}
 }
 
-func TestBuildKiroEndpointConfigsBuilderIDUsesRuntimeRoot(t *testing.T) {
+func TestBuildKiroEndpointConfigsBuilderIDUsesAmazonQ(t *testing.T) {
 	t.Parallel()
 
 	auth := &cliproxyauth.Auth{
@@ -71,15 +71,15 @@ func TestBuildKiroEndpointConfigsBuilderIDUsesRuntimeRoot(t *testing.T) {
 	}
 
 	configs := buildKiroEndpointConfigsForAuth(auth)
-	// runtime, codewhisperer, amazonq in declared order; runtime stays
-	// primary (index 0) for Builder ID as well.
+	// Builder ID has no profile ARN, so Amazon Q must be primary while the
+	// other hosts remain available as local failovers.
 	if len(configs) != 3 {
-		t.Fatalf("endpoint configs = %#v, want 3 endpoints with the runtime generation endpoint first", configs)
+		t.Fatalf("endpoint configs = %#v, want 3 endpoints with Amazon Q first", configs)
 	}
-	if got, want := configs[0].Name, "KiroRuntime"; got != want {
+	if got, want := configs[0].Name, "AmazonQ"; got != want {
 		t.Fatalf("endpoint name = %q, want %q", got, want)
 	}
-	if got, want := configs[0].URL, "https://runtime.us-east-1.kiro.dev/"; got != want {
+	if got, want := configs[0].URL, "https://q.us-east-1.amazonaws.com/generateAssistantResponse"; got != want {
 		t.Fatalf("endpoint URL = %q, want %q", got, want)
 	}
 	if got, want := configs[0].Origin, "AI_EDITOR"; got != want {

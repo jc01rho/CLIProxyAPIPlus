@@ -413,39 +413,37 @@ const kiroLegacyGenerateTarget = "AmazonCodeWhispererStreamingService.GenerateAs
 // by the q.{region}.amazonaws.com host.
 const kiroAmazonQGenerateTarget = "AmazonQDeveloperStreamingService.SendMessage"
 
-// buildKiroEndpointConfigsForAuth builds the Kiro CLI generation endpoints in
-// declared attempt order: runtime (primary, matches current Kiro CLI/IDE
-// clients), then codewhisperer and amazonq as rotation fallbacks. Actual
-// attempt order per request is resolved by kiroEndpointAttemptOrder, which
-// applies affinity and cooldown state on top of this declared order; nothing
-// here is removed for a given account, only reordered.
-// Ported behavior from kiro-lb's endpoints.py (AGPL-3.0, minpeter/jc01rho
-// fork of jwadow/kiro-gateway): KIRO_ENDPOINTS declared order.
+// buildKiroEndpointConfigsForAuth builds generation endpoints in credential-
+// compatible order. Builder ID credentials have no profile ARN and must use
+// Amazon Q as their primary host; desktop, social, and profiled OIDC accounts
+// use Kiro Runtime. The remaining endpoints stay available as local failovers.
 func buildKiroEndpointConfigsForAuth(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	region := resolveKiroAPIRegion(auth)
-	return []kiroEndpointConfig{
-		{
-			Key:       "runtime",
-			URL:       fmt.Sprintf("https://runtime.%s.kiro.dev/", region),
-			Origin:    "AI_EDITOR",
-			AmzTarget: kiroRuntimeGenerateTarget,
-			Name:      "KiroRuntime",
-		},
-		{
-			Key:       "codewhisperer",
-			URL:       fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", region),
-			Origin:    "AI_EDITOR",
-			AmzTarget: kiroLegacyGenerateTarget,
-			Name:      "CodeWhisperer",
-		},
-		{
-			Key:       "amazonq",
-			URL:       fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", region),
-			Origin:    "AI_EDITOR",
-			AmzTarget: kiroAmazonQGenerateTarget,
-			Name:      "AmazonQ",
-		},
+	runtime := kiroEndpointConfig{
+		Key:       "runtime",
+		URL:       fmt.Sprintf("https://runtime.%s.kiro.dev/", region),
+		Origin:    "AI_EDITOR",
+		AmzTarget: kiroRuntimeGenerateTarget,
+		Name:      "KiroRuntime",
 	}
+	codewhisperer := kiroEndpointConfig{
+		Key:       "codewhisperer",
+		URL:       fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", region),
+		Origin:    "AI_EDITOR",
+		AmzTarget: kiroLegacyGenerateTarget,
+		Name:      "CodeWhisperer",
+	}
+	amazonQ := kiroEndpointConfig{
+		Key:       "amazonq",
+		URL:       fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", region),
+		Origin:    "AI_EDITOR",
+		AmzTarget: kiroAmazonQGenerateTarget,
+		Name:      "AmazonQ",
+	}
+	if isKiroBuilderIDAuth(auth) {
+		return []kiroEndpointConfig{amazonQ, codewhisperer, runtime}
+	}
+	return []kiroEndpointConfig{runtime, codewhisperer, amazonQ}
 }
 
 // resolveKiroAPIRegion determines the AWS region for Kiro API calls.
@@ -1009,13 +1007,14 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				_ = httpResp.Body.Close()
 				appendAPIResponseChunk(ctx, e.cfg, respBody)
 
+				monthlyCooldown := kiroMonthlyQuotaCooldown(auth, respBody, httpResp.Header, time.Now())
 				log.Warnf("kiro: received 402 (monthly limit), token %s set to cooldown for %v, body: %s",
-					tokenKey, kiroMonthlyQuotaCooldown, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
+					tokenKey, monthlyCooldown, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
 
 				rateLimiter.MarkTokenFailed(tokenKey)
-				cooldownMgr.SetCooldown(tokenKey, kiroMonthlyQuotaCooldown, kiroCooldownReasonMonthlyQuota)
+				cooldownMgr.SetCooldown(tokenKey, monthlyCooldown, kiroCooldownReasonMonthlyQuota)
 
-				retryAfter := kiroMonthlyQuotaCooldown
+				retryAfter := monthlyCooldown
 				return resp, statusErr{code: httpResp.StatusCode, msg: string(respBody), retryAfter: &retryAfter, credentialScoped: true}
 			}
 
@@ -1088,10 +1087,11 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				if httpResp.StatusCode == http.StatusBadRequest && classifyKiroUpstreamError(httpResp.StatusCode, b) == KiroErrorRecoverable {
 					reason := kiroErrorReasonFromBody(b)
 					if reason == "MONTHLY_REQUEST_COUNT" {
-						log.Warnf("kiro: received 400 (%s), token %s set to cooldown for %v", reason, tokenKey, kiroMonthlyQuotaCooldown)
+						monthlyCooldown := kiroMonthlyQuotaCooldown(auth, b, httpResp.Header, time.Now())
+						log.Warnf("kiro: received 400 (%s), token %s set to cooldown for %v", reason, tokenKey, monthlyCooldown)
 						rateLimiter.MarkTokenFailed(tokenKey)
-						cooldownMgr.SetCooldown(tokenKey, kiroMonthlyQuotaCooldown, kiroCooldownReasonMonthlyQuota)
-						retryAfter := kiroMonthlyQuotaCooldown
+						cooldownMgr.SetCooldown(tokenKey, monthlyCooldown, kiroCooldownReasonMonthlyQuota)
+						retryAfter := monthlyCooldown
 						if errClose := httpResp.Body.Close(); errClose != nil {
 							log.Errorf("response body close error: %v", errClose)
 						}
@@ -1533,17 +1533,18 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				_ = httpResp.Body.Close()
 				appendAPIResponseChunk(ctx, e.cfg, respBody)
 
+				monthlyCooldown := kiroMonthlyQuotaCooldown(auth, respBody, httpResp.Header, time.Now())
 				log.Warnf("kiro: stream received 402 (monthly limit), token %s set to cooldown for %v, body: %s",
-					tokenKey, kiroMonthlyQuotaCooldown, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
+					tokenKey, monthlyCooldown, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
 
 				// Ported from kiro-lb's classify_error: 402 is always RECOVERABLE
 				// (account-specific quota exhaustion), so apply a quota cooldown and
 				// return a credential-scoped error so the conductor rotates to the
 				// next credential instead of treating this as a fatal request error.
 				rateLimiter.MarkTokenFailed(tokenKey)
-				cooldownMgr.SetCooldown(tokenKey, kiroMonthlyQuotaCooldown, kiroCooldownReasonMonthlyQuota)
+				cooldownMgr.SetCooldown(tokenKey, monthlyCooldown, kiroCooldownReasonMonthlyQuota)
 
-				retryAfter := kiroMonthlyQuotaCooldown
+				retryAfter := monthlyCooldown
 				return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody), retryAfter: &retryAfter, credentialScoped: true}
 			}
 
@@ -1617,10 +1618,11 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 						log.Errorf("response body close error: %v", errClose)
 					}
 					if reason == "MONTHLY_REQUEST_COUNT" {
-						log.Warnf("kiro: stream received 400 (%s), token %s set to cooldown for %v", reason, tokenKey, kiroMonthlyQuotaCooldown)
+						monthlyCooldown := kiroMonthlyQuotaCooldown(auth, b, httpResp.Header, time.Now())
+						log.Warnf("kiro: stream received 400 (%s), token %s set to cooldown for %v", reason, tokenKey, monthlyCooldown)
 						rateLimiter.MarkTokenFailed(tokenKey)
-						cooldownMgr.SetCooldown(tokenKey, kiroMonthlyQuotaCooldown, kiroCooldownReasonMonthlyQuota)
-						retryAfter := kiroMonthlyQuotaCooldown
+						cooldownMgr.SetCooldown(tokenKey, monthlyCooldown, kiroCooldownReasonMonthlyQuota)
+						retryAfter := monthlyCooldown
 						return nil, statusErr{code: httpResp.StatusCode, msg: string(b), retryAfter: &retryAfter, credentialScoped: true}
 					}
 					// INVALID_MODEL_ID: this account/subscription cannot serve the
@@ -3917,63 +3919,24 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		}
 	}
 
-	var refreshToken string
-	var clientID, clientSecret string
-	var authMethod string
-	var region, startURL string
-
-	if auth.Metadata != nil {
-		if rt, ok := auth.Metadata["refresh_token"].(string); ok {
-			refreshToken = rt
-		}
-		if cid, ok := auth.Metadata["client_id"].(string); ok {
-			clientID = cid
-		}
-		if cs, ok := auth.Metadata["client_secret"].(string); ok {
-			clientSecret = cs
-		}
-		if am, ok := auth.Metadata["auth_method"].(string); ok {
-			authMethod = am
-		}
-		if r, ok := auth.Metadata["region"].(string); ok {
-			region = r
-		}
-		if su, ok := auth.Metadata["start_url"].(string); ok {
-			startURL = su
+	refreshSource := auth
+	tokenData, err := e.refreshKiroToken(ctx, refreshSource)
+	if err != nil && isKiroRefreshBadRequest(err) {
+		reloaded, reloadErr := e.reloadRawAuthFromFile(auth)
+		if reloadErr == nil {
+			log.Warnf("kiro executor: token refresh failed with HTTP 400; retrying once with raw file credentials")
+			refreshSource = reloaded
+			tokenData, err = e.refreshKiroToken(ctx, refreshSource)
+		} else {
+			log.Debugf("kiro executor: raw credential reload after HTTP 400 failed: %v", reloadErr)
 		}
 	}
-
-	if refreshToken == "" {
-		return nil, fmt.Errorf("kiro executor: refresh token not found")
-	}
-
-	var tokenData *kiroauth.KiroTokenData
-	var err error
-
-	ssoClient := kiroauth.NewSSOOIDCClient(e.cfg)
-
-	// Use SSO OIDC refresh for AWS Builder ID or IDC, otherwise use Kiro's OAuth refresh endpoint
-	switch {
-	case clientID != "" && clientSecret != "" && authMethod == "idc" && region != "":
-		// IDC refresh with region-specific endpoint
-		log.Debugf("kiro executor: using SSO OIDC refresh for IDC (region=%s)", region)
-		tokenData, err = ssoClient.RefreshTokenWithRegion(ctx, clientID, clientSecret, refreshToken, region, startURL)
-	case clientID != "" && clientSecret != "" && authMethod == "builder-id":
-		// Builder ID refresh with default endpoint
-		log.Debugf("kiro executor: using SSO OIDC refresh for AWS Builder ID")
-		tokenData, err = ssoClient.RefreshToken(ctx, clientID, clientSecret, refreshToken)
-	default:
-		// Fallback to Kiro's OAuth refresh endpoint (for social auth: Google/GitHub)
-		log.Debugf("kiro executor: using Kiro OAuth refresh endpoint")
-		oauth := kiroauth.NewKiroOAuth(e.cfg)
-		tokenData, err = oauth.RefreshToken(ctx, refreshToken)
-	}
-
 	if err != nil {
 		return nil, fmt.Errorf("kiro executor: token refresh failed: %w", err)
 	}
 
-	updated := auth.Clone()
+	refreshToken, _ := refreshSource.Metadata["refresh_token"].(string)
+	updated := refreshSource.Clone()
 	now := time.Now()
 	updated.UpdatedAt = now
 	updated.LastRefreshedAt = now
@@ -3982,7 +3945,10 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		updated.Metadata = make(map[string]any)
 	}
 	updated.Metadata["access_token"] = tokenData.AccessToken
-	updated.Metadata["refresh_token"] = tokenData.RefreshToken
+	updated.Metadata["refresh_token"] = refreshToken
+	if tokenData.RefreshToken != "" {
+		updated.Metadata["refresh_token"] = tokenData.RefreshToken
+	}
 	updated.Metadata["expires_at"] = tokenData.ExpiresAt
 	updated.Metadata["last_refresh"] = now.Format(time.RFC3339)
 	if tokenData.ProfileArn != "" {
@@ -4024,6 +3990,44 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 
 	log.Debugf("kiro executor: token refreshed successfully, expires at %s", tokenData.ExpiresAt)
 	return updated, nil
+}
+
+func (e *KiroExecutor) refreshKiroToken(ctx context.Context, auth *cliproxyauth.Auth) (*kiroauth.KiroTokenData, error) {
+	if auth == nil || auth.Metadata == nil {
+		return nil, fmt.Errorf("kiro executor: refresh metadata not found")
+	}
+	refreshToken, _ := auth.Metadata["refresh_token"].(string)
+	clientID, _ := auth.Metadata["client_id"].(string)
+	clientSecret, _ := auth.Metadata["client_secret"].(string)
+	authMethod, _ := auth.Metadata["auth_method"].(string)
+	region, _ := auth.Metadata["region"].(string)
+	startURL, _ := auth.Metadata["start_url"].(string)
+	if refreshToken == "" {
+		return nil, fmt.Errorf("kiro executor: refresh token not found")
+	}
+
+	ssoClient := kiroauth.NewSSOOIDCClient(e.cfg)
+	switch {
+	case clientID != "" && clientSecret != "" && authMethod == "idc" && region != "":
+		log.Debugf("kiro executor: using SSO OIDC refresh for IDC (region=%s)", region)
+		return ssoClient.RefreshTokenWithRegion(ctx, clientID, clientSecret, refreshToken, region, startURL)
+	case clientID != "" && clientSecret != "" && authMethod == "builder-id":
+		log.Debugf("kiro executor: using SSO OIDC refresh for AWS Builder ID")
+		return ssoClient.RefreshToken(ctx, clientID, clientSecret, refreshToken)
+	default:
+		log.Debugf("kiro executor: using Kiro OAuth refresh endpoint")
+		return kiroauth.NewKiroOAuth(e.cfg).RefreshToken(ctx, refreshToken)
+	}
+}
+
+func isKiroRefreshBadRequest(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "(status 400)") ||
+		strings.Contains(message, "(status 400):") ||
+		strings.Contains(message, "status code 400")
 }
 
 // persistRefreshedAuth persists a refreshed auth record to disk.
@@ -4118,52 +4122,44 @@ func (e *KiroExecutor) fetchAndSaveProfileArn(ctx context.Context, auth *cliprox
 	return profileArn
 }
 
-// reloadAuthFromFile 从文件重新加载 auth 数据（方案 B: Fallback 机制）
-// 当内存中的 token 已过期时，尝试从文件读取最新的 token
-// 这解决了后台刷新器已更新文件但内存中 Auth 对象尚未同步的时间差问题
-func (e *KiroExecutor) reloadAuthFromFile(auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
-	if auth == nil {
-		return nil, fmt.Errorf("kiro executor: cannot reload nil auth")
-	}
-
-	// 确定文件路径
-	var authPath string
-	if auth.Attributes != nil {
-		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
-			authPath = p
-		}
-	}
-	if authPath == "" {
-		fileName := strings.TrimSpace(auth.FileName)
-		if fileName == "" {
-			return nil, fmt.Errorf("kiro executor: auth has no file path or filename for reload")
-		}
-		if filepath.IsAbs(fileName) {
-			authPath = fileName
-		} else if e.cfg != nil && e.cfg.AuthDir != "" {
-			authPath = filepath.Join(e.cfg.AuthDir, fileName)
-		} else {
-			return nil, fmt.Errorf("kiro executor: cannot determine auth file path for reload")
-		}
-	}
-
-	// 读取文件
-	raw, err := os.ReadFile(authPath)
+// reloadRawAuthFromFile reloads the backing credential without freshness
+// checks. It is used only after the token endpoint rejects in-memory state with
+// HTTP 400, and the caller performs at most one retry with the reloaded source.
+func (e *KiroExecutor) reloadRawAuthFromFile(auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	authPath, metadata, err := e.readKiroAuthFile(auth)
 	if err != nil {
-		return nil, fmt.Errorf("kiro executor: failed to read auth file %s: %w", authPath, err)
+		return nil, err
+	}
+	updated := auth.Clone()
+	merged := make(map[string]any, len(auth.Metadata)+len(metadata))
+	for key, value := range auth.Metadata {
+		merged[key] = value
+	}
+	for key, value := range metadata {
+		merged[key] = value
+	}
+	updated.Metadata = merged
+	updated.UpdatedAt = time.Now()
+	log.Debugf("kiro executor: reloaded raw auth source from %s", authPath)
+	return updated, nil
+}
+
+// reloadAuthFromFile reloads a newer, still-valid access token written by a
+// background refresher.
+func (e *KiroExecutor) reloadAuthFromFile(auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	authPath, metadata, err := e.readKiroAuthFile(auth)
+	if err != nil {
+		return nil, err
 	}
 
-	// 解析 JSON
-	var metadata map[string]any
-	if err := json.Unmarshal(raw, &metadata); err != nil {
-		return nil, fmt.Errorf("kiro executor: failed to parse auth file %s: %w", authPath, err)
-	}
-
-	// 检查文件中的 token 是否比内存中的更新
+	// Check whether the file contains a newer access token.
 	fileExpiresAt, _ := metadata["expires_at"].(string)
 	fileAccessToken, _ := metadata["access_token"].(string)
-	memExpiresAt, _ := auth.Metadata["expires_at"].(string)
-	memAccessToken, _ := auth.Metadata["access_token"].(string)
+	var memExpiresAt, memAccessToken string
+	if auth.Metadata != nil {
+		memExpiresAt, _ = auth.Metadata["expires_at"].(string)
+		memAccessToken, _ = auth.Metadata["access_token"].(string)
+	}
 
 	// 文件中必须有有效的 access_token
 	if fileAccessToken == "" {
@@ -4231,6 +4227,64 @@ func (e *KiroExecutor) reloadAuthFromFile(auth *cliproxyauth.Auth) (*cliproxyaut
 
 	log.Infof("kiro executor: reloaded auth from file %s, new expires_at: %s", authPath, fileExpiresAt)
 	return updated, nil
+}
+
+func (e *KiroExecutor) readKiroAuthFile(auth *cliproxyauth.Auth) (string, map[string]any, error) {
+	if auth == nil {
+		return "", nil, fmt.Errorf("kiro executor: cannot reload nil auth")
+	}
+	var authPath string
+	if auth.Attributes != nil {
+		authPath = strings.TrimSpace(auth.Attributes["path"])
+	}
+	if authPath == "" {
+		fileName := strings.TrimSpace(auth.FileName)
+		if fileName == "" {
+			return "", nil, fmt.Errorf("kiro executor: auth has no file path or filename for reload")
+		}
+		if filepath.IsAbs(fileName) {
+			authPath = fileName
+		} else if e.cfg != nil && e.cfg.AuthDir != "" {
+			authPath = filepath.Join(e.cfg.AuthDir, fileName)
+		} else {
+			return "", nil, fmt.Errorf("kiro executor: cannot determine auth file path for reload")
+		}
+	}
+	raw, err := os.ReadFile(authPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("kiro executor: failed to read auth file %s: %w", authPath, err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(raw, &metadata); err != nil {
+		return "", nil, fmt.Errorf("kiro executor: failed to parse auth file %s: %w", authPath, err)
+	}
+	normalizeKiroAuthMetadata(metadata)
+	return authPath, metadata, nil
+}
+
+func normalizeKiroAuthMetadata(metadata map[string]any) {
+	aliases := map[string][]string{
+		"access_token":  {"accessToken"},
+		"refresh_token": {"refreshToken"},
+		"profile_arn":   {"profileArn", "arn"},
+		"expires_at":    {"expiresAt"},
+		"client_id":     {"clientId"},
+		"client_secret": {"clientSecret"},
+		"auth_method":   {"authMethod"},
+		"start_url":     {"startUrl"},
+		"api_region":    {"apiRegion"},
+	}
+	for canonical, candidates := range aliases {
+		if value, ok := metadata[canonical]; ok && value != nil {
+			continue
+		}
+		for _, candidate := range candidates {
+			if value, ok := metadata[candidate]; ok && value != nil {
+				metadata[canonical] = value
+				break
+			}
+		}
+	}
 }
 
 // isTokenExpired checks if a JWT access token has expired.
