@@ -846,6 +846,20 @@ nonstream-keepalive-interval: 0
 #       - name: "kimi-k2.5"
 #         alias: "claude-opus-4.66"
 
+# TypeSafe SystemOne (Jev) decision models — native decisions, not chat.
+# Requests go to POST /v1/systemone on the gateway and are forwarded to
+# POST <base-url>/v1/systemone with the same host and key.
+# Get a key at https://console.typesafe.ai/settings/keys
+# openai-compatibility:
+#   - name: "typesafe"
+#     base-url: "https://api.typesafe.ai"
+#     api-key-entries:
+#       - api-key: "ts-..."
+#     models:
+#       - name: "jev-latest"
+#         alias: "jev-latest"
+#         display-name: "TypeSafe Jev Latest"
+
 # Meta Model API (Muse Spark) — OpenAI-compatible. Get a key at https://dev.meta.ai
 #   - name: "meta"
 #     base-url: "https://api.meta.ai/v1"
