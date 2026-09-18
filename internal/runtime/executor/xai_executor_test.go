@@ -302,11 +302,13 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 	if got := gjson.GetBytes(gotBody, "tool_choice.tools.1.name").String(); got != "lookup" {
 		t.Fatalf("tool_choice.tools.1.name = %q, want lookup; body=%s", got, string(gotBody))
 	}
-	if got := gjson.GetBytes(gotBody, "tool_choice.tools.2.type").String(); got != "web_search" {
-		t.Fatalf("tool_choice.tools.2.type = %q, want web_search; body=%s", got, string(gotBody))
+	if got := gjson.GetBytes(gotBody, "tool_choice.tools.2.type").String(); got != "x_search" {
+		t.Fatalf("tool_choice.tools.2.type = %q, want x_search; body=%s", got, string(gotBody))
 	}
-	if got := gjson.GetBytes(gotBody, "tool_choice.tools.3.type").String(); got != "x_search" {
-		t.Fatalf("tool_choice.tools.3.type = %q, want x_search; body=%s", got, string(gotBody))
+	for _, tool := range gjson.GetBytes(gotBody, "tool_choice.tools").Array() {
+		if tool.Get("type").String() == "web_search" {
+			t.Fatalf("web_search must not remain in allowed_tools: %s", string(gotBody))
+		}
 	}
 	xSearchAllowedCount := 0
 	for _, tool := range gjson.GetBytes(gotBody, "tool_choice.tools").Array() {
@@ -1096,18 +1098,55 @@ func TestXAIExecutorPrepareNormalizesClaudeWebSearchToolChoice(t *testing.T) {
 	}
 
 	choice := gjson.GetBytes(prepared.body, "tool_choice")
-	if got := choice.Get("type").String(); got != "allowed_tools" {
-		t.Fatalf("tool_choice.type = %q, want allowed_tools; body=%s", got, prepared.body)
+	if choice.Type != gjson.String || choice.String() != "required" {
+		t.Fatalf("tool_choice = %s, want string required; body=%s", choice.Raw, prepared.body)
 	}
-	if got := choice.Get("mode").String(); got != "required" {
-		t.Fatalf("tool_choice.mode = %q, want required; body=%s", got, prepared.body)
+	tools := gjson.GetBytes(prepared.body, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools length = %d, want 1; body=%s", len(tools), prepared.body)
 	}
-	allowed := choice.Get("tools").Array()
-	if len(allowed) != 1 {
-		t.Fatalf("tool_choice.tools length = %d, want 1; body=%s", len(allowed), prepared.body)
+	if got := tools[0].Get("type").String(); got != "web_search" {
+		t.Fatalf("tools.0.type = %q, want web_search; body=%s", got, prepared.body)
 	}
-	if got := allowed[0].Get("type").String(); got != "web_search" {
-		t.Fatalf("tool_choice.tools.0.type = %q, want web_search; body=%s", got, prepared.body)
+}
+
+func TestXAIExecutorPrepareNormalizesClaudeWebSearchToolChoice_Grok46(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{})
+	prepared, errPrepare := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model: "grok-4.6",
+		Payload: []byte(`{
+			"model":"grok-4.6",
+			"max_tokens":64000,
+			"stream":true,
+			"output_config":{"effort":"high"},
+			"thinking":{"type":"disabled"},
+			"messages":[{"role":"user","content":[{"type":"text","text":"Perform a web search"}]}],
+			"tool_choice":{"type":"tool","name":"web_search"},
+			"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8,"allowed_domains":["github.com"]}]
+		}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+		Stream:       true,
+	}, true)
+	if errPrepare != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", errPrepare)
+	}
+
+	choice := gjson.GetBytes(prepared.body, "tool_choice")
+	if choice.Type != gjson.String || choice.String() != "required" {
+		t.Fatalf("tool_choice = %s, want string required; body=%s", choice.Raw, prepared.body)
+	}
+	tools := gjson.GetBytes(prepared.body, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools length = %d, want 1; body=%s", len(tools), prepared.body)
+	}
+	if got := tools[0].Get("type").String(); got != "web_search" {
+		t.Fatalf("tools.0.type = %q, want web_search; body=%s", got, prepared.body)
+	}
+	if got := tools[0].Get("filters.allowed_domains.0").String(); got != "github.com" {
+		t.Fatalf("tools.0.filters.allowed_domains.0 = %q, want github.com; body=%s", got, prepared.body)
 	}
 }
 
@@ -1421,6 +1460,146 @@ func TestXAIExecutorPrepareStripsImageGenerationFromMixedAllowedTools(t *testing
 	for _, tool := range allowed {
 		if tool.Get("type").String() == "image_generation" {
 			t.Fatalf("image_generation must not remain in allowed_tools: %s", prepared.body)
+		}
+	}
+}
+
+func TestXAIExecutorPrepareRewritesWebSearchAllowedToolsToRequired(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{})
+	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model: "grok-4.6",
+		Payload: []byte(`{
+			"model":"grok-4.6",
+			"input":"search the web",
+			"tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+			"tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"web_search"}]}
+		}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	}, false)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", err)
+	}
+
+	choice := gjson.GetBytes(prepared.body, "tool_choice")
+	if choice.Type != gjson.String || choice.String() != "required" {
+		t.Fatalf("tool_choice = %s, want string required; body=%s", choice.Raw, prepared.body)
+	}
+	tools := gjson.GetBytes(prepared.body, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools length = %d, want 1; body=%s", len(tools), prepared.body)
+	}
+	if got := tools[0].Get("type").String(); got != "web_search" {
+		t.Fatalf("tools.0.type = %q, want web_search; body=%s", got, prepared.body)
+	}
+}
+
+func TestXAIExecutorPrepareForcedWebSearchDropsOtherToolsAndSkipsXSearchInject(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{XAI: config.XAIConfig{InjectXSearch: true}})
+	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model: "grok-4.6",
+		Payload: []byte(`{
+			"model":"grok-4.6",
+			"input":"search the web",
+			"tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+			"tool_choice":{"type":"web_search"}
+		}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	}, false)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", err)
+	}
+
+	choice := gjson.GetBytes(prepared.body, "tool_choice")
+	if choice.Type != gjson.String || choice.String() != "required" {
+		t.Fatalf("tool_choice = %s, want string required; body=%s", choice.Raw, prepared.body)
+	}
+	tools := gjson.GetBytes(prepared.body, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools length = %d, want 1; body=%s", len(tools), prepared.body)
+	}
+	if got := tools[0].Get("type").String(); got != "web_search" {
+		t.Fatalf("tools.0.type = %q, want web_search; body=%s", got, prepared.body)
+	}
+}
+
+func TestXAIExecutorPrepareRewritesWebSearchOnlyAllowedToolsAutoToAuto(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{})
+	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model: "grok-4.6",
+		Payload: []byte(`{
+			"model":"grok-4.6",
+			"input":"search the web",
+			"tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+			"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"web_search"}]}
+		}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	}, false)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", err)
+	}
+
+	choice := gjson.GetBytes(prepared.body, "tool_choice")
+	if choice.Type != gjson.String || choice.String() != "auto" {
+		t.Fatalf("tool_choice = %s, want string auto; body=%s", choice.Raw, prepared.body)
+	}
+	tools := gjson.GetBytes(prepared.body, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools length = %d, want 1; body=%s", len(tools), prepared.body)
+	}
+	if got := tools[0].Get("type").String(); got != "web_search" {
+		t.Fatalf("tools.0.type = %q, want web_search; body=%s", got, prepared.body)
+	}
+}
+
+func TestXAIExecutorPrepareStripsWebSearchFromMixedAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{})
+	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model: "grok-4.6",
+		Payload: []byte(`{
+			"model":"grok-4.6",
+			"input":"draw or search",
+			"tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+			"tool_choice":{"type":"allowed_tools","mode":"required","tools":[
+				{"type":"web_search"},
+				{"type":"function","name":"lookup"}
+			]}
+		}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	}, false)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", err)
+	}
+
+	choice := gjson.GetBytes(prepared.body, "tool_choice")
+	if got := choice.Get("type").String(); got != "allowed_tools" {
+		t.Fatalf("tool_choice.type = %q, want allowed_tools; body=%s", got, prepared.body)
+	}
+	allowed := choice.Get("tools").Array()
+	if len(allowed) != 1 {
+		t.Fatalf("tool_choice.tools length = %d, want 1; body=%s", len(allowed), prepared.body)
+	}
+	if got := allowed[0].Get("name").String(); got != "lookup" {
+		t.Fatalf("tool_choice.tools.0.name = %q, want lookup; body=%s", got, prepared.body)
+	}
+	for _, tool := range allowed {
+		if tool.Get("type").String() == "web_search" {
+			t.Fatalf("web_search must not remain in allowed_tools: %s", prepared.body)
 		}
 	}
 }

@@ -24,6 +24,20 @@ import (
 
 var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
 
+const defaultAuthFilesPageSize = 50
+
+type authFilesPagination struct {
+	enabled  bool
+	page     int
+	pageSize int
+}
+
+type diskAuthFileCandidate struct {
+	entry os.DirEntry
+	info  os.FileInfo
+	data  []byte
+}
+
 var (
 	callbackForwardersMu  sync.Mutex
 	callbackForwarders    = make(map[int]*callbackForwarder)
@@ -98,8 +112,13 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "handler not initialized"})
 		return
 	}
+	pagination, errPagination := parseAuthFilesPagination(c)
+	if errPagination != nil {
+		c.JSON(400, gin.H{"error": errPagination.Error()})
+		return
+	}
 	if h.authManager == nil {
-		h.listAuthFilesFromDisk(c)
+		h.listAuthFilesFromDisk(c, pagination)
 		return
 	}
 	nameFilter := strings.TrimSpace(c.Query("name"))
@@ -114,6 +133,32 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	auths := h.authManager.List()
 	observedAt := time.Now().UTC()
 	cooldownsKnown := !h.authManager.HomeEnabled()
+	if pagination.enabled {
+		matching := make([]*coreauth.Auth, 0, len(auths))
+		for _, auth := range auths {
+			if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) || !isAuthFileListable(auth) {
+				continue
+			}
+			matching = append(matching, auth)
+		}
+		sort.Slice(matching, func(i, j int) bool {
+			return compareAuthFileListOrder(matching[i], matching[j]) < 0
+		})
+		total := len(matching)
+		start, end := pagination.bounds(total)
+		files := make([]gin.H, 0, end-start)
+		for _, auth := range matching[start:end] {
+			if entry := h.buildAuthFileEntry(auth, quotaSupportedProviders); entry != nil {
+				entry["cooldowns"] = nil
+				if cooldownsKnown {
+					entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
+				}
+				files = append(files, entry)
+			}
+		}
+		c.JSON(200, authFilesListResponse(observedAt, files, pagination, total, end))
+		return
+	}
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
 		if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) {
@@ -133,6 +178,113 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		return strings.ToLower(nameI) < strings.ToLower(nameJ)
 	})
 	c.JSON(200, gin.H{"observed_at": observedAt, "files": files})
+}
+
+func parseAuthFilesPagination(c *gin.Context) (authFilesPagination, error) {
+	pageRaw, hasPage := c.GetQuery("page")
+	pageSizeRaw, hasPageSize := c.GetQuery("page_size")
+	if !hasPage && !hasPageSize {
+		return authFilesPagination{}, nil
+	}
+	pagination := authFilesPagination{enabled: true, page: 1, pageSize: defaultAuthFilesPageSize}
+	if hasPage {
+		page, errParse := strconv.Atoi(strings.TrimSpace(pageRaw))
+		if errParse != nil || page <= 0 {
+			return authFilesPagination{}, errors.New("page must be a positive integer")
+		}
+		pagination.page = page
+	}
+	if hasPageSize {
+		pageSize, errParse := strconv.Atoi(strings.TrimSpace(pageSizeRaw))
+		if errParse != nil || pageSize <= 0 {
+			return authFilesPagination{}, errors.New("page_size must be a positive integer")
+		}
+		pagination.pageSize = pageSize
+	}
+	return pagination, nil
+}
+
+func (p authFilesPagination) bounds(total int) (int, int) {
+	if !p.enabled || total <= 0 {
+		return 0, total
+	}
+	if p.page > 1 && p.page-1 > total/p.pageSize {
+		return total, total
+	}
+	start := (p.page - 1) * p.pageSize
+	if start >= total {
+		return total, total
+	}
+	remaining := total - start
+	if p.pageSize >= remaining {
+		return start, total
+	}
+	return start, start + p.pageSize
+}
+
+func authFilesListResponse(observedAt time.Time, files []gin.H, pagination authFilesPagination, total, end int) gin.H {
+	response := gin.H{"observed_at": observedAt, "files": files}
+	if pagination.enabled {
+		response["total"] = total
+		response["page"] = pagination.page
+		response["page_size"] = pagination.pageSize
+		response["has_more"] = end < total
+	}
+	return response
+}
+
+func authFileListName(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(auth.FileName); name != "" {
+		return name
+	}
+	return strings.TrimSpace(auth.ID)
+}
+
+func compareAuthFileListOrder(left, right *coreauth.Auth) int {
+	leftName := authFileListName(left)
+	rightName := authFileListName(right)
+	if cmp := strings.Compare(strings.ToLower(leftName), strings.ToLower(rightName)); cmp != 0 {
+		return cmp
+	}
+	if cmp := strings.Compare(leftName, rightName); cmp != 0 {
+		return cmp
+	}
+	leftID, rightID := "", ""
+	leftIndex, rightIndex := "", ""
+	if left != nil {
+		leftID = strings.TrimSpace(left.ID)
+		leftIndex = strings.TrimSpace(left.Index)
+	}
+	if right != nil {
+		rightID = strings.TrimSpace(right.ID)
+		rightIndex = strings.TrimSpace(right.Index)
+	}
+	if cmp := strings.Compare(leftID, rightID); cmp != 0 {
+		return cmp
+	}
+	return strings.Compare(leftIndex, rightIndex)
+}
+
+func isAuthFileListable(auth *coreauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	runtimeOnly := isRuntimeOnlyAuth(auth)
+	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
+		return false
+	}
+	path := strings.TrimSpace(authAttribute(auth, "path"))
+	if path == "" {
+		return runtimeOnly
+	}
+	if _, errStat := os.Stat(path); os.IsNotExist(errStat) && !runtimeOnly &&
+		(auth.Disabled || auth.Status == coreauth.StatusDisabled || strings.EqualFold(strings.TrimSpace(auth.StatusMessage), "removed via management api")) {
+		return false
+	}
+	return true
 }
 
 func lockedAuthIndex(auth *coreauth.Auth) string {
@@ -299,7 +451,11 @@ func authFileExcludedModelSet(auth *coreauth.Auth, cfg *config.Config) map[strin
 }
 
 // List auth files from disk when the auth manager is unavailable.
-func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
+func (h *Handler) listAuthFilesFromDisk(c *gin.Context, options ...authFilesPagination) {
+	pagination := authFilesPagination{}
+	if len(options) > 0 {
+		pagination = options[0]
+	}
 	observedAt := time.Now().UTC()
 	nameFilter := strings.TrimSpace(c.Query("name"))
 	authIndexFilter := strings.TrimSpace(c.Query("auth_index"))
@@ -308,12 +464,11 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 		c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read auth dir: %v", err)})
 		return
 	}
-	files := make([]gin.H, 0)
 	if authIndexFilter != "" {
-		c.JSON(200, gin.H{"observed_at": observedAt, "files": files})
+		c.JSON(200, authFilesListResponse(observedAt, []gin.H{}, pagination, 0, 0))
 		return
 	}
-	antigravityEntries := make([]antigravityDiskEntry, 0)
+	matching := make([]diskAuthFileCandidate, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -326,109 +481,133 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 			continue
 		}
 		if info, errInfo := e.Info(); errInfo == nil {
-			fileData := gin.H{"name": name, "size": info.Size(), "modtime": info.ModTime(), "cooldowns": nil}
-
-			// Read file to get type field
-			full := filepath.Join(h.cfg.AuthDir, name)
-			if data, errRead := os.ReadFile(full); errRead == nil {
-				typeValue := gjson.GetBytes(data, "type").String()
-				emailValue := gjson.GetBytes(data, "email").String()
-				fileData["type"] = typeValue
-				fileData["email"] = emailValue
-				if strings.EqualFold(strings.TrimSpace(typeValue), "antigravity") {
-					disabled := false
-					if dv := gjson.GetBytes(data, "disabled"); dv.Exists() {
-						switch dv.Type {
-						case gjson.True:
-							disabled = true
-						case gjson.False:
-							disabled = false
-						case gjson.String:
-							if parsed, errParse := strconv.ParseBool(strings.TrimSpace(dv.String())); errParse == nil {
-								disabled = parsed
-							}
-						}
-						fileData["disabled"] = disabled
-					}
-					isPrimary := false
-					if pv := gjson.GetBytes(data, "primary_info.is_primary"); pv.Exists() {
-						switch pv.Type {
-						case gjson.True:
-							isPrimary = true
-						case gjson.False:
-							isPrimary = false
-						case gjson.String:
-							if parsed, errParse := strconv.ParseBool(strings.TrimSpace(pv.String())); errParse == nil {
-								isPrimary = parsed
-							}
-						}
-					}
-					antigravityEntries = append(antigravityEntries, antigravityDiskEntry{
-						index:     len(files),
-						isPrimary: isPrimary,
-						disabled:  disabled,
-					})
-				}
-				if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
-					fileData["project_id"] = projectID
-				}
-				if pv := gjson.GetBytes(data, "priority"); pv.Exists() {
-					switch pv.Type {
-					case gjson.Number:
-						fileData["priority"] = int(pv.Int())
-					case gjson.String:
-						if parsed, errAtoi := strconv.Atoi(strings.TrimSpace(pv.String())); errAtoi == nil {
-							fileData["priority"] = parsed
-						}
-					}
-				}
-				if wv := gjson.GetBytes(data, coreauth.AttributeWeight); wv.Exists() {
-					var rawWeight string
-					switch wv.Type {
-					case gjson.Number:
-						rawWeight = wv.Raw
-					case gjson.String:
-						rawWeight = wv.String()
-					}
-					if rawWeight != "" {
-						if weight, errWeight := credentialweight.ParseString(rawWeight); errWeight == nil {
-							fileData[coreauth.AttributeWeight] = weight
-						}
-					}
-				}
-				if nv := gjson.GetBytes(data, "note"); nv.Exists() && nv.Type == gjson.String {
-					if trimmed := strings.TrimSpace(nv.String()); trimmed != "" {
-						fileData["note"] = trimmed
-					}
-				}
-				if wv := gjson.GetBytes(data, "websockets"); wv.Exists() {
-					switch wv.Type {
-					case gjson.True:
-						fileData["websockets"] = true
-					case gjson.False:
-						fileData["websockets"] = false
-					case gjson.String:
-						if parsed, errParse := strconv.ParseBool(strings.TrimSpace(wv.String())); errParse == nil {
-							fileData["websockets"] = parsed
-						}
-					}
-				}
-				if requestRetry, okRetry := authFileRequestRetryFromJSON(data); okRetry {
-					fileData["request_retry"] = requestRetry
-				}
-				if quotaURL := strings.TrimSpace(gjson.GetBytes(data, "quota_url").String()); quotaURL != "" {
-					fileData["quota_url"] = quotaURL
-				}
-				if baseURL := strings.TrimSpace(gjson.GetBytes(data, "base_url").String()); baseURL != "" {
-					fileData["base_url"] = baseURL
-				}
-			}
-
-			files = append(files, fileData)
+			data, _ := os.ReadFile(filepath.Join(h.cfg.AuthDir, name))
+			matching = append(matching, diskAuthFileCandidate{entry: e, info: info, data: data})
 		}
 	}
+
+	antigravityEntries := make([]antigravityDiskEntry, 0)
+	for index, candidate := range matching {
+		if !strings.EqualFold(strings.TrimSpace(gjson.GetBytes(candidate.data, "type").String()), "antigravity") {
+			continue
+		}
+		disabled := false
+		if dv := gjson.GetBytes(candidate.data, "disabled"); dv.Exists() {
+			switch dv.Type {
+			case gjson.True:
+				disabled = true
+			case gjson.String:
+				disabled, _ = strconv.ParseBool(strings.TrimSpace(dv.String()))
+			}
+		}
+		isPrimary := false
+		if pv := gjson.GetBytes(candidate.data, "primary_info.is_primary"); pv.Exists() {
+			switch pv.Type {
+			case gjson.True:
+				isPrimary = true
+			case gjson.String:
+				isPrimary, _ = strconv.ParseBool(strings.TrimSpace(pv.String()))
+			}
+		}
+		antigravityEntries = append(antigravityEntries, antigravityDiskEntry{
+			index:     index,
+			isPrimary: isPrimary,
+			disabled:  disabled,
+		})
+	}
+
+	total := len(matching)
+	start, end := 0, total
+	if pagination.enabled {
+		start, end = pagination.bounds(total)
+	}
+	for i := range antigravityEntries {
+		antigravityEntries[i].index -= start
+	}
+	files := make([]gin.H, 0, end-start)
+	for _, candidate := range matching[start:end] {
+		name := candidate.entry.Name()
+		fileData := gin.H{"name": name, "size": candidate.info.Size(), "modtime": candidate.info.ModTime(), "cooldowns": nil}
+
+		data := candidate.data
+		if len(data) > 0 {
+			typeValue := gjson.GetBytes(data, "type").String()
+			emailValue := gjson.GetBytes(data, "email").String()
+			fileData["type"] = typeValue
+			fileData["email"] = emailValue
+			if strings.EqualFold(strings.TrimSpace(typeValue), "antigravity") {
+				if dv := gjson.GetBytes(data, "disabled"); dv.Exists() {
+					switch dv.Type {
+					case gjson.True:
+						fileData["disabled"] = true
+					case gjson.False:
+						fileData["disabled"] = false
+					case gjson.String:
+						if parsed, errParse := strconv.ParseBool(strings.TrimSpace(dv.String())); errParse == nil {
+							fileData["disabled"] = parsed
+						}
+					}
+				}
+			}
+			if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
+				fileData["project_id"] = projectID
+			}
+			if pv := gjson.GetBytes(data, "priority"); pv.Exists() {
+				switch pv.Type {
+				case gjson.Number:
+					fileData["priority"] = int(pv.Int())
+				case gjson.String:
+					if parsed, errAtoi := strconv.Atoi(strings.TrimSpace(pv.String())); errAtoi == nil {
+						fileData["priority"] = parsed
+					}
+				}
+			}
+			if wv := gjson.GetBytes(data, coreauth.AttributeWeight); wv.Exists() {
+				var rawWeight string
+				switch wv.Type {
+				case gjson.Number:
+					rawWeight = wv.Raw
+				case gjson.String:
+					rawWeight = wv.String()
+				}
+				if rawWeight != "" {
+					if weight, errWeight := credentialweight.ParseString(rawWeight); errWeight == nil {
+						fileData[coreauth.AttributeWeight] = weight
+					}
+				}
+			}
+			if nv := gjson.GetBytes(data, "note"); nv.Exists() && nv.Type == gjson.String {
+				if trimmed := strings.TrimSpace(nv.String()); trimmed != "" {
+					fileData["note"] = trimmed
+				}
+			}
+			if wv := gjson.GetBytes(data, "websockets"); wv.Exists() {
+				switch wv.Type {
+				case gjson.True:
+					fileData["websockets"] = true
+				case gjson.False:
+					fileData["websockets"] = false
+				case gjson.String:
+					if parsed, errParse := strconv.ParseBool(strings.TrimSpace(wv.String())); errParse == nil {
+						fileData["websockets"] = parsed
+					}
+				}
+			}
+			if requestRetry, okRetry := authFileRequestRetryFromJSON(data); okRetry {
+				fileData["request_retry"] = requestRetry
+			}
+			if quotaURL := strings.TrimSpace(gjson.GetBytes(data, "quota_url").String()); quotaURL != "" {
+				fileData["quota_url"] = quotaURL
+			}
+			if baseURL := strings.TrimSpace(gjson.GetBytes(data, "base_url").String()); baseURL != "" {
+				fileData["base_url"] = baseURL
+			}
+		}
+
+		files = append(files, fileData)
+	}
 	reconcileAntigravityDiskPrimaryInfo(files, antigravityEntries)
-	c.JSON(200, gin.H{"observed_at": observedAt, "files": files})
+	c.JSON(200, authFilesListResponse(observedAt, files, pagination, total, end))
 }
 
 // reconcileAntigravityDiskPrimaryInfo marks which antigravity auth file is the
@@ -458,6 +637,9 @@ func reconcileAntigravityDiskPrimaryInfo(files []gin.H, entries []antigravityDis
 		}
 	}
 	for _, entry := range entries {
+		if entry.index < 0 || entry.index >= len(files) {
+			continue
+		}
 		isPrimary := entry.index == primaryIndex
 		order := 0
 		if isPrimary {
