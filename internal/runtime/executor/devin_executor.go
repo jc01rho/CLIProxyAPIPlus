@@ -735,6 +735,9 @@ func (e *DevinExecutor) streamDevinFrames(
 		if frameRes.Usage != nil {
 			if finalUsage == nil {
 				finalUsage = frameRes.Usage
+				if reporter != nil && finalUsage.ModelName != "" {
+					reporter.SetResponseModel(finalUsage.ModelName)
+				}
 			} else {
 				if frameRes.Usage.PromptTokens > 0 {
 					finalUsage.PromptTokens = frameRes.Usage.PromptTokens
@@ -753,6 +756,9 @@ func (e *DevinExecutor) streamDevinFrames(
 				}
 				if frameRes.Usage.ModelName != "" {
 					finalUsage.ModelName = frameRes.Usage.ModelName
+					if reporter != nil {
+						reporter.SetResponseModel(frameRes.Usage.ModelName)
+					}
 				}
 				if len(frameRes.Usage.Headers) > 0 {
 					if finalUsage.Headers == nil {
@@ -940,6 +946,9 @@ func (e *DevinExecutor) streamDevinFrames(
 		completedEvent, _ = sjson.SetBytes(completedEvent, "interaction.usage.total_tokens", totalTokens)
 		if detail, ok := helps.ParseInteractionsStreamUsage(completedEvent); ok {
 			if reporter != nil {
+				if finalUsage != nil && finalUsage.ModelName != "" {
+					reporter.SetResponseModel(finalUsage.ModelName)
+				}
 				reporter.Publish(ctx, detail)
 			}
 		}
