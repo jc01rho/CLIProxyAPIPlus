@@ -11,6 +11,8 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -132,8 +134,11 @@ func (e *WorkBuddyExecutor) translatePayload(ctx context.Context, req cliproxyex
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
-	translated, _ = sjson.SetBytes(translated, "stream", true)
-	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
+	var supportedEfforts []string
+	if modelInfo := registry.LookupModelInfo(baseModel, workBuddyAuthType); modelInfo != nil && strings.EqualFold(modelInfo.Type, workBuddyAuthType) && modelInfo.Thinking != nil {
+		supportedEfforts = modelInfo.Thinking.Levels
+	}
+	translated, _ = helps.NormalizeWorkBuddyPayload(translated, supportedEfforts, "")
 	return ensureWorkBuddySystemMessage(translated), nil
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -72,6 +73,84 @@ func TestWorkBuddyExecutorUsesConsolePathThenV2Fallback(t *testing.T) {
 	}
 	if !strings.Contains(string(resp.Payload), "ok") {
 		t.Fatalf("response = %s, want content", resp.Payload)
+	}
+}
+
+func TestWorkBuddyTranslatePayloadComposesNormalization(t *testing.T) {
+	payload := []byte(`{"model":"gpt-5.4","max_completion_tokens":256,"messages":[
+		{"role":"developer","content":"rules"},
+		{"role":"assistant","tool_calls":[{"id":"c1"},{"id":"c2"}]},
+		{"role":"tool","tool_call_id":"c1","content":"one"},
+		{"role":"system","content":"interleaved"},
+		{"role":"tool","tool_call_id":"c2","content":"two"},
+		{"role":"user","content":"next"}]}`)
+	exec := NewWorkBuddyExecutor(&config.Config{})
+	out, err := exec.translatePayload(context.Background(), cliproxyexecutor.Request{Model: "gpt-5.4", Payload: payload}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai"),
+		OriginalRequest: payload,
+	}, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("translatePayload() error = %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal translated payload: %v (payload=%s)", err, out)
+	}
+	if obj["stream"] != true {
+		t.Fatalf("stream = %#v, want true", obj["stream"])
+	}
+	streamOptions, _ := obj["stream_options"].(map[string]any)
+	if streamOptions["include_usage"] != true {
+		t.Fatalf("stream_options = %#v, want include_usage=true", obj["stream_options"])
+	}
+	if obj["max_tokens"] != float64(256) {
+		t.Fatalf("max_tokens = %#v, want 256", obj["max_tokens"])
+	}
+	if _, exists := obj["max_completion_tokens"]; exists {
+		t.Fatal("max_completion_tokens was not removed")
+	}
+	rawMessages, _ := obj["messages"].([]any)
+	roles := make([]string, 0, len(rawMessages))
+	toolIDs := make([]string, 0, 2)
+	for _, raw := range rawMessages {
+		message, _ := raw.(map[string]any)
+		role, _ := message["role"].(string)
+		roles = append(roles, role)
+		if role == "tool" {
+			toolIDs = append(toolIDs, message["tool_call_id"].(string))
+		}
+	}
+	wantRoles := []string{"system", "assistant", "tool", "tool", "system", "user"}
+	if strings.Join(roles, ",") != strings.Join(wantRoles, ",") {
+		t.Fatalf("message roles = %v, want %v", roles, wantRoles)
+	}
+	if strings.Join(toolIDs, ",") != "c1,c2" {
+		t.Fatalf("tool result IDs = %v, want [c1 c2]", toolIDs)
+	}
+}
+
+func TestWorkBuddyTranslatePayloadUsesCatalogEfforts(t *testing.T) {
+	const modelID = "workbuddy-effort-test-model"
+	const clientID = "workbuddy-effort-test-client"
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient(clientID, workBuddyAuthType, []*registry.ModelInfo{{
+		ID: modelID, Type: workBuddyAuthType, Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}},
+	}})
+	t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
+
+	payload := []byte(`{"model":"` + modelID + `","reasoning_effort":"max","messages":[{"role":"system","content":"rules"}]}`)
+	out, err := NewWorkBuddyExecutor(&config.Config{}).translatePayload(context.Background(), cliproxyexecutor.Request{
+		Model: modelID, Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), OriginalRequest: payload}, modelID)
+	if err != nil {
+		t.Fatalf("translatePayload() error = %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal translated payload: %v", err)
+	}
+	if obj["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %#v, want catalog downgrade to high", obj["reasoning_effort"])
 	}
 }
 
