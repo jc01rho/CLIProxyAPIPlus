@@ -25,9 +25,9 @@ import (
 	kiloauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kilo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	kiro "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/meta"
-	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
+	metaauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/meta"
 	workbuddyauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
+	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/zcode"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
@@ -639,19 +639,14 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 	c.JSON(200, response)
 }
 
-// RequestMetaToken runs the Meta Model API subscription device-code login.
-// Unlike the OAuth providers that persist an auth file, Meta mints a Model API
-// key from the subscription and stores it in the config's openai-compatibility
-// "meta" provider, which the standard OpenAI-compatible executor routes to
-// https://api.meta.ai/v1.
 func (h *Handler) RequestMetaToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 
-	fmt.Println("Initializing Meta Model API authentication...")
+	fmt.Println("Initializing Meta authentication...")
 
 	state := fmt.Sprintf("meta-%d", time.Now().UnixNano())
-	authSvc := meta.NewMetaAuth(h.cfg)
+	authSvc := metaauth.NewMetaAuth(h.cfg)
 
 	deviceFlow, errStartDeviceFlow := authSvc.StartDeviceFlow(ctx)
 	if errStartDeviceFlow != nil {
@@ -672,7 +667,7 @@ func (h *Handler) RequestMetaToken(c *gin.Context) {
 		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "meta")
 
 		fmt.Println("Waiting for Meta authentication...")
-		accessToken, errWaitForAuthorization := authSvc.WaitForAuthorization(pollCtx, deviceFlow)
+		bundle, errWaitForAuthorization := authSvc.WaitForAuthorization(pollCtx, deviceFlow)
 		if errWaitForAuthorization != nil {
 			if !IsOAuthSessionPending(state, "meta") {
 				return
@@ -685,33 +680,84 @@ func (h *Handler) RequestMetaToken(c *gin.Context) {
 			return
 		}
 
-		fmt.Println("Signed in. Minting Meta Model API key from the subscription...")
-		apiKey, errMint := authSvc.MintAPIKey(pollCtx, accessToken)
-		if errMint != nil {
-			if !IsOAuthSessionPending(state, "meta") {
-				return
-			}
-			log.Errorf("Meta key mint failed: %v", errMint)
-			SetOAuthSessionError(state, oauthSessionErrorWithCause("Failed to mint Model API key", errMint))
-			return
-		}
-		if !IsOAuthSessionPending(state, "meta") {
+		tokenStorage := authSvc.CreateTokenStorage(bundle)
+		if tokenStorage == nil || strings.TrimSpace(tokenStorage.AccessToken) == "" {
+			log.Error("Meta token exchange returned empty access token")
+			SetOAuthSessionError(state, "Failed to exchange token")
 			return
 		}
 
-		if !meta.StoreAPIKey(h.cfg, apiKey) {
-			CompleteOAuthSession(state)
-			fmt.Println("Meta Model API key is already present in the config")
+		fileName := metaauth.CredentialFileName(tokenStorage.Email, tokenStorage.DCAToken)
+		label := strings.TrimSpace(tokenStorage.Email)
+		if label == "" {
+			label = "Meta"
+		}
+
+		metadata := map[string]any{
+			"type":         "meta",
+			"access_token": tokenStorage.AccessToken,
+			"token_type":   tokenStorage.TokenType,
+			"expires_in":   tokenStorage.ExpiresIn,
+			"expired":      tokenStorage.Expired,
+			"last_refresh": tokenStorage.LastRefresh,
+			"base_url":     tokenStorage.BaseURL,
+			"auth_kind":    "oauth",
+		}
+		if tokenStorage.DCAExpired != "" {
+			metadata["dca_expired"] = tokenStorage.DCAExpired
+		}
+		if tokenStorage.DCAExpiresAt > 0 {
+			metadata["dca_expires_at"] = tokenStorage.DCAExpiresAt
+		}
+		if tokenStorage.APIKey != "" {
+			metadata["api_key"] = tokenStorage.APIKey
+		}
+		if tokenStorage.DCAToken != "" {
+			metadata["dca_token"] = tokenStorage.DCAToken
+		}
+		if tokenStorage.Email != "" {
+			metadata["email"] = tokenStorage.Email
+		}
+		if tokenStorage.Name != "" {
+			metadata["name"] = tokenStorage.Name
+		}
+
+		attrs := map[string]string{
+			"auth_kind": "oauth",
+			"base_url":  tokenStorage.BaseURL,
+		}
+		if tokenStorage.APIKey != "" {
+			attrs["api_key"] = tokenStorage.APIKey
+		}
+		if tokenStorage.DCAToken != "" {
+			attrs["dca_token"] = tokenStorage.DCAToken
+		}
+		if tokenStorage.Email != "" {
+			attrs["email"] = tokenStorage.Email
+		}
+
+		record := &coreauth.Auth{
+			ID:         fileName,
+			Provider:   "meta",
+			FileName:   fileName,
+			Label:      label,
+			Storage:    tokenStorage,
+			Metadata:   metadata,
+			Attributes: attrs,
+		}
+		if errGuard := guardOAuthSessionPendingForSave(state, "meta"); errGuard != nil {
 			return
 		}
-		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
-			log.Errorf("Failed to save Meta API key to config: %v", errSave)
-			SetOAuthSessionError(state, oauthSessionErrorWithCause("Failed to save config", errSave))
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save Meta token to file: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save token to file")
 			return
 		}
 
 		CompleteOAuthSession(state)
-		fmt.Println("Authentication successful! Meta Model API key stored in config")
+		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+		fmt.Println("You can now use Meta services through this CLI")
 	}()
 
 	response := gin.H{"status": "ok", "url": authURL, "state": state, "flow": "device"}
@@ -721,7 +767,7 @@ func (h *Handler) RequestMetaToken(c *gin.Context) {
 	if deviceFlow.ExpiresIn > 0 {
 		response["expires_in"] = deviceFlow.ExpiresIn
 	} else {
-		response["expires_in"] = int(meta.MaxPollDuration / time.Second)
+		response["expires_in"] = int(metaauth.MaxPollDuration / time.Second)
 	}
 	c.JSON(200, response)
 }
@@ -1722,17 +1768,17 @@ func (h *Handler) RequestWorkBuddyToken(c *gin.Context) {
 		}
 
 		metadata := map[string]any{
-			"type":           "workbuddy",
-			"access_token":   storage.AccessToken,
-			"refresh_token":  storage.RefreshToken,
-			"uid":            storage.UserID,
-			"domain":         storage.Domain,
-			"realm":          storage.Realm,
-			"expires_at":     storage.ExpiresAt,
-			"enterprise_id":  storage.EnterpriseID,
-			"nickname":       storage.Nickname,
-			"device_token":   storage.DeviceToken,
-			"auth_kind":      "oauth",
+			"type":          "workbuddy",
+			"access_token":  storage.AccessToken,
+			"refresh_token": storage.RefreshToken,
+			"uid":           storage.UserID,
+			"domain":        storage.Domain,
+			"realm":         storage.Realm,
+			"expires_at":    storage.ExpiresAt,
+			"enterprise_id": storage.EnterpriseID,
+			"nickname":      storage.Nickname,
+			"device_token":  storage.DeviceToken,
+			"auth_kind":     "oauth",
 		}
 
 		record := &coreauth.Auth{

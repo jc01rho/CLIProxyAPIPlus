@@ -29,6 +29,7 @@ func newAuthManager() *sdkAuth.Manager {
 		sdkAuth.NewCursorAuthenticator(),
 		sdkAuth.NewClineAuthenticator(),
 		sdkAuth.NewDevinAuthenticator(),
+		sdkAuth.NewMetaAuthenticator(),
 	)
 	return manager
 }

@@ -188,7 +188,7 @@ func main() {
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi using OAuth")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
-	flag.BoolVar(&metaLogin, "meta-login", false, "Login to Meta Model API (Muse Spark subscription) using device code flow; mints an API key into the meta openai-compatibility provider")
+	flag.BoolVar(&metaLogin, "meta-login", false, "Login to Meta using OAuth")
 	flag.BoolVar(&cursorLogin, "cursor-login", false, "Login to Cursor using OAuth")
 	flag.BoolVar(&kiroLogin, "kiro-login", false, "Login to Kiro using Google OAuth")
 	flag.BoolVar(&zcodeLogin, "zcode-login", false, "Login to GLM ZCode (UNOFFICIAL, opt-in; at your own risk)")
@@ -795,8 +795,7 @@ func main() {
 		// Handle Codex device-code login
 		cmd.DoCodexDeviceLogin(cfg, options)
 	} else if metaLogin {
-		// Handle Meta Model API (Muse Spark subscription) device-code login
-		cmd.DoMetaLogin(cfg, configFilePath, options)
+		cmd.DoMetaLogin(cfg, options)
 	} else if claudeLogin {
 		// Handle Claude login
 		cmd.DoClaudeLogin(cfg, options)

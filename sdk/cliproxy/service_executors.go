@@ -217,6 +217,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"kilo",
 		"kilo-gateway",
 		"devin",
+		"meta",
 		"openai-compatibility",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
@@ -363,6 +364,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewCursorExecutor(cfg))
 	case "github-copilot":
 		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(cfg))
+	case "meta":
+		s.coreManager.RegisterExecutor(executor.NewMetaExecutor(cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
