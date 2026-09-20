@@ -88,6 +88,8 @@ func TestRegisterAvailableExecutors(t *testing.T) {
 		"aistudio",
 		"antigravity",
 		"kimi",
+		"kimi-ai",
+		"kimi.ai",
 		"xai",
 		"workbuddy",
 		"openai-compatibility",

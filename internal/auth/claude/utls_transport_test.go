@@ -1,8 +1,8 @@
 package claude
 
 import (
-	"crypto/md5"
 	"context"
+	"crypto/md5"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"

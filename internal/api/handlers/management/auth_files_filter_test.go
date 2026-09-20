@@ -336,5 +336,3 @@ func TestBuildAuthFileEntryExposesQuotaAndBaseURL(t *testing.T) {
 		t.Errorf("base_url should be absent, got %#v", entry["base_url"])
 	}
 }
-
-

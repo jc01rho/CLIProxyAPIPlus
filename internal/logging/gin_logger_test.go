@@ -468,4 +468,3 @@ func TestGinLogrusLoggerKeepsOriginalModelAfterTimedGateFallback(t *testing.T) {
 		t.Fatalf("gin 200 hid the original model behind the fallback alias, got: %s", logOutput)
 	}
 }
-

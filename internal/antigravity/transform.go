@@ -214,6 +214,7 @@ func buildClaudeThinkingConfig(includeThoughts bool, thinkingBudget int) map[str
 // cortexkit antigravity-auth request.ts (1256-1266) for headerStyle="antigravity":
 //   - if no current max is set, pin maxOutputTokens to 64000 (the antigravity cap)
 //   - else if the current max is <= budget, scale via computeClaudeMaxOutputTokens
+//
 // This package always runs in antigravity headerStyle, so the unset-max case pins 64000.
 func ensureClaudeMaxOutputTokens(generationConfig map[string]any, thinkingBudget int) {
 	if thinkingBudget <= 0 {
@@ -335,8 +336,8 @@ func normalizeClaudeTools(payload []byte) ([]byte, int, []string) {
 				schema := declMap["parameters"]
 				if schema == nil {
 					schema = map[string]any{
-						"type":                 "object",
-						"properties":           map[string]any{},
+						"type":       "object",
+						"properties": map[string]any{},
 					}
 				}
 				functionDeclarations = append(functionDeclarations, map[string]any{
@@ -561,28 +562,28 @@ func setToolConfigValidated(payload []byte) []byte {
 // toGeminiSchema transforms a JSON Schema to Gemini-compatible format.
 // Key transformations: uppercase type values, remove unsupported fields, recursively process nested schemas.
 var unsupportedSchemaFields = map[string]bool{
-	"additionalProperties":     true,
-	"$schema":                  true,
-	"$id":                      true,
-	"$comment":                 true,
-	"$ref":                     true,
-	"$defs":                    true,
-	"definitions":              true,
-	"const":                    true,
-	"contentMediaType":         true,
-	"contentEncoding":          true,
-	"if":                       true,
-	"then":                     true,
-	"else":                     true,
-	"not":                      true,
-	"patternProperties":       true,
-	"unevaluatedProperties":   true,
-	"unevaluatedItems":        true,
-	"dependentRequired":       true,
-	"dependentSchemas":        true,
-	"propertyNames":           true,
-	"minContains":             true,
-	"maxContains":             true,
+	"additionalProperties":  true,
+	"$schema":               true,
+	"$id":                   true,
+	"$comment":              true,
+	"$ref":                  true,
+	"$defs":                 true,
+	"definitions":           true,
+	"const":                 true,
+	"contentMediaType":      true,
+	"contentEncoding":       true,
+	"if":                    true,
+	"then":                  true,
+	"else":                  true,
+	"not":                   true,
+	"patternProperties":     true,
+	"unevaluatedProperties": true,
+	"unevaluatedItems":      true,
+	"dependentRequired":     true,
+	"dependentSchemas":      true,
+	"propertyNames":         true,
+	"minContains":           true,
+	"maxContains":           true,
 }
 
 func toGeminiSchema(schema map[string]any) map[string]any {
@@ -791,8 +792,8 @@ func normalizeGeminiTools(payload []byte) ([]byte, int, []string) {
 		if custom, ok := newTool["custom"].(map[string]any); !ok || custom == nil {
 			if fn, ok := newTool["function"].(map[string]any); ok && fn != nil {
 				newTool["custom"] = map[string]any{
-					"name":        fn["name"],
-					"description": fn["description"],
+					"name":         fn["name"],
+					"description":  fn["description"],
 					"input_schema": schema,
 				}
 			}
@@ -800,8 +801,8 @@ func normalizeGeminiTools(payload []byte) ([]byte, int, []string) {
 		// Create custom if both missing
 		if _, hasCustom := newTool["custom"]; !hasCustom {
 			newTool["custom"] = map[string]any{
-				"name":        name,
-				"description": newTool["description"],
+				"name":         name,
+				"description":  newTool["description"],
 				"input_schema": schema,
 			}
 			if _, hasParams := newTool["parameters"]; !hasParams {
@@ -1237,16 +1238,16 @@ type ImageConfig struct {
 
 // TransformContext contains request transformation context.
 type TransformContext struct {
-	ProjectID       string
-	Model           string
-	RequestedModel  string
-	Family          ModelFamily
-	Streaming       bool
-	RequestID       string
-	SessionID       string
-	ThinkingTier    ThinkingTier
-	ThinkingBudget  int
-	ThinkingLevel   string
+	ProjectID      string
+	Model          string
+	RequestedModel string
+	Family         ModelFamily
+	Streaming      bool
+	RequestID      string
+	SessionID      string
+	ThinkingTier   ThinkingTier
+	ThinkingBudget int
+	ThinkingLevel  string
 }
 
 // TransformDebugInfo describes a transform pass.
@@ -1293,9 +1294,9 @@ type SanitizerOptions struct {
 
 // SanitizationResult is returned by SanitizeCrossModelPayload.
 type SanitizationResult struct {
-	Payload             []byte
-	Modified            bool
-	SignaturesStripped  int
+	Payload            []byte
+	Modified           bool
+	SignaturesStripped int
 }
 
 // WrapToolsResult describes Gemini tool wrapping.

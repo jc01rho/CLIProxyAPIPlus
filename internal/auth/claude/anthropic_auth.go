@@ -24,16 +24,16 @@ const (
 	ProfileURL = "https://api.anthropic.com/api/oauth/profile"
 	// RolesURL is the claude_cli role endpoint the native client queries right
 	// after a successful token exchange, alongside the profile lookup.
-	RolesURL = "https://api.anthropic.com/api/oauth/claude_cli/roles"
-	AuthURL              = "https://claude.com/cai/oauth/authorize"
+	RolesURL               = "https://api.anthropic.com/api/oauth/claude_cli/roles"
+	AuthURL                = "https://claude.com/cai/oauth/authorize"
 	PlatformConsoleAuthURL = "https://platform.claude.com/oauth/authorize"
-	TokenURL             = "https://platform.claude.com/v1/oauth/token"
-	RefreshTokenURL      = "https://platform.claude.com/v1/oauth/token"
-	ClientID             = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	RedirectURI          = "http://localhost:54545/callback"
-	ClaudeUserAgent      = "axios/1.15.2"
-	ClaudeOAuthScope     = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
-	RefreshScope         = ClaudeOAuthScope
+	TokenURL               = "https://platform.claude.com/v1/oauth/token"
+	RefreshTokenURL        = "https://platform.claude.com/v1/oauth/token"
+	ClientID               = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	RedirectURI            = "http://localhost:54545/callback"
+	ClaudeUserAgent        = "axios/1.15.2"
+	ClaudeOAuthScope       = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+	RefreshScope           = ClaudeOAuthScope
 
 	claudeRefreshMinBackoff       = 5 * time.Second
 	claudeRefreshMaxBackoff       = 5 * time.Minute

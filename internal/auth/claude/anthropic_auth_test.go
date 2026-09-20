@@ -113,7 +113,6 @@ func TestClaudeAuthBlankExplicitOverrideFallsBackToDefaultEndpoints(t *testing.T
 	}
 }
 
-
 func TestNewAnthropicHttpClientDoesNotSetRequestTimeout(t *testing.T) {
 	if got := NewAnthropicHttpClient(nil).Timeout; got != 0 {
 		t.Fatalf("HTTP client timeout = %s, want zero", got)

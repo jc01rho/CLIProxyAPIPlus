@@ -268,7 +268,7 @@ type testStreamingLogWriter struct {
 	closed               bool
 }
 
-func (w *testStreamingLogWriter) WriteChunkAsync([]byte) {}
+func (w *testStreamingLogWriter) WriteChunkAsync([]byte)                     {}
 func (w *testStreamingLogWriter) WriteStatus(int, map[string][]string) error { return nil }
 func (w *testStreamingLogWriter) WriteAPIRequest([]byte) error               { return nil }
 func (w *testStreamingLogWriter) WriteAPIResponse([]byte) error              { return nil }

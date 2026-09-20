@@ -50,9 +50,9 @@ func newUtlsRoundTripper(cfg *config.SDKConfig) *utlsRoundTripper {
 	}
 
 	return &utlsRoundTripper{
-		connections:  make(map[string]*http2.ClientConn),
-		pending:      make(map[string]chan struct{}),
-		dialer:       dialer,
+		connections: make(map[string]*http2.ClientConn),
+		pending:     make(map[string]chan struct{}),
+		dialer:      dialer,
 		sessionCache: claudeOAuthSessionCache(func() string {
 			if cfg != nil {
 				return strings.TrimSpace(cfg.ProxyURL)

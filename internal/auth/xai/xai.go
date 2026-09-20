@@ -64,24 +64,6 @@ func ValidateOAuthEndpoint(rawURL string, field string) (string, error) {
 	return rawURL, nil
 }
 
-// validateVerificationURI validates a verification URI returned by xAI's device
-// authorization endpoint. The URI is printed and handed to the operator's browser, so
-// force it to be an https URL to keep a malicious response from launching something else.
-func validateVerificationURI(rawURL string, field string) (string, error) {
-	rawURL = strings.TrimSpace(rawURL)
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("xai device code: untrusted %s in response: %w", field, err)
-	}
-	if parsed.Scheme != "https" {
-		return "", fmt.Errorf("xai device code: untrusted %s in response: must use https: %q", field, rawURL)
-	}
-	if strings.TrimSpace(parsed.Host) == "" {
-		return "", fmt.Errorf("xai device code: untrusted %s in response: missing host: %q", field, rawURL)
-	}
-	return rawURL, nil
-}
-
 // Discover resolves xAI OAuth endpoints through OIDC discovery.
 func (a *XAIAuth) Discover(ctx context.Context) (*Discovery, error) {
 	if ctx == nil {
@@ -189,16 +171,6 @@ func (a *XAIAuth) RequestDeviceCode(ctx context.Context, deviceAuthorizationEndp
 	}
 	if strings.TrimSpace(deviceCode.VerificationURI) == "" && strings.TrimSpace(deviceCode.VerificationURIComplete) == "" {
 		return nil, fmt.Errorf("xai device code: response missing verification URI")
-	}
-	if strings.TrimSpace(deviceCode.VerificationURI) != "" {
-		if deviceCode.VerificationURI, err = validateVerificationURI(deviceCode.VerificationURI, "verification_uri"); err != nil {
-			return nil, err
-		}
-	}
-	if strings.TrimSpace(deviceCode.VerificationURIComplete) != "" {
-		if deviceCode.VerificationURIComplete, err = validateVerificationURI(deviceCode.VerificationURIComplete, "verification_uri_complete"); err != nil {
-			return nil, err
-		}
 	}
 	deviceCode.TokenEndpoint = strings.TrimSpace(tokenEndpoint)
 	return &deviceCode, nil
@@ -327,7 +299,6 @@ func (a *XAIAuth) exchangeDeviceCode(ctx context.Context, tokenEndpoint, deviceC
 		IDToken          string `json:"id_token"`
 		TokenType        string `json:"token_type"`
 		ExpiresIn        int    `json:"expires_in"`
-		Interval         int    `json:"interval"`
 	}
 	if err = json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("xai device token: parse response: %w", err), interval, false
@@ -338,24 +309,15 @@ func (a *XAIAuth) exchangeDeviceCode(ctx context.Context, tokenEndpoint, deviceC
 		case "authorization_pending":
 			return nil, nil, interval, true
 		case "slow_down":
-			// Honor the server-reported interval when present; trusting only a locally
-			// tracked value risks polling early forever under VM/WSL clock drift.
-			// Otherwise apply RFC 8628 section 3.5: increase by the configured step.
 			step := defaultPollInterval
 			if a != nil && a.minPollInterval > 0 {
 				step = a.minPollInterval
 			}
 			nextInterval := interval + step
-			if payload.Interval > 0 {
-				nextInterval = time.Duration(payload.Interval) * time.Second
-			}
-			if nextInterval < minPollInterval {
-				nextInterval = minPollInterval
-			}
 			return nil, nil, nextInterval, true
 		case "expired_token":
 			return nil, fmt.Errorf("xai device code expired"), interval, false
-		case "access_denied", "authorization_denied":
+		case "access_denied":
 			return nil, fmt.Errorf("xai device authorization denied"), interval, false
 		default:
 			desc := strings.TrimSpace(payload.ErrorDescription)
@@ -484,9 +446,6 @@ func (a *XAIAuth) CreateTokenStorage(bundle *AuthBundle) *TokenStorage {
 }
 
 func buildTokenData(accessToken, refreshToken, idToken, tokenType string, expiresIn int, email, subject string) *TokenData {
-	if expiresIn <= 0 {
-		expiresIn = defaultTokenLifetimeSeconds
-	}
 	tokenData := &TokenData{
 		AccessToken:  strings.TrimSpace(accessToken),
 		RefreshToken: strings.TrimSpace(refreshToken),
@@ -496,7 +455,9 @@ func buildTokenData(accessToken, refreshToken, idToken, tokenType string, expire
 		Email:        email,
 		Subject:      subject,
 	}
-	tokenData.Expire = time.Now().Add(time.Duration(expiresIn) * time.Second).UTC().Format(time.RFC3339)
+	if expiresIn > 0 {
+		tokenData.Expire = time.Now().Add(time.Duration(expiresIn) * time.Second).UTC().Format(time.RFC3339)
+	}
 	return tokenData
 }
 

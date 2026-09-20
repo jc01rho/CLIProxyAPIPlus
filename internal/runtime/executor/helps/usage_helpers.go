@@ -825,8 +825,9 @@ func resolveUsageAuthType(auth *cliproxyauth.Auth) string {
 
 // StreamUsageBuffer keeps the latest usage detail observed in a stream.
 type StreamUsageBuffer struct {
-	detail usage.Detail
-	ok     bool
+	detail        usage.Detail
+	ok            bool
+	responseModel string
 }
 
 var (
@@ -866,6 +867,11 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
 	hasUsageCandidate := bytes.Contains(payload, openAIStreamUsageMarker)
 	needTier := b.detail.ResponseServiceTier == "" || hasUsageCandidate
 	hasTierCandidate := needTier && bytes.Contains(payload, openAIStreamServiceTierMarker)
+	if b.responseModel == "" {
+		if model, _ := extractGenericResponseModelEvent(payload); model != "" {
+			b.responseModel = model
+		}
+	}
 	if !hasUsageCandidate && !hasTierCandidate {
 		return
 	}
@@ -893,6 +899,13 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
 	if b == nil {
 		return
 	}
+	if b.responseModel == "" {
+		if payload := jsonPayload(line); len(payload) > 0 {
+			if model, _ := extractClaudeResponseModelEvent(payload); model != "" {
+				b.responseModel = model
+			}
+		}
+	}
 	if detail, ok := ParseClaudeStreamUsage(line); ok {
 		ObserveMergedStreamUsage(b, detail)
 	}
@@ -903,6 +916,9 @@ func (b *StreamUsageBuffer) Publish(ctx context.Context, reporter *UsageReporter
 	if b == nil || !b.ok || reporter == nil {
 		return false
 	}
+	if b.responseModel != "" && reporter.ResponseModel() == "" {
+		reporter.SetResponseModel(b.responseModel)
+	}
 	reporter.Publish(ctx, b.detail)
 	return true
 }
@@ -911,6 +927,9 @@ func (b *StreamUsageBuffer) Publish(ctx context.Context, reporter *UsageReporter
 func (b *StreamUsageBuffer) PublishFailure(ctx context.Context, reporter *UsageReporter, errs ...error) bool {
 	if b == nil || reporter == nil {
 		return false
+	}
+	if b.responseModel != "" && reporter.ResponseModel() == "" {
+		reporter.SetResponseModel(b.responseModel)
 	}
 	reporter.PublishFailureWithDetail(ctx, b.detail, errs...)
 	return true
@@ -922,6 +941,14 @@ func (b *StreamUsageBuffer) Detail() (usage.Detail, bool) {
 		return usage.Detail{}, false
 	}
 	return b.detail, true
+}
+
+// ResponseModel returns the latest model observed in the stream buffer.
+func (b *StreamUsageBuffer) ResponseModel() string {
+	if b == nil {
+		return ""
+	}
+	return b.responseModel
 }
 
 func ParseCodexUsage(data []byte) (usage.Detail, bool) {

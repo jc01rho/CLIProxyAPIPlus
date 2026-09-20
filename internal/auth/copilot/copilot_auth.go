@@ -54,14 +54,14 @@ const (
 )
 
 const (
-	copilotCLIVersionEnv     = "GITHUB_COPILOT_CLI_VERSION"
-	copilotMachineIDEnv      = "GITHUB_COPILOT_MACHINE_ID"
+	copilotCLIVersionEnv      = "GITHUB_COPILOT_CLI_VERSION"
+	copilotMachineIDEnv       = "GITHUB_COPILOT_MACHINE_ID"
 	copilotVersionSafePattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$"
 )
 
 var (
-	copilotVersionRe    = regexp.MustCompile(copilotVersionSafePattern)
-	copilotMachineIDOnce sync.Once
+	copilotVersionRe      = regexp.MustCompile(copilotVersionSafePattern)
+	copilotMachineIDOnce  sync.Once
 	copilotMachineIDValue string
 )
 

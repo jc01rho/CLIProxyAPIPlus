@@ -6,10 +6,10 @@ package keeperexport
 
 // Error is a stable keeper-export/v1 protocol error (contract section 9).
 type Error struct {
-	HTTPStatus      int    `json:"-"`
-	Code            string `json:"code"`
-	Message         string `json:"message"`
-	Retryable       bool   `json:"retryable"`
+	HTTPStatus int    `json:"-"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	Retryable  bool   `json:"retryable"`
 	// CurrentRevision is a transport hint, parsed from the
 	// X-Keeper-Export-Current-Revision response header. It is the
 	// revision Keeper currently holds for this category and lets the

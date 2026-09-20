@@ -34,8 +34,6 @@ type XAIWebsocketsExecutor struct {
 	idStore *xaiWebsocketIDStateStore
 }
 
-var xaiResponsesWebsocketIdleTimeout = codexResponsesWebsocketIdleTimeout
-
 var globalXAIWebsocketSessionStore = &codexWebsocketSessionStore{
 	sessions: make(map[string]*codexWebsocketSession),
 }
@@ -780,12 +778,16 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 
 			for _, payload := range xaiNormalizeReasoningSummaryDataEvents(payload) {
 				payload = namespaceRestorer.restore(payload)
+				if prepared.webSearchAlias != "" {
+					payload = restoreXAIClientWebSearchName(payload, prepared.webSearchAlias)
+				}
 				payload = responseFilter.apply(payload)
 				if len(payload) == 0 {
 					continue
 				}
 				eventType := gjson.GetBytes(payload, "type").String()
 				isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "error"
+				reporter.ObserveResponseModel(payload)
 				warmupCompletedPayload := []byte(nil)
 				switch eventType {
 				case "response.created":
@@ -1210,10 +1212,6 @@ func configureXAIWebsocketConn(sess *codexWebsocketSession, conn *websocket.Conn
 		return
 	}
 	sess.resetUpstreamDisconnectError(conn)
-	_ = conn.SetReadDeadline(time.Now().Add(xaiResponsesWebsocketIdleTimeout))
-	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(xaiResponsesWebsocketIdleTimeout))
-	})
 	conn.SetPingHandler(func(appData string) error {
 		sessionID := ""
 		if sess != nil {
@@ -1260,7 +1258,6 @@ func readXAIWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, c
 		if conn == nil {
 			return 0, nil, fmt.Errorf("xai websockets executor: websocket conn is nil")
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(xaiResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
 		return msgType, payload, errRead
 	}
@@ -1294,7 +1291,6 @@ func (e *XAIWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, co
 		return
 	}
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(xaiResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
 		if errRead != nil {
 			invalidate := func() {

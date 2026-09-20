@@ -135,13 +135,15 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 		rejectedWindows = append(rejectedWindows, "7d_oi")
 	}
 
-	// 1. Retry-After header
-	if rawRetryAfter := getHeaderCaseInsensitive(headers, "Retry-After"); rawRetryAfter != "" {
-		if !containsString(rejectedWindows, "retry-after") {
-			rejectedWindows = append(rejectedWindows, "retry-after")
-		}
-		if t, ok := parseRetryAfterHeader(rawRetryAfter, now); ok && t.After(now) {
-			candidateDeadlines = append(candidateDeadlines, t)
+	// 1. Retry-After header (skipped for an overage/Fable-only rejection, which does not describe the credential)
+	if !overageOnlyRejection {
+		if rawRetryAfter := getHeaderCaseInsensitive(headers, "Retry-After"); rawRetryAfter != "" {
+			if !containsString(rejectedWindows, "retry-after") {
+				rejectedWindows = append(rejectedWindows, "retry-after")
+			}
+			if t, ok := parseRetryAfterHeader(rawRetryAfter, now); ok && t.After(now) {
+				candidateDeadlines = append(candidateDeadlines, t)
+			}
 		}
 	}
 

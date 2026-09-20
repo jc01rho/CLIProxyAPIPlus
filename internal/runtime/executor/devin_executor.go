@@ -246,6 +246,9 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if errPrep != nil {
 		return resp, errPrep
 	}
+	if chatModelUID != "" {
+		reporter.SetUpstreamModel(chatModelUID)
+	}
 
 	authID, authLabel, authType, authValue := devinAuthLogFields(auth)
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
@@ -289,6 +292,9 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, errConsume
 	}
 
+	if respLog != nil && respLog.Usage != nil && respLog.Usage.ModelName != "" {
+		reporter.SetResponseModel(respLog.Usage.ModelName)
+	}
 	reporter.Publish(ctx, helps.ParseInteractionsUsage(interactionsJSON))
 
 	targetFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -311,6 +317,9 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	httpReq, chatModelUID, logBody, errPrep := e.prepareDevinHTTPRequest(ctx, auth, req, opts)
 	if errPrep != nil {
 		return nil, errPrep
+	}
+	if chatModelUID != "" {
+		reporter.SetUpstreamModel(chatModelUID)
 	}
 
 	authID, authLabel, authType, authValue := devinAuthLogFields(auth)
@@ -452,6 +461,12 @@ func (e *DevinExecutor) streamDevinFrames(
 	reporter *helps.UsageReporter,
 	out chan<- cliproxyexecutor.StreamChunk,
 ) {
+	if reporter != nil {
+		if chatModelUID != "" {
+			reporter.SetUpstreamModel(chatModelUID)
+		}
+		defer reporter.EnsurePublished(ctx)
+	}
 	interactionID := fmt.Sprintf("interaction_%s", uuid.New().String()[:12])
 	stepIndex := 0
 	thoughtStarted := false
@@ -564,14 +579,29 @@ func (e *DevinExecutor) streamDevinFrames(
 		return true
 	}
 
+	// Buffer text content arriving after tool calls have started. In protocols such as
+	// OpenAI Responses / Codex Desktop, all tool activity must be fully completed before
+	// the final assistant response is finalized. Emitting post-tool text eagerly would cause
+	// the assistant message to finalize before the tool items, rendering tool widgets after
+	// the message in client UIs. Post-tool text is flushed immediately upon closing active tools.
+	var postToolBufferedContent []string
+
 	emitContentChunk := func(chunk string) bool {
 		if thoughtStarted {
-			stopEvent, _ := sjson.SetBytes([]byte(`{"event_type":"step.stop","index":0}`), "index", stepIndex)
+			stopIdx := thoughtStepIndex
+			if stopIdx < 0 {
+				stopIdx = stepIndex
+			}
+			stopEvent, _ := sjson.SetBytes([]byte(`{"event_type":"step.stop","index":0}`), "index", stopIdx)
 			if !emitInteractionsEvent(stopEvent) {
 				return false
 			}
 			thoughtStarted = false
 			stepIndex++
+		}
+		if toolCallCount > 0 {
+			postToolBufferedContent = append(postToolBufferedContent, chunk)
+			return true
 		}
 		if !contentStarted {
 			startEvent, _ := sjson.SetBytes([]byte(`{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`), "index", stepIndex)
@@ -671,11 +701,6 @@ func (e *DevinExecutor) streamDevinFrames(
 		if len(pendingActions) > 0 || thoughtStarted {
 			_ = flushPendingActions()
 		}
-		if contentStarted {
-			stopEvent, _ := sjson.SetBytes([]byte(`{"event_type":"step.stop","index":0}`), "index", stepIndex)
-			_ = emitInteractionsEvent(stopEvent)
-			contentStarted = false
-		}
 		if len(activeToolSlots) > 0 {
 			sortedIndices := make([]int, 0, len(activeToolSlots))
 			for _, slot := range activeToolSlots {
@@ -689,6 +714,22 @@ func (e *DevinExecutor) streamDevinFrames(
 			clear(activeToolSlots)
 			clear(activeCallByID)
 			activeCallSlot = nil
+		}
+		if len(postToolBufferedContent) > 0 {
+			startEvent, _ := sjson.SetBytes([]byte(`{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`), "index", stepIndex)
+			_ = emitInteractionsEvent(startEvent)
+			contentStarted = true
+			for _, chunk := range postToolBufferedContent {
+				deltaEvent, _ := sjson.SetBytes([]byte(`{"event_type":"step.delta","index":0,"delta":{"type":"text","text":""}}`), "index", stepIndex)
+				deltaEvent, _ = sjson.SetBytes(deltaEvent, "delta.text", chunk)
+				_ = emitInteractionsEvent(deltaEvent)
+			}
+			postToolBufferedContent = nil
+		}
+		if contentStarted {
+			stopEvent, _ := sjson.SetBytes([]byte(`{"event_type":"step.stop","index":0}`), "index", stepIndex)
+			_ = emitInteractionsEvent(stopEvent)
+			contentStarted = false
 		}
 	}
 
@@ -854,6 +895,20 @@ func (e *DevinExecutor) streamDevinFrames(
 			}
 		}
 
+		// Emit tool call deltas
+		for _, tc := range frameRes.ToolCallDeltas {
+			if thoughtStarted {
+				capturedTC := tc
+				pendingActions = append(pendingActions, func() bool {
+					return emitToolCall(capturedTC)
+				})
+			} else {
+				if !emitToolCall(tc) {
+					return
+				}
+			}
+		}
+
 		// Emit content text delta
 		if frameRes.ContentText != "" {
 			accumulatedContent.WriteString(frameRes.ContentText)
@@ -868,20 +923,6 @@ func (e *DevinExecutor) streamDevinFrames(
 					if !emitContentChunk(chunk) {
 						return
 					}
-				}
-			}
-		}
-
-		// Emit tool call deltas
-		for _, tc := range frameRes.ToolCallDeltas {
-			if thoughtStarted {
-				capturedTC := tc
-				pendingActions = append(pendingActions, func() bool {
-					return emitToolCall(capturedTC)
-				})
-			} else {
-				if !emitToolCall(tc) {
-					return
 				}
 			}
 		}
@@ -999,13 +1040,16 @@ func (e *DevinExecutor) streamDevinFrames(
 
 func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string) ([]byte, *helps.DevinUpstreamResponseLog, error) {
 	interactionID := fmt.Sprintf("interaction_%s", uuid.New().String()[:12])
-	var textParts []string
+	var preToolTextParts []string
+	var postToolTextParts []string
 	var thinkingParts []string
+
 	type devinToolCallBuilder struct {
 		id   string
 		name string
 		args strings.Builder
 	}
+
 	var toolBuilders []*devinToolCallBuilder
 	callIDToBuilderIndex := make(map[string]int)
 	lastBuilderIdx := -1
@@ -1032,6 +1076,17 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 		return res
 	}
 
+	getAllContentText := func() string {
+		var sb strings.Builder
+		for _, s := range preToolTextParts {
+			sb.WriteString(s)
+		}
+		for _, s := range postToolTextParts {
+			sb.WriteString(s)
+		}
+		return sb.String()
+	}
+
 	var finalUsage *helps.DevinUsage
 	var accumulatedSignature []byte
 	var signatureType string
@@ -1050,7 +1105,7 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 			respLog := &helps.DevinUpstreamResponseLog{
 				Status:        fmt.Sprintf("read_error: %v", errRead),
 				FramesCount:   framesCount,
-				Content:       strings.Join(textParts, ""),
+				Content:       getAllContentText(),
 				Thinking:      strings.Join(thinkingParts, ""),
 				Signature:     string(accumulatedSignature),
 				SignatureType: signatureType,
@@ -1068,7 +1123,7 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 				respLog := &helps.DevinUpstreamResponseLog{
 					Status:        fmt.Sprintf("trailer_error(%d): %s", code, errTrailer.Error()),
 					FramesCount:   framesCount,
-					Content:       strings.Join(textParts, ""),
+					Content:       getAllContentText(),
 					Thinking:      strings.Join(thinkingParts, ""),
 					Signature:     string(accumulatedSignature),
 					SignatureType: signatureType,
@@ -1154,9 +1209,6 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 		if frameRes.ThinkingText != "" {
 			thinkingParts = append(thinkingParts, frameRes.ThinkingText)
 		}
-		if frameRes.ContentText != "" {
-			textParts = append(textParts, frameRes.ContentText)
-		}
 		for _, tc := range frameRes.ToolCallDeltas {
 			argsChunk := tc.Arguments
 			if argsChunk == "" {
@@ -1178,10 +1230,11 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 					continue
 				}
 				bIdx = len(toolBuilders)
-				toolBuilders = append(toolBuilders, &devinToolCallBuilder{
+				builder := &devinToolCallBuilder{
 					id:   tc.ID,
 					name: tc.Name,
-				})
+				}
+				toolBuilders = append(toolBuilders, builder)
 				if tc.ID != "" {
 					callIDToBuilderIndex[tc.ID] = bIdx
 				}
@@ -1201,6 +1254,13 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 				toolBuilders[bIdx].args.WriteString(argsChunk)
 			}
 		}
+		if frameRes.ContentText != "" {
+			if len(toolBuilders) > 0 {
+				postToolTextParts = append(postToolTextParts, frameRes.ContentText)
+			} else {
+				preToolTextParts = append(preToolTextParts, frameRes.ContentText)
+			}
+		}
 	}
 
 	toolCalls := getToolCalls()
@@ -1210,7 +1270,7 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 		respLog := &helps.DevinUpstreamResponseLog{
 			Status:        "premature_eof_before_eos",
 			FramesCount:   framesCount,
-			Content:       strings.Join(textParts, ""),
+			Content:       getAllContentText(),
 			Thinking:      strings.Join(thinkingParts, ""),
 			Signature:     string(accumulatedSignature),
 			SignatureType: signatureType,
@@ -1260,9 +1320,9 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 		steps = append(steps, thoughtStep)
 	}
 
-	if len(textParts) > 0 {
+	if len(preToolTextParts) > 0 {
 		modelStep := []byte(`{"type":"model_output","content":[{"type":"text","text":""}]}`)
-		modelStep, _ = sjson.SetBytes(modelStep, "content.0.text", strings.Join(textParts, ""))
+		modelStep, _ = sjson.SetBytes(modelStep, "content.0.text", strings.Join(preToolTextParts, ""))
 		steps = append(steps, modelStep)
 	}
 
@@ -1279,6 +1339,12 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 			}
 		}
 		steps = append(steps, fnStep)
+	}
+
+	if len(postToolTextParts) > 0 {
+		modelStep := []byte(`{"type":"model_output","content":[{"type":"text","text":""}]}`)
+		modelStep, _ = sjson.SetBytes(modelStep, "content.0.text", strings.Join(postToolTextParts, ""))
+		steps = append(steps, modelStep)
 	}
 
 	if len(steps) > 0 {
@@ -1311,7 +1377,7 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 	respLog := &helps.DevinUpstreamResponseLog{
 		Status:        "completed",
 		FramesCount:   framesCount,
-		Content:       strings.Join(textParts, ""),
+		Content:       getAllContentText(),
 		Thinking:      strings.Join(thinkingParts, ""),
 		Signature:     string(accumulatedSignature),
 		SignatureType: signatureType,

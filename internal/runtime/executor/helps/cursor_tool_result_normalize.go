@@ -14,7 +14,7 @@ import (
 // any external dependency on exec-tool-result-normalize.ts.
 
 const (
-	cursorEmptyExecOutputMessage = "[empty output: the tool ran but produced no stdout or return value. Verify application state with get_app_state, or make the script emit output.]"
+	cursorEmptyExecOutputMessage  = "[empty output: the tool ran but produced no stdout or return value. Verify application state with get_app_state, or make the script emit output.]"
 	cursorFailedExecOutputMessage = "[script failed: no error detail returned]"
 )
 

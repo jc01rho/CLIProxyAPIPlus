@@ -128,6 +128,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 			}
 		}
 	}
+	m.structuralEpoch.Add(1)
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	for _, changed := range antigravityReconcileChanged {
@@ -288,6 +289,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 			}
 		}
 	}
+	m.structuralEpoch.Add(1)
 	m.queueRefreshReschedule(auth.ID)
 	if !persistMetaMint {
 		_ = m.persist(ctx, auth)
@@ -352,6 +354,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	if m.scheduler != nil {
 		m.scheduler.RecordRemovalTombstone(id, tombstoneEpoch)
 	}
+	m.structuralEpoch.Add(1)
 	m.queueRefreshUnschedule(id)
 	m.invalidateSessionAffinity(id)
 
@@ -434,6 +437,7 @@ func (m *Manager) Load(ctx context.Context) error {
 			m.scheduler.RecordRemovalTombstone(rt.id, rt.epoch)
 		}
 	}
+	m.structuralEpoch.Add(1)
 	m.syncScheduler()
 	return nil
 }

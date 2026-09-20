@@ -34,7 +34,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	baseURL := xaiChatBaseURL(auth)
 	logXAIResolvedBaseURL(ctx, baseURL)
 
-	prepared, err := e.prepareHTTPResponsesRequest(ctx, auth, req, opts)
+	prepared, err := e.prepareResponsesRequest(ctx, req, opts, true)
 	if err != nil {
 		return resp, err
 	}
@@ -48,11 +48,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	if err != nil {
 		return resp, err
 	}
-	headerSessionID := prepared.sessionID
-	if xaiOAuthHTTP(auth) {
-		headerSessionID = gjson.GetBytes(prepared.body, "prompt_cache_key").String()
-	}
-	applyXAIChatHeaders(httpReq, auth, token, true, headerSessionID, opts.Headers)
+	applyXAIChatHeaders(httpReq, auth, token, true, prepared.sessionID, opts.Headers)
 	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
@@ -96,10 +92,14 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		}
 		eventData := xaiNormalizeReasoningSummaryData(bytes.TrimSpace(line[len(xaiDataTag):]))
 		eventData = namespaceRestorer.restore(eventData)
+		if prepared.webSearchAlias != "" {
+			eventData = restoreXAIClientWebSearchName(eventData, prepared.webSearchAlias)
+		}
 		eventData = responseFilter.apply(eventData)
 		if len(eventData) == 0 {
 			continue
 		}
+		reporter.ObserveResponseModel(eventData)
 		eventType := gjson.GetBytes(eventData, "type").String()
 		switch eventType {
 		case "response.output_item.done":
@@ -207,6 +207,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 		return nil, nil, nil, err
 	}
 
+	reporter.ObserveResponseModel(data)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
 	reporter.EnsurePublished(ctx)
 	clearXAIReasoningReplayAfterCompaction(ctx, prepared.replayScope)

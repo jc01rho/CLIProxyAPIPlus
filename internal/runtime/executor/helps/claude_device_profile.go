@@ -216,14 +216,13 @@ func shouldUpgradeClaudeDeviceProfile(candidate, current ClaudeDeviceProfile) bo
 	return candidate.version.Compare(current.version) > 0
 }
 
+// plausibleClaudeCLIVersion treats the baseline as a floor for patch releases.
+// Claude Code auto-updates in the background; allow newer patch versions in the
+// same major/minor line to preserve native passthrough and prompt caching.
 func plausibleClaudeCLIVersion(candidate, baseline claudeCLIVersion) bool {
-	if candidate.major != baseline.major {
-		return false
-	}
-	if candidate.minor != baseline.minor {
-		return false
-	}
-	return true
+	return candidate.major == baseline.major &&
+		candidate.minor == baseline.minor &&
+		candidate.patch >= baseline.patch
 }
 
 func meetsClaudeDeviceProfileBaseline(candidate, baseline ClaudeDeviceProfile) bool {

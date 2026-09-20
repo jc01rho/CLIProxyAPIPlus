@@ -18,9 +18,9 @@ import (
 // ClaudeCodeIdentity represents the device/session identity used by Claude Code.
 // It is used to construct the metadata.user_id JSON string.
 type ClaudeCodeIdentity struct {
-	DeviceID     string
-	AccountUUID  string
-	SessionID    string
+	DeviceID    string
+	AccountUUID string
+	SessionID   string
 }
 
 // Global identity cache to ensure stable identities for a given seed.
@@ -44,10 +44,10 @@ type bootstrapResult struct {
 }
 
 const (
-	claudeCodeBootstrapTTL          = 24 * time.Hour
+	claudeCodeBootstrapTTL         = 24 * time.Hour
 	claudeCodeBootstrapNegativeTTL = 5 * time.Minute
-	claudeCodeBootstrapURL          = "https://api.anthropic.com/api/claude_cli/bootstrap"
-	claudeCodeBootstrapTimeout      = 5 * time.Second
+	claudeCodeBootstrapURL         = "https://api.anthropic.com/api/claude_cli/bootstrap"
+	claudeCodeBootstrapTimeout     = 5 * time.Second
 )
 
 // GetClaudeCodeIdentity returns a stable identity for the given seed (typically the access token).
@@ -62,9 +62,9 @@ func GetClaudeCodeIdentity(seed string) *ClaudeCodeIdentity {
 	if cached, ok := claudeCodeIdentityCache[seed]; ok {
 		// Return a copy to prevent mutation
 		return &ClaudeCodeIdentity{
-			DeviceID:     cached.DeviceID,
-			AccountUUID:  cached.AccountUUID,
-			SessionID:    cached.SessionID,
+			DeviceID:    cached.DeviceID,
+			AccountUUID: cached.AccountUUID,
+			SessionID:   cached.SessionID,
 		}
 	}
 
@@ -87,9 +87,9 @@ func GetClaudeCodeIdentity(seed string) *ClaudeCodeIdentity {
 
 	claudeCodeIdentityCache[seed] = identity
 	return &ClaudeCodeIdentity{
-		DeviceID:     identity.DeviceID,
-		AccountUUID:  identity.AccountUUID,
-		SessionID:    identity.SessionID,
+		DeviceID:    identity.DeviceID,
+		AccountUUID: identity.AccountUUID,
+		SessionID:   identity.SessionID,
 	}
 }
 
@@ -128,7 +128,7 @@ func ResolveClaudeCodeIdentity(ctx context.Context, accessToken string, model st
 // fetchClaudeCodeAccountUUID performs the actual HTTP fetch to the bootstrap API
 func fetchClaudeCodeAccountUUID(ctx context.Context, accessToken, model string) string {
 	url := claudeCodeBootstrapURL
-	
+
 	// Build query parameters
 	query := url + "?entrypoint=cli"
 	if model != "" {

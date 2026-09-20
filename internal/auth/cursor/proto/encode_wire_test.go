@@ -440,7 +440,6 @@ func TestEncodeRunRequestIncludesBothModelSelectors(t *testing.T) {
 	}
 }
 
-
 func TestEncodeRunRequestConversationTurnIncludesMcpToolCallStep(t *testing.T) {
 	p := &RunRequestParams{
 		ModelId:  "composer-2.5",

@@ -39,7 +39,7 @@ const (
 )
 
 var (
-	billingHeaderCCHRe          = regexp.MustCompile(billingHeaderCCHPattern)
+	billingHeaderCCHRe            = regexp.MustCompile(billingHeaderCCHPattern)
 	billingHeaderCCHPlaceholderRe = regexp.MustCompile(billingHeaderCCHPlaceholderPattern)
 )
 

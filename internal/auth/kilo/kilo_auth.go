@@ -79,7 +79,8 @@ func (k *KiloAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceAuthResponse,
 
 // PollForToken polls for the device flow completion.
 // HTTP semantics match OmniRoute #4019:
-//   202 pending, 403 denied, 410 expired, 200 {status:"approved", token, userEmail}.
+//
+//	202 pending, 403 denied, 410 expired, 200 {status:"approved", token, userEmail}.
 func (k *KiloAuth) PollForToken(ctx context.Context, code string) (*DeviceStatusResponse, error) {
 	if ctx == nil {
 		ctx = context.Background()
