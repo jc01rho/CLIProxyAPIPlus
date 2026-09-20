@@ -154,6 +154,64 @@ func TestWorkBuddyTranslatePayloadUsesCatalogEfforts(t *testing.T) {
 	}
 }
 
+func TestParseWorkBuddyModelsCarriesReasoningDefaultEffort(t *testing.T) {
+	models := parseWorkBuddyModels([]byte(`{"code":0,"data":{"models":[
+		{"id":"deepseek-v4.1-flash","reasoning":{"supportedEfforts":["low","medium","high"],"defaultEffort":"medium"}},
+		{"id":"default-only","reasoning":{"defaultEffort":"low"}},
+		{"id":"no-reasoning"}
+	]}}`))
+	if len(models) != 3 {
+		t.Fatalf("models = %d entries, want 3", len(models))
+	}
+	byID := make(map[string]*registry.ModelInfo, len(models))
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	withBoth := byID["deepseek-v4.1-flash"]
+	if withBoth == nil || withBoth.Thinking == nil {
+		t.Fatalf("deepseek-v4.1-flash thinking = %#v, want catalog entry", withBoth)
+	}
+	if withBoth.Thinking.DefaultEffort != "medium" {
+		t.Fatalf("default effort = %q, want medium", withBoth.Thinking.DefaultEffort)
+	}
+	if len(withBoth.Thinking.Levels) != 3 {
+		t.Fatalf("levels = %#v, want 3 supported levels", withBoth.Thinking.Levels)
+	}
+	defaultOnly := byID["default-only"]
+	if defaultOnly == nil || defaultOnly.Thinking == nil || defaultOnly.Thinking.DefaultEffort != "low" {
+		t.Fatalf("default-only thinking = %#v, want default effort low", defaultOnly)
+	}
+	if noReasoning := byID["no-reasoning"]; noReasoning == nil || noReasoning.Thinking != nil {
+		t.Fatalf("no-reasoning thinking = %#v, want nil", byID["no-reasoning"])
+	}
+}
+
+func TestWorkBuddyTranslatePayloadUsesCatalogDefaultEffort(t *testing.T) {
+	const modelID = "deepseek-workbuddy-default-effort-test"
+	const clientID = "workbuddy-default-effort-test-client"
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient(clientID, workBuddyAuthType, []*registry.ModelInfo{{
+		ID: modelID, Type: workBuddyAuthType,
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}, DefaultEffort: "medium"},
+	}})
+	t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
+
+	payload := []byte(`{"model":"` + modelID + `","messages":[{"role":"system","content":"rules"}]}`)
+	out, err := NewWorkBuddyExecutor(&config.Config{}).translatePayload(context.Background(), cliproxyexecutor.Request{
+		Model: modelID, Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), OriginalRequest: payload}, modelID)
+	if err != nil {
+		t.Fatalf("translatePayload() error = %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal translated payload: %v", err)
+	}
+	if obj["reasoning_effort"] != "medium" {
+		t.Fatalf("reasoning_effort = %#v, want catalog default medium", obj["reasoning_effort"])
+	}
+}
+
 func TestParseWorkBuddyModelsNormalizesOwnedBy(t *testing.T) {
 	models := parseWorkBuddyModels([]byte(`{"code":0,"data":{"models":[{"id":"model-a","vendor":"f"},{"id":"model-b","vendor":"workbuddy"}]}}`))
 	if len(models) != 2 {

@@ -84,6 +84,7 @@ type workBuddyModelEntry struct {
 	Tags            []string `json:"tags"`
 	Reasoning       struct {
 		SupportedEfforts []string `json:"supportedEfforts"`
+		DefaultEffort    string   `json:"defaultEffort"`
 	} `json:"reasoning"`
 }
 
@@ -174,8 +175,12 @@ func parseWorkBuddyModels(body []byte) []*registry.ModelInfo {
 			if entry.SupportsImages {
 				model.SupportedInputModalities = []string{"TEXT", "IMAGE"}
 			}
-			if len(entry.Reasoning.SupportedEfforts) > 0 {
-				model.Thinking = &registry.ThinkingSupport{Levels: entry.Reasoning.SupportedEfforts, ZeroAllowed: true}
+			if len(entry.Reasoning.SupportedEfforts) > 0 || strings.TrimSpace(entry.Reasoning.DefaultEffort) != "" {
+				model.Thinking = &registry.ThinkingSupport{
+					Levels:        entry.Reasoning.SupportedEfforts,
+					DefaultEffort: strings.TrimSpace(entry.Reasoning.DefaultEffort),
+					ZeroAllowed:   true,
+				}
 			}
 			models = append(models, model)
 		}

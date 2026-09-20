@@ -135,10 +135,12 @@ func (e *WorkBuddyExecutor) translatePayload(ctx context.Context, req cliproxyex
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
 	var supportedEfforts []string
+	defaultEffort := ""
 	if modelInfo := registry.LookupModelInfo(baseModel, workBuddyAuthType); modelInfo != nil && strings.EqualFold(modelInfo.Type, workBuddyAuthType) && modelInfo.Thinking != nil {
 		supportedEfforts = modelInfo.Thinking.Levels
+		defaultEffort = modelInfo.Thinking.DefaultEffort
 	}
-	translated, _ = helps.NormalizeWorkBuddyPayload(translated, supportedEfforts, "")
+	translated, _ = helps.NormalizeWorkBuddyPayload(translated, supportedEfforts, defaultEffort)
 	return ensureWorkBuddySystemMessage(translated), nil
 }
 

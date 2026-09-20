@@ -168,6 +168,10 @@ type ThinkingSupport struct {
 	// Levels defines discrete reasoning effort levels (e.g., "low", "medium", "high").
 	// When set, the model uses level-based reasoning instead of token budgets.
 	Levels []string `json:"levels,omitempty" yaml:"levels,omitempty"`
+	// DefaultEffort is the provider-declared default reasoning effort level for this
+	// model. Providers such as WorkBuddy report it next to Levels; leaving it empty
+	// means the caller's own fallback applies.
+	DefaultEffort string `json:"default_effort,omitempty" yaml:"default-effort,omitempty"`
 }
 
 // ModelRegistration tracks a model's availability
