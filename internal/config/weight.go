@@ -170,5 +170,13 @@ func (cfg *Config) ValidateCredentialWeights() error {
 			}
 		}
 	}
+	for providerIndex := range cfg.OpenCodeKey {
+		for keyIndex := range cfg.OpenCodeKey[providerIndex].APIKeyEntries {
+			weight := cfg.OpenCodeKey[providerIndex].APIKeyEntries[keyIndex].Weight
+			if errValidate := ValidateCredentialWeight(weight); errValidate != nil {
+				return fmt.Errorf("opencode-api-key[%d].api-key-entries[%d].weight: %w", providerIndex, keyIndex, errValidate)
+			}
+		}
+	}
 	return nil
 }

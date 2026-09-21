@@ -1127,3 +1127,25 @@ freebuff-api-key:
       - name: "deepseek/deepseek-v4-flash"
         alias: "deepseek-v4-flash"
         agent-id: "base2-free-deepseek-flash"
+
+# Native OpenCode credentials (OpenCode Zen / OpenCode Go).
+# Omit api-key or set it to "public" for the anonymous free tier (big-pickle and
+# the *-free models). A real oc_sk_ key unlocks the paid Zen catalog.
+# Point base-url at https://opencode.ai/zen/go/v1 for the Go subscription tier.
+# The executor mirrors the OpenCode client identity (User-Agent, x-opencode-*)
+# and tops up the tool list for free-tier models, because the gateway serves its
+# free tier only to requests that look like they come from OpenCode.
+opencode-api-key:
+  - api-key: "public"
+    base-url: "https://opencode.ai/zen/v1"
+    proxy-url: ""
+    prefix: "opencode"
+    priority: 0
+    disable-cooling: false
+    excluded-models: []
+    headers: {}
+    models:
+      - name: "big-pickle"
+        alias: "big-pickle"
+      - name: "deepseek-v4-flash-free"
+        alias: "deepseek-v4-flash-free"

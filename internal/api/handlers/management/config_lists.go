@@ -1980,6 +1980,188 @@ func (h *Handler) GetMistralKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"mistral-api-key": h.mistralKeysWithAuthIndex()})
 }
 
+// opencode-api-key: []OpenCodeKey
+func (h *Handler) GetOpenCodeKeys(c *gin.Context) {
+	c.JSON(200, gin.H{"opencode-api-key": h.openCodeKeysWithAuthIndex()})
+}
+
+func (h *Handler) PutOpenCodeKeys(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.OpenCodeKey
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.OpenCodeKey `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	filtered := make([]config.OpenCodeKey, 0, len(arr))
+	for i := range arr {
+		entry := arr[i]
+		normalizeOpenCodeKey(&entry)
+		if entry.APIKey == "" && len(entry.APIKeyEntries) == 0 {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.OpenCodeKey = filtered
+	h.cfg.SanitizeOpenCodeKeys()
+	h.persistLocked(c)
+}
+
+func (h *Handler) PatchOpenCodeKey(c *gin.Context) {
+	type openCodeKeyPatch struct {
+		APIKey         *string                             `json:"api-key"`
+		Priority       *int                                `json:"priority"`
+		Prefix         *string                             `json:"prefix"`
+		BaseURL        *string                             `json:"base-url"`
+		ProxyURL       *string                             `json:"proxy-url"`
+		Models         *[]config.OpenCodeModel             `json:"models"`
+		Headers        *map[string]string                  `json:"headers"`
+		ExcludedModels *[]string                           `json:"excluded-models"`
+		DisableCooling *bool                               `json:"disable-cooling"`
+		APIKeyEntries  *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
+	}
+	var body struct {
+		Index *int              `json:"index"`
+		Match *string           `json:"match"`
+		Value *openCodeKeyPatch `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	targetIndex := -1
+	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.OpenCodeKey) {
+		targetIndex = *body.Index
+	}
+	if targetIndex == -1 && body.Match != nil {
+		match := strings.TrimSpace(*body.Match)
+		for i := range h.cfg.OpenCodeKey {
+			if h.cfg.OpenCodeKey[i].APIKey == match {
+				targetIndex = i
+				break
+			}
+		}
+	}
+	if targetIndex == -1 {
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+
+	entry := h.cfg.OpenCodeKey[targetIndex]
+	if body.Value.APIKey != nil {
+		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
+	}
+	if body.Value.Prefix != nil {
+		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.BaseURL != nil {
+		trimmed := strings.TrimSpace(*body.Value.BaseURL)
+		if trimmed == "" {
+			h.cfg.OpenCodeKey = append(h.cfg.OpenCodeKey[:targetIndex], h.cfg.OpenCodeKey[targetIndex+1:]...)
+			h.cfg.SanitizeOpenCodeKeys()
+			h.persistLocked(c)
+			return
+		}
+		entry.BaseURL = trimmed
+	}
+	if body.Value.ProxyURL != nil {
+		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+	}
+	if body.Value.Models != nil {
+		entry.Models = append([]config.OpenCodeModel(nil), (*body.Value.Models)...)
+	}
+	if body.Value.Headers != nil {
+		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+	}
+	if body.Value.ExcludedModels != nil {
+		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.DisableCooling != nil {
+		entry.DisableCooling = *body.Value.DisableCooling
+	}
+	if body.Value.APIKeyEntries != nil {
+		entry.APIKeyEntries = append(
+			[]config.OpenAICompatibilityAPIKey(nil),
+			(*body.Value.APIKeyEntries)...,
+		)
+	}
+	normalizeOpenCodeKey(&entry)
+	h.cfg.OpenCodeKey[targetIndex] = entry
+	h.cfg.SanitizeOpenCodeKeys()
+	h.persistLocked(c)
+}
+
+func (h *Handler) DeleteOpenCodeKey(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
+			base := strings.TrimSpace(baseRaw)
+			out := make([]config.OpenCodeKey, 0, len(h.cfg.OpenCodeKey))
+			for _, v := range h.cfg.OpenCodeKey {
+				if v.ContainsAPIKey(val) && strings.TrimSpace(v.BaseURL) == base {
+					continue
+				}
+				out = append(out, v)
+			}
+			h.cfg.OpenCodeKey = out
+			h.cfg.SanitizeOpenCodeKeys()
+			h.persistLocked(c)
+			return
+		}
+
+		matchIndex := -1
+		matchCount := 0
+		for i := range h.cfg.OpenCodeKey {
+			if h.cfg.OpenCodeKey[i].ContainsAPIKey(val) {
+				matchCount++
+			}
+		}
+		if matchCount == 1 {
+			for i := range h.cfg.OpenCodeKey {
+				if h.cfg.OpenCodeKey[i].ContainsAPIKey(val) {
+					matchIndex = i
+					break
+				}
+			}
+		}
+		if matchIndex != -1 {
+			h.cfg.OpenCodeKey = append(h.cfg.OpenCodeKey[:matchIndex], h.cfg.OpenCodeKey[matchIndex+1:]...)
+		}
+		h.cfg.SanitizeOpenCodeKeys()
+		h.persistLocked(c)
+		return
+	}
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		_, err := fmt.Sscanf(idxStr, "%d", &idx)
+		if err == nil && idx >= 0 && idx < len(h.cfg.OpenCodeKey) {
+			h.cfg.OpenCodeKey = append(h.cfg.OpenCodeKey[:idx], h.cfg.OpenCodeKey[idx+1:]...)
+			h.cfg.SanitizeOpenCodeKeys()
+			h.persistLocked(c)
+			return
+		}
+	}
+	c.JSON(400, gin.H{"error": "missing api-key or index"})
+}
+
 // freebuff-api-key: []FreebuffKey
 func (h *Handler) GetFreebuffKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"freebuff-api-key": h.freebuffKeysWithAuthIndex()})
@@ -2836,6 +3018,44 @@ func normalizeCommandCodeKey(entry *config.CommandCodeKey) {
 		return
 	}
 	normalized := make([]config.CommandCodeModel, 0, len(entry.Models))
+	for i := range entry.Models {
+		model := entry.Models[i]
+		model.Name = strings.TrimSpace(model.Name)
+		model.Alias = strings.TrimSpace(model.Alias)
+		if model.Name == "" && model.Alias == "" {
+			continue
+		}
+		normalized = append(normalized, model)
+	}
+	entry.Models = normalized
+}
+
+func normalizeOpenCodeKey(entry *config.OpenCodeKey) {
+	if entry == nil {
+		return
+	}
+	entry.APIKey = strings.TrimSpace(entry.APIKey)
+	entry.Prefix = strings.TrimSpace(entry.Prefix)
+	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+	nested := make([]config.OpenAICompatibilityAPIKey, 0, len(entry.APIKeyEntries))
+	for _, apiKeyEntry := range entry.APIKeyEntries {
+		apiKeyEntry.APIKey = strings.TrimSpace(apiKeyEntry.APIKey)
+		apiKeyEntry.ProxyURL = strings.TrimSpace(apiKeyEntry.ProxyURL)
+		apiKeyEntry.Comment = strings.TrimSpace(apiKeyEntry.Comment)
+		if apiKeyEntry.APIKey != "" {
+			nested = append(nested, apiKeyEntry)
+		}
+	}
+	entry.APIKeyEntries = nested
+	config.FoldOpenCodeLegacyAPIKey(entry)
+	entry.BillingClass = config.BillingClass(normalizeBillingClassValue(string(entry.BillingClass)))
+	entry.Headers = config.NormalizeHeaders(entry.Headers)
+	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
+	if len(entry.Models) == 0 {
+		return
+	}
+	normalized := make([]config.OpenCodeModel, 0, len(entry.Models))
 	for i := range entry.Models {
 		model := entry.Models[i]
 		model.Name = strings.TrimSpace(model.Name)
