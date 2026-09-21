@@ -662,6 +662,25 @@ func TestBaseURLInUsageRecordAndHostAuthFileEntry(t *testing.T) {
 	}
 }
 
+func TestUsageRecordResponseModelServiceTierAndStream(t *testing.T) {
+	record := UsageRecord{
+		Provider:            "codex",
+		Model:               "gpt-5.6-luna",
+		ResponseModel:       "gpt-5.6-luna-2026-05-13",
+		ResponseServiceTier: "scale",
+		Stream:              true,
+	}
+	if record.ResponseModel != "gpt-5.6-luna-2026-05-13" {
+		t.Fatalf("UsageRecord.ResponseModel = %q, want %q", record.ResponseModel, "gpt-5.6-luna-2026-05-13")
+	}
+	if record.ResponseServiceTier != "scale" {
+		t.Fatalf("UsageRecord.ResponseServiceTier = %q, want %q", record.ResponseServiceTier, "scale")
+	}
+	if !record.Stream {
+		t.Fatalf("UsageRecord.Stream = %v, want true", record.Stream)
+	}
+}
+
 func TestQuotaPayloadJSON(t *testing.T) {
 	// Test camelCase input
 	camelJSON := []byte(`{
