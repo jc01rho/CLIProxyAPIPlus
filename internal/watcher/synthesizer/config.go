@@ -497,6 +497,11 @@ func (s *ConfigSynthesizer) synthesizeOpenCodeKeys(ctx *SynthesisContext) []*cor
 		}
 
 		key := strings.TrimSpace(ok.APIKey)
+		if key == "" {
+			// Anonymous free-tier entry: the OpenCode client sends "public"
+			// when no account is connected.
+			key = "public"
+		}
 		proxyURL := strings.TrimSpace(ok.ProxyURL)
 		id, token := idGen.Next("opencode:apikey", key, ok.BaseURL)
 		attrs := map[string]string{
