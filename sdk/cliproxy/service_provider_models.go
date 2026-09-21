@@ -105,10 +105,28 @@ func (s *Service) resolveConfigCommandCodeKey(auth *coreauth.Auth) *config.Comma
 }
 
 func (s *Service) resolveConfigOpenCodeKey(auth *coreauth.Auth) *config.OpenCodeKey {
-	if s == nil || s.cfg == nil {
+	if s == nil || s.cfg == nil || auth == nil {
 		return nil
 	}
-	return resolveNativeAPIKeyConfig(s.cfg.OpenCodeKey, auth)
+	// Config-backed OpenCode credentials are synthesized per api-key-entries
+	// element, so the auth's api_key attribute holds a nested entry credential
+	// while the generic resolver only compares the top-level api-key field.
+	// Match against the whole entry (top-level + nested credentials) instead.
+	var attrKey, attrBase string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes[coreauth.AttributeAPIKey])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	for i := range s.cfg.OpenCodeKey {
+		entry := &s.cfg.OpenCodeKey[i]
+		if !entry.MatchesCredential(attrKey, auth.ProxyURL) {
+			continue
+		}
+		if attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase) {
+			return entry
+		}
+	}
+	return nil
 }
 
 func (s *Service) resolveConfigMistralKey(auth *coreauth.Auth) *config.MistralKey {

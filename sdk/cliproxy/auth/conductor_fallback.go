@@ -51,6 +51,29 @@ func (m *Manager) getFallbackModel(originalModel string) (string, bool) {
 	return fallback, exists && fallback != ""
 }
 
+// fallbackDenyMarker reports whether a fallback-models mapping value explicitly
+// disables fallback for the requested model. Configuring the mapping value to
+// "none" (or "-") denies both post-error credential retry and the fallback
+// chain for that model; the original upstream error is returned to the client
+// unchanged.
+func fallbackDenyMarker(fallback string) bool {
+	trimmed := strings.TrimSpace(fallback)
+	return trimmed == "none" || trimmed == "-"
+}
+
+// fallbackDeniedForModel reports whether the requested model has an explicit
+// fallback-models deny marker configured.
+func (m *Manager) fallbackDeniedForModel(originalModel string) bool {
+	if m == nil {
+		return false
+	}
+	models, ok := m.fallbackModels.Load().(map[string]string)
+	if !ok || models == nil {
+		return false
+	}
+	return fallbackDenyMarker(models[originalModel])
+}
+
 func (m *Manager) SetFallbackChain(chain []string, maxDepth int) {
 	if m == nil {
 		return
@@ -439,7 +462,7 @@ func (m *Manager) executeWithRouteFallback(
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 	originalModel := req.Model
 	attempted := map[string]struct{}{originalModel: {}}
-	fallbackAllowed := m.fallbackRetryAllowedForModel(originalModel)
+	fallbackAllowed := m.fallbackRetryAllowedForModel(originalModel) && !m.fallbackDeniedForModel(originalModel)
 	// The requested model's allowlist state gates the retry loop itself (via
 	// fallbackAllowed passed into executeWithRetry below), not
 	// maxRetryCredentials: request-level retry rounds are controlled by
@@ -502,7 +525,7 @@ func (m *Manager) executeStreamWithRouteFallback(
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 	originalModel := req.Model
 	attempted := map[string]struct{}{originalModel: {}}
-	fallbackAllowed := m.fallbackRetryAllowedForModel(originalModel)
+	fallbackAllowed := m.fallbackRetryAllowedForModel(originalModel) && !m.fallbackDeniedForModel(originalModel)
 	// See the equivalent comment in executeWithRouteFallback: the allowlist
 	// state gates the retry loop itself (fallbackAllowed passed into
 	// executeStreamWithRetry below), not maxRetryCredentials, since request-
