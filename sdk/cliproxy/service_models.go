@@ -257,10 +257,15 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = buildOpenCodeConfigModels(entry)
 			excluded = entry.ExcludedModels
 		default:
-			// No explicit config models: fetch the live Zen/Go catalog so a
-			// configured OpenCode provider still surfaces its models through
-			// /v1/models. The fetch falls back to the static catalog.
-			models = executor.FetchOpenCodeModels(ctx, a, s.cfg)
+			// OpenCode publishes vendor-neutral model names (claude-opus-5,
+			// gpt-5.5, ...) that collide with the catalogs of every other
+			// provider. Registering the live catalog by default made those
+			// shared names resolve to OpenCode and silently stole traffic
+			// from the provider the user configured for them, so an entry
+			// without an explicit models list registers nothing: the list is
+			// the opt-in whitelist. Use the model discovery button in the
+			// Management Center to pick the models to expose.
+			models = nil
 			if entry != nil {
 				excluded = entry.ExcludedModels
 			}
