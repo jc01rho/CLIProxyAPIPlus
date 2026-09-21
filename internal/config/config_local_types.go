@@ -262,10 +262,16 @@ func FoldOpenCodeLegacyAPIKey(entry *OpenCodeKey) {
 	entry.APIKey = ""
 }
 
-// SanitizeOpenCodeKeys trims OpenCode credential entries, folds legacy keys into
-// api-key-entries and drops entries that carry no credential at all. An entry
-// with neither key is dropped even though the anonymous "public" credential
-// exists: reachable free-tier traffic should be an explicit opt-in.
+// OpenCodeAnonymousAPIKey is the credential the OpenCode client sends when no
+// account is connected. It is what reaches the free tier, so an entry saved
+// without a key (the Management Center leaves the field blank for keyless
+// providers) is normalized to it instead of being discarded.
+const OpenCodeAnonymousAPIKey = "public"
+
+// SanitizeOpenCodeKeys trims OpenCode credential entries and folds legacy keys
+// into api-key-entries. An entry with no credential at all is normalized to the
+// anonymous "public" key rather than dropped: the free tier needs no key, and
+// dropping it silently deleted provider entries saved from the UI.
 func (cfg *Config) SanitizeOpenCodeKeys() {
 	if cfg == nil {
 		return
@@ -294,9 +300,11 @@ func (cfg *Config) SanitizeOpenCodeKeys() {
 			entry.Models[i].Name = strings.TrimSpace(entry.Models[i].Name)
 			entry.Models[i].Alias = strings.TrimSpace(entry.Models[i].Alias)
 		}
-		if entry.APIKey != "" || len(entry.APIKeyEntries) > 0 {
-			out = append(out, entry)
+		if entry.APIKey == "" && len(entry.APIKeyEntries) == 0 {
+			// Keyless entries are the anonymous free tier, not junk.
+			entry.APIKey = OpenCodeAnonymousAPIKey
 		}
+		out = append(out, entry)
 	}
 	cfg.OpenCodeKey = out
 }

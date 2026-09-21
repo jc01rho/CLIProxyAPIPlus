@@ -2007,7 +2007,10 @@ func (h *Handler) PutOpenCodeKeys(c *gin.Context) {
 		entry := arr[i]
 		normalizeOpenCodeKey(&entry)
 		if entry.APIKey == "" && len(entry.APIKeyEntries) == 0 {
-			continue
+			// The free tier needs no credential, so the UI leaves the key
+			// blank. Treat that as the anonymous key instead of dropping the
+			// entry, which silently deleted provider configuration on save.
+			entry.APIKey = config.OpenCodeAnonymousAPIKey
 		}
 		filtered = append(filtered, entry)
 	}
