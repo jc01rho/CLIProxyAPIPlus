@@ -114,7 +114,11 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = registry.GetAntigravityModels()
 		models = applyExcludedModels(models, excluded)
 	case "claude":
-		models = registry.GetClaudeModels()
+		// A credential pointed at a custom gateway gets its catalog from that
+		// gateway: the static definitions describe Anthropic's own lineup and
+		// say nothing about what a third-party endpoint serves. Anthropic-hosted
+		// credentials keep the static list without a network round trip.
+		models = executor.FetchClaudeModels(ctx, a, s.cfg)
 		if entry := s.resolveConfigClaudeKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildClaudeConfigModels(entry)
