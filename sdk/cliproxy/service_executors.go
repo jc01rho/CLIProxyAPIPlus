@@ -205,6 +205,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"claude",
 		constant.CommandCode,
 		constant.Freebuff,
+		constant.OpenCode,
 		constant.Gemini,
 		constant.GeminiInteractions,
 		"vertex",
@@ -333,6 +334,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewCommandCodeExecutor(cfg))
 	case constant.Freebuff:
 		s.coreManager.RegisterExecutor(executor.NewFreebuffExecutor(cfg))
+	case constant.OpenCode:
+		s.coreManager.RegisterExecutor(executor.NewOpenCodeExecutor(cfg))
 	case constant.Devin:
 		s.coreManager.RegisterExecutor(executor.NewDevinExecutor(cfg))
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":

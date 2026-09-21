@@ -181,6 +181,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/freebuff-api-key", s.mgmt.PatchFreebuffKey)
 		mgmt.DELETE("/freebuff-api-key", s.mgmt.DeleteFreebuffKey)
 
+		mgmt.GET("/opencode-api-key", s.mgmt.GetOpenCodeKeys)
+		mgmt.PUT("/opencode-api-key", s.mgmt.PutOpenCodeKeys)
+		mgmt.PATCH("/opencode-api-key", s.mgmt.PatchOpenCodeKey)
+		mgmt.DELETE("/opencode-api-key", s.mgmt.DeleteOpenCodeKey)
+
 		mgmt.GET("/mistral-api-key", s.mgmt.GetMistralKeys)
 		mgmt.PUT("/mistral-api-key", s.mgmt.PutMistralKeys)
 		mgmt.PATCH("/mistral-api-key", s.mgmt.PatchMistralKey)

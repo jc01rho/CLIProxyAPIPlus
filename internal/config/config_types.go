@@ -992,6 +992,79 @@ func (m MistralModel) GetAlias() string       { return m.Alias }
 func (m MistralModel) GetDisplayName() string { return "" }
 func (m MistralModel) GetForceMapping() bool  { return m.ForceMapping }
 
+// OpenCodeKey represents an OpenCode Zen or OpenCode Go credential. Entries
+// without an api-key use the anonymous "public" credential, which is what the
+// OpenCode client itself sends when no account is connected; that is the path
+// that reaches the free tier.
+type OpenCodeKey struct {
+	APIKey         string                      `yaml:"api-key,omitempty" json:"api-key,omitempty"`
+	Comment        string                      `yaml:"comment,omitempty" json:"comment,omitempty"`
+	Priority       int                         `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Prefix         string                      `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	BaseURL        string                      `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	ProxyURL       string                      `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	BillingClass   BillingClass                `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+	Models         []OpenCodeModel             `yaml:"models,omitempty" json:"models,omitempty"`
+	Headers        map[string]string           `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ExcludedModels []string                    `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	DisableCooling bool                        `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+	APIKeyEntries  []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
+}
+
+func (k OpenCodeKey) GetAPIKey() string   { return k.APIKey }
+func (k OpenCodeKey) GetBaseURL() string  { return k.BaseURL }
+func (k OpenCodeKey) GetPrefix() string   { return k.Prefix }
+func (k OpenCodeKey) GetProxyURL() string { return k.ProxyURL }
+
+// ContainsAPIKey reports whether apiKey is the legacy top-level key or any
+// nested api-key-entries credential.
+func (k OpenCodeKey) ContainsAPIKey(apiKey string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return true
+	}
+	for i := range k.APIKeyEntries {
+		if strings.TrimSpace(k.APIKeyEntries[i].APIKey) == apiKey {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesCredential reports whether the credential pair belongs to this entry.
+func (k OpenCodeKey) MatchesCredential(apiKey, proxyURL string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	proxyURL = strings.TrimSpace(proxyURL)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return strings.TrimSpace(k.ProxyURL) == proxyURL
+	}
+	for i := range k.APIKeyEntries {
+		entry := k.APIKeyEntries[i]
+		if strings.TrimSpace(entry.APIKey) == apiKey {
+			return strings.TrimSpace(entry.ProxyURL) == proxyURL
+		}
+	}
+	return false
+}
+
+// OpenCodeModel maps a client alias to an upstream OpenCode model name.
+type OpenCodeModel struct {
+	Name         string `yaml:"name" json:"name"`
+	Alias        string `yaml:"alias" json:"alias"`
+	ForceMapping bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+}
+
+func (m OpenCodeModel) GetName() string        { return m.Name }
+func (m OpenCodeModel) GetAlias() string       { return m.Alias }
+func (m OpenCodeModel) GetDisplayName() string { return "" }
+func (m OpenCodeModel) GetForceMapping() bool  { return m.ForceMapping }
+
 // XAIKey uses the Codex API key structure for native xAI execution.
 type XAIKey = CodexKey
 

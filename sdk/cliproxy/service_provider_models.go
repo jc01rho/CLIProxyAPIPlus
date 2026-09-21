@@ -104,6 +104,13 @@ func (s *Service) resolveConfigCommandCodeKey(auth *coreauth.Auth) *config.Comma
 	return nil
 }
 
+func (s *Service) resolveConfigOpenCodeKey(auth *coreauth.Auth) *config.OpenCodeKey {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	return resolveNativeAPIKeyConfig(s.cfg.OpenCodeKey, auth)
+}
+
 func (s *Service) resolveConfigMistralKey(auth *coreauth.Auth) *config.MistralKey {
 	if s == nil || s.cfg == nil {
 		return nil
@@ -151,6 +158,13 @@ func buildCommandCodeConfigModels(entry *config.CommandCodeKey) []*ModelInfo {
 		return nil
 	}
 	return buildNativeConfigModels(entry.Models, "commandcode", "commandcode")
+}
+
+func buildOpenCodeConfigModels(entry *config.OpenCodeKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildNativeConfigModels(entry.Models, "opencode", "opencode")
 }
 
 func buildMistralConfigModels(entry *config.MistralKey) []*ModelInfo {

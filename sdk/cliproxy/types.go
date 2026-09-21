@@ -82,6 +82,9 @@ type APIKeyClientResult struct {
 
 	// MistralKeyCount is the number of Mistral API keys loaded
 	MistralKeyCount int
+
+	// OpenCodeKeyCount is the number of OpenCode credentials loaded
+	OpenCodeKeyCount int
 }
 
 // WatcherFactory creates a watcher for configuration and token changes.

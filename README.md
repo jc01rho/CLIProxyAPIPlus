@@ -166,6 +166,34 @@ Use Codebuff-native tools (`read_files`, etc.). Arbitrary foreign tool names are
 
 Management REST: `GET/PUT/PATCH/DELETE /v0/management/freebuff-api-key`.
 
+### OpenCode (Zen / Go)
+
+OpenCode has a **dedicated executor** (`OpenCodeExecutor`) instead of the `openai-compatibility` path, because the gateway only serves its free tier to requests that look like they come from the OpenCode client.
+
+**What the gateway checks (measured against the live endpoint):**
+
+- `Authorization: Bearer <key>` — no key (or `public`) means *anonymous*, which is the tier the free models live in.
+- `User-Agent` must start with `opencode/` (the CLI sends `opencode/<version> ai-sdk/provider-utils/<v> runtime/bun/<v>`).
+- `x-opencode-client`, `x-opencode-session` and `x-opencode-request` must be present; `x-opencode-project` completes the fingerprint.
+- The request body must declare both the `bash` **and** `read` tools, and must carry `"stream": true` — the free tier is served over SSE only, so a buffered request is rejected the same way.
+- `x-opencode-session` / `x-opencode-request` must match the OpenCode identifier shape exactly: 26 characters of 12 lowercase hex digits (a millisecond timestamp packed with a counter) followed by 14 base62 characters. Malformed identifiers are rejected even when every other signal is correct. Missing either tool, missing the identity headers, or a non-streaming body returns `403 FreeTierError: OpenCode's free tier can only be used from within OpenCode`.
+
+The executor mirrors the headers on every call and appends minimal `bash`/`read` tool definitions **only** when the client omitted them and the upstream model is a free-tier model (`big-pickle` or any `*-free`); paid models and payloads that already carry both tools are forwarded untouched. For the same free-tier models it asks the gateway to stream and folds the SSE back into a buffered completion, so a non-streaming client request still succeeds.
+
+Zen models are discovered live from `GET {base-url}/models` (which answers anonymously) and merged over the static catalog; point `base-url` at `https://opencode.ai/zen/go/v1` for the Go subscription tier.
+
+**Example config for OpenCode:**
+
+    opencode-api-key:
+      - api-key: "public"                       # or an oc_sk_ key for paid Zen
+        base-url: "https://opencode.ai/zen/v1"  # /zen/go/v1 for OpenCode Go
+        prefix: "opencode"
+        models:
+          - name: "big-pickle"
+            alias: "big-pickle"
+
+Management REST: `GET/PUT/PATCH/DELETE /v0/management/opencode-api-key`.
+
 ### Generic usage flow
 
 All providers expose the standard OpenAI-compatible `/v1/chat/completions`, `/v1/chat/completions` (streaming), and `/v1/images/generations` endpoints. Point your client to:

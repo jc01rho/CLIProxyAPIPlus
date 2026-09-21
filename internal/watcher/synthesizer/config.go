@@ -64,6 +64,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeDevinKeys(ctx)...)
 	// Mistral API Keys
 	out = append(out, s.synthesizeMistralKeys(ctx)...)
+	// OpenCode API Keys
+	out = append(out, s.synthesizeOpenCodeKeys(ctx)...)
 	// Meta API Keys
 	out = append(out, s.synthesizeMetaKeys(ctx)...)
 
@@ -418,6 +420,120 @@ func (s *ConfigSynthesizer) synthesizeCommandCodeKeys(ctx *SynthesisContext) []*
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeOpenCodeKeys creates Auth entries for OpenCode Zen / Go credentials.
+// Entries without an api-key are registered with the anonymous "public"
+// credential the OpenCode client uses, which is the free-tier path.
+func (s *ConfigSynthesizer) synthesizeOpenCodeKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.OpenCodeKey))
+	for i := range cfg.OpenCodeKey {
+		ok := cfg.OpenCodeKey[i]
+		prefix := strings.TrimSpace(ok.Prefix)
+
+		createdEntries := 0
+		for j := range ok.APIKeyEntries {
+			entry := &ok.APIKeyEntries[j]
+			key := strings.TrimSpace(entry.APIKey)
+			if key == "" {
+				continue
+			}
+			proxyURL := strings.TrimSpace(entry.ProxyURL)
+			id, token := idGen.Next("opencode:apikey", key, ok.BaseURL, proxyURL)
+			attrs := map[string]string{
+				"source":  fmt.Sprintf("config:opencode[%s]", token),
+				"api_key": key,
+			}
+			metadata := map[string]any{}
+			if ok.DisableCooling {
+				metadata["disable_cooling"] = true
+			}
+			if ok.Priority != 0 {
+				attrs["priority"] = strconv.Itoa(ok.Priority)
+			}
+			if ok.BillingClass != "" {
+				attrs["billing_class"] = string(ok.BillingClass)
+			}
+			if ok.BaseURL != "" {
+				attrs["base_url"] = ok.BaseURL
+			}
+			addWeightToAttrs(entry.Weight, attrs)
+			if hash := diff.ComputeOpenCodeModelsHash(ok.Models); hash != "" {
+				attrs["models_hash"] = hash
+			}
+			attrs["runtime_only"] = "true"
+			addConfigHeadersToAttrs(ok.Headers, attrs)
+			a := &coreauth.Auth{
+				ID:         id,
+				Provider:   "opencode",
+				Label:      "opencode-apikey",
+				Prefix:     prefix,
+				Status:     coreauth.StatusActive,
+				ProxyURL:   proxyURL,
+				Attributes: attrs,
+				Metadata:   metadata,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			}
+			ApplyAuthExcludedModelsMeta(a, cfg, ok.ExcludedModels, "apikey")
+			if len(a.Metadata) == 0 {
+				a.Metadata = nil
+			}
+			out = append(out, a)
+			createdEntries++
+		}
+		if createdEntries > 0 {
+			continue
+		}
+
+		key := strings.TrimSpace(ok.APIKey)
+		proxyURL := strings.TrimSpace(ok.ProxyURL)
+		id, token := idGen.Next("opencode:apikey", key, ok.BaseURL)
+		attrs := map[string]string{
+			"source":       fmt.Sprintf("config:opencode[%s]", token),
+			"api_key":      key,
+			"runtime_only": "true",
+		}
+		metadata := map[string]any{}
+		if ok.DisableCooling {
+			metadata["disable_cooling"] = true
+		}
+		if ok.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(ok.Priority)
+		}
+		if ok.BillingClass != "" {
+			attrs["billing_class"] = string(ok.BillingClass)
+		}
+		if ok.BaseURL != "" {
+			attrs["base_url"] = ok.BaseURL
+		}
+		if hash := diff.ComputeOpenCodeModelsHash(ok.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(ok.Headers, attrs)
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   "opencode",
+			Label:      "opencode-apikey",
+			Prefix:     prefix,
+			Status:     coreauth.StatusActive,
+			ProxyURL:   proxyURL,
+			Attributes: attrs,
+			Metadata:   metadata,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		ApplyAuthExcludedModelsMeta(a, cfg, ok.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}

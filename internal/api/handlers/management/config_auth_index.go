@@ -34,6 +34,12 @@ type mistralKeyWithAuthIndex struct {
 	AuthIndex string `json:"auth-index,omitempty"`
 }
 
+type openCodeKeyWithAuthIndex struct {
+	config.OpenCodeKey
+	APIKeyEntries []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
+	AuthIndex     string                                   `json:"auth-index,omitempty"`
+}
+
 type freebuffKeyWithAuthIndex struct {
 	config.FreebuffKey
 	APIKeyEntries []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
@@ -271,6 +277,52 @@ func (h *Handler) commandCodeKeysWithAuthIndex() []commandCodeKeyWithAuthIndex {
 				apiKeyEntry := entry.APIKeyEntries[j]
 				id, _ := idGen.Next(
 					"commandcode:apikey",
+					apiKeyEntry.APIKey,
+					entry.BaseURL,
+					apiKeyEntry.ProxyURL,
+				)
+				response.APIKeyEntries[j] = openAICompatibilityAPIKeyWithAuthIndex{
+					OpenAICompatibilityAPIKey: apiKeyEntry,
+					AuthIndex:                 liveIndexByID[id],
+				}
+			}
+		}
+		out[i] = response
+	}
+	return out
+}
+
+func (h *Handler) openCodeKeysWithAuthIndex() []openCodeKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveIndexByID := h.liveAuthIndexByID()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]openCodeKeyWithAuthIndex, len(h.cfg.OpenCodeKey))
+	for i := range h.cfg.OpenCodeKey {
+		entry := h.cfg.OpenCodeKey[i]
+		response := openCodeKeyWithAuthIndex{OpenCodeKey: entry}
+		if len(entry.APIKeyEntries) == 0 {
+			if key := strings.TrimSpace(entry.APIKey); key != "" {
+				id, _ := idGen.Next("opencode:apikey", key, entry.BaseURL)
+				response.AuthIndex = liveIndexByID[id]
+			}
+		} else {
+			response.APIKeyEntries = make(
+				[]openAICompatibilityAPIKeyWithAuthIndex,
+				len(entry.APIKeyEntries),
+			)
+			for j := range entry.APIKeyEntries {
+				apiKeyEntry := entry.APIKeyEntries[j]
+				id, _ := idGen.Next(
+					"opencode:apikey",
 					apiKeyEntry.APIKey,
 					entry.BaseURL,
 					apiKeyEntry.ProxyURL,

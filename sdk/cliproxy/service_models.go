@@ -250,6 +250,22 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case constant.OpenCode:
+		entry := s.resolveConfigOpenCodeKey(a)
+		switch {
+		case entry != nil && len(entry.Models) > 0:
+			models = buildOpenCodeConfigModels(entry)
+			excluded = entry.ExcludedModels
+		default:
+			// No explicit config models: fetch the live Zen/Go catalog so a
+			// configured OpenCode provider still surfaces its models through
+			// /v1/models. The fetch falls back to the static catalog.
+			models = executor.FetchOpenCodeModels(ctx, a, s.cfg)
+			if entry != nil {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
 	case constant.Mistral:
 		entry := s.resolveConfigMistralKey(a)
 		switch {

@@ -39,6 +39,11 @@ type MistralModelsSummary struct {
 	count int
 }
 
+type OpenCodeModelsSummary struct {
+	hash  string
+	count int
+}
+
 // SummarizeGeminiModels hashes Gemini model aliases for change detection.
 func SummarizeGeminiModels(models []config.GeminiModel) GeminiModelsSummary {
 	if len(models) == 0 {
@@ -143,6 +148,27 @@ func SummarizeVertexModels(models []config.VertexCompatModel) VertexModelsSummar
 	return VertexModelsSummary{
 		hash:  hex.EncodeToString(sum[:]),
 		count: len(names),
+	}
+}
+
+// SummarizeOpenCodeModels hashes OpenCode model aliases for change detection.
+func SummarizeOpenCodeModels(models []config.OpenCodeModel) OpenCodeModelsSummary {
+	if len(models) == 0 {
+		return OpenCodeModelsSummary{}
+	}
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return OpenCodeModelsSummary{
+		hash:  hashJoined(keys),
+		count: len(keys),
 	}
 }
 

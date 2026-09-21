@@ -45,6 +45,9 @@ const (
 	// Freebuff represents the Freebuff provider identifier.
 	Freebuff = "freebuff"
 
+	// OpenCode represents the OpenCode Zen / OpenCode Go provider identifier.
+	OpenCode = "opencode"
+
 	// Devin represents the Devin (Cognition) provider identifier.
 	Devin = "devin"
 
