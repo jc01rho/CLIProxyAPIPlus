@@ -155,33 +155,35 @@ func TestRouteFallbackFormattedLogs(t *testing.T) {
 							t.Fatalf("unexpected attempt %d for %q", i, model)
 						}
 						if i > 0 {
-							wantRecords++
-							records := fallbackLogRecords(t, output.String(), requestID)
-							if len(records) != wantRecords {
-								t.Fatalf("before attempt %s: got %d records, want %d (trigger must precede execution); output=%q", model, len(records), wantRecords, output.String())
-							}
-							fields := records[len(records)-1]
-							source := "fallback-chain"
-							if tc.mapping && i == 1 {
-								source = "fallback-models"
-							}
-							assertFallbackLogFields(t, fields, map[string]string{
-								"requested_model": models[0], "fallback_trigger_model": models[i-1],
-								"selected_fallback_model": model, "fallback_source": source, "outcome": "attempt",
-							})
-							wantStatus := ""
-							if status := statusCodeFromError(tc.errs[i-1]); status > 0 {
-								wantStatus = strconv.Itoa(status)
-							}
-							assertFallbackLogFields(t, fields, map[string]string{"fallback_trigger_status": wantStatus})
-							if !strings.Contains(fields["fallback_trigger_error"], tc.causeMarkers[i-1]) {
-								t.Errorf("missing cause marker %s: %v", tc.causeMarkers[i-1], fields)
-							}
-							if tc.name == "nested-unavailable" && !strings.Contains(fields["fallback_trigger_error"], "UPSTREAM_503") {
-								t.Errorf("nested cause lost: %v", fields)
-							}
-							if requested, selected := GetFallbackInfoFromContext(ctx); requested != models[0] || selected != model {
-								t.Errorf("fallback context changed: %q -> %q", requested, selected)
+							if level == log.DebugLevel {
+								wantRecords++
+								records := fallbackLogRecords(t, output.String(), requestID)
+								if len(records) != wantRecords {
+									t.Fatalf("before attempt %s: got %d records, want %d (trigger must precede execution); output=%q", model, len(records), wantRecords, output.String())
+								}
+								fields := records[len(records)-1]
+								source := "fallback-chain"
+								if tc.mapping && i == 1 {
+									source = "fallback-models"
+								}
+								assertFallbackLogFields(t, fields, map[string]string{
+									"requested_model": models[0], "fallback_trigger_model": models[i-1],
+									"selected_fallback_model": model, "fallback_source": source, "outcome": "attempt",
+								})
+								wantStatus := ""
+								if status := statusCodeFromError(tc.errs[i-1]); status > 0 {
+									wantStatus = strconv.Itoa(status)
+								}
+								assertFallbackLogFields(t, fields, map[string]string{"fallback_trigger_status": wantStatus})
+								if !strings.Contains(fields["fallback_trigger_error"], tc.causeMarkers[i-1]) {
+									t.Errorf("missing cause marker %s: %v", tc.causeMarkers[i-1], fields)
+								}
+								if tc.name == "nested-unavailable" && !strings.Contains(fields["fallback_trigger_error"], "UPSTREAM_503") {
+									t.Errorf("nested cause lost: %v", fields)
+								}
+								if requested, selected := GetFallbackInfoFromContext(ctx); requested != models[0] || selected != model {
+									t.Errorf("fallback context changed: %q -> %q", requested, selected)
+								}
 							}
 							if tc.errs[i] == nil || level == log.DebugLevel {
 								wantRecords++
@@ -260,7 +262,7 @@ func TestRouteFallbackNoActivationFormattedLogs(t *testing.T) {
 }
 
 func TestRouteFallbackLogIncludesTimeGateExclusionReason(t *testing.T) {
-	output := captureFallbackLogOutput(t, log.InfoLevel)
+	output := captureFallbackLogOutput(t, log.DebugLevel)
 	manager := NewManager(nil, nil, nil)
 	manager.SetRetryConfig(0, 0, 0)
 	manager.SetFallbackChain([]string{"fallback"}, 1)
@@ -394,10 +396,9 @@ func TestManagerRouteFallbackFormattedInfoEntrypoint(t *testing.T) {
 					return &Error{HTTPStatus: 503, Message: `{"error":{"code":"UPSTREAM_FIXTURE","message":"busy"}}`}
 				}
 				records := fallbackLogRecords(t, output.String(), requestID)
-				if len(records) != 1 {
+				if len(records) != 0 {
 					t.Fatalf("before provider fallback: records=%v output=%q", records, output.String())
 				}
-				assertFallbackLogFields(t, records[0], map[string]string{"outcome": "attempt", "fallback_trigger_status": "503", "fallback_trigger_model": "original", "selected_fallback_model": "target"})
 				return nil
 			}
 			manager.RegisterExecutor(executor)
@@ -450,10 +451,10 @@ func TestManagerRouteFallbackFormattedInfoEntrypoint(t *testing.T) {
 				t.Fatalf("calls=%d", calls)
 			}
 			records := fallbackLogRecords(t, output.String(), requestID)
-			if len(records) != 2 {
+			if len(records) != 1 {
 				t.Fatalf("records=%v", records)
 			}
-			assertFallbackLogFields(t, records[1], map[string]string{"outcome": "success", "fallback_trigger_status": "503", "requested_model": "original", "selected_fallback_model": "target"})
+			assertFallbackLogFields(t, records[0], map[string]string{"outcome": "success", "fallback_trigger_status": "503", "requested_model": "original", "selected_fallback_model": "target"})
 			t.Logf("application Info output:\n%s", output.String())
 		})
 	}

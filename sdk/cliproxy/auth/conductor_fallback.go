@@ -499,7 +499,7 @@ func (m *Manager) executeWithRouteFallback(
 			fallbackProviders = providers
 		}
 		logEntryWithRequestID(ctx).WithFields(routeModelFallbackLogFields(originalModel, triggerModel, fallbackModel, source, lastErr)).
-			WithField("outcome", "attempt").Info("fallback chain activated")
+			WithField("outcome", "attempt").Debug("fallback chain activated")
 		resp, errFallback := m.executeWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, defaultRequestRetry, maxWait, true, execOnce)
 		if errFallback == nil {
 			logRouteModelFallbackResult(ctx, originalModel, triggerModel, fallbackModel, source, lastErr, nil, startedAt)
@@ -559,7 +559,7 @@ func (m *Manager) executeStreamWithRouteFallback(
 			fallbackProviders = providers
 		}
 		logEntryWithRequestID(ctx).WithFields(routeModelFallbackLogFields(originalModel, triggerModel, fallbackModel, source, lastErr)).
-			WithField("outcome", "attempt").Info("fallback chain activated")
+			WithField("outcome", "attempt").Debug("fallback chain activated")
 		result, errFallback := m.executeStreamWithRetry(ctx, fallbackProviders, fallbackReq, opts, maxRetryCredentials, defaultRequestRetry, maxWait, true, execOnce)
 		if errFallback == nil {
 			logRouteModelFallbackResult(ctx, originalModel, triggerModel, fallbackModel, source, lastErr, nil, startedAt)
