@@ -180,7 +180,9 @@ OpenCode has a **dedicated executor** (`OpenCodeExecutor`) instead of the `opena
 
 The executor mirrors the headers on every call and appends minimal `bash`/`read` tool definitions **only** when the client omitted them and the upstream model is a free-tier model (`big-pickle` or any `*-free`); paid models and payloads that already carry both tools are forwarded untouched. For the same free-tier models it asks the gateway to stream and folds the SSE back into a buffered completion, so a non-streaming client request still succeeds.
 
-Zen models are discovered live from `GET {base-url}/models` (which answers anonymously) and merged over the static catalog; point `base-url` at `https://opencode.ai/zen/go/v1` for the Go subscription tier.
+`models` is a whitelist and it is required: OpenCode publishes vendor-neutral names (`claude-opus-5`, `gpt-5.5`, ...) that collide with the catalogs of every other provider, so an entry without `models` registers nothing instead of claiming those shared names. Browse the catalog with `GET {base-url}/models` (it answers anonymously) or the model discovery button in the Management Center, then list the models to expose. Point `base-url` at `https://opencode.ai/zen/go/v1` for the Go subscription tier.
+
+`api-key` may be omitted for the free tier — the anonymous `public` credential is filled in automatically.
 
 **Example config for OpenCode:**
 
