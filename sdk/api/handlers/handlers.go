@@ -526,12 +526,13 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	if c != nil && c.Request != nil {
 		sessionID, parentSessionID := extractSessionIDsFromRequest(c.Request)
 		newCtx = logging.WithClientRequestMetadata(newCtx, logging.ClientRequestMetadata{
-			ClientIP:        requestClientIP(c.Request),
-			XForwardedFor:   strings.TrimSpace(strings.Join(c.Request.Header.Values("X-Forwarded-For"), ", ")),
-			UserAgent:       strings.TrimSpace(c.Request.UserAgent()),
-			APIKey:          requestRawAPIKey(c),
-			SessionID:       sessionID,
-			ParentSessionID: parentSessionID,
+			ClientIP:         requestClientIP(c.Request),
+			ResolvedClientIP: strings.TrimSpace(c.ClientIP()),
+			XForwardedFor:    strings.TrimSpace(strings.Join(c.Request.Header.Values("X-Forwarded-For"), ", ")),
+			UserAgent:        strings.TrimSpace(c.Request.UserAgent()),
+			APIKey:           requestRawAPIKey(c),
+			SessionID:        sessionID,
+			ParentSessionID:  parentSessionID,
 		})
 	}
 	newCtx = logging.WithResponseStatusHolder(newCtx)
