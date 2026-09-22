@@ -71,17 +71,17 @@ func GetCodexFreeModels() []*ModelInfo {
 
 // GetCodexTeamModels returns model definitions for the Codex team plan tier.
 func GetCodexTeamModels() []*ModelInfo {
-	return WithCodexBuiltins(cloneModelInfos(getModels().CodexTeam))
+	return WithCodexPaidBuiltins(WithCodexBuiltins(cloneModelInfos(getModels().CodexTeam)))
 }
 
 // GetCodexPlusModels returns model definitions for the Codex plus plan tier.
 func GetCodexPlusModels() []*ModelInfo {
-	return WithCodexBuiltins(cloneModelInfos(getModels().CodexPlus))
+	return WithCodexPaidBuiltins(WithCodexBuiltins(cloneModelInfos(getModels().CodexPlus)))
 }
 
 // GetCodexProModels returns model definitions for the Codex pro plan tier.
 func GetCodexProModels() []*ModelInfo {
-	return WithCodexBuiltins(cloneModelInfos(getModels().CodexPro))
+	return WithCodexPaidBuiltins(WithCodexBuiltins(cloneModelInfos(getModels().CodexPro)))
 }
 
 // GetKimiModels returns the standard Kimi (Moonshot AI) model definitions.
@@ -291,6 +291,15 @@ func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
 	)
 }
 
+// WithCodexPaidBuiltins injects Codex models advertised to paid plans by
+// upstream clients newer than the embedded static catalog.
+func WithCodexPaidBuiltins(models []*ModelInfo) []*ModelInfo {
+	return upsertModelInfos(models,
+		codexBuiltinGPT6SolModelInfo(),
+		codexBuiltinGPT6LunaModelInfo(),
+	)
+}
+
 // WithXAIBuiltins injects hard-coded xAI image/video model definitions that should
 // not depend on remote models.json updates.
 func WithXAIBuiltins(models []*ModelInfo) []*ModelInfo {
@@ -314,6 +323,52 @@ func codexBuiltinImage15ModelInfo() *ModelInfo {
 		Type:        "openai",
 		DisplayName: "GPT Image 1.5",
 		Version:     codexBuiltinImage15ModelID,
+	}
+}
+
+func codexBuiltinGPT6SolModelInfo() *ModelInfo {
+	webSearch := true
+	return &ModelInfo{
+		ID:                  "gpt-6-sol",
+		Object:              "model",
+		Created:             1783616400,
+		OwnedBy:             "openai",
+		Type:                "openai",
+		DisplayName:         "GPT-6-Sol",
+		Version:             "gpt-6",
+		Description:         "GPT-6 Sol Codex model.",
+		ContextLength:       272000,
+		MaxCompletionTokens: 128000,
+		SupportedParameters: []string{"tools"},
+		Thinking: &ThinkingSupport{
+			Levels: []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		},
+		SupportedInputModalities:  []string{"text", "image"},
+		SupportedOutputModalities: []string{"text"},
+		NativeCapabilities:        &NativeCapabilities{WebSearch: &webSearch},
+	}
+}
+
+func codexBuiltinGPT6LunaModelInfo() *ModelInfo {
+	webSearch := true
+	return &ModelInfo{
+		ID:                  "gpt-6-luna",
+		Object:              "model",
+		Created:             1783616400,
+		OwnedBy:             "openai",
+		Type:                "openai",
+		DisplayName:         "GPT-6-Luna",
+		Version:             "gpt-6",
+		Description:         "GPT-6 Luna Codex model.",
+		ContextLength:       272000,
+		MaxCompletionTokens: 128000,
+		SupportedParameters: []string{"tools"},
+		Thinking: &ThinkingSupport{
+			Levels: []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		SupportedInputModalities:  []string{"text", "image"},
+		SupportedOutputModalities: []string{"text"},
+		NativeCapabilities:        &NativeCapabilities{WebSearch: &webSearch},
 	}
 }
 

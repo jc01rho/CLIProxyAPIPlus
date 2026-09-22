@@ -2,6 +2,12 @@ package main
 
 import "testing"
 
+func TestDefaultClientVersionIncludesGPT6SolAndLuna(t *testing.T) {
+	if defaultClientVersion != "0.155.0" {
+		t.Fatalf("defaultClientVersion = %q, want %q", defaultClientVersion, "0.155.0")
+	}
+}
+
 func TestCodexModelsURL(t *testing.T) {
 	got, err := codexModelsURL(" 0.144.1 ")
 	if err != nil {
