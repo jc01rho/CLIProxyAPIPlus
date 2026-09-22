@@ -85,9 +85,9 @@ func TestBuildAPIKeyClientsCounts(t *testing.T) {
 		},
 	}
 
-	gemini, vertex, claude, codex, xai, meta, compat, commandCode, freebuff, mistral, openCode := BuildAPIKeyClients(cfg)
-	if gemini != 3 || vertex != 1 || claude != 1 || codex != 2 || xai != 1 || meta != 1 || compat != 2 || commandCode != 0 || freebuff != 3 || mistral != 0 || openCode != 3 {
-		t.Fatalf("unexpected counts: %d %d %d %d %d %d %d %d %d %d %d", gemini, vertex, claude, codex, xai, meta, compat, commandCode, freebuff, mistral, openCode)
+	gemini, vertex, claude, codex, xai, meta, compat, commandCode, freebuff, mistral, openCode, mimocode := BuildAPIKeyClients(cfg)
+	if gemini != 3 || vertex != 1 || claude != 1 || codex != 2 || xai != 1 || meta != 1 || compat != 2 || commandCode != 0 || freebuff != 3 || mistral != 0 || openCode != 3 || mimocode != 0 {
+		t.Fatalf("unexpected counts: %d %d %d %d %d %d %d %d %d %d %d %d", gemini, vertex, claude, codex, xai, meta, compat, commandCode, freebuff, mistral, openCode, mimocode)
 	}
 }
 

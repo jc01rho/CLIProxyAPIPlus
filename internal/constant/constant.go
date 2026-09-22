@@ -48,6 +48,9 @@ const (
 	// OpenCode represents the OpenCode Zen / OpenCode Go provider identifier.
 	OpenCode = "opencode"
 
+	// Mimocode represents the Xiaomi MiMo Code provider identifier.
+	Mimocode = "mimocode"
+
 	// Devin represents the Devin (Cognition) provider identifier.
 	Devin = "devin"
 

@@ -204,6 +204,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SanitizeClaudeKeys()
 	cfg.SanitizeFreebuffKeys()
 	cfg.SanitizeOpenCodeKeys()
+	if errSanitize := cfg.SanitizeMimocodeKeys(); errSanitize != nil {
+		return nil, errSanitize
+	}
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()

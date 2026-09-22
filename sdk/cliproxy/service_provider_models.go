@@ -129,6 +129,33 @@ func (s *Service) resolveConfigOpenCodeKey(auth *coreauth.Auth) *config.OpenCode
 	return nil
 }
 
+func (s *Service) resolveConfigMimocodeKey(auth *coreauth.Auth) *config.MimocodeKey {
+	if s == nil || s.cfg == nil || auth == nil {
+		return nil
+	}
+	var attrKey, attrBase string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes[coreauth.AttributeAPIKey])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	if entry := configEntryForAuthIndex(auth, s.cfg.MimocodeKey); entry != nil {
+		if entry.MatchesCredential(attrKey, auth.ProxyURL) && (attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase)) {
+			return entry
+		}
+		return nil
+	}
+	for i := range s.cfg.MimocodeKey {
+		entry := &s.cfg.MimocodeKey[i]
+		if !entry.MatchesCredential(attrKey, auth.ProxyURL) {
+			continue
+		}
+		if attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase) {
+			return entry
+		}
+	}
+	return nil
+}
+
 func (s *Service) resolveConfigMistralKey(auth *coreauth.Auth) *config.MistralKey {
 	if s == nil || s.cfg == nil {
 		return nil
@@ -183,6 +210,33 @@ func buildOpenCodeConfigModels(entry *config.OpenCodeKey) []*ModelInfo {
 		return nil
 	}
 	return buildNativeConfigModels(entry.Models, "opencode", "opencode")
+}
+
+func buildMimocodeConfigModels(entry *config.MimocodeKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	models := buildNativeConfigModels(entry.Models, "xiaomi", "mimocode")
+	staticByID := make(map[string]*registry.ModelInfo, len(models))
+	for _, model := range registry.GetMimocodeModels() {
+		if model != nil {
+			staticByID[strings.ToLower(strings.TrimSpace(model.ID))] = model
+		}
+	}
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		staticModel := staticByID[strings.ToLower(strings.TrimSpace(model.MetadataModelID))]
+		if staticModel == nil {
+			continue
+		}
+		model.ContextLength = staticModel.ContextLength
+		model.MaxCompletionTokens = staticModel.MaxCompletionTokens
+		model.SupportedEndpoints = append([]string(nil), staticModel.SupportedEndpoints...)
+		model.Thinking = staticModel.Thinking
+	}
+	return models
 }
 
 func buildMistralConfigModels(entry *config.MistralKey) []*ModelInfo {

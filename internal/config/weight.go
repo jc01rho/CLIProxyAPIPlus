@@ -178,5 +178,13 @@ func (cfg *Config) ValidateCredentialWeights() error {
 			}
 		}
 	}
+	for providerIndex := range cfg.MimocodeKey {
+		for keyIndex := range cfg.MimocodeKey[providerIndex].APIKeyEntries {
+			weight := cfg.MimocodeKey[providerIndex].APIKeyEntries[keyIndex].Weight
+			if errValidate := ValidateCredentialWeight(weight); errValidate != nil {
+				return fmt.Errorf("mimocode-api-key[%d].api-key-entries[%d].weight: %w", providerIndex, keyIndex, errValidate)
+			}
+		}
+	}
 	return nil
 }

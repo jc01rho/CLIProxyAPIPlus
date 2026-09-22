@@ -2,6 +2,7 @@ package management
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -26,6 +28,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	kiro "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	metaauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/meta"
+	mimocodeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/mimocode"
 	workbuddyauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/zcode"
@@ -42,6 +45,231 @@ type codexOAuthService interface {
 	GenerateAuthURL(state string, pkceCodes *codex.PKCECodes) (string, error)
 	ExchangeCodeForTokens(ctx context.Context, code string, pkceCodes *codex.PKCECodes) (*codex.CodexAuthBundle, error)
 	CreateTokenStorage(bundle *codex.CodexAuthBundle) *codex.CodexTokenStorage
+}
+
+var mimocodeOAuthSaveMu sync.Mutex
+
+// RequestMimocodeToken starts the MiMo X25519 authorization flow.
+func (h *Handler) RequestMimocodeToken(c *gin.Context) {
+	ctx := PopulateAuthContext(context.Background(), c)
+	state, errState := misc.GenerateRandomState()
+	if errState != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return
+	}
+	publicKey, privateKeyDER, errKeys := mimocodeauth.GenerateKeyPair()
+	if errKeys != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate encryption key"})
+		return
+	}
+	callbackServer, errServer := mimocodeauth.StartOAuthServer()
+	if errServer != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
+		return
+	}
+	keyName, fileName := h.mimocodeReloginIdentity(c)
+	if keyName == "" {
+		keyName = newMimocodeKeyName()
+	}
+	redirectURI := callbackServer.RedirectURI()
+	metadata := map[string]any{
+		"private_key":     base64.RawURLEncoding.EncodeToString(privateKeyDER),
+		"key_name":        keyName,
+		"file_name":       fileName,
+		"callback_server": callbackServer,
+	}
+	RegisterOAuthSessionWithMetadata(state, "mimocode", metadata)
+	authURL := mimocodeauth.BuildAuthorizeURL(publicKey, redirectURI, keyName)
+
+	go func() {
+		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		defer func() {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer closeCancel()
+			_ = callbackServer.Close(closeCtx)
+		}()
+		payload, errWait := callbackServer.Wait(waitCtx)
+		if errWait != nil {
+			if IsOAuthSessionPending(state, "mimocode") {
+				SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
+			}
+			return
+		}
+		if errComplete := h.completeMimocodeAuthorization(ctx, state, payload, privateKeyDER, keyName, fileName); errComplete != nil {
+			if IsOAuthSessionPending(state, "mimocode") {
+				SetOAuthSessionError(state, oauthSessionErrorWithCause("Failed to save MiMo credentials", errComplete))
+			}
+		}
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":          "ok",
+		"url":             authURL,
+		"state":           state,
+		"redirect_uri":    redirectURI,
+		"manual_endpoint": "/v0/management/mimocode-auth-callback",
+		"instructions":    "If the localhost callback cannot be reached, POST the returned u value as code with this state.",
+	})
+}
+
+// PostMimocodeAuthCallback accepts the encrypted u value for headless login.
+func (h *Handler) PostMimocodeAuthCallback(c *gin.Context) {
+	var request struct {
+		State       string `json:"state"`
+		Code        string `json:"code"`
+		U           string `json:"u"`
+		RedirectURL string `json:"redirect_url"`
+	}
+	if errBind := c.ShouldBindJSON(&request); errBind != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	state := strings.TrimSpace(request.State)
+	if state == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "state is required"})
+		return
+	}
+	provider, status, _, metadata, completed, ok := GetOAuthSessionDetails(state)
+	if !ok || completed || !strings.EqualFold(provider, "mimocode") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "unknown or expired state"})
+		return
+	}
+	if status != "" {
+		c.JSON(http.StatusConflict, gin.H{"error": status})
+		return
+	}
+	payload := firstNonEmpty(request.U, request.Code)
+	if payload == "" && strings.TrimSpace(request.RedirectURL) != "" {
+		if parsed, errParse := url.Parse(strings.TrimSpace(request.RedirectURL)); errParse == nil {
+			payload = strings.TrimSpace(parsed.Query().Get("u"))
+		}
+	}
+	if payload == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "code or u is required"})
+		return
+	}
+	privateKeyEncoded, _ := metadata["private_key"].(string)
+	privateKeyDER, errDecode := base64.RawURLEncoding.DecodeString(privateKeyEncoded)
+	if errDecode != nil || len(privateKeyDER) == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "authorization session is invalid"})
+		return
+	}
+	keyName, _ := metadata["key_name"].(string)
+	fileName, _ := metadata["file_name"].(string)
+	ctx := PopulateAuthContext(context.Background(), c)
+	if errComplete := h.completeMimocodeAuthorization(ctx, state, payload, privateKeyDER, keyName, fileName); errComplete != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errComplete.Error()})
+		return
+	}
+	if callbackServer, okServer := metadata["callback_server"].(*mimocodeauth.OAuthServer); okServer && callbackServer != nil {
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = callbackServer.Close(closeCtx)
+		cancelClose()
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (h *Handler) completeMimocodeAuthorization(ctx context.Context, state, payload string, privateKeyDER []byte, keyName, fileName string) error {
+	mimocodeOAuthSaveMu.Lock()
+	defer mimocodeOAuthSaveMu.Unlock()
+	if errGuard := guardOAuthSessionPendingForSave(state, "mimocode"); errGuard != nil {
+		return errGuard
+	}
+	credentials, errDecrypt := mimocodeauth.DecryptPayload(privateKeyDER, payload)
+	if errDecrypt != nil {
+		return errDecrypt
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(credentials.URL), "/")
+	if baseURL == "" {
+		baseURL = "https://api.xiaomimimo.com/v1"
+	}
+	if strings.TrimSpace(fileName) == "" {
+		identifier := sanitizeZcodeIdentifier(credentials.UID)
+		if identifier == "" {
+			digest := sha256.Sum256([]byte(credentials.SK))
+			identifier = hex.EncodeToString(digest[:])[:8]
+		}
+		fileName = "mimocode-" + identifier + ".json"
+	}
+	metadata := map[string]any{
+		"type":     "api",
+		"provider": "mimocode",
+		"api_key":  credentials.SK,
+		"uid":      credentials.UID,
+		"base_url": baseURL,
+		"key_name": strings.TrimSpace(keyName),
+	}
+	record := &coreauth.Auth{
+		ID:       fileName,
+		Provider: "mimocode",
+		FileName: fileName,
+		Label:    credentials.UID,
+		Metadata: metadata,
+		Attributes: map[string]string{
+			"api_key":  credentials.SK,
+			"uid":      credentials.UID,
+			"base_url": baseURL,
+		},
+	}
+	if _, errSave := h.saveTokenRecord(ctx, record); errSave != nil {
+		return errSave
+	}
+	CompleteOAuthSession(state)
+	return nil
+}
+
+func (h *Handler) mimocodeReloginIdentity(c *gin.Context) (keyName, fileName string) {
+	if h == nil || c == nil {
+		return "", ""
+	}
+	name := strings.TrimSpace(c.Query("name"))
+	authIndex := strings.TrimSpace(c.Query("auth_index"))
+	if name == "" && authIndex == "" {
+		return "", ""
+	}
+	if h.authManager != nil {
+		for _, auth := range h.authManager.List() {
+			if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "mimocode") {
+				continue
+			}
+			if authIndex != "" && auth.EnsureIndex() != authIndex {
+				continue
+			}
+			if name != "" && strings.TrimSpace(auth.FileName) != name {
+				continue
+			}
+			fileName = strings.TrimSpace(auth.FileName)
+			if value, ok := auth.Metadata["key_name"].(string); ok {
+				keyName = strings.TrimSpace(value)
+			}
+			return keyName, fileName
+		}
+	}
+	if name == "" || filepath.Base(name) != name || !strings.HasSuffix(strings.ToLower(name), ".json") {
+		return "", ""
+	}
+	data, errRead := os.ReadFile(filepath.Join(h.cfg.AuthDir, name))
+	if errRead != nil {
+		return "", ""
+	}
+	var stored map[string]any
+	if errJSON := json.Unmarshal(data, &stored); errJSON != nil {
+		return "", ""
+	}
+	if provider, _ := stored["provider"].(string); !strings.EqualFold(strings.TrimSpace(provider), "mimocode") {
+		return "", ""
+	}
+	keyName, _ = stored["key_name"].(string)
+	return strings.TrimSpace(keyName), name
+}
+
+func newMimocodeKeyName() string {
+	var suffix [4]byte
+	if _, errRead := cryptorand.Read(suffix[:]); errRead != nil {
+		return fmt.Sprintf("mimo-code-cli-key-%08x", uint32(time.Now().UnixNano()))
+	}
+	return "mimo-code-cli-key-" + hex.EncodeToString(suffix[:])
 }
 
 func (h *Handler) RequestAnthropicToken(c *gin.Context) {
@@ -1871,7 +2099,15 @@ func (h *Handler) CancelAuthSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid state"})
 		return
 	}
+	_, _, _, metadata, _, _ := GetOAuthSessionDetails(state)
 	cancelled := CancelOAuthSession(state)
+	if cancelled {
+		if callbackServer, okServer := metadata["callback_server"].(*mimocodeauth.OAuthServer); okServer && callbackServer != nil {
+			closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = callbackServer.Close(closeCtx)
+			cancelClose()
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "cancelled": cancelled})
 }
 

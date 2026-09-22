@@ -66,6 +66,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeMistralKeys(ctx)...)
 	// OpenCode API Keys
 	out = append(out, s.synthesizeOpenCodeKeys(ctx)...)
+	// Mimocode API Keys
+	out = append(out, s.synthesizeMimocodeKeys(ctx)...)
 	// Meta API Keys
 	out = append(out, s.synthesizeMetaKeys(ctx)...)
 
@@ -543,6 +545,96 @@ func (s *ConfigSynthesizer) synthesizeOpenCodeKeys(ctx *SynthesisContext) []*cor
 			a.Metadata = nil
 		}
 		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeMimocodeKeys creates Auth entries for Xiaomi MiMo credentials.
+func (s *ConfigSynthesizer) synthesizeMimocodeKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.MimocodeKey))
+	for i := range cfg.MimocodeKey {
+		mk := cfg.MimocodeKey[i]
+		prefix := strings.TrimSpace(mk.Prefix)
+		baseURL := strings.TrimSpace(mk.BaseURL)
+		headers := cloneHeadersWithMimocodeDefault(mk.Headers)
+		add := func(key, proxyURL string, weight *int, comment string) {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				return
+			}
+			proxyURL = strings.TrimSpace(proxyURL)
+			id, token := idGen.Next("mimocode:apikey", key, baseURL, proxyURL, prefix, config.FormatSortedHeaders(headers))
+			attrs := map[string]string{
+				"source":       fmt.Sprintf("config:mimocode[%s]", token),
+				"api_key":      key,
+				"config_index": strconv.Itoa(i),
+				"runtime_only": "true",
+			}
+			if comment != "" {
+				attrs["comment"] = strings.TrimSpace(comment)
+			}
+			if mk.Priority != 0 {
+				attrs["priority"] = strconv.Itoa(mk.Priority)
+			}
+			addWeightToAttrs(weight, attrs)
+			if mk.BillingClass != "" {
+				attrs["billing_class"] = string(mk.BillingClass)
+			}
+			if baseURL != "" {
+				attrs["base_url"] = baseURL
+			}
+			if hash := diff.ComputeMimocodeModelsHash(mk.Models); hash != "" {
+				attrs["models_hash"] = hash
+			}
+			addConfigHeadersToAttrs(headers, attrs)
+			metadata := map[string]any{}
+			if mk.DisableCooling {
+				metadata["disable_cooling"] = true
+			}
+			a := &coreauth.Auth{
+				ID:         id,
+				Provider:   constant.Mimocode,
+				Label:      "mimocode-apikey",
+				Prefix:     prefix,
+				Status:     coreauth.StatusActive,
+				ProxyURL:   proxyURL,
+				Attributes: attrs,
+				Metadata:   metadata,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			}
+			ApplyAuthExcludedModelsMeta(a, cfg, mk.ExcludedModels, "apikey")
+			if len(a.Metadata) == 0 {
+				a.Metadata = nil
+			}
+			out = append(out, a)
+		}
+		if len(mk.APIKeyEntries) > 0 {
+			for _, entry := range mk.APIKeyEntries {
+				add(entry.APIKey, entry.ProxyURL, entry.Weight, entry.Comment)
+			}
+			continue
+		}
+		add(mk.APIKey, mk.ProxyURL, nil, mk.Comment)
+	}
+	return out
+}
+
+func cloneHeadersWithMimocodeDefault(headers map[string]string) map[string]string {
+	out := make(map[string]string, len(headers)+1)
+	hasSource := false
+	for key, value := range headers {
+		out[key] = value
+		if strings.EqualFold(strings.TrimSpace(key), "X-Mimo-Source") {
+			hasSource = true
+		}
+	}
+	if !hasSource {
+		out["X-Mimo-Source"] = "mimocode-cli"
 	}
 	return out
 }

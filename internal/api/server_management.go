@@ -186,6 +186,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/opencode-api-key", s.mgmt.PatchOpenCodeKey)
 		mgmt.DELETE("/opencode-api-key", s.mgmt.DeleteOpenCodeKey)
 
+		mgmt.GET("/mimocode-api-key", s.mgmt.GetMimocodeKeys)
+		mgmt.PUT("/mimocode-api-key", s.mgmt.PutMimocodeKeys)
+
 		mgmt.GET("/mistral-api-key", s.mgmt.GetMistralKeys)
 		mgmt.PUT("/mistral-api-key", s.mgmt.PutMistralKeys)
 		mgmt.PATCH("/mistral-api-key", s.mgmt.PatchMistralKey)
@@ -247,6 +250,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/zcode-auth-url", s.mgmt.RequestZcodeToken)
 		mgmt.GET("/devin-auth-url", s.mgmt.RequestDevinToken)
 		mgmt.GET("/workbuddy-auth-url", s.mgmt.RequestWorkBuddyToken)
+		mgmt.GET("/mimocode-auth-url", s.mgmt.RequestMimocodeToken)
+		mgmt.POST("/mimocode-auth-callback", s.mgmt.PostMimocodeAuthCallback)
 		mgmt.POST("/gitlab-pat", s.mgmt.RequestGitLabPATToken)
 		mgmt.GET("/copilot-quota", s.mgmt.GetCopilotQuota)
 		mgmt.GET("/zcode-quota", s.mgmt.GetZcodeQuota)

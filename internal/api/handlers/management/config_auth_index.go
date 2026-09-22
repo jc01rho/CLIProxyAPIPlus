@@ -40,6 +40,12 @@ type openCodeKeyWithAuthIndex struct {
 	AuthIndex     string                                   `json:"auth-index,omitempty"`
 }
 
+type mimocodeKeyWithAuthIndex struct {
+	config.MimocodeKey
+	APIKeyEntries []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
+	AuthIndex     string                                   `json:"auth-index,omitempty"`
+}
+
 type freebuffKeyWithAuthIndex struct {
 	config.FreebuffKey
 	APIKeyEntries []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
@@ -331,6 +337,50 @@ func (h *Handler) openCodeKeysWithAuthIndex() []openCodeKeyWithAuthIndex {
 					OpenAICompatibilityAPIKey: apiKeyEntry,
 					AuthIndex:                 liveIndexByID[id],
 				}
+			}
+		}
+		out[i] = response
+	}
+	return out
+}
+
+func (h *Handler) mimocodeKeysWithAuthIndex() []mimocodeKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveIndexByID := h.liveAuthIndexByID()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]mimocodeKeyWithAuthIndex, len(h.cfg.MimocodeKey))
+	for i := range h.cfg.MimocodeKey {
+		entry := h.cfg.MimocodeKey[i]
+		response := mimocodeKeyWithAuthIndex{MimocodeKey: entry}
+		headers := make(map[string]string, len(entry.Headers)+1)
+		hasSource := false
+		for key, value := range entry.Headers {
+			headers[key] = value
+			if strings.EqualFold(strings.TrimSpace(key), "X-Mimo-Source") {
+				hasSource = true
+			}
+		}
+		if !hasSource {
+			headers["X-Mimo-Source"] = "mimocode-cli"
+		}
+		if len(entry.APIKeyEntries) == 0 {
+			if key := strings.TrimSpace(entry.APIKey); key != "" {
+				id, _ := idGen.Next("mimocode:apikey", key, strings.TrimSpace(entry.BaseURL), strings.TrimSpace(entry.ProxyURL), strings.TrimSpace(entry.Prefix), config.FormatSortedHeaders(headers))
+				response.AuthIndex = liveIndexByID[id]
+			}
+		} else {
+			response.APIKeyEntries = make([]openAICompatibilityAPIKeyWithAuthIndex, len(entry.APIKeyEntries))
+			for j := range entry.APIKeyEntries {
+				apiKeyEntry := entry.APIKeyEntries[j]
+				id, _ := idGen.Next("mimocode:apikey", apiKeyEntry.APIKey, strings.TrimSpace(entry.BaseURL), strings.TrimSpace(apiKeyEntry.ProxyURL), strings.TrimSpace(entry.Prefix), config.FormatSortedHeaders(headers))
+				response.APIKeyEntries[j] = openAICompatibilityAPIKeyWithAuthIndex{OpenAICompatibilityAPIKey: apiKeyEntry, AuthIndex: liveIndexByID[id]}
 			}
 		}
 		out[i] = response

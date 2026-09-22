@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -269,6 +270,24 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			// without an explicit models list registers nothing: the list is
 			// the opt-in whitelist. Use the model discovery button in the
 			// Management Center to pick the models to expose.
+			models = nil
+			if entry != nil {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
+	case constant.Mimocode:
+		entry := s.resolveConfigMimocodeKey(a)
+		fileModels := mimocodeModelsFromAuth(a)
+		switch {
+		case entry != nil && len(entry.Models) > 0:
+			models = buildMimocodeConfigModels(entry)
+			excluded = entry.ExcludedModels
+		case len(fileModels) > 0:
+			models = buildMimocodeConfigModels(&config.MimocodeKey{Models: fileModels})
+		default:
+			// MiMo model exposure is an explicit whitelist. Auth files and config
+			// entries without models intentionally register no routes.
 			models = nil
 			if entry != nil {
 				excluded = entry.ExcludedModels
@@ -716,6 +735,39 @@ func (s *Service) oauthExcludedModels(provider, authKind string) []string {
 		return nil
 	}
 	return cfg.OAuthExcludedModels[providerKey]
+}
+
+func mimocodeModelsFromAuth(auth *coreauth.Auth) []config.MimocodeModel {
+	if auth == nil || auth.Metadata == nil {
+		return nil
+	}
+	raw, exists := auth.Metadata["models"]
+	if !exists || raw == nil {
+		return nil
+	}
+	if values, ok := raw.([]any); ok {
+		models := make([]config.MimocodeModel, 0, len(values))
+		for _, value := range values {
+			if name, okString := value.(string); okString {
+				name = strings.TrimSpace(name)
+				if name != "" {
+					models = append(models, config.MimocodeModel{Name: name})
+				}
+			}
+		}
+		if len(models) > 0 {
+			return models
+		}
+	}
+	data, errMarshal := json.Marshal(raw)
+	if errMarshal != nil {
+		return nil
+	}
+	var models []config.MimocodeModel
+	if errUnmarshal := json.Unmarshal(data, &models); errUnmarshal != nil {
+		return nil
+	}
+	return models
 }
 
 func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {

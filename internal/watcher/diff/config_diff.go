@@ -442,6 +442,36 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		}
 	}
 
+	// Mimocode keys (do not print key material)
+	if len(oldCfg.MimocodeKey) != len(newCfg.MimocodeKey) {
+		changes = append(changes, fmt.Sprintf("mimocode-api-key count: %d -> %d", len(oldCfg.MimocodeKey), len(newCfg.MimocodeKey)))
+	} else {
+		for i := range oldCfg.MimocodeKey {
+			o := oldCfg.MimocodeKey[i]
+			n := newCfg.MimocodeKey[i]
+			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
+				changes = append(changes, fmt.Sprintf("mimocode[%d].base-url: %s -> %s", i, strings.TrimSpace(o.BaseURL), strings.TrimSpace(n.BaseURL)))
+			}
+			if strings.TrimSpace(o.ProxyURL) != strings.TrimSpace(n.ProxyURL) {
+				changes = append(changes, fmt.Sprintf("mimocode[%d].proxy-url: %s -> %s", i, formatProxyURL(o.ProxyURL), formatProxyURL(n.ProxyURL)))
+			}
+			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
+				changes = append(changes, fmt.Sprintf("mimocode[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
+			}
+			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
+				changes = append(changes, fmt.Sprintf("mimocode[%d].api-key: updated", i))
+			}
+			if !equalStringMap(o.Headers, n.Headers) {
+				changes = append(changes, fmt.Sprintf("mimocode[%d].headers: updated", i))
+			}
+			oldModels := SummarizeMimocodeModels(o.Models)
+			newModels := SummarizeMimocodeModels(n.Models)
+			if oldModels.hash != newModels.hash {
+				changes = append(changes, fmt.Sprintf("mimocode[%d].models: updated (%d -> %d entries)", i, oldModels.count, newModels.count))
+			}
+		}
+	}
+
 	// Freebuff keys (do not print key material)
 	if len(oldCfg.FreebuffKey) != len(newCfg.FreebuffKey) {
 		changes = append(changes, fmt.Sprintf("freebuff-api-key count: %d -> %d", len(oldCfg.FreebuffKey), len(newCfg.FreebuffKey)))

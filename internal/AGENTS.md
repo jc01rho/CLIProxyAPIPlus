@@ -37,6 +37,7 @@ internal/
 - Keep handler = HTTP boundary, executor = upstream call, translator = format transform.
 - Add provider-specific exceptions near the provider, not in broad utility paths.
 - Config changes require checking watcher hot reload and management UI serialization.
+- Mimocode is OpenAI-compatible at execution time, but remains a native provider: keep its default source header, required model whitelist, region `base-url`, and key-provisioning OAuth behavior in provider-specific layers.
 - Usage queue and detailed logging paths must mask API keys before management exposure.
 
 ## ANTI-PATTERNS

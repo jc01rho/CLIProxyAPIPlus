@@ -90,6 +90,11 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	}
 	t, _ := metadata["type"].(string)
 	provider := strings.ToLower(strings.TrimSpace(t))
+	if provider == "api" {
+		if explicitProvider, _ := metadata["provider"].(string); strings.EqualFold(strings.TrimSpace(explicitProvider), "mimocode") {
+			provider = "mimocode"
+		}
+	}
 	originalProvider := provider
 	if ctx.PluginAuthParser != nil {
 		auths, handled, errParse := parsePluginFileAuths(ctx.PluginAuthParser, pluginapi.AuthParseRequest{
@@ -194,6 +199,10 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
 
+	authKind := coreauth.AuthKindOAuth
+	if strings.EqualFold(strings.TrimSpace(t), "api") && provider == "mimocode" {
+		authKind = coreauth.AuthKindAPIKey
+	}
 	a := &coreauth.Auth{
 		ID:       id,
 		FileName: filepath.Base(fullPath),
@@ -206,7 +215,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			coreauth.AttributeSource:        fullPath,
 			coreauth.AttributePath:          fullPath,
 			coreauth.AttributeSourceBackend: coreauth.AuthSourceFile,
-			coreauth.AttributeAuthKind:      coreauth.AuthKindOAuth,
+			coreauth.AttributeAuthKind:      authKind,
 		},
 		ProxyURL:  proxyURL,
 		Metadata:  metadata,
@@ -260,9 +269,24 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			a.Attributes["base_url"] = trimmed
 		}
 	}
+	if authKind == coreauth.AuthKindAPIKey {
+		if rawAPIKey, ok := metadata["api_key"].(string); ok {
+			if trimmed := strings.TrimSpace(rawAPIKey); trimmed != "" {
+				a.Attributes[coreauth.AttributeAPIKey] = trimmed
+			}
+		}
+		if rawUID, ok := metadata["uid"].(string); ok {
+			if trimmed := strings.TrimSpace(rawUID); trimmed != "" {
+				a.Attributes["uid"] = trimmed
+				if a.Label == provider {
+					a.Label = trimmed
+				}
+			}
+		}
+	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
-	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
+	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, authKind)
 	applyFingerprintProfileAttribute(a, metadata)
 	if provider == "devin" {
 		for _, field := range []string{"api_key", "session_token", "windsurf_api_key", "token", "access_token"} {

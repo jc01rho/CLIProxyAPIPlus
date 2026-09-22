@@ -229,6 +229,19 @@ func TestRegisterExecutorForAuth_CommandCodeUsesNativeExecutor(t *testing.T) {
 	}
 }
 
+func TestRegisterExecutorForAuthMimocodeUsesNativeWrapper(t *testing.T) {
+	service := &Service{cfg: &config.Config{}, coreManager: coreauth.NewManager(nil, nil, nil)}
+	service.registerExecutorForAuth(&coreauth.Auth{ID: "mimocode-key", Provider: "mimocode", Attributes: map[string]string{"api_key": "secret"}}, true)
+
+	resolved, ok := service.coreManager.Executor("mimocode")
+	if !ok || resolved == nil {
+		t.Fatal("expected native mimocode executor")
+	}
+	if _, okMimocode := resolved.(*runtimeexecutor.MimocodeExecutor); !okMimocode {
+		t.Fatalf("executor type = %T, want *executor.MimocodeExecutor", resolved)
+	}
+}
+
 func openAICompatKimiAuth() *coreauth.Auth {
 	return &coreauth.Auth{
 		ID:       "compat-kimi",

@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // APIKeyIPBlacklistConfig configures automatic blocking for repeated invalid API keys.
 type APIKeyIPBlacklistConfig struct {
@@ -307,6 +310,66 @@ func (cfg *Config) SanitizeOpenCodeKeys() {
 		out = append(out, entry)
 	}
 	cfg.OpenCodeKey = out
+}
+
+// FoldMimocodeLegacyAPIKey makes api-key-entries the single source of truth
+// when any nested keys are present.
+func FoldMimocodeLegacyAPIKey(entry *MimocodeKey) {
+	if entry == nil {
+		return
+	}
+	legacy := strings.TrimSpace(entry.APIKey)
+	if legacy == "" || len(entry.APIKeyEntries) == 0 {
+		return
+	}
+	for i := range entry.APIKeyEntries {
+		if strings.TrimSpace(entry.APIKeyEntries[i].APIKey) == legacy {
+			entry.APIKey = ""
+			return
+		}
+	}
+	entry.APIKeyEntries = append([]OpenAICompatibilityAPIKey{{
+		APIKey:   legacy,
+		ProxyURL: strings.TrimSpace(entry.ProxyURL),
+	}}, entry.APIKeyEntries...)
+	entry.APIKey = ""
+}
+
+// SanitizeMimocodeKeys normalizes MiMo credentials and rejects keyless entries.
+func (cfg *Config) SanitizeMimocodeKeys() error {
+	if cfg == nil {
+		return nil
+	}
+	out := make([]MimocodeKey, 0, len(cfg.MimocodeKey))
+	for providerIndex, entry := range cfg.MimocodeKey {
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		for keyIndex := range entry.APIKeyEntries {
+			apiKeyEntry := &entry.APIKeyEntries[keyIndex]
+			apiKeyEntry.APIKey = strings.TrimSpace(apiKeyEntry.APIKey)
+			apiKeyEntry.ProxyURL = strings.TrimSpace(apiKeyEntry.ProxyURL)
+			apiKeyEntry.Comment = strings.TrimSpace(apiKeyEntry.Comment)
+			if apiKeyEntry.APIKey == "" {
+				return fmt.Errorf("mimocode-api-key[%d].api-key-entries[%d].api-key is required", providerIndex, keyIndex)
+			}
+		}
+		FoldMimocodeLegacyAPIKey(&entry)
+		if entry.APIKey == "" && len(entry.APIKeyEntries) == 0 {
+			return fmt.Errorf("mimocode-api-key[%d].api-key is required", providerIndex)
+		}
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BillingClass = normalizeBillingClass(entry.BillingClass)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		for i := range entry.Models {
+			entry.Models[i].Name = strings.TrimSpace(entry.Models[i].Name)
+			entry.Models[i].Alias = strings.TrimSpace(entry.Models[i].Alias)
+		}
+		out = append(out, entry)
+	}
+	cfg.MimocodeKey = out
+	return nil
 }
 
 func (cfg *Config) SanitizeMistralKeys() {

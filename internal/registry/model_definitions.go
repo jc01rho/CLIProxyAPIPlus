@@ -599,6 +599,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetFreebuffModels()
 	case "opencode":
 		return GetOpenCodeModels()
+	case "mimocode", "mimo-code":
+		return GetMimocodeModels()
 	case "meta", "muse":
 		return GetMetaModels()
 	default:

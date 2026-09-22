@@ -433,6 +433,8 @@ func NormalizeOAuthProvider(provider string) (string, error) {
 		return "meta", nil
 	case "workbuddy":
 		return "workbuddy", nil
+	case "mimocode", "mimo-code":
+		return "mimocode", nil
 	default:
 		return "", errUnsupportedOAuthFlow
 	}

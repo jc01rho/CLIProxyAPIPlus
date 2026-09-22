@@ -1065,6 +1065,73 @@ func (m OpenCodeModel) GetAlias() string       { return m.Alias }
 func (m OpenCodeModel) GetDisplayName() string { return "" }
 func (m OpenCodeModel) GetForceMapping() bool  { return m.ForceMapping }
 
+// MimocodeKey represents a Xiaomi MiMo API credential.
+type MimocodeKey struct {
+	APIKey         string                      `yaml:"api-key" json:"api-key"`
+	Comment        string                      `yaml:"comment,omitempty" json:"comment,omitempty"`
+	Priority       int                         `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Prefix         string                      `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	BaseURL        string                      `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	ProxyURL       string                      `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	BillingClass   BillingClass                `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+	Models         []MimocodeModel             `yaml:"models" json:"models"`
+	Headers        map[string]string           `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ExcludedModels []string                    `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	DisableCooling bool                        `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+	APIKeyEntries  []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
+}
+
+func (k MimocodeKey) GetAPIKey() string   { return k.APIKey }
+func (k MimocodeKey) GetBaseURL() string  { return k.BaseURL }
+func (k MimocodeKey) GetPrefix() string   { return k.Prefix }
+func (k MimocodeKey) GetProxyURL() string { return k.ProxyURL }
+
+func (k MimocodeKey) ContainsAPIKey(apiKey string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return true
+	}
+	for i := range k.APIKeyEntries {
+		if strings.TrimSpace(k.APIKeyEntries[i].APIKey) == apiKey {
+			return true
+		}
+	}
+	return false
+}
+
+func (k MimocodeKey) MatchesCredential(apiKey, proxyURL string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	proxyURL = strings.TrimSpace(proxyURL)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return strings.TrimSpace(k.ProxyURL) == proxyURL
+	}
+	for i := range k.APIKeyEntries {
+		entry := k.APIKeyEntries[i]
+		if strings.TrimSpace(entry.APIKey) == apiKey {
+			return strings.TrimSpace(entry.ProxyURL) == proxyURL
+		}
+	}
+	return false
+}
+
+// MimocodeModel maps a client alias to an upstream MiMo model name.
+type MimocodeModel struct {
+	Name         string `yaml:"name" json:"name"`
+	Alias        string `yaml:"alias" json:"alias"`
+	ForceMapping bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+}
+
+func (m MimocodeModel) GetName() string        { return m.Name }
+func (m MimocodeModel) GetAlias() string       { return m.Alias }
+func (m MimocodeModel) GetDisplayName() string { return "" }
+func (m MimocodeModel) GetForceMapping() bool  { return m.ForceMapping }
+
 // XAIKey uses the Codex API key structure for native xAI execution.
 type XAIKey = CodexKey
 

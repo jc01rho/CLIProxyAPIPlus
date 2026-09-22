@@ -53,6 +53,20 @@ func ComputeOpenCodeModelsHash(models []config.OpenCodeModel) string {
 	return hashJoined(keys)
 }
 
+func ComputeMimocodeModelsHash(models []config.MimocodeModel) string {
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.GetName())
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
+}
+
 func ComputeMistralModelsHash(models []config.MistralModel) string {
 	keys := normalizeModelPairs(func(out func(key string)) {
 		for _, model := range models {

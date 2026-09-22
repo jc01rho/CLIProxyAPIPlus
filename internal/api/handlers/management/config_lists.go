@@ -2165,6 +2165,47 @@ func (h *Handler) DeleteOpenCodeKey(c *gin.Context) {
 	c.JSON(400, gin.H{"error": "missing api-key or index"})
 }
 
+// mimocode-api-key: []MimocodeKey
+func (h *Handler) GetMimocodeKeys(c *gin.Context) {
+	c.JSON(200, gin.H{"mimocode-api-key": h.mimocodeKeysWithAuthIndex()})
+}
+
+func (h *Handler) PutMimocodeKeys(c *gin.Context) {
+	data, errRead := c.GetRawData()
+	if errRead != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var entries []config.MimocodeKey
+	if errUnmarshal := json.Unmarshal(data, &entries); errUnmarshal != nil {
+		var wrapper struct {
+			Items []config.MimocodeKey `json:"items"`
+		}
+		if errWrapper := json.Unmarshal(data, &wrapper); errWrapper != nil {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		entries = wrapper.Items
+	}
+	for providerIndex := range entries {
+		for keyIndex := range entries[providerIndex].APIKeyEntries {
+			field := fmt.Sprintf("mimocode-api-key[%d].api-key-entries[%d].weight", providerIndex, keyIndex)
+			if rejectInvalidCredentialWeight(c, field, entries[providerIndex].APIKeyEntries[keyIndex].Weight) {
+				return
+			}
+		}
+	}
+	candidate := &config.Config{MimocodeKey: append([]config.MimocodeKey(nil), entries...)}
+	if errSanitize := candidate.SanitizeMimocodeKeys(); errSanitize != nil {
+		c.JSON(400, gin.H{"error": errSanitize.Error()})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.MimocodeKey = candidate.MimocodeKey
+	h.persistLocked(c)
+}
+
 // freebuff-api-key: []FreebuffKey
 func (h *Handler) GetFreebuffKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"freebuff-api-key": h.freebuffKeysWithAuthIndex()})

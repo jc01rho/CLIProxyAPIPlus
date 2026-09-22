@@ -60,6 +60,7 @@ cli-proxy/
 ## CROSS-PROJECT CONVENTIONS
 
 - Backend logs must mask tokens, cookies, API keys, and auth headers; use existing masking utilities first.
+- Mimocode credentials require an explicit non-empty API key and `models` exposure whitelist. Regional endpoints are separate `mimocode-api-key` entries selected with `base-url`.
 - Translators are pure format conversion. Do not add HTTP calls, credential selection, or upstream execution there.
 - Management UI state changes go through Zustand actions; components must not mutate store state directly.
 - Management UI HTTP calls go through `src/services/api/`; no raw component-level `/v0/management/*` calls.

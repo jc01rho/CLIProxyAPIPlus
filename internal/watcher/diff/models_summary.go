@@ -44,6 +44,11 @@ type OpenCodeModelsSummary struct {
 	count int
 }
 
+type MimocodeModelsSummary struct {
+	hash  string
+	count int
+}
+
 // SummarizeGeminiModels hashes Gemini model aliases for change detection.
 func SummarizeGeminiModels(models []config.GeminiModel) GeminiModelsSummary {
 	if len(models) == 0 {
@@ -170,6 +175,24 @@ func SummarizeOpenCodeModels(models []config.OpenCodeModel) OpenCodeModelsSummar
 		hash:  hashJoined(keys),
 		count: len(keys),
 	}
+}
+
+// SummarizeMimocodeModels hashes MiMo model aliases for change detection.
+func SummarizeMimocodeModels(models []config.MimocodeModel) MimocodeModelsSummary {
+	if len(models) == 0 {
+		return MimocodeModelsSummary{}
+	}
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return MimocodeModelsSummary{hash: hashJoined(keys), count: len(keys)}
 }
 
 // SummarizeCommandCodeModels hashes CommandCode model aliases for change detection.

@@ -196,6 +196,21 @@ The executor mirrors the headers on every call and appends minimal `bash`/`read`
 
 Management REST: `GET/PUT/PATCH/DELETE /v0/management/opencode-api-key`.
 
+### Mimocode (Xiaomi MiMo)
+
+Mimocode uses Xiaomi's OpenAI-compatible endpoint and sends `X-Mimo-Source: mimocode-cli` by default. Set `headers.X-Mimo-Source` to override that value. An empty `base-url` defaults to `https://api.xiaomimimo.com/v1`; configure separate entries for regional gateways.
+
+`models` is a required exposure whitelist. A credential without explicit models registers no routes, and empty API keys are rejected.
+
+    mimocode-api-key:
+      - api-key: "sk-..."
+        base-url: "https://api.xiaomimimo.com/v1"
+        models:
+          - name: "mimo-v2.5-pro"
+            alias: "mimo-v2.5-pro"
+
+Management REST: `GET/PUT /v0/management/mimocode-api-key`. OAuth key provisioning starts with `GET /v0/management/mimocode-auth-url`; headless clients can submit the encrypted callback value to `POST /v0/management/mimocode-auth-callback`. For relogin, pass the existing auth file as `?name=...` or its `?auth_index=...` so the persisted `key_name` is reused.
+
 ### Generic usage flow
 
 All providers expose the standard OpenAI-compatible `/v1/chat/completions`, `/v1/chat/completions` (streaming), and `/v1/images/generations` endpoints. Point your client to:

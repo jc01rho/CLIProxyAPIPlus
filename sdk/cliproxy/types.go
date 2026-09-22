@@ -85,6 +85,9 @@ type APIKeyClientResult struct {
 
 	// OpenCodeKeyCount is the number of OpenCode credentials loaded
 	OpenCodeKeyCount int
+
+	// MimocodeKeyCount is the number of Xiaomi MiMo credentials loaded
+	MimocodeKeyCount int
 }
 
 // WatcherFactory creates a watcher for configuration and token changes.
