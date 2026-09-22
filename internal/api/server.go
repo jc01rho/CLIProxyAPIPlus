@@ -221,6 +221,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if optionState.postAuthPersistHook != nil {
 		s.mgmt.SetPostAuthPersistHook(optionState.postAuthPersistHook)
 	}
+	if optionState.modelRefreshHook != nil {
+		s.mgmt.SetModelRegistrationRefreshHook(optionState.modelRefreshHook)
+	}
 	s.localPassword = optionState.localPassword
 
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the

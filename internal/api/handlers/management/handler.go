@@ -57,6 +57,7 @@ type Handler struct {
 	onConfigApplied         func(*config.Config)
 	apiKeyIPBlacklist       *APIKeyIPBlacklistStore
 	postAuthPersistHook     coreauth.PostAuthHook
+	modelRefreshHook        coreauth.PostAuthHook
 	pluginHost              *pluginhost.Host
 	configReloadHook        func(context.Context, *config.Config)
 	pluginStoreRegistryURL  string
@@ -320,6 +321,12 @@ func (h *Handler) applyRuntimeConfig(cfg *config.Config) {
 func (h *Handler) SetPostAuthPersistHook(hook coreauth.PostAuthHook) {
 	h.postAuthPersistHook = hook
 
+}
+
+// SetModelRegistrationRefreshHook registers a hook that refreshes one auth's
+// runtime model registration without persisting or mutating the credential.
+func (h *Handler) SetModelRegistrationRefreshHook(hook coreauth.PostAuthHook) {
+	h.modelRefreshHook = hook
 }
 
 // Middleware enforces access control for management endpoints.

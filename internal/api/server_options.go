@@ -25,6 +25,7 @@ type serverOptionConfig struct {
 	keepAliveOnTimeout    func()
 	postAuthHook          auth.PostAuthHook
 	postAuthPersistHook   auth.PostAuthHook
+	modelRefreshHook      auth.PostAuthHook
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
 	usageExportRuntime    *keeperexport.Runtime
@@ -114,6 +115,14 @@ func WithPostAuthHook(hook auth.PostAuthHook) ServerOption {
 func WithPostAuthPersistHook(hook auth.PostAuthHook) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.postAuthPersistHook = hook
+	}
+}
+
+// WithModelRegistrationRefreshHook registers a hook used by management model
+// listing and manual refresh endpoints to rebuild one auth's model catalog.
+func WithModelRegistrationRefreshHook(hook auth.PostAuthHook) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.modelRefreshHook = hook
 	}
 }
 

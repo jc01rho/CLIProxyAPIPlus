@@ -297,12 +297,27 @@ func (b *Builder) Build() (*Service, error) {
 	}
 	service.serverOptions = append(service.serverOptions,
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),
+		api.WithModelRegistrationRefreshHook(service.runtimeModelRegistrationRefreshHook()),
 		api.WithPluginHost(pluginHost),
 		api.WithConfigReloadHook(func(_ context.Context, _ *config.Config) {
 			service.reloadConfigFromWatcher()
 		}),
 	)
 	return service, nil
+}
+
+func (s *Service) runtimeModelRegistrationRefreshHook() coreauth.PostAuthHook {
+	return func(ctx context.Context, auth *coreauth.Auth) error {
+		if s == nil || auth == nil || auth.ID == "" {
+			return nil
+		}
+		refreshCtx := context.Background()
+		if ctx != nil {
+			refreshCtx = context.WithoutCancel(ctx)
+		}
+		s.refreshModelRegistrationForAuthWithContext(refreshCtx, auth, nil)
+		return nil
+	}
 }
 
 func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {

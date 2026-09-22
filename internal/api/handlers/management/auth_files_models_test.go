@@ -68,6 +68,62 @@ func TestGetAuthFileModelsAppliesAuthExcludedModels(t *testing.T) {
 	}
 }
 
+func TestGetAuthFileModelsRefreshesRegistrationBeforeResponse(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "claude-sajjon.json",
+		Provider: "claude",
+		FileName: "claude-sajjon.json",
+		Status:   coreauth.StatusActive,
+	}
+	registered, errRegister := manager.Register(context.Background(), auth)
+	if errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(registered.ID, registered.Provider, []*registry.ModelInfo{
+		{ID: "claude-opus-5", Type: "claude"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient(registered.ID)
+	})
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	refreshCalls := 0
+	h.SetModelRegistrationRefreshHook(func(_ context.Context, refreshedAuth *coreauth.Auth) error {
+		refreshCalls++
+		reg.RegisterClient(refreshedAuth.ID, refreshedAuth.Provider, []*registry.ModelInfo{
+			{ID: "claude-opus-5-5", Type: "claude"},
+			{ID: "opus", Type: "claude"},
+		})
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/models?name=claude-sajjon.json", nil)
+
+	h.GetAuthFileModels(ginCtx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("model registration refresh calls = %d, want 1", refreshCalls)
+	}
+	for _, modelID := range []string{"claude-opus-5-5", "opus"} {
+		if !containsModelID(rec.Body.String(), modelID) {
+			t.Fatalf("expected refreshed model %s, got %s", modelID, rec.Body.String())
+		}
+	}
+	if containsModelID(rec.Body.String(), "claude-opus-5") {
+		t.Fatalf("stale model remained after refresh: %s", rec.Body.String())
+	}
+}
+
 func TestGetAuthFileModelsAllowsOnlySupportedCopilotModels(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 

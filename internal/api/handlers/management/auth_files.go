@@ -1,9 +1,11 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -360,6 +362,17 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 
 	if authID == "" {
 		authID = name // fallback to filename as ID
+	}
+
+	if matchedAuth != nil && !matchedAuth.Disabled && h.modelRefreshHook != nil {
+		if errRefresh := h.modelRefreshHook(context.WithoutCancel(c.Request.Context()), matchedAuth); errRefresh != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to refresh auth models: %v", errRefresh)})
+			return
+		}
+		if latestAuth, okLatest := h.lookupAuthFile(name, ""); okLatest && latestAuth != nil {
+			matchedAuth = latestAuth
+			authID = latestAuth.ID
+		}
 	}
 
 	// Get models from registry

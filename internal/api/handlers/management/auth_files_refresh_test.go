@@ -86,6 +86,11 @@ func TestRefreshAuthFiles_AllAndSpecific(t *testing.T) {
 	_, _ = manager.Register(context.Background(), auth2)
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	modelRefreshCalls := atomic.Int32{}
+	h.SetModelRegistrationRefreshHook(func(context.Context, *coreauth.Auth) error {
+		modelRefreshCalls.Add(1)
+		return nil
+	})
 
 	engine := gin.New()
 	engine.POST("/auth-files/refresh", h.RefreshAuthFiles)
@@ -105,9 +110,6 @@ func TestRefreshAuthFiles_AllAndSpecific(t *testing.T) {
 	if ok, _ := resp["ok"].(bool); !ok {
 		t.Fatalf("expected ok=true, got %v", resp)
 	}
-
-	// Wait briefly for refresh to execute
-	time.Sleep(50 * time.Millisecond)
 
 	if cnt := exec.refreshCnt.Load(); cnt < 2 {
 		t.Fatalf("expected at least 2 refreshes, got %d", cnt)
@@ -130,6 +132,9 @@ func TestRefreshAuthFiles_AllAndSpecific(t *testing.T) {
 	}
 	if newCnt := exec.refreshCnt.Load(); newCnt != prevCnt+1 {
 		t.Fatalf("expected cnt to increment by 1, was %d now %d", prevCnt, newCnt)
+	}
+	if got := modelRefreshCalls.Load(); got < 1 {
+		t.Fatalf("expected model registration refresh after token refresh, got %d calls", got)
 	}
 
 	// 4. Refresh nonexistent file
@@ -162,5 +167,53 @@ func TestRefreshAuthFiles_AllAndSpecific(t *testing.T) {
 
 	if wBadJSON.Code != http.StatusBadRequest {
 		t.Fatalf("expected malformed JSON to return 400, got %d", wBadJSON.Code)
+	}
+}
+
+func TestRefreshAuthFiles_ExpiresNeverRefreshesModelsWithoutTokenRotation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	exec := &refreshRecordExecutor{provider: "claude"}
+	manager.RegisterExecutor(exec)
+	auth := &coreauth.Auth{
+		ID:       "claude-sajjon.json",
+		FileName: "claude-sajjon.json",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{
+			"access_token":  "static-token",
+			"refresh_token": "must-not-be-used",
+			"expires_never": true,
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	modelRefreshCalls := 0
+	h.SetModelRegistrationRefreshHook(func(_ context.Context, refreshedAuth *coreauth.Auth) error {
+		modelRefreshCalls++
+		if refreshedAuth.ID != auth.ID {
+			t.Fatalf("refresh auth ID = %q, want %q", refreshedAuth.ID, auth.ID)
+		}
+		return nil
+	})
+
+	engine := gin.New()
+	engine.POST("/auth-files/refresh", h.RefreshAuthFiles)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth-files/refresh?name=claude-sajjon.json", nil)
+	engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := exec.refreshCnt.Load(); got != 0 {
+		t.Fatalf("token refresh calls = %d, want 0 for expires-never auth", got)
+	}
+	if modelRefreshCalls != 1 {
+		t.Fatalf("model registration refresh calls = %d, want 1", modelRefreshCalls)
 	}
 }
