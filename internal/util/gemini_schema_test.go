@@ -2919,3 +2919,56 @@ func TestCleanJSONSchema_ArrayItemsRequireArrayType_Issue6011(t *testing.T) {
 		}
 	})
 }
+
+func TestSanitizeArrayItems_PreservesItemsForUppercaseArrayType(t *testing.T) {
+	input := `{
+		"type": "OBJECT",
+		"properties": {
+			"summary": {"type": "STRING"},
+			"brands": {
+				"type": "ARRAY",
+				"items": {"type": "STRING"}
+			},
+			"catalog": {
+				"type": "OBJECT",
+				"properties": {
+					"items": {
+						"type": "ARRAY",
+						"items": {
+							"type": "OBJECT",
+							"properties": {"id": {"type": "STRING"}}
+						}
+					}
+				}
+			}
+		}
+	}`
+
+	cleaners := map[string]func(string) string{
+		"AntigravityResponse": CleanJSONSchemaForAntigravityResponse,
+		"Antigravity":         CleanJSONSchemaForAntigravity,
+		"Gemini":              CleanJSONSchemaForGemini,
+		"AntigravityTool":     func(s string) string { return CleanJSONSchemaForAntigravityTool(s, false) },
+	}
+
+	for name, clean := range cleaners {
+		t.Run(name, func(t *testing.T) {
+			got := clean(input)
+			parsed := gjson.Parse(got)
+
+			brandsItems := parsed.Get("properties.brands.items")
+			if !brandsItems.Exists() {
+				t.Fatalf("[%s] properties.brands.items was stripped from uppercase ARRAY: %s", name, got)
+			}
+			typeStr := parsed.Get("properties.brands.type").String()
+			if !strings.EqualFold(typeStr, "array") {
+				t.Fatalf("[%s] properties.brands.type corrupted: %s", name, got)
+			}
+
+			nestedItems := parsed.Get("properties.catalog.properties.items.items")
+			if !nestedItems.Exists() {
+				t.Fatalf("[%s] properties.catalog.properties.items.items was stripped: %s", name, got)
+			}
+		})
+	}
+}

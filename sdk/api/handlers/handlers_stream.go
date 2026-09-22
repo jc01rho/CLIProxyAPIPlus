@@ -91,7 +91,7 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 		return nil, nil, errChan
 	}
 
-	passthroughHeadersEnabled := PassthroughHeadersEnabled(h.Cfg)
+	passthroughHeadersEnabled := executionPassthroughHeaders(h.Cfg, execOptions.InternalSource)
 	interceptorHost := h.interceptorHost()
 	streamInterceptorsActive := streamInterceptorsEnabled(interceptorHost)
 	rawStreamHeaders := cloneHeader(streamResult.Headers)
@@ -347,6 +347,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		Query:                       modelExecutionQuery(ctx, execOptions.Query),
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
 		WebSocketResponseObserver:   h.webSocketResponseObserver(lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
+		ProxyURL:                    execOptions.ProxyURL,
 	}
 	opts.Metadata = reqMeta
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
@@ -384,7 +385,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	if executedReq, executedOpts := executedRequest(); len(executedOpts.Headers) > 0 || len(executedReq.Payload) > 0 || len(executedOpts.Metadata) > 0 {
 		ctx = enrichContextWithSessionHierarchy(ctx, executedOpts.Headers, executedReq.Payload, executedOpts.Metadata)
 	}
-	passthroughHeadersEnabled := PassthroughHeadersEnabled(h.Cfg)
+	passthroughHeadersEnabled := executionPassthroughHeaders(h.Cfg, execOptions.InternalSource)
 	interceptorHost := h.interceptorHost()
 	streamInterceptorsActive := streamInterceptorsEnabled(interceptorHost)
 	// Resolve bootstrap retries and header initialization before returning so the

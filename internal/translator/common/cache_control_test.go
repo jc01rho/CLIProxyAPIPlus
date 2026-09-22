@@ -106,4 +106,3 @@ func TestAttachToolMessageCacheControl_NoToolResultLeavesMessageUntouched(t *tes
 		t.Fatalf("expected text block to not receive cache_control; out=%s", out)
 	}
 }
-
