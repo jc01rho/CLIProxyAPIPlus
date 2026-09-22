@@ -132,9 +132,11 @@ func TestApplyClaudeHeaders_CustomHeadersCannotOverrideAnthropicIdentity(t *test
 // field into their traffic.
 func TestClaudeExecutor_ContextManagementNeverLeaksToOtherUpstreams(t *testing.T) {
 	var upstreamBody []byte
+	var upstreamUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		upstreamBody = bytes.Clone(body)
+		upstreamUserAgent = r.Header.Get("User-Agent")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
 	}))
@@ -156,6 +158,12 @@ func TestClaudeExecutor_ContextManagementNeverLeaksToOtherUpstreams(t *testing.T
 	}
 	if got := gjson.GetBytes(upstreamBody, "context_management"); got.Exists() {
 		t.Fatalf("non-Anthropic upstream received context_management = %s", got.Raw)
+	}
+	if upstreamUserAgent != "claude-cli/2.1.280 (external, cli)" {
+		t.Fatalf("upstream User-Agent = %q, want Claude Code 2.1.280", upstreamUserAgent)
+	}
+	if billing := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.Contains(billing, "cc_version=2.1.280.") {
+		t.Fatalf("upstream billing header = %q, want Claude Code 2.1.280", billing)
 	}
 }
 

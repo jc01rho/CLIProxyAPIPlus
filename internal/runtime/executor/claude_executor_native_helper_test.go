@@ -32,7 +32,7 @@ func claudeNativeHelperHeaders(betas, compression string) http.Header {
 		"Accept":            {"application/json"},
 		"Accept-Encoding":   {compression},
 		"Content-Type":      {"application/json"},
-		"User-Agent":        {"claude-cli/2.1.220 (external, cli)"},
+		"User-Agent":        {"claude-cli/2.1.280 (external, cli)"},
 		"X-App":             {"cli"},
 		"Anthropic-Beta":    {betas},
 		"Anthropic-Version": {"2023-06-01"},
@@ -145,7 +145,7 @@ func TestClaudeExecutorMinimalNativeHelperCloaksMarkerlessWire(t *testing.T) {
 		t.Fatalf("system block count = %d, want masqueraded 2: %s", got, upstreamBody)
 	}
 	// Independent SHA-256 vector: "helper probe" samples "ep0" at indices 4, 7, 20.
-	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header: cc_version=2.1.177.2da; cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000") {
+	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header: cc_version=2.1.280.b9a; cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000") {
 		t.Fatalf("billing header not re-signed at current baseline: %q", got)
 	}
 	if got := gjson.GetBytes(upstreamBody, "system.1.text").String(); got != "You are Claude Code, Anthropic's official CLI for Claude." {
@@ -268,7 +268,7 @@ func assertClaudeNativeHelperHeaders(t *testing.T, got, incoming http.Header, wa
 	if got := claudeNativeHelperHeaderValue(got, "X-Claude-Code-Session-Id"); !uuidRe.MatchString(got) {
 		t.Fatalf("X-Claude-Code-Session-Id = %q, want re-derived fingerprint UUID", got)
 	}
-	if got := claudeNativeHelperHeaderValue(got, "User-Agent"); got != "claude-cli/2.1.177 (external, cli)" {
+	if got := claudeNativeHelperHeaderValue(got, "User-Agent"); got != "claude-cli/2.1.280 (external, cli)" {
 		t.Fatalf("User-Agent = %q, want pinned fingerprint baseline", got)
 	}
 	if got := claudeNativeHelperHeaderValue(got, "Accept"); got != wantAccept {

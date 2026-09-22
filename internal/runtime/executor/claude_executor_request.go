@@ -1254,7 +1254,7 @@ func doClaudeUpstreamRequest(client *http.Client, req *http.Request) (*http.Resp
 }
 
 // claudeWireHeaderCasing maps Go's canonical header name to the exact casing
-// Claude Code 2.1.220 puts on the wire. Only the names that differ are listed;
+// Claude Code 2.1.280 puts on the wire. Only the names that differ are listed;
 // the other twelve already survive canonicalisation unchanged.
 var claudeWireHeaderCasing = map[string]string{
 	"X-Stainless-Os":      "X-Stainless-OS",

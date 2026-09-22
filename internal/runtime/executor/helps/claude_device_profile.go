@@ -21,8 +21,10 @@ import (
 
 const (
 	// Fingerprint constants mirror cortexkit/anthropic-auth constants.ts
-	// (CLAUDE_CODE_VERSION 2.1.177, ENTRYPOINT cli, BUILD_HASH 3bf).
-	defaultClaudeFingerprintUserAgent      = "claude-cli/2.1.177 (external, cli)"
+	// (CLAUDE_CODE_VERSION, ENTRYPOINT cli).
+	// DefaultClaudeCodeVersion is the minimum Claude Code version that supports Opus 5.5.
+	DefaultClaudeCodeVersion               = "2.1.280"
+	defaultClaudeFingerprintUserAgent      = "claude-cli/" + DefaultClaudeCodeVersion + " (external, cli)"
 	defaultClaudeFingerprintPackageVersion = "0.94.0"
 	defaultClaudeFingerprintRuntimeVersion = "v24.3.0"
 	defaultClaudeFingerprintOS             = "MacOS"
@@ -234,7 +236,7 @@ func meetsClaudeDeviceProfileBaseline(candidate, baseline ClaudeDeviceProfile) b
 	}
 	// Official Claude Code 2.1.x clients share package 0.94.0 but bump the
 	// CLI patch and stainless runtime independently of our cloak fingerprint
-	// (2.1.177 / v24.3.0). Matching major.minor + package keeps those clients
+	// (2.1.280 / v24.3.0). Matching major.minor + package keeps those clients
 	// on pass-through; a different line or package is rewritten to baseline.
 	return plausibleClaudeCLIVersion(candidate.version, baseline.version) &&
 		candidate.PackageVersion == baseline.PackageVersion
@@ -621,7 +623,7 @@ func DefaultClaudeVersion(cfg *config.Config) string {
 	if version, ok := parseClaudeCLIVersion(profile.UserAgent); ok {
 		return strconv.Itoa(version.major) + "." + strconv.Itoa(version.minor) + "." + strconv.Itoa(version.patch)
 	}
-	return "2.1.220"
+	return DefaultClaudeCodeVersion
 }
 
 func ApplyClaudeDefaultDeviceProfileHeaders(r *http.Request, cfg *config.Config) {
