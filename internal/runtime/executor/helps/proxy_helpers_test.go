@@ -49,8 +49,10 @@ func TestNewProxyAwareHTTPClientRequestProxyOverridesAuthAndGlobal(t *testing.T)
 		&cliproxyauth.Auth{ProxyURL: "http://auth-proxy.example:8080"},
 		0,
 	)
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok || transport.Proxy == nil {
+	// The fork wraps proxy transports in idleTimeoutRoundTripper, so unwrap
+	// before asserting on *http.Transport.
+	transport := requireHTTPTransport(t, client.Transport)
+	if transport.Proxy == nil {
 		t.Fatalf("transport = %#v, want request proxy", client.Transport)
 	}
 	req, errReq := http.NewRequest(http.MethodGet, "https://upstream.example/v1", nil)
@@ -72,8 +74,8 @@ func TestNewProxyAwareHTTPClientRequestProxyOverridesAuthAndGlobal(t *testing.T)
 		&cliproxyauth.Auth{ProxyURL: "http://auth-proxy.example:8080"},
 		0,
 	)
-	refreshTransport, ok := refreshClient.Transport.(*http.Transport)
-	if !ok || refreshTransport.Proxy == nil {
+	refreshTransport := requireHTTPTransport(t, refreshClient.Transport)
+	if refreshTransport.Proxy == nil {
 		t.Fatalf("refresh transport = %#v, want auth proxy", refreshClient.Transport)
 	}
 	refreshProxy, errRefresh := refreshTransport.Proxy(req)
