@@ -366,6 +366,11 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			return
 		} else if fieldPath == "headers" {
 			applyAuthFileHeadersPatch(targetAuth, value)
+		} else if fieldPath == "cloak_mode" {
+			if errCloak := applyAuthFileCloakModePatch(targetAuth, value); errCloak != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": errCloak.Error()})
+				return
+			}
 		} else if fieldPath == "model_aliases" {
 			aliases, errAliases := parseAuthFileModelAliases(value)
 			if errAliases != nil {
@@ -653,6 +658,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["websockets"]; ok {
 		syncAuthFileWebsocketsAttribute(auth)
 	}
+	if _, ok := touchedRoots["cloak_mode"]; ok {
+		syncAuthFileCloakModeAttribute(auth)
+	}
 	if _, ok := touchedRoots["disabled"]; ok {
 		syncAuthFileDisabledState(auth)
 	}
@@ -783,6 +791,54 @@ func syncAuthFileQuotaURLAttribute(auth *coreauth.Auth) {
 		auth.Attributes = make(map[string]string)
 	}
 	auth.Attributes["quota_url"] = quotaURL
+}
+
+func applyAuthFileCloakModePatch(auth *coreauth.Auth, value any) error {
+	if auth == nil {
+		return fmt.Errorf("auth is nil")
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	if value == nil {
+		delete(auth.Metadata, "cloak_mode")
+		return nil
+	}
+	mode, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("cloak_mode must be auto, always, never, or null")
+	}
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "":
+		delete(auth.Metadata, "cloak_mode")
+	case "auto", "always", "never":
+		auth.Metadata["cloak_mode"] = strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return fmt.Errorf("cloak_mode must be auto, always, never, or null")
+	}
+	return nil
+}
+
+func syncAuthFileCloakModeAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	mode := ""
+	if auth.Metadata != nil {
+		if raw, ok := auth.Metadata["cloak_mode"].(string); ok {
+			mode = strings.ToLower(strings.TrimSpace(raw))
+		}
+	}
+	if mode == "" {
+		if auth.Attributes != nil {
+			delete(auth.Attributes, "cloak_mode")
+		}
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Attributes["cloak_mode"] = mode
 }
 
 func syncAuthFileHeaderAttributes(auth *coreauth.Auth) {

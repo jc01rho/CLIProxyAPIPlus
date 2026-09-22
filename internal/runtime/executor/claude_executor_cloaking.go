@@ -1304,7 +1304,10 @@ func resolveClaudeWirePolicy(cfg *config.Config, auth *cliproxyauth.Auth, apiKey
 		cloakMode = attrMode
 	}
 	if cloakCfg != nil {
-		if mode := strings.TrimSpace(cloakCfg.Mode); mode != "" {
+		// An explicit per-credential cloak_mode (the auth-file editor toggle)
+		// wins over the matching claude-api-key cloak.mode. Config mode is
+		// only the default when this credential did not set one.
+		if mode := strings.TrimSpace(cloakCfg.Mode); mode != "" && attrMode == "" {
 			cloakMode = mode
 		}
 		if cloakCfg.StrictMode {

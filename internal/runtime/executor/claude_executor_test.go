@@ -5103,6 +5103,40 @@ func TestClaudeExecutor_RebuildMidSystemMessageOptInMovesSystemMessages(t *testi
 	}
 }
 
+func TestResolveClaudeWirePolicy_AuthCloakModeOverridesConfig(t *testing.T) {
+	cfg := &config.Config{
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey: "sk-ant-oat-test",
+			Cloak:  &config.CloakConfig{Mode: "always", StrictMode: true},
+		}},
+	}
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{"api_key": "sk-ant-oat-test"},
+		Metadata:   map[string]any{"cloak_mode": "never"},
+	}
+
+	policy, _ := resolveClaudeWirePolicy(cfg, auth, "sk-ant-oat-test", false)
+	if policy.Cloak {
+		t.Fatal("auth cloak_mode=never must beat matching claude-api-key cloak.mode=always")
+	}
+}
+
+func TestApplyCloaking_NeverSkipsFableFallbacks(t *testing.T) {
+	payload := []byte(`{"model":"claude-fable-5-1","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{"cloak_mode": "never"}}
+
+	out, cloaked, err := applyCloaking(context.Background(), &config.Config{}, auth, payload, "sk-ant-oat-test", false, false)
+	if err != nil {
+		t.Fatalf("applyCloaking() error = %v", err)
+	}
+	if cloaked {
+		t.Fatal("applyCloaking() cloaked = true, want false when cloak_mode is never")
+	}
+	if gjson.GetBytes(out, "fallbacks").Exists() {
+		t.Fatalf("fallbacks injected while cloaking is off: %s", out)
+	}
+}
+
 func TestResolveClaudeWirePolicy(t *testing.T) {
 	tests := []struct {
 		name      string
