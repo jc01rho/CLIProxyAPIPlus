@@ -902,6 +902,18 @@ func buildConfiguredModelInfo(model modelEntry, ownedBy, modelType string, creat
 		DisplayName:     displayName,
 		UserDefined:     userDefined,
 	}
+	// A configured alias is registered under the alias ID, so the dispatcher
+	// needs the reverse mapping to rewrite it back to the upstream name before
+	// the request leaves for the provider. Without ExecutionTarget,
+	// resolveRequestedModelForAuth treats the entry as a real registered model
+	// and sends the bare alias upstream, which the provider rejects (or, on a
+	// gateway that does not 404, silently serves something else). This mirrors
+	// the OAuth alias path in applyOAuthModelAliasEntries. Only set it when the
+	// alias actually renames the model: an entry whose alias equals its name is
+	// a real registered model and must keep ExecutionTarget empty.
+	if name != "" && !strings.EqualFold(alias, name) {
+		info.ExecutionTarget = name
+	}
 	if maxContextModel, okMaxContext := any(model).(modelMaxContextLengthEntry); okMaxContext {
 		if maxContextLength := maxContextModel.GetMaxContextLength(); maxContextLength > 0 {
 			info.ContextLength = maxContextLength
