@@ -243,7 +243,6 @@ func assertClaudeNativeHelperHeaders(t *testing.T, got, incoming http.Header, wa
 		"Anthropic-Dangerous-Direct-Browser-Access",
 		"X-Stainless-Lang",
 		"X-Stainless-Runtime",
-		"X-Stainless-Package-Version",
 		"X-Stainless-OS",
 		"X-Stainless-Arch",
 		"X-Stainless-Retry-Count",
@@ -255,9 +254,12 @@ func assertClaudeNativeHelperHeaders(t *testing.T, got, incoming http.Header, wa
 			t.Fatalf("%s = %q, want preserved %q", name, gotValue, wantValue)
 		}
 	}
-	// Pinned to the fingerprint baseline in helps/claude_device_profile.go.
-	if got := claudeNativeHelperHeaderValue(got, "X-Stainless-Runtime-Version"); got != "v24.3.0" {
-		t.Fatalf("X-Stainless-Runtime-Version = %q, want fingerprint baseline v24.3.0", got)
+	// An outdated caller SDK profile is replaced with the current CLI baseline.
+	if got := claudeNativeHelperHeaderValue(got, "X-Stainless-Package-Version"); got != "0.112.1" {
+		t.Fatalf("X-Stainless-Package-Version = %q, want fingerprint baseline 0.112.1", got)
+	}
+	if got := claudeNativeHelperHeaderValue(got, "X-Stainless-Runtime-Version"); got != "v26.3.0" {
+		t.Fatalf("X-Stainless-Runtime-Version = %q, want fingerprint baseline v26.3.0", got)
 	}
 	if got := claudeNativeHelperHeaderValue(got, "X-Stainless-Async"); got != "" {
 		t.Fatalf("X-Stainless-Async = %q, want dropped for helper probes", got)

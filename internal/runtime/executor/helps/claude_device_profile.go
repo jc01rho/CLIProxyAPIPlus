@@ -20,13 +20,11 @@ import (
 )
 
 const (
-	// Fingerprint constants mirror cortexkit/anthropic-auth constants.ts
-	// (CLAUDE_CODE_VERSION, ENTRYPOINT cli).
-	// DefaultClaudeCodeVersion is the minimum Claude Code version that supports Opus 5.5.
+	// DefaultClaudeCodeVersion matches the minimum CLI version for Opus 5.5.
 	DefaultClaudeCodeVersion               = "2.1.280"
 	defaultClaudeFingerprintUserAgent      = "claude-cli/" + DefaultClaudeCodeVersion + " (external, cli)"
-	defaultClaudeFingerprintPackageVersion = "0.94.0"
-	defaultClaudeFingerprintRuntimeVersion = "v24.3.0"
+	defaultClaudeFingerprintPackageVersion = "0.112.1"
+	defaultClaudeFingerprintRuntimeVersion = "v26.3.0"
 	defaultClaudeFingerprintOS             = "MacOS"
 	defaultClaudeFingerprintArch           = "arm64"
 	claudeDeviceProfileTTL                 = 7 * 24 * time.Hour
@@ -616,7 +614,7 @@ func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfil
 	r.Header.Set("X-Stainless-Arch", profile.Arch)
 }
 
-// DefaultClaudeVersion returns the version string (e.g. "2.1.220") from the
+// DefaultClaudeVersion returns the version string (e.g. "2.1.280") from the
 // current baseline device profile. It extracts the version from the User-Agent.
 func DefaultClaudeVersion(cfg *config.Config) string {
 	profile := defaultClaudeDeviceProfile(cfg)
