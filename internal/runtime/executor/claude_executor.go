@@ -27,6 +27,13 @@ type ClaudeExecutor struct {
 	oauthProfileFetcher     claudeOAuthProfileFetcher
 }
 
+func (e *ClaudeExecutor) httpClient(ctx context.Context, auth *cliproxyauth.Auth, apiKey string) *http.Client {
+	if claudeCredentialUsesOAuth(auth, apiKey) {
+		return helps.NewStandardHTTPClient(ctx, e.cfg, auth)
+	}
+	return helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+}
+
 const claudeToolPrefix = "mcp_"
 
 type claudeOAuthCancellationError struct {
@@ -77,41 +84,7 @@ func sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx context.Context, body 
 		sanitized, report = sigcompat.SanitizeClaudeMessagesForClaudeUpstream(body, baseModel, preserveEmptyThinkingBlocks...)
 		logClaudeSignatureSanitizeReport(ctx, baseModel, report)
 	}
-	return sanitizeClaudeServerTools(sanitized)
-}
-
-// sanitizeClaudeServerTools ensures server tools in the tools array have their
-// canonical required name (e.g. name: "tool_search_tool_bm25" for
-// type: "tool_search_tool_bm25_20251119"). Some clients (and agent frameworks)
-// emit the full dated type string or a custom label as the name, or omit the
-// name field entirely, which Anthropic rejects with:
-// "tools.N.<tool_type>.name: Input should be '<canonical_name>'".
-func sanitizeClaudeServerTools(body []byte) []byte {
-	tools := gjson.GetBytes(body, "tools")
-	if !tools.Exists() || !tools.IsArray() {
-		return sanitizeClaudeWebSearchDomains(body)
-	}
-	tools.ForEach(func(index, tool gjson.Result) bool {
-		toolType := tool.Get("type").String()
-		canonicalName := helps.CanonicalClaudeServerToolName(toolType)
-		if canonicalName != "" {
-			name := tool.Get("name").String()
-			if name != canonicalName {
-				path := fmt.Sprintf("tools.%d.name", index.Int())
-				if updated, err := sjson.SetBytes(body, path, canonicalName); err == nil {
-					body = updated
-				}
-				// If tool_choice referenced the old name, update it too
-				if name != "" && gjson.GetBytes(body, "tool_choice.name").String() == name {
-					if updated, err := sjson.SetBytes(body, "tool_choice.name", canonicalName); err == nil {
-						body = updated
-					}
-				}
-			}
-		}
-		return true
-	})
-	return sanitizeClaudeWebSearchDomains(body)
+	return sanitizeClaudeWebSearchDomains(sanitized)
 }
 
 // sanitizeClaudeWebSearchDomains removes empty allowed_domains/blocked_domains
@@ -286,6 +259,7 @@ func (e *ClaudeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Aut
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	apiKey, _ := claudeCreds(auth)
+	httpClient := e.httpClient(ctx, auth, apiKey)
 	return httpClient.Do(httpReq)
 }

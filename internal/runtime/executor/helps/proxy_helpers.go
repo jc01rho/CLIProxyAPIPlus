@@ -92,6 +92,26 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	return httpClient
 }
 
+// NewStandardHTTPClient uses the standard transport without response or stream
+// timeouts while honoring the same request, credential, and global proxy priority.
+func NewStandardHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) *http.Client {
+	proxyURL := effectiveProxyURL(ctx, cfg, auth)
+	if proxyURL != "" {
+		transport, _, err := proxyutil.BuildHTTPTransport(proxyURL)
+		if err != nil {
+			log.Errorf("failed to configure proxy %q: %v", proxyutil.Redact(proxyURL), err)
+		} else if transport != nil {
+			return &http.Client{Transport: transport}
+		}
+	}
+	if ctx != nil {
+		if transport, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && transport != nil {
+			return &http.Client{Transport: transport}
+		}
+	}
+	return &http.Client{Transport: http.DefaultTransport}
+}
+
 var devinTransportCache = NewTransportCache[string](DefaultTransportCacheCapacity)
 
 // NewDevinHTTPClient creates an HTTP client customized for Devin Connect-RPC upstream.

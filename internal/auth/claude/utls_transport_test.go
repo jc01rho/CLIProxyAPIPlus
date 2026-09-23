@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
@@ -87,7 +88,7 @@ func TestClaudeOAuthTLSClientHelloSpecMatchesNative220Capture(t *testing.T) {
 	}
 }
 
-func TestClaudeOAuthTLSResumptionIsWireSafe(t *testing.T) {
+func TestClaudeLegacyTLSResumptionIsWireSafe(t *testing.T) {
 	t.Parallel()
 
 	// RFC 8446 4.2.11 requires pre_shared_key to be the final extension.
@@ -131,18 +132,10 @@ func TestClaudeOAuthTLSResumptionIsWireSafe(t *testing.T) {
 		t.Fatal("different proxies share a session cache, want per-proxy isolation")
 	}
 
-	// Same check through the real entry point: two ClaudeAuth values built the way
-	// refresh and the executor profile check build them must still share a cache.
-	cacheOf := func(service *ClaudeAuth) tls.ClientSessionCache {
-		t.Helper()
-		transport, ok := service.httpClient.Transport.(*utlsRoundTripper)
-		if !ok {
-			t.Fatalf("ClaudeAuth transport type = %T, want *utlsRoundTripper", service.httpClient.Transport)
-		}
-		return transport.sessionCache
-	}
-	if cacheOf(NewClaudeAuthWithProxyURL(nil, "http://127.0.0.1:11")) != cacheOf(NewClaudeAuthWithProxyURL(nil, "http://127.0.0.1:11")) {
-		t.Fatal("per-operation ClaudeAuth instances do not share a session cache, so refresh can never resume")
+	// The OAuth entry point now uses the standard transport; retain the
+	// legacy uTLS invariant for the independent transport implementation.
+	if _, ok := NewClaudeAuthWithProxyURL(nil, "http://127.0.0.1:11").httpClient.Transport.(*http.Transport); !ok {
+		t.Fatal("ClaudeAuth did not use the standard transport")
 	}
 }
 

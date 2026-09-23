@@ -220,11 +220,17 @@ func dialUTLSContext(ctx context.Context, dialer proxy.Dialer, network, addr str
 	}
 }
 
-// NewAnthropicHttpClient creates an HTTP client that bypasses TLS fingerprinting
-// for Anthropic domains by using utls with Chrome fingerprint.
-// It accepts optional SDK configuration for proxy settings.
+// NewAnthropicHttpClient uses the standard HTTP transport for Claude OAuth
+// control-plane requests, with the configured proxy when present.
 func NewAnthropicHttpClient(cfg *config.SDKConfig) *http.Client {
-	return &http.Client{
-		Transport: newUtlsRoundTripper(cfg),
+	var transport http.RoundTripper = http.DefaultTransport
+	if cfg != nil && strings.TrimSpace(cfg.ProxyURL) != "" {
+		configured, _, err := proxyutil.BuildHTTPTransport(cfg.ProxyURL)
+		if err != nil {
+			log.Errorf("failed to configure Claude OAuth proxy %q: %v", proxyutil.Redact(cfg.ProxyURL), err)
+		} else if configured != nil {
+			transport = configured
+		}
 	}
+	return &http.Client{Transport: transport}
 }

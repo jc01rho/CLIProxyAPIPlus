@@ -267,7 +267,7 @@ func ApplyClaudeCredentialMetadata(payload []byte, auth *cliproxyauth.Auth, sess
 	if auth == nil {
 		return nil, "", fmt.Errorf("apply Claude credential metadata: auth is nil")
 	}
-	metadata, metadataPresent, errMetadata := uniqueClaudeJSONObjectMember(payload, "metadata")
+	metadata, metadataPresent, errMetadata := lastClaudeJSONObjectMember(payload, "metadata")
 	if errMetadata != nil {
 		return nil, "", newClaudeCredentialMetadataRequestError(fmt.Errorf("apply Claude credential metadata: %w", errMetadata))
 	}
@@ -275,7 +275,7 @@ func ApplyClaudeCredentialMetadata(payload []byte, auth *cliproxyauth.Auth, sess
 	if metadataPresent {
 		trimmedMetadata := bytes.TrimSpace(metadata)
 		if len(trimmedMetadata) >= 2 && trimmedMetadata[0] == '{' {
-			userID, userIDPresent, errUserID := uniqueClaudeJSONObjectMember(trimmedMetadata, "user_id")
+			userID, userIDPresent, errUserID := lastClaudeJSONObjectMember(trimmedMetadata, "user_id")
 			if errUserID != nil {
 				return nil, "", newClaudeCredentialMetadataRequestError(fmt.Errorf("apply Claude credential metadata: metadata: %w", errUserID))
 			}
@@ -314,7 +314,7 @@ type claudeJSONMember struct {
 	value json.RawMessage
 }
 
-func uniqueClaudeJSONObjectMember(raw []byte, target string) ([]byte, bool, error) {
+func lastClaudeJSONObjectMember(raw []byte, target string) ([]byte, bool, error) {
 	raw = bytes.TrimSpace(raw)
 	if !json.Valid(raw) || len(raw) < 2 || raw[0] != '{' {
 		return nil, false, fmt.Errorf("request must be a JSON object")
@@ -345,9 +345,6 @@ func uniqueClaudeJSONObjectMember(raw []byte, target string) ([]byte, bool, erro
 		valueStart := position
 		position = skipClaudeJSONValue(raw, position)
 		if key == target {
-			if found {
-				return nil, false, fmt.Errorf("duplicate JSON object key %q", target)
-			}
 			found = true
 			value = raw[valueStart:position]
 		}
@@ -435,7 +432,7 @@ func rebuildClaudeMetadataUserID(existing, deviceID, accountUUID, sessionID stri
 	if json.Valid(rawExisting) && len(rawExisting) >= 2 && rawExisting[0] == '{' {
 		decoder := json.NewDecoder(bytes.NewReader(rawExisting))
 		_, _ = decoder.Token()
-		seen := make(map[string]bool)
+		seen := make(map[string]int)
 		for decoder.More() {
 			token, errToken := decoder.Token()
 			if errToken != nil {
@@ -445,10 +442,6 @@ func rebuildClaudeMetadataUserID(existing, deviceID, accountUUID, sessionID stri
 			if !ok {
 				return nil, fmt.Errorf("metadata.user_id contains a non-string key")
 			}
-			if seen[key] {
-				return nil, fmt.Errorf("metadata.user_id contains duplicate key %q", key)
-			}
-			seen[key] = true
 			var value json.RawMessage
 			if errDecode := decoder.Decode(&value); errDecode != nil {
 				return nil, errDecode
@@ -456,7 +449,12 @@ func rebuildClaudeMetadataUserID(existing, deviceID, accountUUID, sessionID stri
 			switch key {
 			case "device_id", "account_uuid", "session_id":
 			default:
-				extras = append(extras, claudeJSONMember{key: key, value: value})
+				if index, exists := seen[key]; exists {
+					extras[index].value = value
+				} else {
+					seen[key] = len(extras)
+					extras = append(extras, claudeJSONMember{key: key, value: value})
+				}
 			}
 		}
 	}
@@ -481,19 +479,4 @@ func rebuildClaudeMetadataUserID(existing, deviceID, accountUUID, sessionID stri
 func writeClaudeJSONQuoted(output *bytes.Buffer, value string) {
 	encoded, _ := json.Marshal(value)
 	output.Write(encoded)
-}
-
-// PreFlightCheckDuplicateClaudeMetadata returns a 400 request-scoped error if
-// the top-level JSON body has a duplicate "metadata" key. Downstream pipeline
-// functions that re-serialize via sjson keep only one occurrence, so the
-// duplicate must be detected on the raw body before any re-serialization.
-func PreFlightCheckDuplicateClaudeMetadata(payload []byte) error {
-	if len(payload) == 0 {
-		return nil
-	}
-	_, _, err := uniqueClaudeJSONObjectMember(payload, "metadata")
-	if err != nil {
-		return newClaudeCredentialMetadataRequestError(fmt.Errorf("apply Claude credential metadata: %w", err))
-	}
-	return nil
 }

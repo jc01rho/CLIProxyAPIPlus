@@ -114,8 +114,12 @@ func TestClaudeAuthBlankExplicitOverrideFallsBackToDefaultEndpoints(t *testing.T
 }
 
 func TestNewAnthropicHttpClientDoesNotSetRequestTimeout(t *testing.T) {
-	if got := NewAnthropicHttpClient(nil).Timeout; got != 0 {
+	client := NewAnthropicHttpClient(nil)
+	if got := client.Timeout; got != 0 {
 		t.Fatalf("HTTP client timeout = %s, want zero", got)
+	}
+	if _, ok := client.Transport.(*http.Transport); !ok {
+		t.Fatalf("HTTP transport = %T, want standard *http.Transport", client.Transport)
 	}
 }
 
@@ -220,7 +224,7 @@ func TestExchangeCodeForTokensPersistsUpstreamAccountAndDevicePool(t *testing.T)
 	}
 }
 
-func TestExchangeCodeForTokensUsesNative220ControlPlaneShape(t *testing.T) {
+func TestExchangeCodeForTokensMatchesCortexkitControlPlaneShape(t *testing.T) {
 	var order []string
 	headers := make(map[string]http.Header)
 	var tokenBody []byte
@@ -230,8 +234,8 @@ func TestExchangeCodeForTokensUsesNative220ControlPlaneShape(t *testing.T) {
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				order = append(order, req.URL.String())
 				headers[req.URL.String()] = req.Header.Clone()
-				if !req.Close {
-					t.Fatalf("%s request Close = false, want true", req.URL)
+				if req.Close {
+					t.Fatalf("%s request Close = true, want connection reuse", req.URL)
 				}
 				switch req.URL.String() {
 				case TokenURL:
@@ -278,18 +282,16 @@ func TestExchangeCodeForTokensUsesNative220ControlPlaneShape(t *testing.T) {
 		}
 	}
 
-	// Key order mirrors the captured native exchange body.
-	wantBody := `{"grant_type":"authorization_code","code":"auth-code","redirect_uri":"` + RedirectURI + `","client_id":"` + ClientID + `","code_verifier":"verifier","state":"state-value"}`
+	// Key order matches cortexkit's authorization-code exchange.
+	wantBody := `{"code":"auth-code","state":"state-value","grant_type":"authorization_code","client_id":"` + ClientID + `","redirect_uri":"` + RedirectURI + `","code_verifier":"verifier"}`
 	if got := string(tokenBody); got != wantBody {
 		t.Fatalf("exchange body = %q, want %q", got, wantBody)
 	}
 
 	wantAxios := map[string]string{
-		"Accept":          "application/json, text/plain, */*",
-		"Content-Type":    "application/json",
-		"User-Agent":      "axios/1.15.2",
-		"Accept-Encoding": "gzip, compress, deflate, br",
-		"Connection":      "close",
+		"Accept":       "application/json, text/plain, */*",
+		"Content-Type": "application/json",
+		"User-Agent":   "axios/1.15.2",
 	}
 	for _, endpoint := range wantOrder {
 		for name, want := range wantAxios {
@@ -488,7 +490,7 @@ func TestRefreshTokens_DeduplicatesConcurrentRefresh(t *testing.T) {
 	}
 }
 
-func TestRefreshTokensUsesNative220ControlPlaneShape(t *testing.T) {
+func TestRefreshTokensMatchesCortexkitControlPlaneShape(t *testing.T) {
 	resetClaudeRefreshState()
 	defer resetClaudeRefreshState()
 
@@ -505,24 +507,22 @@ func TestRefreshTokensUsesNative220ControlPlaneShape(t *testing.T) {
 					if errRead != nil {
 						t.Fatal(errRead)
 					}
-					wantBody := `{"client_id":"` + ClientID + `","grant_type":"refresh_token","refresh_token":"` + refreshToken + `","scope":"` + ClaudeOAuthScope + `"}`
+					wantBody := `{"grant_type":"refresh_token","refresh_token":"` + refreshToken + `","client_id":"` + ClientID + `","scope":"` + ClaudeOAuthScope + `"}`
 					if got := string(body); got != wantBody {
 						t.Fatalf("refresh body = %q, want %q", got, wantBody)
 					}
 					wantHeaders := map[string]string{
-						"Accept":          "application/json, text/plain, */*",
-						"Content-Type":    "application/json",
-						"User-Agent":      "axios/1.15.2",
-						"Accept-Encoding": "gzip, compress, deflate, br",
-						"Connection":      "close",
+						"Accept":       "application/json, text/plain, */*",
+						"Content-Type": "application/json",
+						"User-Agent":   "axios/1.15.2",
 					}
 					for name, want := range wantHeaders {
 						if got := req.Header.Get(name); got != want {
 							t.Fatalf("%s = %q, want %q", name, got, want)
 						}
 					}
-					if !req.Close {
-						t.Fatal("refresh request Close = false, want true")
+					if req.Close {
+						t.Fatal("refresh request Close = true, want connection reuse")
 					}
 					return &http.Response{
 						StatusCode: http.StatusOK,
@@ -571,20 +571,18 @@ func TestFetchOAuthProfile(t *testing.T) {
 					t.Fatalf("Authorization = %q, want bearer token", got)
 				}
 				wantHeaders := map[string]string{
-					"Accept":          "application/json, text/plain, */*",
-					"Content-Type":    "application/json",
-					"Cache-Control":   "no-cache",
-					"User-Agent":      "axios/1.15.2",
-					"Accept-Encoding": "gzip, compress, deflate, br",
-					"Connection":      "close",
+					"Accept":        "application/json, text/plain, */*",
+					"Content-Type":  "application/json",
+					"Cache-Control": "no-cache",
+					"User-Agent":    "axios/1.15.2",
 				}
 				for name, want := range wantHeaders {
 					if got := req.Header.Get(name); got != want {
 						t.Fatalf("%s = %q, want %q", name, got, want)
 					}
 				}
-				if !req.Close {
-					t.Fatal("profile request Close = false, want true")
+				if req.Close {
+					t.Fatal("profile request Close = true, want connection reuse")
 				}
 				return &http.Response{
 					StatusCode: http.StatusOK,

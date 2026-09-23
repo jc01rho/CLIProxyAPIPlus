@@ -142,15 +142,14 @@ type tokenResponse struct {
 }
 
 // authorizationCodeExchangeRequest is the authorization-code exchange body.
-// Field order is significant: it mirrors the key order observed in native
-// Claude Code 2.1.220 traffic to platform.claude.com/v1/oauth/token.
+// Field order matches cortexkit's authorization-code exchange.
 type authorizationCodeExchangeRequest struct {
-	GrantType    string `json:"grant_type"`
 	Code         string `json:"code"`
-	RedirectURI  string `json:"redirect_uri"`
-	ClientID     string `json:"client_id"`
-	CodeVerifier string `json:"code_verifier"`
 	State        string `json:"state"`
+	GrantType    string `json:"grant_type"`
+	ClientID     string `json:"client_id"`
+	RedirectURI  string `json:"redirect_uri"`
+	CodeVerifier string `json:"code_verifier"`
 }
 
 // OAuthProfile is the account identity returned by Anthropic's OAuth profile endpoint.
@@ -174,8 +173,7 @@ type ClaudeAuth struct {
 }
 
 // NewClaudeAuth creates a new Anthropic authentication service.
-// It initializes the HTTP client with a custom TLS transport that uses Firefox
-// fingerprint to bypass Cloudflare's TLS fingerprinting on Anthropic domains.
+// It initializes a standard HTTP client with the configured proxy.
 //
 // Parameters:
 //   - cfg: The application configuration containing proxy settings
@@ -359,16 +357,14 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 		effectiveState = newState
 	}
 
-	// Prepare token exchange request. The struct field order reproduces the key
-	// order Claude Code 2.1.220 emits on the wire; a map would be re-sorted
-	// alphabetically by encoding/json and change the serialized body bytes.
+	// Preserve the field order of cortexkit's token exchange JSON.
 	reqBody := authorizationCodeExchangeRequest{
-		GrantType:    "authorization_code",
 		Code:         newCode,
-		RedirectURI:  RedirectURI,
-		ClientID:     ClientID,
-		CodeVerifier: pkceCodes.CodeVerifier,
 		State:        effectiveState,
+		GrantType:    "authorization_code",
+		ClientID:     ClientID,
+		RedirectURI:  RedirectURI,
+		CodeVerifier: pkceCodes.CodeVerifier,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -505,13 +501,16 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 	}
 
 	// Prepare refresh request.
-	// Field order mirrors cortexkit/anthropic-auth refreshClaudeOAuthToken():
-	// grant_type, refresh_token, client_id, scope.
-	reqBody := map[string]interface{}{
-		"client_id":     ClientID,
-		"grant_type":    "refresh_token",
-		"refresh_token": refreshToken,
-		"scope":         ClaudeOAuthScope,
+	reqBody := struct {
+		GrantType    string `json:"grant_type"`
+		RefreshToken string `json:"refresh_token"`
+		ClientID     string `json:"client_id"`
+		Scope        string `json:"scope"`
+	}{
+		GrantType:    "refresh_token",
+		RefreshToken: refreshToken,
+		ClientID:     ClientID,
+		Scope:        ClaudeOAuthScope,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -697,9 +696,6 @@ func applyClaudeOAuthAxiosHeaders(req *http.Request) {
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "axios/1.15.2")
-	req.Header.Set("Accept-Encoding", "gzip, compress, deflate, br")
-	req.Header.Set("Connection", "close")
-	req.Close = true
 }
 
 // fetchOAuthControlPlaneJSON issues an Axios-shaped OAuth control-plane GET and

@@ -168,7 +168,7 @@ func TestApplyClaudeCredentialMetadataUsesCredentialDeviceAndPreservesExtras(t *
 	}
 }
 
-func TestApplyClaudeCredentialMetadataRejectsDuplicateIdentityContainers(t *testing.T) {
+func TestApplyClaudeCredentialMetadataUsesLastDuplicateIdentityContainer(t *testing.T) {
 	auth := &cliproxyauth.Auth{Metadata: map[string]any{
 		"account_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		claudeauth.ClaudeDeviceIDsMetadataKey: []string{
@@ -177,20 +177,22 @@ func TestApplyClaudeCredentialMetadataRejectsDuplicateIdentityContainers(t *test
 	}}
 	const sessionID = "11111111-2222-4333-8444-555555555555"
 	tests := []struct {
-		name string
-		body string
+		name    string
+		body    string
+		invalid bool
 	}{
 		{
-			name: "invalid request JSON",
-			body: `{"messages":[],"metadata":`,
+			name:    "invalid request JSON",
+			body:    `{"messages":[],"metadata":`,
+			invalid: true,
 		},
 		{
 			name: "duplicate top-level metadata",
-			body: `{"messages":[],"metadata":{"user_id":"{}"},"metadata":{"user_id":"{}"}}`,
+			body: `{"messages":[],"metadata":{"user_id":"{\"source\":\"first\"}"},"metadata":{"user_id":"{\"source\":\"last\"}"}}`,
 		},
 		{
 			name: "duplicate metadata user ID",
-			body: `{"messages":[],"metadata":{"user_id":"{}","user_id":"{}"}}`,
+			body: `{"messages":[],"metadata":{"user_id":"{\"source\":\"first\"}","user_id":"{\"source\":\"last\"}"}}`,
 		},
 		{
 			name: "duplicate encoded account UUID",
@@ -199,17 +201,31 @@ func TestApplyClaudeCredentialMetadataRejectsDuplicateIdentityContainers(t *test
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, errApply := ApplyClaudeCredentialMetadata([]byte(test.body), auth, sessionID)
-			if errApply == nil {
-				t.Fatal("ApplyClaudeCredentialMetadata() error = nil, want duplicate-key rejection")
+			out, _, errApply := ApplyClaudeCredentialMetadata([]byte(test.body), auth, sessionID)
+			if test.invalid {
+				if errApply == nil {
+					t.Fatal("ApplyClaudeCredentialMetadata() error = nil, want invalid JSON rejection")
+				}
+				var requestErr cliproxyexecutor.RequestScopedError
+				if !errors.As(errApply, &requestErr) || requestErr == nil || !requestErr.IsRequestScoped() {
+					t.Fatalf("ApplyClaudeCredentialMetadata() error = %T %v, want request-scoped", errApply, errApply)
+				}
+				var statusErr interface{ StatusCode() int }
+				if !errors.As(errApply, &statusErr) || statusErr.StatusCode() != http.StatusBadRequest {
+					t.Fatalf("ApplyClaudeCredentialMetadata() error = %T %v, want HTTP 400", errApply, errApply)
+				}
+				return
 			}
-			var requestErr cliproxyexecutor.RequestScopedError
-			if !errors.As(errApply, &requestErr) || requestErr == nil || !requestErr.IsRequestScoped() {
-				t.Fatalf("ApplyClaudeCredentialMetadata() error = %T %v, want request-scoped", errApply, errApply)
+			if errApply != nil {
+				t.Fatalf("ApplyClaudeCredentialMetadata() error = %v, want last duplicate value", errApply)
 			}
-			var statusErr interface{ StatusCode() int }
-			if !errors.As(errApply, &statusErr) || statusErr.StatusCode() != http.StatusBadRequest {
-				t.Fatalf("ApplyClaudeCredentialMetadata() error = %T %v, want HTTP 400", errApply, errApply)
+			userID := gjson.GetBytes(out, "metadata.user_id").String()
+			if strings.Contains(test.name, "account UUID") {
+				if got := gjson.Get(userID, "account_uuid").String(); got != auth.Metadata["account_uuid"] {
+					t.Fatalf("account_uuid = %q, want credential UUID", got)
+				}
+			} else if got := gjson.Get(userID, "source").String(); got != "last" {
+				t.Fatalf("source = %q, want last duplicate value", got)
 			}
 		})
 	}

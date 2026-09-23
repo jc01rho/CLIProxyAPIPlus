@@ -87,6 +87,31 @@ func TestNewProxyAwareHTTPClientRequestProxyOverridesAuthAndGlobal(t *testing.T)
 	}
 }
 
+func TestNewStandardHTTPClientPreservesProxyPriorityAndNoResponseDeadline(t *testing.T) {
+	ctx := coreexecutor.WithRequestProxyURL(t.Context(), "http://request-proxy.example:8081")
+	cfg := &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example:8080"}}
+	auth := &cliproxyauth.Auth{ProxyURL: "http://auth-proxy.example:8080"}
+	client := NewStandardHTTPClient(ctx, cfg, auth)
+	if client.Timeout != 0 {
+		t.Fatalf("client.Timeout = %s, want no total timeout", client.Timeout)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport.ResponseHeaderTimeout != 0 {
+		t.Fatalf("transport = %T, want standard transport without response deadline", client.Transport)
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://upstream.example/v1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL, err := transport.Proxy(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxyURL == nil || proxyURL.String() != "http://request-proxy.example:8081" {
+		t.Fatalf("proxy = %v, want request override", proxyURL)
+	}
+}
+
 func TestNewProxyAwareHTTPClientDirectBypassesGlobalProxy(t *testing.T) {
 	t.Parallel()
 

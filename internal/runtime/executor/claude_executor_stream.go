@@ -261,11 +261,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 		_ = mcpAliases
 	}
-	if fp.ApplyCLIIdentity {
-		if err := helps.PreFlightCheckDuplicateClaudeMetadata(bodyForUpstream); err != nil {
-			return nil, err
-		}
-	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel, helps.APIKeyModelIsCompat(req))
 	bodyForUpstream = orderClaudeCodeBody(bodyForUpstream)
 	if fp.ApplyCLIIdentity {
@@ -331,7 +326,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.httpClient(ctx, auth, apiKey)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := doClaudeUpstreamRequest(httpClient, httpReq)
 	if err != nil {

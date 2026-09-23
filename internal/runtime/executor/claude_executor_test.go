@@ -9505,8 +9505,8 @@ func TestClaudeExecutor_PreservesNativeAgentAndEnvironmentHeaders(t *testing.T) 
 	}
 }
 
-func TestSanitizeClaudeServerTools_NormalizesDatedToolSearchTool(t *testing.T) {
-	// Case 1: Client sends type with date suffix as the tool name
+func TestSanitizeClaudeMessages_PreservesServerToolNames(t *testing.T) {
+	// Reference rewrite leaves supplied server-tool names unchanged.
 	input := []byte(`{
 		"tools": [
 			{
@@ -9532,27 +9532,26 @@ func TestSanitizeClaudeServerTools_NormalizesDatedToolSearchTool(t *testing.T) {
 		}
 	}`)
 
-	out := sanitizeClaudeServerTools(input)
+	out := sanitizeClaudeMessagesForClaudeUpstreamWithDebug(t.Context(), input, "claude-opus-5")
 
-	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "tool_search_tool_bm25" {
-		t.Fatalf("tools.0.name = %q, want tool_search_tool_bm25", got)
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "tool_search_tool_bm25_20251119" {
+		t.Fatalf("tools.0.name = %q, want original name", got)
 	}
-	if got := gjson.GetBytes(out, "tools.1.name").String(); got != "tool_search_tool_regex" {
-		t.Fatalf("tools.1.name = %q, want tool_search_tool_regex", got)
+	if got := gjson.GetBytes(out, "tools.1.name").String(); got != "wrong_regex_name" {
+		t.Fatalf("tools.1.name = %q, want original name", got)
 	}
-	if got := gjson.GetBytes(out, "tools.2.name").String(); got != "web_search" {
-		t.Fatalf("tools.2.name = %q, want web_search", got)
+	if got := gjson.GetBytes(out, "tools.2.name").String(); got != "web_search_20250305" {
+		t.Fatalf("tools.2.name = %q, want original name", got)
 	}
 	if got := gjson.GetBytes(out, "tools.3.name").String(); got != "client_tool" {
 		t.Fatalf("tools.3.name = %q, want client_tool", got)
 	}
-	if got := gjson.GetBytes(out, "tool_choice.name").String(); got != "tool_search_tool_bm25" {
-		t.Fatalf("tool_choice.name = %q, want tool_search_tool_bm25", got)
+	if got := gjson.GetBytes(out, "tool_choice.name").String(); got != "tool_search_tool_bm25_20251119" {
+		t.Fatalf("tool_choice.name = %q, want original name", got)
 	}
 }
 
-func TestSanitizeClaudeServerTools_AddsMissingNameOnServerTool(t *testing.T) {
-	// Case 2: Client sends server tool without name property
+func TestSanitizeClaudeMessages_DoesNotInventServerToolName(t *testing.T) {
 	input := []byte(`{
 		"tools": [
 			{
@@ -9561,10 +9560,10 @@ func TestSanitizeClaudeServerTools_AddsMissingNameOnServerTool(t *testing.T) {
 		]
 	}`)
 
-	out := sanitizeClaudeServerTools(input)
+	out := sanitizeClaudeMessagesForClaudeUpstreamWithDebug(t.Context(), input, "claude-opus-5")
 
-	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "tool_search_tool_bm25" {
-		t.Fatalf("tools.0.name = %q, want tool_search_tool_bm25", got)
+	if got := gjson.GetBytes(out, "tools.0.name"); got.Exists() {
+		t.Fatalf("tools.0.name = %q, want absent", got.String())
 	}
 }
 

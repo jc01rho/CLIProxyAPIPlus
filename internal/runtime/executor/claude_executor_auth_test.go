@@ -1,20 +1,95 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
-func TestClaudeExecutorDuplicateMetadataIsRequestScoped(t *testing.T) {
+func TestClaudeExecutorOAuthUsesStandardHTTPTransport(t *testing.T) {
+	executor := NewClaudeExecutor(&config.Config{})
+	oauth := &cliproxyauth.Auth{Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}}
+	client := executor.httpClient(t.Context(), oauth, "sk-ant-oat-access")
+	if _, ok := helps.UnwrapStreamingIdleTimeout(client.Transport).(*http.Transport); !ok {
+		t.Fatalf("OAuth transport = %T, want standard *http.Transport", client.Transport)
+	}
+	apiKey := &cliproxyauth.Auth{Provider: "claude", Attributes: map[string]string{"api_key": "sk-ant-api-access"}}
+	client = executor.httpClient(t.Context(), apiKey, "sk-ant-api-access")
+	if _, ok := helps.UnwrapStreamingIdleTimeout(client.Transport).(*http.Transport); ok {
+		t.Fatal("API-key transport switched to OAuth standard transport")
+	}
+}
+
+func TestClaudeExecutorOAuthMessagesReachLocalUpstream(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		name := "non-stream"
+		if stream {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			received := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				received <- r.Header.Get("Authorization")
+				if stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-opus-5","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer server.Close()
+
+			auth := &cliproxyauth.Auth{
+				Provider:   "claude",
+				Attributes: map[string]string{"api_key": "sk-ant-oat-local-upstream", "auth_kind": "oauth", "base_url": server.URL},
+				Metadata:   claudeOAuthTestMetadata(),
+			}
+			payload := []byte(`{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
+			request := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: payload}
+			options := cliproxyexecutor.Options{Stream: stream, SourceFormat: sdktranslator.FormatClaude}
+			executor := NewClaudeExecutor(&config.Config{})
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			if stream {
+				result, err := executor.ExecuteStream(ctx, auth, request, options)
+				if err != nil {
+					t.Fatalf("ExecuteStream() error = %v", err)
+				}
+				for chunk := range result.Chunks {
+					if chunk.Err != nil {
+						t.Fatalf("stream chunk error = %v", chunk.Err)
+					}
+				}
+			} else if _, err := executor.Execute(ctx, auth, request, options); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			select {
+			case got := <-received:
+				if got != "Bearer sk-ant-oat-local-upstream" {
+					t.Fatalf("upstream Authorization = %q, want OAuth bearer", got)
+				}
+			case <-ctx.Done():
+				t.Fatal("OAuth upstream request was not observed before deadline")
+			}
+		})
+	}
+}
+
+func TestClaudeExecutorDuplicateMetadataReachesUpstream(t *testing.T) {
 	testCases := []struct {
 		name string
 		run  func(context.Context, *ClaudeExecutor, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) error
@@ -38,9 +113,17 @@ func TestClaudeExecutorDuplicateMetadataIsRequestScoped(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			upstreamCalled := false
-			transport := roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			errUpstream := errors.New("upstream reached")
+			transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 				upstreamCalled = true
-				return nil, errors.New("unexpected upstream request")
+				body, errRead := io.ReadAll(req.Body)
+				if errRead != nil {
+					t.Errorf("read upstream request: %v", errRead)
+				}
+				if got := bytes.Count(body, []byte(`"metadata":`)); got != 1 {
+					t.Errorf("upstream metadata members = %d, want one after JSON normalization", got)
+				}
+				return nil, errUpstream
 			})
 			ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
 			auth := &cliproxyauth.Auth{
@@ -59,19 +142,11 @@ func TestClaudeExecutorDuplicateMetadataIsRequestScoped(t *testing.T) {
 					`"metadata":{"user_id":"{}"},"metadata":{"user_id":"{}"}}`),
 			}
 			errRun := testCase.run(ctx, NewClaudeExecutor(&config.Config{}), auth, req, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
-			if errRun == nil {
-				t.Fatal("duplicate metadata error = nil")
+			if !upstreamCalled {
+				t.Fatal("duplicate metadata did not reach upstream")
 			}
-			if upstreamCalled {
-				t.Fatal("duplicate metadata reached upstream")
-			}
-			var requestErr cliproxyexecutor.RequestScopedError
-			if !errors.As(errRun, &requestErr) || requestErr == nil || !requestErr.IsRequestScoped() {
-				t.Fatalf("duplicate metadata error = %T %v, want request-scoped", errRun, errRun)
-			}
-			var statusErr interface{ StatusCode() int }
-			if !errors.As(errRun, &statusErr) || statusErr.StatusCode() != http.StatusBadRequest {
-				t.Fatalf("duplicate metadata error = %T %v, want HTTP 400", errRun, errRun)
+			if !errors.Is(errRun, errUpstream) {
+				t.Fatalf("error = %v, want upstream error", errRun)
 			}
 		})
 	}
