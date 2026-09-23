@@ -37,7 +37,9 @@ func TestOpenAIModelsClientVersionFiltersAndCompactsCatalog(t *testing.T) {
 		t.Fatalf("client catalog has an unescaped newline: %q", body)
 	}
 	var catalog struct {
-		Models []struct{ Slug string `json:"slug"` } `json:"models"`
+		Models []struct {
+			Slug string `json:"slug"`
+		} `json:"models"`
 	}
 	if err := json.Unmarshal(body, &catalog); err != nil {
 		t.Fatalf("decode client catalog: %v", err)
