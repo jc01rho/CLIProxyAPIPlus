@@ -1,12 +1,51 @@
 package openai
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 )
+
+func TestOpenAIModelsClientVersionFiltersAndCompactsCatalog(t *testing.T) {
+	const clientID = "codex-client-filter-compact-test"
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient(clientID, "openai-compatibility", []*registry.ModelInfo{
+		{ID: "client-filter-allowed-test", Object: "model", OwnedBy: "openai"},
+		{ID: "client-filter-denied-test", Object: "model", OwnedBy: "openai"},
+	})
+	t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest("GET", "/v1/models?client_version=0.160.0", nil)
+	sdkaccess.SetModelAccessPatterns(context, []string{"client-filter-allowed-test"})
+	handler := NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(&config.SDKConfig{}, nil))
+	handler.OpenAIModels(context)
+
+	if recorder.Code != 200 {
+		t.Fatalf("response status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.Bytes()
+	if bytes.Contains(body, []byte("\n")) {
+		t.Fatalf("client catalog has an unescaped newline: %q", body)
+	}
+	var catalog struct {
+		Models []struct{ Slug string `json:"slug"` } `json:"models"`
+	}
+	if err := json.Unmarshal(body, &catalog); err != nil {
+		t.Fatalf("decode client catalog: %v", err)
+	}
+	if len(catalog.Models) != 1 || catalog.Models[0].Slug != "client-filter-allowed-test" {
+		t.Fatalf("visible models = %#v, want only the allowed model", catalog.Models)
+	}
+}
 
 func TestCodexClientModelsResponseMultiAgentV2FollowsConfig(t *testing.T) {
 	modelID := "codex-client-multi-agent-v2-test"
