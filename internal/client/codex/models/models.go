@@ -106,6 +106,7 @@ func buildCodexClientModels(models []map[string]any, providersForModel Providers
 				entry["multi_agent_version"] = "v2"
 			}
 			applyCodexClientDevinDisplayName(entry, id, model, providersForModel)
+			applyCodexClientModelsDevLimit(entry, id, model)
 			result = append(result, entry)
 			continue
 		}
@@ -118,6 +119,7 @@ func buildCodexClientModels(models []map[string]any, providersForModel Providers
 		sanitizeCodexClientReasoningMetadata(entry, clientVersion)
 		applyCodexClientVisibilityOverride(entry, id)
 		applyCodexClientDevinDisplayName(entry, id, model, providersForModel)
+		applyCodexClientModelsDevLimit(entry, id, model)
 		result = append(result, entry)
 	}
 
@@ -128,6 +130,24 @@ func buildCodexClientModels(models []map[string]any, providersForModel Providers
 	})
 
 	return result
+}
+
+func applyCodexClientModelsDevLimit(entry map[string]any, id string, model map[string]any) {
+	metadataID, _ := model["metadata_model_id"].(string)
+	if metadataID == "" {
+		metadataID = id
+	}
+	limit, ok := registry.LookupModelsDevLimit(metadataID)
+	if !ok {
+		return
+	}
+	if limit.Context > 0 {
+		entry["context_window"] = limit.Context
+		entry["max_context_window"] = limit.Context
+	}
+	if limit.Output > 0 {
+		entry["max_tokens"] = limit.Output
+	}
 }
 
 func maxCodexClientTemplatePriority(templates map[string]map[string]any) int {

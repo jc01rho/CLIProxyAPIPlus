@@ -2918,6 +2918,129 @@ func TestDecodeHomeModelsKeepsTokenMetadata(t *testing.T) {
 	}
 }
 
+func TestDecodeHomeModelsUsesModelsDevLimitsForMissingAndDifferingMetadata(t *testing.T) {
+	const modelID = "models-dev-home-override-test"
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"openai/`+modelID+`":{"limit":{"context":1050000,"input":922000,"output":128000}}}`)
+	}))
+	defer catalog.Close()
+	if err := registry.RefreshModelsDevLimits(context.Background(), catalog.URL); err != nil {
+		t.Fatalf("refresh models.dev: %v", err)
+	}
+
+	entries, err := decodeHomeModels([]byte(`{
+		"openai": [{"id":"` + modelID + `","context_length":272000,"max_completion_tokens":64000}],
+		"opencode": [{"id":"` + modelID + `","context_length":872000,"max_completion_tokens":64000}],
+		"claude": [
+			{"id":"models-dev-unmapped-alias-test","display_name":"` + modelID + `"},
+			{"id":"models-dev-mapped-alias-test","metadata_model_id":"` + modelID + `"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("decode Home models: %v", err)
+	}
+	var matched, alias, mappedAlias homeModelEntry
+	for _, entry := range entries {
+		switch entry.id {
+		case modelID:
+			matched = entry
+		case "models-dev-unmapped-alias-test":
+			alias = entry
+		case "models-dev-mapped-alias-test":
+			mappedAlias = entry
+		}
+	}
+	if matched.contextLength != 1050000 || matched.maxInputTokens != 922000 || matched.maxCompletionTokens != 128000 {
+		t.Fatalf("matched limits = %d/%d/%d, want 1050000/922000/128000",
+			matched.contextLength, matched.maxInputTokens, matched.maxCompletionTokens)
+	}
+	if len(matched.providers) != 2 {
+		t.Fatalf("merged providers = %v, want two", matched.providers)
+	}
+	if alias.contextLength != 0 || alias.maxCompletionTokens != 0 {
+		t.Fatalf("display-name-only alias inherited model limits: %+v", alias)
+	}
+	if mappedAlias.contextLength != 1050000 || mappedAlias.maxCompletionTokens != 128000 {
+		t.Fatalf("explicitly mapped alias limits = %+v", mappedAlias)
+	}
+	claudeModel := formatHomeClaudeModel(matched)
+	if claudeModel["context_length"] != 1050000 || claudeModel["max_context_window"] != 1050000 ||
+		claudeModel["max_input_tokens"] != 922000 || claudeModel["max_tokens"] != 128000 {
+		t.Fatalf("Anthropic limits = %#v", claudeModel)
+	}
+	if got := grokModelsFromHomeEntries([]homeModelEntry{matched})[0].ContextLength; got != 1050000 {
+		t.Fatalf("Grok context = %d, want 1050000", got)
+	}
+}
+
+func TestModelsDevLimitsAppearOnLiveModelListRoutes(t *testing.T) {
+	const modelID = "models-dev-http-route-test"
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"openai/`+modelID+`":{"limit":{"context":1050000,"input":922000,"output":128000}}}`)
+	}))
+	defer catalog.Close()
+	if err := registry.RefreshModelsDevLimits(context.Background(), catalog.URL); err != nil {
+		t.Fatalf("refresh models.dev: %v", err)
+	}
+
+	modelRegistry := registry.GetGlobalRegistry()
+	const clientID = "models-dev-http-route-test-client"
+	modelRegistry.RegisterClient(clientID, "openai", []*registry.ModelInfo{
+		{ID: modelID, Object: "model", OwnedBy: "openai", Type: "openai",
+			ContextLength: 272000, MaxCompletionTokens: 64000},
+	})
+	t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
+
+	server := newTestServer(t)
+	for _, tt := range []struct {
+		name    string
+		path    string
+		headers map[string]string
+		field   string
+		want    float64
+	}{
+		{"Grok context", "/v1/models", map[string]string{"User-Agent": "grok-shell"}, "context_window", 1050000},
+		{"Anthropic input", "/v1/models", map[string]string{"Anthropic-Version": "2023-06-01"}, "max_input_tokens", 922000},
+		{"Anthropic context", "/v1/models", map[string]string{"Anthropic-Version": "2023-06-01"}, "context_length", 1050000},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req.Header.Set("Authorization", "Bearer test-key")
+			for key, value := range tt.headers {
+				req.Header.Set(key, value)
+			}
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+			}
+			var response map[string]json.RawMessage
+			if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			raw := response["models"]
+			if raw == nil {
+				raw = response["data"]
+			}
+			var models []map[string]any
+			if err := json.Unmarshal(raw, &models); err != nil {
+				t.Fatalf("decode models: %v", err)
+			}
+			for _, model := range models {
+				if model["id"] != modelID && model["slug"] != modelID &&
+					model["id"] != claudemodels.EnsureClaudeModelIDPrefix(modelID) {
+					continue
+				}
+				if got := model[tt.field]; got != tt.want {
+					t.Fatalf("%s = %v, want %v", tt.field, got, tt.want)
+				}
+				return
+			}
+			t.Fatalf("model %s absent from %s", modelID, tt.path)
+		})
+	}
+}
+
 func TestHomeModelsAuthStatus(t *testing.T) {
 	cases := []struct {
 		name        string

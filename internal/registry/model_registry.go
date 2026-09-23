@@ -1385,7 +1385,9 @@ func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
 		if !available || registration == nil || registration.Info == nil {
 			continue
 		}
-		result = append(result, cloneModelInfo(registration.Info))
+		info := cloneModelInfo(registration.Info)
+		ApplyModelsDevLimit(info)
+		result = append(result, info)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return strings.TrimSpace(result[i].ID) < strings.TrimSpace(result[j].ID)
@@ -1406,7 +1408,9 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 			continue
 		}
 
-		model := r.convertModelToMap(registration.Info, handlerType)
+		info := cloneModelInfo(registration.Info)
+		ApplyModelsDevLimit(info)
+		model := r.convertModelToMap(info, handlerType)
 		if model != nil {
 			models = append(models, model)
 		}
@@ -1777,7 +1781,10 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		// context correctly, especially for Copilot-proxied models whose
 		// real prompt limit (128K-168K) is much lower than the 1M window
 		// that Claude Code may assume for Opus 4.6 with 1M context enabled.
-		maxInput := model.ContextLength
+		maxInput := model.InputTokenLimit
+		if maxInput <= 0 {
+			maxInput = model.ContextLength
+		}
 		if maxInput <= 0 {
 			maxInput = DefaultClaudeMaxInputTokens
 		}

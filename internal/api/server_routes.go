@@ -725,6 +725,9 @@ func formatHomeCodexModel(entry homeModelEntry) map[string]any {
 	if entry.ownedBy != "" {
 		model["owned_by"] = entry.ownedBy
 	}
+	if entry.metadataModelID != "" {
+		model["metadata_model_id"] = entry.metadataModelID
+	}
 	for _, p := range entry.providers {
 		if strings.EqualFold(p, "devin") {
 			model["type"] = "devin"
@@ -771,10 +774,12 @@ func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.Ha
 
 type homeModelEntry struct {
 	id                     string
+	metadataModelID        string
 	created                int64
 	ownedBy                string
 	displayName            string
 	contextLength          int
+	maxInputTokens         int
 	maxCompletionTokens    int
 	thinking               *registry.ThinkingSupport
 	providers              []string
@@ -828,7 +833,10 @@ func formatHomeClaudeModel(entry homeModelEntry) map[string]any {
 	if displayName == "" {
 		displayName = entry.id
 	}
-	maxInput := entry.contextLength
+	maxInput := entry.maxInputTokens
+	if maxInput <= 0 {
+		maxInput = entry.contextLength
+	}
 	if maxInput <= 0 {
 		maxInput = registry.DefaultClaudeMaxInputTokens
 	}
@@ -844,6 +852,13 @@ func formatHomeClaudeModel(entry homeModelEntry) map[string]any {
 		"display_name":     displayName,
 		"max_input_tokens": maxInput,
 		"max_tokens":       maxOutput,
+	}
+	if entry.contextLength > 0 {
+		model["context_length"] = entry.contextLength
+		model["max_context_window"] = entry.contextLength
+	}
+	if entry.maxCompletionTokens > 0 {
+		model["max_completion_tokens"] = entry.maxCompletionTokens
 	}
 	if entry.created > 0 {
 		model["created_at"] = time.Unix(entry.created, 0).UTC().Format(time.RFC3339)
@@ -1091,14 +1106,20 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 				displayName = strings.TrimSpace(displayName)
 			}
 			thinking := homeModelThinkingSupport(model)
+			metadataModelID, _ := model["metadata_model_id"].(string)
+			if metadataModelID == "" {
+				metadataModelID, _ = model["metadataModelID"].(string)
+			}
 
 			indexByID[id] = len(out)
 			out = append(out, homeModelEntry{
 				id:                     id,
+				metadataModelID:        strings.TrimSpace(metadataModelID),
 				created:                homeModelInt64Value(model, "created"),
 				ownedBy:                ownedBy,
 				displayName:            displayName,
 				contextLength:          int(homeModelInt64Value(model, "context_length", "contextLength", "inputTokenLimit", "max_input_tokens")),
+				maxInputTokens:         int(homeModelInt64Value(model, "max_input_tokens", "inputTokenLimit")),
 				maxCompletionTokens:    int(homeModelInt64Value(model, "max_completion_tokens", "maxCompletionTokens", "outputTokenLimit", "max_tokens")),
 				thinking:               thinking,
 				providers:              appendUniqueHomeProvider(nil, provider),
@@ -1110,6 +1131,25 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
 	if len(out) == 0 {
 		return nil, fmt.Errorf("home models payload contains no models")
+	}
+	for i := range out {
+		metadataID := out[i].metadataModelID
+		if metadataID == "" {
+			metadataID = out[i].id
+		}
+		if limit, ok := registry.LookupModelsDevLimit(metadataID); ok {
+			if limit.Context > 0 {
+				out[i].contextLength = limit.Context
+			}
+			if limit.Input > 0 {
+				out[i].maxInputTokens = limit.Input
+			} else if limit.Context > 0 {
+				out[i].maxInputTokens = limit.Context
+			}
+			if limit.Output > 0 {
+				out[i].maxCompletionTokens = limit.Output
+			}
+		}
 	}
 	return out, nil
 }

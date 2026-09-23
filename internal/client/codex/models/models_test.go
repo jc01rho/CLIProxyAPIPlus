@@ -1,11 +1,64 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
+
+func TestCodexClientModelsModelsDevLimitsOverrideTemplateAndHomeMetadata(t *testing.T) {
+	const modelID = "models-dev-codex-override-test"
+	var includeTemplate atomic.Bool
+	includeTemplate.Store(true)
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body := `{"openai/` + modelID + `":{"limit":{"context":1050000,"input":922000,"output":128000}}`
+		if includeTemplate.Load() {
+			body += `,"openai/gpt-6-sol":{"limit":{"context":1050000,"input":922000,"output":128000}}`
+		}
+		_, _ = io.WriteString(w, body+`}`)
+	}))
+	defer catalog.Close()
+	defer func() {
+		includeTemplate.Store(false)
+		if err := registry.RefreshModelsDevLimits(context.Background(), catalog.URL); err != nil {
+			t.Errorf("restore models.dev fixture: %v", err)
+		}
+	}()
+	if err := registry.RefreshModelsDevLimits(context.Background(), catalog.URL); err != nil {
+		t.Fatalf("refresh models.dev: %v", err)
+	}
+
+	response := BuildResponseForClientWithCPACapabilities([]map[string]any{
+		{"id": modelID, "context_length": 272000, "max_completion_tokens": 64000},
+	}, nil, nil, false, "cpa")
+	models, ok := response["models"].([]map[string]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("Codex models = %#v", response["models"])
+	}
+	model := models[0]
+	if model["context_window"] != 1050000 || model["max_context_window"] != 1050000 || model["max_tokens"] != 128000 {
+		t.Fatalf("Codex limits = %#v", model)
+	}
+
+	templated := BuildResponseForClientWithCPACapabilities([]map[string]any{
+		{"id": "gpt-6-sol", "context_length": 272000, "max_completion_tokens": 128000},
+	}, nil, nil, false, "cpa")["models"].([]map[string]any)[0]
+	if templated["context_window"] != 1050000 || templated["max_context_window"] != 1050000 || templated["max_tokens"] != 128000 {
+		t.Fatalf("templated GPT-6 Sol limits = %#v", templated)
+	}
+	alias := BuildResponseForClientWithCPACapabilities([]map[string]any{
+		{"id": "explicit-sol-alias", "metadata_model_id": "gpt-6-sol"},
+	}, nil, nil, false, "cpa")["models"].([]map[string]any)[0]
+	if alias["context_window"] != 1050000 || alias["max_tokens"] != 128000 {
+		t.Fatalf("explicit alias limits = %#v", alias)
+	}
+}
 
 func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
 	modelID := "mimo-v2.5-pro-codex-test"

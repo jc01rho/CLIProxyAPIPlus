@@ -222,7 +222,7 @@ func main() {
 	flag.BoolVar(&homeDisableClusterDiscovery, "home-disable-cluster-discovery", false, "Disable Home CLUSTER NODES discovery and keep using the configured -home-jwt address")
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
-	flag.BoolVar(&localModel, "local-model", false, "Use embedded models.json and codex_client_models.json only, skip remote model catalog fetching")
+	flag.BoolVar(&localModel, "local-model", false, "Use embedded registry and Codex catalogs; still fetch models.dev limits on each server start")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -971,6 +971,9 @@ func modelCatalogUpdaterPlan(localModel, homeEnabled bool) (startModels, startCo
 }
 
 func startModelCatalogUpdaters(localModel, homeEnabled bool) {
+	if err := registry.RefreshModelsDevLimits(context.Background(), registry.ModelsDevLimitsURL); err != nil {
+		log.Warnf("models.dev model limits unavailable; using existing metadata: %v", err)
+	}
 	startModels, startCodexClient := modelCatalogUpdaterPlan(localModel, homeEnabled)
 	if startCodexClient {
 		registry.StartCodexClientModelsUpdater(context.Background())
