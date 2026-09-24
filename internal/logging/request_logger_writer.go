@@ -133,7 +133,7 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 		responseToWrite = response
 	}
 
-	logFile, _, errOpen := createUniqueLogFile(l.logsDir, filename)
+	logFile, filePath, errOpen := createUniqueLogFile(l.logsDir, filename)
 	if errOpen != nil {
 		return fmt.Errorf("failed to create log file: %w", errOpen)
 	}

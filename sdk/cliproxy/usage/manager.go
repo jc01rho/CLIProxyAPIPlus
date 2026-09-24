@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -391,6 +390,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	if m == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if strings.TrimSpace(record.RequestID) == "" {
 		if reqID := ExecutionRequestIDFromContext(ctx); reqID != "" {
 			record.RequestID = reqID
@@ -399,11 +401,7 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 		}
 	}
 	if strings.TrimSpace(record.TraceID) == "" {
-		if trID := TraceIDFromContext(ctx); trID != "" {
-			record.TraceID = trID
-		} else if trID := internallogging.GetRequestID(ctx); trID != "" {
-			record.TraceID = trID
-		}
+		record.TraceID = TraceIDFromContext(ctx)
 	}
 	// ensure worker is running even if Start was not called explicitly
 	m.Start(context.Background())
