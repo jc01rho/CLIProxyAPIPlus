@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -102,5 +103,31 @@ func TestFetchClaudeModels_FailureFallsBackToStatic(t *testing.T) {
 		if m.ID == "gateway-sonnet" {
 			t.Fatal("gateway models leaked into the fallback")
 		}
+	}
+}
+
+// Gateway listings carry only ids and names. Ids that match Anthropic's own
+// lineup must keep the static reasoning metadata, or clients see no thinking
+// levels for models that do accept a thinking budget.
+func TestFetchClaudeModels_GatewayKeepsStaticThinking(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-5","display_name":"Claude Opus 5"},{"id":"gateway-only"}]}`))
+	}))
+	defer srv.Close()
+
+	models := FetchClaudeModels(context.Background(), claudeAuthWithBase(srv.URL), nil)
+	byID := map[string]*registry.ModelInfo{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	if byID["claude-opus-5"] == nil || byID["claude-opus-5"].Thinking == nil {
+		t.Fatalf("claude-opus-5 lost static thinking: %+v", byID["claude-opus-5"])
+	}
+	if byID["claude-opus-5"].DisplayName != "Claude Opus 5" {
+		t.Fatalf("display name = %q", byID["claude-opus-5"].DisplayName)
+	}
+	if byID["gateway-only"] == nil || byID["gateway-only"].Thinking != nil {
+		t.Fatalf("gateway-only must not invent thinking: %+v", byID["gateway-only"])
 	}
 }

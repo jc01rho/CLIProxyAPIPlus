@@ -107,6 +107,16 @@ func FetchClaudeModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 		return fallback
 	}
 
+	// Gateway listings carry ids and names only. Ids that are part of
+	// Anthropic's own lineup keep the static reasoning and limit metadata, so a
+	// gateway-served Opus or Sonnet still advertises its thinking levels.
+	static := make(map[string]*registry.ModelInfo, len(fallback))
+	for _, model := range fallback {
+		if model != nil {
+			static[model.ID] = model
+		}
+	}
+
 	now := time.Now().Unix()
 	seen := make(map[string]struct{})
 	models := make([]*registry.ModelInfo, 0, 32)
@@ -123,14 +133,20 @@ func FetchClaudeModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 		if displayName == "" {
 			displayName = id
 		}
-		models = append(models, &registry.ModelInfo{
+		model := &registry.ModelInfo{
 			ID:          id,
 			DisplayName: displayName,
 			OwnedBy:     "anthropic",
 			Type:        "claude",
 			Object:      "model",
 			Created:     now,
-		})
+		}
+		if known := static[id]; known != nil {
+			model.Thinking = known.Thinking
+			model.ContextLength = known.ContextLength
+			model.MaxCompletionTokens = known.MaxCompletionTokens
+		}
+		models = append(models, model)
 		return true
 	})
 

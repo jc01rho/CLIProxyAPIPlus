@@ -627,14 +627,14 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 		model := newModels[id]
 		if reg, ok := r.models[id]; ok {
 			hasWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(id, "", clientID)
-			reg.Info = cloneModelInfo(model)
+			reg.Info = r.withKnownThinkingLocked(cloneModelInfo(model), id, "", clientID)
 			reg.Info.SupportsWebSearch = hasWebSearch
 			if provider != "" {
 				if reg.InfoByProvider == nil {
 					reg.InfoByProvider = make(map[string]*ModelInfo)
 				}
 				hasProvWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(id, provider, clientID)
-				reg.InfoByProvider[provider] = cloneModelInfo(model)
+				reg.InfoByProvider[provider] = r.withKnownThinkingLocked(cloneModelInfo(model), id, provider, clientID)
 				reg.InfoByProvider[provider].SupportsWebSearch = hasProvWebSearch
 			}
 			if providerChanged && oldProvider != "" && reg.InfoByProvider != nil && reg.InfoByProvider[oldProvider] != nil {
@@ -704,7 +704,7 @@ func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *Mo
 		existing.Count++
 		existing.LastUpdated = now
 		hasWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(modelID, "", excludeClientID)
-		existing.Info = cloneModelInfo(model)
+		existing.Info = r.withKnownThinkingLocked(cloneModelInfo(model), modelID, "", excludeClientID)
 		existing.Info.SupportsWebSearch = hasWebSearch
 		if existing.SuspendedClients == nil {
 			existing.SuspendedClients = make(map[string]string)
@@ -718,7 +718,7 @@ func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *Mo
 			}
 			existing.Providers[provider]++
 			hasProvWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(modelID, provider, excludeClientID)
-			existing.InfoByProvider[provider] = cloneModelInfo(model)
+			existing.InfoByProvider[provider] = r.withKnownThinkingLocked(cloneModelInfo(model), modelID, provider, excludeClientID)
 			existing.InfoByProvider[provider].SupportsWebSearch = hasProvWebSearch
 		}
 		log.Debugf("Incremented count for model %s, now %d clients", modelID, existing.Count)
@@ -1168,6 +1168,33 @@ func (r *ModelRegistry) hasClientSupportingWebSearchLocked(modelID, provider, ex
 		}
 	}
 	return false
+}
+
+// withKnownThinkingLocked keeps reasoning metadata that another client already
+// registered for modelID when the incoming info carries none.
+//
+// The shared registration keeps only the most recently registered info, and a
+// gateway catalog lists ids without thinking data. Without this, a credential
+// whose listing lacks thinking hides the thinking support that a statically
+// described credential for the same model id advertised, depending only on
+// which of them registered last.
+func (r *ModelRegistry) withKnownThinkingLocked(info *ModelInfo, modelID, provider, excludeClientID string) *ModelInfo {
+	if info == nil || info.Thinking != nil {
+		return info
+	}
+	for cID, infos := range r.clientModelInfos {
+		if cID == excludeClientID {
+			continue
+		}
+		if provider != "" && r.clientProviders[cID] != provider {
+			continue
+		}
+		if known, ok := infos[modelID]; ok && known != nil && known.Thinking != nil {
+			info.Thinking = cloneModelInfo(known).Thinking
+			return info
+		}
+	}
+	return info
 }
 
 // SuspendClientModel marks a client's model as temporarily unavailable until explicitly resumed.
