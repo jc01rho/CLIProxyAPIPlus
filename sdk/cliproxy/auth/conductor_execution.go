@@ -251,7 +251,7 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
 		RequestedModel: requestedModel,
 		Stream:         opts.Stream,
 		Headers:        cloneRequestHeaders(opts.Headers),
-		Body:           bytes.Clone(req.Payload),
+		Body:           req.Payload,
 		Metadata:       opts.Metadata,
 	})
 	opts.Headers = mergeRequestHeaders(opts.Headers, resp.Headers, resp.ClearHeaders)

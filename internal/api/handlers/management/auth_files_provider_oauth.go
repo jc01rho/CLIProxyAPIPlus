@@ -915,64 +915,7 @@ func (h *Handler) RequestMetaToken(c *gin.Context) {
 			return
 		}
 
-		fileName := metaauth.CredentialFileName(tokenStorage.Email, tokenStorage.DCAToken)
-		label := strings.TrimSpace(tokenStorage.Email)
-		if label == "" {
-			label = "Meta"
-		}
-
-		metadata := map[string]any{
-			"type":         "meta",
-			"access_token": tokenStorage.AccessToken,
-			"token_type":   tokenStorage.TokenType,
-			"expires_in":   tokenStorage.ExpiresIn,
-			"expired":      tokenStorage.Expired,
-			"last_refresh": tokenStorage.LastRefresh,
-			"base_url":     tokenStorage.BaseURL,
-			"auth_kind":    "oauth",
-		}
-		if tokenStorage.DCAExpired != "" {
-			metadata["dca_expired"] = tokenStorage.DCAExpired
-		}
-		if tokenStorage.DCAExpiresAt > 0 {
-			metadata["dca_expires_at"] = tokenStorage.DCAExpiresAt
-		}
-		if tokenStorage.APIKey != "" {
-			metadata["api_key"] = tokenStorage.APIKey
-		}
-		if tokenStorage.DCAToken != "" {
-			metadata["dca_token"] = tokenStorage.DCAToken
-		}
-		if tokenStorage.Email != "" {
-			metadata["email"] = tokenStorage.Email
-		}
-		if tokenStorage.Name != "" {
-			metadata["name"] = tokenStorage.Name
-		}
-
-		attrs := map[string]string{
-			"auth_kind": "oauth",
-			"base_url":  tokenStorage.BaseURL,
-		}
-		if tokenStorage.APIKey != "" {
-			attrs["api_key"] = tokenStorage.APIKey
-		}
-		if tokenStorage.DCAToken != "" {
-			attrs["dca_token"] = tokenStorage.DCAToken
-		}
-		if tokenStorage.Email != "" {
-			attrs["email"] = tokenStorage.Email
-		}
-
-		record := &coreauth.Auth{
-			ID:         fileName,
-			Provider:   "meta",
-			FileName:   fileName,
-			Label:      label,
-			Storage:    tokenStorage,
-			Metadata:   metadata,
-			Attributes: attrs,
-		}
+		record := buildMetaAuthRecord(bundle, tokenStorage)
 		if errGuard := guardOAuthSessionPendingForSave(state, "meta"); errGuard != nil {
 			return
 		}
@@ -1226,6 +1169,73 @@ func decodeClineCallbackTokenPayload(code string) (*cline.TokenResponse, bool) {
 		return nil, false
 	}
 	return &tokenResp, true
+}
+
+func buildMetaAuthRecord(bundle *metaauth.MetaAuthBundle, tokenStorage *metaauth.MetaTokenStorage) *coreauth.Auth {
+	fileName := metaauth.CredentialFileName(tokenStorage.Email, tokenStorage.DCAToken)
+	label := strings.TrimSpace(tokenStorage.Email)
+	if label == "" {
+		label = "Meta"
+	}
+
+	metadata := map[string]any{
+		"type":         "meta",
+		"access_token": tokenStorage.AccessToken,
+		"token_type":   tokenStorage.TokenType,
+		"expires_in":   tokenStorage.ExpiresIn,
+		"expired":      tokenStorage.Expired,
+		"last_refresh": tokenStorage.LastRefresh,
+		"base_url":     tokenStorage.BaseURL,
+		"auth_kind":    "oauth",
+	}
+	if tokenStorage.DCAExpired != "" {
+		metadata["dca_expired"] = tokenStorage.DCAExpired
+	}
+	if tokenStorage.DCAExpiresAt > 0 {
+		metadata["dca_expires_at"] = tokenStorage.DCAExpiresAt
+	}
+	if tokenStorage.APIKey != "" {
+		metadata["api_key"] = tokenStorage.APIKey
+	}
+	if tokenStorage.DCAToken != "" {
+		metadata["dca_token"] = tokenStorage.DCAToken
+	}
+	if tokenStorage.Email != "" {
+		metadata["email"] = tokenStorage.Email
+	}
+	if tokenStorage.Name != "" {
+		metadata["name"] = tokenStorage.Name
+	}
+	if bundle != nil && bundle.MintedKey != nil {
+		metadata["subs_tier_name"] = bundle.MintedKey.SubsTierName
+		metadata["subs_tier_id"] = bundle.MintedKey.SubsTierID
+		metadata["is_subs_active"] = bundle.MintedKey.IsSubsActive
+		metadata["has_payment_method"] = bundle.MintedKey.HasPaymentMethod
+	}
+
+	attrs := map[string]string{
+		"auth_kind": "oauth",
+		"base_url":  tokenStorage.BaseURL,
+	}
+	if tokenStorage.APIKey != "" {
+		attrs["api_key"] = tokenStorage.APIKey
+	}
+	if tokenStorage.DCAToken != "" {
+		attrs["dca_token"] = tokenStorage.DCAToken
+	}
+	if tokenStorage.Email != "" {
+		attrs["email"] = tokenStorage.Email
+	}
+
+	return &coreauth.Auth{
+		ID:         fileName,
+		Provider:   "meta",
+		FileName:   fileName,
+		Label:      label,
+		Storage:    tokenStorage,
+		Metadata:   metadata,
+		Attributes: attrs,
+	}
 }
 
 func (h *Handler) RequestKimiToken(c *gin.Context) {

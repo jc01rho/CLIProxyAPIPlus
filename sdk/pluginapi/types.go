@@ -1068,7 +1068,7 @@ type RequestInterceptRequest struct {
 	Stream bool
 	// Headers contains the current upstream request headers.
 	Headers http.Header
-	// Body contains the current request payload.
+	// Body contains the current request payload. Treat it as read-only; modifications must be returned in RequestInterceptResponse.Body.
 	Body []byte
 	// Metadata is a best-effort cloned context snapshot. Treat it as read-only and JSON-like.
 	Metadata map[string]any
