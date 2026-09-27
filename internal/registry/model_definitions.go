@@ -103,6 +103,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "SWE-2",
 		ContextLength:       262000,
 		MaxCompletionTokens: 128000,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"medium", "high", "max"},
 		},
@@ -114,6 +115,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "Claude Fable 5.1",
 		ContextLength:       1000000,
 		MaxCompletionTokens: 64000,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"low", "medium", "high", "xhigh", "max"},
 		},
@@ -125,6 +127,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "GPT-6 Astra",
 		ContextLength:       1000000,
 		MaxCompletionTokens: 64000,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"low", "medium", "high", "xhigh", "max"},
 		},
@@ -136,6 +139,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "GLM-5.2",
 		ContextLength:       200000,
 		MaxCompletionTokens: 64000,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"none", "high"},
 		},
@@ -147,6 +151,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "GLM-5.3",
 		ContextLength:       1048576,
 		MaxCompletionTokens: 128000,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"low", "high", "max"},
 		},
@@ -158,6 +163,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "GLM-5.3 Flash",
 		ContextLength:       1000000,
 		MaxCompletionTokens: 128000,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"low", "high", "max"},
 		},
@@ -169,6 +175,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "GPT-5.6 Sol",
 		ContextLength:       1000000,
 		MaxCompletionTokens: 128000,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"none", "low", "medium", "high", "xhigh", "max"},
 		},
@@ -180,6 +187,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "Gemini 3.8 Flash",
 		ContextLength:       1048576,
 		MaxCompletionTokens: 65536,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"low", "medium", "high"},
 		},
@@ -191,6 +199,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "Grok 4.6",
 		ContextLength:       500000,
 		MaxCompletionTokens: 131072,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"low", "medium", "high", "xhigh"},
 		},
@@ -202,6 +211,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "DeepSeek V4 Flash",
 		ContextLength:       1048576,
 		MaxCompletionTokens: 64000,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"high", "max"},
 		},
@@ -213,6 +223,7 @@ var staticDevinModels = []*ModelInfo{
 		DisplayName:         "DeepSeek V4.1 Flash",
 		ContextLength:       1048576,
 		MaxCompletionTokens: 64000,
+		SupportedEndpoints:  []string{"/chat/completions"},
 		Thinking: &ThinkingSupport{
 			Levels: []string{"high", "max"},
 		},

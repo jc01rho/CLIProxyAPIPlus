@@ -52,6 +52,7 @@ func devinBuiltinSWE16SlowModelInfo() *ModelInfo {
 		SupportedInputModalities:   []string{"text", "image"},
 		SupportedOutputModalities:  []string{"text"},
 		SupportedGenerationMethods: []string{"generateContent", "countTokens"},
+		SupportedEndpoints:         []string{"/chat/completions"},
 	}
 }
 

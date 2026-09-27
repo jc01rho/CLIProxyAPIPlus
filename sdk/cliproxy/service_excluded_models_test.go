@@ -395,13 +395,13 @@ func TestRegisterModelsForAuth_DevinSWE16SlowIncluded(t *testing.T) {
 	models := registry.GetModelsForClient(auth.ID)
 	var foundSlow *internalregistry.ModelInfo
 	for _, m := range models {
-		if m != nil && m.ID == "devin/swe-1-6-slow" {
+		if m != nil && m.ID == "swe-1-6-slow" {
 			foundSlow = m
 			break
 		}
 	}
 	if foundSlow == nil {
-		t.Fatal("expected devin/swe-1-6-slow to be registered for devin auth")
+		t.Fatal("expected swe-1-6-slow to be registered for devin auth")
 	}
 	if foundSlow.DisplayName != "SWE-1.6 Slow" {
 		t.Errorf("DisplayName = %q, want 'SWE-1.6 Slow'", foundSlow.DisplayName)
