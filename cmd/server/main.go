@@ -169,6 +169,7 @@ func main() {
 	var standalone bool
 	var noIncognito bool
 	var useIncognito bool
+	var managementBaseURL string
 	var localModel bool
 
 	// Define command-line flags for different operation modes.
@@ -222,7 +223,8 @@ func main() {
 	flag.BoolVar(&homeDisableClusterDiscovery, "home-disable-cluster-discovery", false, "Disable Home CLUSTER NODES discovery and keep using the configured -home-jwt address")
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
-	flag.BoolVar(&localModel, "local-model", false, "Use embedded registry and Codex catalogs; still fetch models.dev limits on each server start")
+	flag.StringVar(&managementBaseURL, "management-base-url", "", "Base URL of remote management API for TUI client mode (e.g. https://proxy.example.com)")
+	flag.BoolVar(&localModel, "local-model", false, "Use embedded registry, Codex and Devin catalogs; still fetch models.dev limits on each server start")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -939,8 +941,9 @@ func main() {
 				<-done
 			} else {
 				// Default TUI mode: pure management client.
-				// The proxy server must already be running.
-				if errRun := tui.Run(cfg.Port, password, nil, os.Stdout); errRun != nil {
+				// The proxy server must already be running (locally or remotely).
+				baseURL := resolveManagementBaseURL(managementBaseURL, cfg)
+				if errRun := tui.RunWithBaseURL(baseURL, password, nil, os.Stdout); errRun != nil {
 					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
 				}
 			}
@@ -960,23 +963,46 @@ func main() {
 	}
 }
 
-// modelCatalogUpdaterPlan decides which remote model catalogs should refresh.
-// Codex client templates still refresh under Home mode because the model list
-// comes from Home IDs while template metadata stays edge-local.
-func modelCatalogUpdaterPlan(localModel, homeEnabled bool) (startModels, startCodexClient bool) {
-	if localModel {
-		return false, false
+// resolveManagementBaseURL determines the management API base URL for TUI client mode.
+// Priority: command-line flag > config file remote-management.base-url > default localhost.
+func resolveManagementBaseURL(flagURL string, cfg *config.Config) string {
+	baseURL := strings.TrimSpace(flagURL)
+	if baseURL != "" {
+		return baseURL
 	}
-	return !homeEnabled, true
+	if cfg != nil {
+		baseURL = strings.TrimSpace(cfg.RemoteManagement.BaseURL)
+		if baseURL != "" {
+			return baseURL
+		}
+	}
+	port := 8317
+	if cfg != nil && cfg.Port > 0 {
+		port = cfg.Port
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+// modelCatalogUpdaterPlan decides which remote model catalogs should refresh.
+// Codex client and Devin catalogs still refresh under Home mode because
+// template metadata and Devin models stay edge-local.
+func modelCatalogUpdaterPlan(localModel, homeEnabled bool) (startModels, startCodexClient, startDevin bool) {
+	if localModel {
+		return false, false, false
+	}
+	return !homeEnabled, true, true
 }
 
 func startModelCatalogUpdaters(localModel, homeEnabled bool) {
 	if err := registry.RefreshModelsDevLimits(context.Background(), registry.ModelsDevLimitsURL); err != nil {
 		log.Warnf("models.dev model limits unavailable; using existing metadata: %v", err)
 	}
-	startModels, startCodexClient := modelCatalogUpdaterPlan(localModel, homeEnabled)
+	startModels, startCodexClient, startDevin := modelCatalogUpdaterPlan(localModel, homeEnabled)
 	if startCodexClient {
 		registry.StartCodexClientModelsUpdater(context.Background())
+	}
+	if startDevin {
+		registry.StartDevinModelsUpdater(context.Background())
 	}
 	if startModels {
 		registry.StartModelsUpdater(context.Background())
