@@ -1618,9 +1618,9 @@ func applySensenovaMaxTokensClamp(body []byte) []byte {
 //   - tools[].function.name (Chat Completions), tools[].name (flat/Responses-style),
 //     and tools[].custom.name (Responses "custom" tool variant). The effective name is
 //     the first non-empty of function.name / name / custom.name; entries whose effective
-//     name is empty or whitespace are dropped. Missing/empty function.arguments on kept
-//     entries with a function object are backfilled with "{}". If no tools remain the
-//     tools field is removed entirely.
+//     name is empty or whitespace are dropped. Named declarations are preserved without
+//     adding call-only fields such as function.arguments. If no tools remain the tools
+//     field is removed entirely.
 //   - messages[].tool_calls[].function.name (Chat Completions assistant replay): entries
 //     with an empty/whitespace function name are dropped, mirroring sanitizeSensenovaToolCalls
 //     but applied unconditionally so every openai-compatible provider is protected.
@@ -1655,9 +1655,8 @@ func toolEffectiveName(tool gjson.Result) string {
 }
 
 // sanitizeEmptyToolDeclarations drops tools[] entries whose effective name (see
-// toolEffectiveName) is empty or whitespace, and backfills missing or empty
-// function.arguments with "{}" on entries that carry a function object. If every
-// entry is dropped, the tools field itself is removed.
+// toolEffectiveName) is empty or whitespace. If every entry is dropped, the tools
+// field itself is removed.
 func sanitizeEmptyToolDeclarations(body []byte) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
@@ -1675,18 +1674,7 @@ func sanitizeEmptyToolDeclarations(body []byte) []byte {
 			changed = true
 			continue
 		}
-		raw := tool.Raw
-		if tool.Get("function").Exists() {
-			if args := tool.Get("function.arguments"); !args.Exists() || strings.TrimSpace(args.String()) == "" {
-				repaired, errSet := sjson.Set(raw, "function.arguments", "{}")
-				if errSet != nil {
-					return body
-				}
-				raw = repaired
-				changed = true
-			}
-		}
-		kept = append(kept, raw)
+		kept = append(kept, tool.Raw)
 	}
 	if !changed {
 		return body

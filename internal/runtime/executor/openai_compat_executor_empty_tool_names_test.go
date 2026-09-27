@@ -37,25 +37,25 @@ func TestSanitizeEmptyToolFunctionNames(t *testing.T) {
 				`{"type":"function","function":{"name":"keep","arguments":"{}"}}]}`,
 		},
 		{
-			name: "empty arguments are filled with empty object",
+			name: "empty declaration arguments are left untouched",
 			body: `{"model":"m","tools":[` +
 				`{"type":"function","function":{"name":"keep","arguments":""}}]}`,
 			want: `{"model":"m","tools":[` +
-				`{"type":"function","function":{"name":"keep","arguments":"{}"}}]}`,
+				`{"type":"function","function":{"name":"keep","arguments":""}}]}`,
 		},
 		{
-			name: "missing arguments are filled with empty object",
+			name: "declarations do not gain arguments",
 			body: `{"model":"m","tools":[` +
 				`{"type":"function","function":{"name":"keep"}}]}`,
 			want: `{"model":"m","tools":[` +
-				`{"type":"function","function":{"name":"keep","arguments":"{}"}}]}`,
+				`{"type":"function","function":{"name":"keep"}}]}`,
 		},
 		{
-			name: "whitespace arguments are filled with empty object",
+			name: "whitespace declaration arguments are left untouched",
 			body: `{"model":"m","tools":[` +
 				`{"type":"function","function":{"name":"keep","arguments":"  "}}]}`,
 			want: `{"model":"m","tools":[` +
-				`{"type":"function","function":{"name":"keep","arguments":"{}"}}]}`,
+				`{"type":"function","function":{"name":"keep","arguments":"  "}}]}`,
 		},
 		{
 			name: "request losing every tool entry loses the field",
@@ -205,7 +205,7 @@ func TestOpenAICompatExecutor_DropsEmptyToolFunctionNamesRedirect(t *testing.T) 
 		Model: "solar-pro-4",
 		Payload: []byte(`{"model":"solar-pro-4","messages":[{"role":"user","content":"hi"}],"tools":[
 {"type":"function","function":{"name":"","arguments":"{}"}},
-{"type":"function","function":{"name":"keep","arguments":""}}
+{"type":"function","function":{"name":"keep","parameters":{"type":"object","properties":{}}}}
 ]}`),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
 	if err != nil {
@@ -220,8 +220,11 @@ func TestOpenAICompatExecutor_DropsEmptyToolFunctionNamesRedirect(t *testing.T) 
 	if name := call.Get("function.name").String(); name != "keep" {
 		t.Fatalf("function.name = %q, want %q; body=%s", name, "keep", gotBody)
 	}
-	if args := call.Get("function.arguments").String(); args != "{}" {
-		t.Fatalf("function.arguments = %q, want %q; body=%s", args, "{}", gotBody)
+	if args := call.Get("function.arguments"); args.Exists() {
+		t.Fatalf("tool declaration must not gain arguments; body=%s", gotBody)
+	}
+	if parameters := call.Get("function.parameters"); parameters.Get("type").String() != "object" || !parameters.Get("properties").IsObject() {
+		t.Fatalf("tool parameters were not preserved; body=%s", gotBody)
 	}
 }
 
@@ -253,7 +256,7 @@ func TestOpenAICompatExecutor_DropsEmptyToolFunctionNamesStreamRedirect(t *testi
 		Model: "solar-pro-4",
 		Payload: []byte(`{"model":"solar-pro-4","messages":[{"role":"user","content":"hi"}],"tools":[
 {"type":"function","function":{"name":"","arguments":"{}"}},
-{"type":"function","function":{"name":"keep","arguments":""}}
+{"type":"function","function":{"name":"keep","parameters":{"type":"object","properties":{}}}}
 ]}`),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: true})
 	if err != nil {
@@ -270,8 +273,11 @@ func TestOpenAICompatExecutor_DropsEmptyToolFunctionNamesStreamRedirect(t *testi
 	if name := call.Get("function.name").String(); name != "keep" {
 		t.Fatalf("function.name = %q, want %q; body=%s", name, "keep", gotBody)
 	}
-	if args := call.Get("function.arguments").String(); args != "{}" {
-		t.Fatalf("function.arguments = %q, want %q; body=%s", args, "{}", gotBody)
+	if args := call.Get("function.arguments"); args.Exists() {
+		t.Fatalf("tool declaration must not gain arguments; body=%s", gotBody)
+	}
+	if parameters := call.Get("function.parameters"); parameters.Get("type").String() != "object" || !parameters.Get("properties").IsObject() {
+		t.Fatalf("tool parameters were not preserved; body=%s", gotBody)
 	}
 }
 
