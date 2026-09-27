@@ -48,8 +48,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		reporter.SetUpstreamModel(upstreamModel)
 	}
 	from := opts.SourceFormat
-	ctx = withClaudeInboundFormat(ctx, from.String())
-	ctx = withClaudeDirectMessagesPassthrough(ctx, from == sdktranslator.FormatClaude && isAnthropicUpstreamBase(baseURL))
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("claude")
 	var replayScope claudeThinkingReplayScope
@@ -99,7 +97,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
-	wirePolicy, wireSettings := resolveClaudeWirePolicy(e.cfg, auth, apiKey, confirmedClaudeCode)
+	_, wireSettings := resolveClaudeWirePolicy(e.cfg, auth, apiKey, confirmedClaudeCode)
 	bodyBeforeCloaking := body
 	isProbeOrHelper := helps.IsClaudeProbeOrHelperRequest(bodyBeforeCloaking)
 	var cloaked bool
@@ -215,21 +213,20 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body = normalizeClaudeSamplingForUpstream(body, confirmedClaudeCode)
 
 	// Default cache_control for translated entrypoints (Responses/Chat/Gemini) and other
-	// non-native callers. Confirmed native Claude Code and direct Messages callers own
-	// their marker placement and must not be rewritten. Cloaked requests always run
-	// section-independent ensure so cloaking's first-user marker cannot suppress
-	// system/latest-user breakpoints.
-	messagesPassthrough := !confirmedClaudeCode && claudeInboundMessagesPassthrough(ctx) && wirePolicy.OAuth && !wirePolicy.CloakConfigured
-	cpaOwnsCacheControl := !messagesPassthrough && shouldEnsureCacheControl(body, cloaked, confirmedClaudeCode)
+	// non-native callers. Confirmed native Claude Code owns its marker placement and must
+	// not be rewritten. Cloaked requests always run section-independent ensure so cloaking's
+	// first-user marker cannot suppress system/latest-user breakpoints.
+	// cloaked and confirmedClaudeCode are mutually exclusive: resolveClaudeWirePolicy
+	// forces Cloak off for a confirmed native client.
+	cpaOwnsCacheControl := shouldEnsureCacheControl(body, cloaked, confirmedClaudeCode)
 	if cpaOwnsCacheControl {
 		body = ensureCacheControl(body)
 	}
 
 	// Enforce Anthropic's cache_control block limit (max 4 breakpoints per request).
-	// Direct Messages callers retain their caller-owned cache layout.
-	if !messagesPassthrough {
-		body = enforceCacheControlLimit(body, 4)
-	}
+	// Cloaking and ensureCacheControl may push the total over 4 when the client
+	// already sends multiple cache_control blocks.
+	body = enforceCacheControlLimit(body, 4)
 
 	// Native selects the 1h cache pool only for OAuth credentials and pairs it with
 	// extended-cache-ttl-2025-04-11, which claudeCodeCLIBetas emits on exactly the
@@ -246,16 +243,14 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// probes omit both 1h cache and extended-cache-ttl.
 	isSubagent := helps.IsClaudeSubagentRequest(incomingHeaders, body)
 	subagent1h := isSubagent && helps.ClaudeSubagentRequests1h(incomingHeaders, body)
-	if !messagesPassthrough {
-		if cpaOwnsCacheControl && fp.ProfileClaudeCodeCLI && (!isSubagent || subagent1h) && !isProbeOrHelper {
-			body = upgradeClaudeCacheControlTTL(body, claudeCacheControlTTL1h)
-		} else if isProbeOrHelper || (isSubagent && !subagent1h) {
-			body = stripClaudeCacheControlTTL(body)
-		}
-
-		// Normalize TTL values to prevent ordering violations under prompt-caching-scope-2026-01-05.
-		body = normalizeCacheControlTTL(body)
+	if cpaOwnsCacheControl && fp.ProfileClaudeCodeCLI && (!isSubagent || subagent1h) && !isProbeOrHelper {
+		body = upgradeClaudeCacheControlTTL(body, claudeCacheControlTTL1h)
+	} else if isProbeOrHelper || (isSubagent && !subagent1h) {
+		body = stripClaudeCacheControlTTL(body)
 	}
+
+	// Normalize TTL values to prevent ordering violations under prompt-caching-scope-2026-01-05.
+	body = normalizeCacheControlTTL(body)
 
 	// Extract betas from body and convert to header
 	var extraBetas []string
@@ -284,7 +279,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// OAuth tokens sign via cchSigning (claudeCCHSigningEnabled returns true for
 	// OAuth). experimentalCCHSigningEnabled covers per-key experimental config.
 	if cchSigning || experimentalCCHSigningEnabled(e.cfg, auth) {
-		if !messagesPassthrough && (!claudeCodeDetection.HelperProfile || claudeBodyNeedsBillingFallback(bodyForUpstream)) {
+		if !claudeCodeDetection.HelperProfile || claudeBodyNeedsBillingFallback(bodyForUpstream) {
 			cchBilling = claudeCCHFallbackBillingHeader(ctx, e.cfg, bodyForUpstream, claudeCodeDetection.Entrypoint)
 		}
 		bodyForUpstream, err = finalizeAnthropicMessagesBodyCCH(bodyForUpstream, cchBilling)

@@ -76,6 +76,7 @@ const (
 	claudeCodeHelperShapeNone claudeCodeHelperShape = iota
 	claudeCodeHelperShapeMinimal
 	claudeCodeHelperShapeStructured
+	claudeCodeHelperShapeTitle280
 
 	claudeCodeHelperModel = "claude-haiku-4-5-20251001"
 )
@@ -109,7 +110,7 @@ var measuredClaudeCodeHelperBetaProfiles = map[string]claudeCodeHelperShape{
 		"server-side-fallback-2026-06-01",
 		"fallback-credit-2026-06-01",
 		"cache-diagnosis-2026-04-07",
-	): claudeCodeHelperShapeStructured,
+	): claudeCodeHelperShapeTitle280,
 }
 
 // ClaudeCodeRequestDetection records the strong signals and first-party
@@ -345,12 +346,17 @@ func measuredClaudeCodeHelperSessionMatches(headers http.Header, payload []byte)
 func measuredClaudeCodeHelperBodyShape(payload []byte) claudeCodeHelperShape {
 	minimalKeys := []string{"model", "max_tokens", "messages", "metadata"}
 	structuredKeys := []string{"model", "messages", "system", "tools", "metadata", "max_tokens", "thinking", "temperature", "output_config", "stream"}
+	structuredTitle280Keys := []string{"model", "max_tokens", "messages", "metadata", "output_config"}
 	shape := claudeCodeHelperShapeNone
+	isTitle280 := false
 	switch {
 	case claudeJSONObjectHasKeys(payload, minimalKeys):
 		shape = claudeCodeHelperShapeMinimal
 	case claudeJSONObjectHasKeys(payload, structuredKeys):
 		shape = claudeCodeHelperShapeStructured
+	case claudeJSONObjectHasKeys(payload, structuredTitle280Keys):
+		shape = claudeCodeHelperShapeTitle280
+		isTitle280 = true
 	default:
 		return claudeCodeHelperShapeNone
 	}
@@ -372,6 +378,22 @@ func measuredClaudeCodeHelperBodyShape(payload []byte) claudeCodeHelperShape {
 
 	if shape == claudeCodeHelperShapeMinimal {
 		if maxTokens.Raw != "1" || message.Get("content").Type != gjson.String {
+			return claudeCodeHelperShapeNone
+		}
+		return shape
+	}
+
+	if isTitle280 {
+		outputConfig := gjson.GetBytes(payload, "output_config")
+		format := outputConfig.Get("format")
+		schema := format.Get("schema")
+		if maxTokens.Raw != "80" ||
+			message.Get("content").Type != gjson.String ||
+			!claudeJSONObjectHasKeys([]byte(outputConfig.Raw), []string{"format"}) ||
+			!claudeJSONObjectHasKeys([]byte(format.Raw), []string{"type", "schema"}) ||
+			format.Get("type").String() != "json_schema" ||
+			!claudeJSONObjectHasKeys([]byte(schema.Raw), []string{"type"}) ||
+			schema.Get("type").String() != "object" {
 			return claudeCodeHelperShapeNone
 		}
 		return shape

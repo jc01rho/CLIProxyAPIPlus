@@ -93,6 +93,9 @@ type ModelInfo struct {
 	// IsFree reports whether the provider marked this model as free/unlimited
 	// (Devin model_cost_tier == MODEL_COST_TIER_FREE). Derived from CostTier.
 	IsFree bool `json:"is_free,omitempty"`
+	// SupportConfigurationUpdate reports internal support for configuration_update.
+	SupportConfigurationUpdate bool `json:"-"`
+
 	// NativeCapabilities contains internal, static per-model capability metadata.
 	// It is intentionally separate from Antigravity's dynamically probed capability.
 	NativeCapabilities *NativeCapabilities `json:"-"`
@@ -135,18 +138,20 @@ type ModelConfig struct {
 	OverrideHeader map[string]string `json:"override_header,omitempty"`
 }
 
-// UnmarshalJSON loads internal native capability metadata without exposing it
+// UnmarshalJSON loads internal capability metadata without exposing it
 // through ModelInfo's normal JSON serialization.
 func (m *ModelInfo) UnmarshalJSON(data []byte) error {
 	type modelInfoAlias ModelInfo
 	aux := struct {
 		*modelInfoAlias
-		NativeCapabilities *NativeCapabilities `json:"native_capabilities"`
+		NativeCapabilities         *NativeCapabilities `json:"native_capabilities"`
+		SupportConfigurationUpdate bool                `json:"support_configuration_update"`
 	}{modelInfoAlias: (*modelInfoAlias)(m)}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
+	if errUnmarshal := json.Unmarshal(data, &aux); errUnmarshal != nil {
+		return errUnmarshal
 	}
 	m.NativeCapabilities = aux.NativeCapabilities
+	m.SupportConfigurationUpdate = aux.SupportConfigurationUpdate
 	return nil
 }
 
