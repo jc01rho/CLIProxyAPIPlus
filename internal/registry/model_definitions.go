@@ -470,7 +470,10 @@ func codexBuiltinGPT6SolModelInfo() *ModelInfo {
 		},
 		SupportedInputModalities:  []string{"text", "image"},
 		SupportedOutputModalities: []string{"text"},
-		NativeCapabilities:        &NativeCapabilities{WebSearch: &webSearch},
+		// The embedded/remote catalog marks gpt-6-sol with configuration_update
+		// support; the hard-coded paid builtin must not drop that capability.
+		SupportConfigurationUpdate: true,
+		NativeCapabilities:         &NativeCapabilities{WebSearch: &webSearch},
 	}
 }
 
@@ -493,7 +496,10 @@ func codexBuiltinGPT6LunaModelInfo() *ModelInfo {
 		},
 		SupportedInputModalities:  []string{"text", "image"},
 		SupportedOutputModalities: []string{"text"},
-		NativeCapabilities:        &NativeCapabilities{WebSearch: &webSearch},
+		// The embedded/remote catalog marks gpt-6-luna with configuration_update
+		// support; the hard-coded paid builtin must not drop that capability.
+		SupportConfigurationUpdate: true,
+		NativeCapabilities:         &NativeCapabilities{WebSearch: &webSearch},
 	}
 }
 

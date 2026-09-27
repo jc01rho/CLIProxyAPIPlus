@@ -405,6 +405,10 @@ func TestClaudeExecutor_Native280HaikuTitleHelperPreservesServerSideFallbackBeta
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
 	const titleBetas = claudeNativeHelperCoreBetas + ",structured-outputs-2025-12-15,server-side-fallback-2026-06-01,fallback-credit-2026-06-01,cache-diagnosis-2026-04-07"
 	headers := claudeNativeHelperHeaders(titleBetas, "gzip, deflate, br, zstd")
+	// Native-helper recognition authorizes helper injection only for the pinned
+	// fingerprint tuple; the shared fixture models an older SDK package to exercise
+	// the non-helper path, so pin the measured baseline package here.
+	headers.Set("X-Stainless-Package-Version", "0.112.1")
 	payload := []byte(`{"model":"claude-haiku-4-5-20251001","max_tokens":80,"messages":[{"role":"user","content":"generate title"}],"metadata":{"user_id":"` + strings.ReplaceAll(claudeNativeHelperUserID, `"`, `\"`) + `"},"output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}}`)
 
 	_, err := NewClaudeExecutor(&config.Config{}).Execute(ctx, claudeNativeHelperOAuthAuth("https://api.anthropic.com"), cliproxyexecutor.Request{

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -191,7 +192,9 @@ func TestDevinModelsRemoteFetchFallback(t *testing.T) {
 	foundCustom := false
 	foundBuiltinSlow := false
 	for _, m := range updatedModels {
-		if m != nil && m.ID == "devin/custom-test-model" {
+		if m != nil && m.ID == "custom-test-model" {
+			// The catalog normalizes any `devin/` prefix away, so a prefixed
+			// remote payload surfaces under its bare ID.
 			foundCustom = true
 		}
 		if m != nil && m.ID == "swe-1-6-slow" {
