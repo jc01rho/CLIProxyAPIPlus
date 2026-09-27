@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
+	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
 )
 
 // NormalizePluginsConfig applies default plugin configuration values.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	responsesconverter "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
+	responsesconverter "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/openai/responses"
 )
 
 // TestChatToResponsesEmitsTerminalEventWithoutDoneMarker pins that a chat

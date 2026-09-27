@@ -6,7 +6,7 @@ import (
 	"github.com/tidwall/gjson"
 	"google.golang.org/protobuf/encoding/protowire"
 
-	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
+	cursorproto "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/cursor/proto"
 )
 
 // These tests pin the senpi cursor-agent usage contract at commit

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/keeperexport"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/keeperexport"
 )
 
 // TestDecodeSettingsPutRequestRequiredKeys audits that a complete settings

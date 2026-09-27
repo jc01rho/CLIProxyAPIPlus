@@ -3,7 +3,7 @@ package auth
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 )
 
 func TestResolveAntigravityOAuthCallbackIgnoresCallbackPortOverride(t *testing.T) {

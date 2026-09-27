@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/requestmeta"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/requestmeta"
 )
 
 func TestRecordAPIRequestStoresUpstreamSummaryWhenRequestLogDisabled(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	claudeopenai "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/openai/chat-completions"
+	claudeopenai "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/chat-completions"
 
 	"github.com/tidwall/gjson"
 )

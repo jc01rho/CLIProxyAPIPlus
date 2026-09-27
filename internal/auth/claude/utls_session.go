@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	tls "github.com/refraction-networking/utls"
-	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
+	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 )
 
 var claudeOAuthRefreshHeaderOrder = []string{

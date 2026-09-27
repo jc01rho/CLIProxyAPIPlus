@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
+	cursorproto "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/cursor/proto"
 )
 
 // Pins senpi's zero-token resource_exhausted classification at commit

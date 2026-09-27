@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/zcode"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/zcode"
 )
 
 // TestZcodeCreateAuthRecord verifies the auth record maps zcode credentials

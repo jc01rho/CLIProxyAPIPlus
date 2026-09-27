@@ -16,8 +16,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	mimocodeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/mimocode"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	mimocodeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/mimocode"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func TestMimocodeReloginIdentityReusesPersistedKeyName(t *testing.T) {

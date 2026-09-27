@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func TestLegacyConfigMigration(t *testing.T) {
@@ -27,6 +27,7 @@ amp-model-mappings:
   - from: "old-model"
     to: "new-model"
 `)
+		original := readFile(t, path)
 		cfg, err := config.LoadConfig(path)
 		if err != nil {
 			t.Fatalf("load legacy config: %v", err)
@@ -50,14 +51,8 @@ amp-model-mappings:
 			t.Fatalf("amp mappings migration mismatch: %+v", cfg.AmpCode.ModelMappings)
 		}
 		updated := readFile(t, path)
-		if strings.Contains(updated, "generative-language-api-key") {
-			t.Fatalf("legacy gemini key still present:\n%s", updated)
-		}
-		if strings.Contains(updated, "amp-upstream-url") || strings.Contains(updated, "amp-restrict-management-to-localhost") {
-			t.Fatalf("legacy amp keys still present:\n%s", updated)
-		}
-		if strings.Contains(updated, "\n    api-keys:") {
-			t.Fatalf("legacy openai compat keys still present:\n%s", updated)
+		if updated != original {
+			t.Fatalf("loading legacy-only config rewrote it before an explicit v8 write:\n%s", updated)
 		}
 	})
 

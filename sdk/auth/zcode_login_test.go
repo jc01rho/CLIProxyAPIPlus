@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/zcode"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/zcode"
 )
 
 // fakeZcodeFlow drives runZcodeLogin without touching the broker.

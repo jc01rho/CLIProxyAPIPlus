@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
-	internalsignature "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
+	internalsignature "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
 

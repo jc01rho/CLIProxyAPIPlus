@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/keeperexport"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/keeperexport"
 )
 
 const fixtureDir = "testdata/v1"

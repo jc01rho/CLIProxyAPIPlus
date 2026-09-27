@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // kiroErrorDecision mirrors kiro-lb's ErrorType enum.

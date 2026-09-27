@@ -32,6 +32,7 @@ auths/*
 # Documentation
 docs/*
 !docs/keeper-export.md
+!docs/management-api-v8.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

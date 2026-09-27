@@ -15,6 +15,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("config payload is empty")
 	}
+	if err := rejectUsageExportTLSBypassYAML(data); err != nil {
+		return nil, err
+	}
 
 	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
 		return nil, errValidate
@@ -53,6 +56,12 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, errValidate
 	}
 	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.Codex.LiveMediaRelay.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.normalizeUsageExport(""); errValidate != nil {
 		return nil, errValidate
 	}
 	if cfg.Discovery.ServiceType == "" {
@@ -115,8 +124,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeCodexHeaderDefaults()
 	cfg.SanitizeClaudeHeaderDefaults()
 	cfg.SanitizeClaudeKeys()
+	cfg.SanitizeCommandCodeKeys()
 	cfg.SanitizeFreebuffKeys()
 	cfg.SanitizeOpenCodeKeys()
+	cfg.SanitizeMistralKeys()
 	if errSanitize := cfg.SanitizeMimocodeKeys(); errSanitize != nil {
 		return nil, errSanitize
 	}

@@ -288,6 +288,26 @@ usage-export:
 	}
 }
 
+func TestUsageExportRejectsTLSBypassInV8AndLegacyEvenWhenOverridden(t *testing.T) {
+	for _, raw := range []string{
+		"observability: {usage: {usage-export: {keeper: {tls-skip-verify: true}}}}\n",
+		"usage-export: {keeper: {skip-tls-verify: true}}\nobservability: {usage: {usage-export: {enabled: false, mode: disabled}}}\n",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := ParseConfigBytes([]byte(raw)); err == nil || !strings.Contains(err.Error(), "forbidden") {
+				t.Fatalf("ParseConfigBytes accepted TLS bypass: %v", err)
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "forbidden") {
+				t.Fatalf("LoadConfig accepted TLS bypass: %v", err)
+			}
+		})
+	}
+}
+
 func TestUsageExportRejectsWhitespaceAndTLSBypassVariantsButAllowsUnrelatedExtensions(t *testing.T) {
 	base := func(keeperExtra string) string {
 		return `usage-statistics-enabled: true

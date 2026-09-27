@@ -255,16 +255,23 @@ func usageExportCategoryOrder(category string) int {
 
 func rejectUsageExportTLSBypassYAML(data []byte) error {
 	var root struct {
-		UsageExport map[string]any `yaml:"usage-export"`
+		UsageExport   map[string]any `yaml:"usage-export"`
+		Observability struct {
+			Usage struct {
+				UsageExport map[string]any `yaml:"usage-export"`
+			} `yaml:"usage"`
+		} `yaml:"observability"`
 	}
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return nil
 	}
-	keeper, _ := root.UsageExport["keeper"].(map[string]any)
-	for key := range keeper {
-		normalized := normalizeSecurityKey(key)
-		if normalized == "tlsskipverify" || normalized == "skiptlsverify" || normalized == "insecureskipverify" || normalized == "insecuretlsskipverify" {
-			return fmt.Errorf("usage-export: %s is forbidden", key)
+	for _, export := range []map[string]any{root.UsageExport, root.Observability.Usage.UsageExport} {
+		keeper, _ := export["keeper"].(map[string]any)
+		for key := range keeper {
+			normalized := normalizeSecurityKey(key)
+			if normalized == "tlsskipverify" || normalized == "skiptlsverify" || normalized == "insecureskipverify" || normalized == "insecuretlsskipverify" {
+				return fmt.Errorf("usage-export: %s is forbidden", key)
+			}
 		}
 	}
 	return nil

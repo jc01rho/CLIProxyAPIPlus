@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cline"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/cline"
 )
 
 func TestTokenResponse_UnmarshalJSON_WrapperData(t *testing.T) {
