@@ -105,6 +105,76 @@ func TestConfigV8MigrationAndLegacyAPI(t *testing.T) {
 	}
 }
 
+func TestConfigV8CommentsUnknownLegacySectionsOnWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := "home: {enabled: true, host: ignored.example}\nenable-gemini-cli-endpoint: false\nformer-feature: {mode: old}\nserver: {port: 8317}\nproxy-url: \"\"\n"
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Home = config.HomeConfig{Enabled: true, Host: "runtime.example"}
+	h := &Handler{cfg: cfg, configFilePath: path}
+	router := gin.New()
+	router.GET("/v8/management/config", h.ConfigV8)
+	router.PATCH("/v8/management/config", h.ConfigV8)
+	router.PUT("/v8/management/config/*path", h.ConfigV8)
+	router.DELETE("/v8/management/config/*path", h.ConfigV8)
+	request := func(method, url, body string, status int) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(method, url, strings.NewReader(body)))
+		if recorder.Code != status {
+			t.Fatalf("%s %s: status=%d body=%s", method, url, recorder.Code, recorder.Body.String())
+		}
+	}
+	request(http.MethodGet, "/v8/management/config", "", http.StatusOK)
+	request(http.MethodPatch, "/v8/management/config", `{"server":{"port":"invalid"}}`, http.StatusUnprocessableEntity)
+	request(http.MethodPatch, "/v8/management/config", `{"home":{"enabled":true}}`, http.StatusBadRequest)
+	request(http.MethodPatch, "/v8/management/config", `{"unknown-setting":true}`, http.StatusBadRequest)
+	saved, err := os.ReadFile(path)
+	if err != nil || string(saved) != raw {
+		t.Fatalf("read or failed write changed the config: %v", err)
+	}
+	request(http.MethodPut, "/v8/management/config/requests/proxy-url", `"direct"`, http.StatusOK)
+	saved, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = config.ValidateV8Config(saved); err != nil {
+		t.Fatalf("saved file contains invalid legacy fields: %v", err)
+	}
+	var doc yaml.Node
+	if err = yaml.Unmarshal(saved, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"home", "enable-gemini-cli-endpoint", "former-feature"} {
+		if configV8Node(doc.Content[0], []string{key}) != nil || !strings.Contains(string(saved), "# "+key+":") {
+			t.Fatalf("unknown legacy section %s was not commented on disk", key)
+		}
+	}
+	if url := configV8Node(doc.Content[0], []string{"requests", "proxy-url"}); url == nil || url.Value != "direct" {
+		t.Fatal("path update did not persist the proxy URL")
+	}
+	if h.cfg.Home.Host != "runtime.example" || !h.cfg.Home.Enabled || h.cfg.ProxyURL != "direct" {
+		t.Fatal("path update changed runtime Home settings or missed the proxy URL")
+	}
+	request(http.MethodPut, "/v8/management/config/requests/proxy-url", `"none"`, http.StatusOK)
+	request(http.MethodDelete, "/v8/management/config/server", "", http.StatusOK)
+	saved, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"home", "enable-gemini-cli-endpoint", "former-feature"} {
+		if strings.Count(string(saved), "# "+key+":") != 1 {
+			t.Fatalf("subsequent write or deletion lost or duplicated %s comments", key)
+		}
+	}
+}
+
 func TestV8NestedWriteMigratesOnlyOnSuccess(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string

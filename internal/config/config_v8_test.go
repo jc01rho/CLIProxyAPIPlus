@@ -577,6 +577,87 @@ openai-compatibility:
 	}
 }
 
+func TestV8MigrationCommentsUnknownLegacySections(t *testing.T) {
+	raw := []byte(`home:
+  enabled: true
+  host: ignored.example
+enable-gemini-cli-endpoint: true
+forgotten-setting:
+  items: [first, second]
+proxy-url: old
+`)
+	unchanged, changed, err := NormalizeConfigLayout(raw, false)
+	if err != nil || changed || string(unchanged) != string(raw) {
+		t.Fatalf("read-only normalization changed the legacy file: changed=%v error=%v", changed, err)
+	}
+	migrated, changed, err := NormalizeConfigLayout(raw, true)
+	if err != nil || !changed {
+		t.Fatalf("migrate legacy file: changed=%v error=%v", changed, err)
+	}
+	var doc yaml.Node
+	if err = yaml.Unmarshal(migrated, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"home", "enable-gemini-cli-endpoint", "forgotten-setting", "proxy-url"} {
+		if yamlPath(doc.Content[0], key) != nil {
+			t.Fatalf("legacy section %s remained active after migration", key)
+		}
+	}
+	for _, text := range []string{"# home:", "#     enabled: true", "#     host: ignored.example", "# enable-gemini-cli-endpoint: true", "# forgotten-setting:", "#     items: [first, second]"} {
+		if !strings.Contains(string(migrated), text) {
+			t.Fatalf("unknown legacy section was not preserved as a comment: %s\n%s", text, migrated)
+		}
+	}
+	if err = ValidateV8Config(migrated); err != nil {
+		t.Fatalf("migrated file is invalid: %v", err)
+	}
+	cfg, err := ParseConfigBytes(migrated)
+	if err != nil || cfg.ProxyURL != "old" || cfg.Home.Enabled {
+		t.Fatalf("migration changed effective settings: cfg=%+v error=%v", cfg, err)
+	}
+	remigrated, _, err := NormalizeConfigLayout(migrated, true)
+	if err != nil || strings.Count(string(remigrated), "# home:") != 1 || strings.Count(string(remigrated), "# forgotten-setting:") != 1 {
+		t.Fatalf("repeated migration lost or duplicated comments: %v\n%s", err, remigrated)
+	}
+}
+
+func TestV8SaveCommentsObsoleteSections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `auth: {old: true}
+ampcode: {old: true}
+amp-upstream-url: https://old.example
+amp-upstream-api-key: old-secret
+generative-language-api-key: old-key
+home: {enabled: true}
+proxy-url: old
+`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = SaveConfigPreserveComments(path, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = ValidateV8Config(saved); err != nil {
+		t.Fatalf("saved migration is invalid: %v", err)
+	}
+	for _, key := range []string{"auth", "ampcode", "amp-upstream-url", "amp-upstream-api-key", "generative-language-api-key", "home"} {
+		if !strings.Contains(string(saved), "# "+key+":") {
+			t.Errorf("obsolete setting %s was discarded rather than commented", key)
+		}
+	}
+	if !strings.Contains(string(saved), "# amp-upstream-api-key: old-secret") {
+		t.Fatal("obsolete setting lost its value")
+	}
+}
+
 func TestV8MigrationPreservesEmptyLegacyContainers(t *testing.T) {
 	for _, section := range []configPath{
 		{"tls", "server.tls"}, {"remote-management", "management"},
@@ -772,6 +853,7 @@ func TestV8ValidationRejectsLegacyWriteLayout(t *testing.T) {
 	for _, raw := range []string{
 		"debug: true", "server: {port: 8317}\nport: 8318", "api-keys: [client]",
 		"codex-api-key: []", "codex: {}", "quota-exceeded: {antigravity-credits: true}",
+		"home: {enabled: true}", "enable-gemini-cli-endpoint: true", "unknown-root: true",
 		"<<: {debug: true}",
 	} {
 		t.Run(raw, func(t *testing.T) {
