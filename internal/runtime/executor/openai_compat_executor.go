@@ -211,6 +211,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	developerRoleKey := e.developerRoleCapabilityKey(auth, baseURL, baseModel, endpoint)
 	if endpoint == "/chat/completions" {
 		translated = e.applyKnownDeveloperRoleFallback(developerRoleKey, translated)
+		if compatCfg != nil && compatCfg.SystemContentAsString {
+			translated, err = helps.NormalizeOpenAISystemContentAsString(translated)
+			if err != nil {
+				return resp, err
+			}
+		}
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
@@ -276,6 +282,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 			log.Errorf("openai compat executor: close developer-role retry response body error: %v", errClose)
 		}
 		translated = retryPayload
+		if compatCfg != nil && compatCfg.SystemContentAsString {
+			translated, err = helps.NormalizeOpenAISystemContentAsString(translated)
+			if err != nil {
+				return resp, err
+			}
+		}
 		retriedDeveloperRole = true
 		retryReq := cloneOpenAICompatRequestWithBody(httpReq, translated)
 		helps.LogWithRequestID(ctx).Warnf("openai compat provider %s rejected role developer; retrying with normalized leading instructions", strings.TrimPrefix(e.provider, "openai-compatible-"))
@@ -624,6 +636,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	translated = normalizeToolResultIDsToString(translated)
 	developerRoleKey := e.developerRoleCapabilityKey(auth, baseURL, baseModel, "/chat/completions")
 	translated = e.applyKnownDeveloperRoleFallback(developerRoleKey, translated)
+	if compatCfg != nil && compatCfg.SystemContentAsString {
+		translated, err = helps.NormalizeOpenAISystemContentAsString(translated)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -686,6 +704,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				log.Errorf("openai compat executor: close developer-role retry response body error: %v", errClose)
 			}
 			translated = retryPayload
+			if compatCfg != nil && compatCfg.SystemContentAsString {
+				translated, err = helps.NormalizeOpenAISystemContentAsString(translated)
+				if err != nil {
+					return nil, err
+				}
+			}
 			retriedDeveloperRole = true
 			retryReq := cloneOpenAICompatRequestWithBody(httpReq, translated)
 			helps.LogWithRequestID(ctx).Warnf("openai compat provider %s rejected role developer; retrying stream with normalized leading instructions", strings.TrimPrefix(e.provider, "openai-compatible-"))
@@ -758,6 +782,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 						log.Errorf("openai compat executor: close embedded developer-role retry response body error: %v", errClose)
 					}
 					translated = retryPayload
+					if compatCfg != nil && compatCfg.SystemContentAsString {
+						translated, err = helps.NormalizeOpenAISystemContentAsString(translated)
+						if err != nil {
+							return nil, err
+						}
+					}
 					retriedDeveloperRole = true
 					retryReq := cloneOpenAICompatRequestWithBody(httpReq, translated)
 					helps.LogWithRequestID(ctx).Warnf("openai compat provider %s returned a streamed developer-role error; retrying with normalized leading instructions", strings.TrimPrefix(e.provider, "openai-compatible-"))
