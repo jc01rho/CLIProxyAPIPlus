@@ -86,6 +86,78 @@ func TestRefreshModelsDevLimitsRejectsHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestLookupModelsDevLimitMatchesNumericVersionSeparators(t *testing.T) {
+	previous := modelsDevLimits.Load()
+	t.Cleanup(func() { modelsDevLimits.Store(previous) })
+	catalog, err := parseModelsDevLimits([]byte(`{
+		"anthropic/claude-opus-5-5":{"limit":{"context":1000000}},
+		"vendor/model-1-2-3":{"limit":{"context":300000}},
+		"vendor/exact-1.2":{"limit":{"context":400000}},
+		"vendor/exact-1-2":{"limit":{"context":500000}},
+		"vendor/shared-1-2":{"limit":{"context":600000}},
+		"other/shared-1-2":{"limit":{"context":700000}},
+		"vendor/collision-1.2":{"limit":{"context":800000}},
+		"other/collision-1.2":{"limit":{"context":900000}},
+		"vendor/collision-1-2":{"limit":{"context":1000000}},
+		"vendor/model-preview":{"limit":{"context":1100000}},
+		"provider-1-2/model-1-2":{"limit":{"context":1200000}}
+	}`))
+	if err != nil {
+		t.Fatalf("parse models.dev: %v", err)
+	}
+	modelsDevLimits.Store(catalog)
+
+	for _, tc := range []struct {
+		id   string
+		want int
+	}{
+		{"claude-opus-5.5", 1000000},
+		{"anthropic/claude-opus-5.5", 1000000},
+		{"claude-opus-5-5", 1000000},
+		{"model-1.2.3", 300000},
+		{"exact-1.2", 400000},
+		{"vendor/exact-1.2", 400000},
+		{"shared-1.2", 0},
+		{"other/shared-1.2", 700000},
+		{"collision-1.2", 0},
+		{"vendor/collision-1.2", 800000},
+		{"model.preview", 0},
+		{"provider-1.2/model-1.2", 0},
+		{"unknown-1.2", 0},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			got, ok := LookupModelsDevLimit(tc.id)
+			if ok != (tc.want > 0) || got.Context != tc.want {
+				t.Fatalf("lookup %q = (%+v, %v), want context %d", tc.id, got, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyModelsDevLimitPreservesDottedAliasRouting(t *testing.T) {
+	previous := modelsDevLimits.Load()
+	t.Cleanup(func() { modelsDevLimits.Store(previous) })
+	catalog, err := parseModelsDevLimits([]byte(`{"anthropic/claude-opus-5-5":{"limit":{"context":1000000,"output":128000}}}`))
+	if err != nil {
+		t.Fatalf("parse models.dev: %v", err)
+	}
+	modelsDevLimits.Store(catalog)
+	info := &ModelInfo{
+		ID:              "codecraftapi-claude-opus-5.5",
+		MetadataModelID: "claude-opus-5.5",
+		ExecutionTarget: "claude-opus-5.5",
+	}
+
+	ApplyModelsDevLimit(info)
+
+	if info.ContextLength != 1000000 || info.MaxCompletionTokens != 128000 {
+		t.Fatalf("alias limits = %+v", info)
+	}
+	if info.ID != "codecraftapi-claude-opus-5.5" || info.MetadataModelID != "claude-opus-5.5" || info.ExecutionTarget != "claude-opus-5.5" {
+		t.Fatalf("metadata lookup changed routing identity: %+v", info)
+	}
+}
+
 func TestApplyModelsDevLimitDoesNotChangeRegisteredModel(t *testing.T) {
 	previous := modelsDevLimits.Load()
 	t.Cleanup(func() { modelsDevLimits.Store(previous) })

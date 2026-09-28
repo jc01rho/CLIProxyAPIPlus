@@ -25,12 +25,14 @@ type ModelsDevLimit struct {
 type modelsDevLimitCatalog struct {
 	exact     map[string]ModelsDevLimit
 	byModelID map[string]ModelsDevLimit
+	ambiguous map[string]bool
 }
 
 var modelsDevLimits atomic.Pointer[modelsDevLimitCatalog]
 
 // LookupModelsDevLimit returns a limit only when the model ID identifies one
-// canonical model. A fully qualified models.dev ID is always unambiguous.
+// canonical model. Exact IDs win; otherwise numeric version dots may match
+// hyphens in the model portion of the ID, without changing provider names.
 func LookupModelsDevLimit(id string) (ModelsDevLimit, bool) {
 	catalog := modelsDevLimits.Load()
 	if catalog == nil {
@@ -39,7 +41,24 @@ func LookupModelsDevLimit(id string) (ModelsDevLimit, bool) {
 	if limit, ok := catalog.exact[id]; ok {
 		return limit, true
 	}
-	limit, ok := catalog.byModelID[id]
+	if limit, ok := catalog.byModelID[id]; ok {
+		return limit, true
+	}
+	if catalog.ambiguous[id] {
+		return ModelsDevLimit{}, false
+	}
+
+	normalized := []byte(id)
+	modelStart := strings.LastIndexByte(id, '/') + 1
+	for i := modelStart + 1; i+1 < len(normalized); i++ {
+		if normalized[i] == '.' && normalized[i-1] >= '0' && normalized[i-1] <= '9' && normalized[i+1] >= '0' && normalized[i+1] <= '9' {
+			normalized[i] = '-'
+		}
+	}
+	if limit, ok := catalog.exact[string(normalized)]; ok {
+		return limit, true
+	}
+	limit, ok := catalog.byModelID[string(normalized)]
 	return limit, ok
 }
 
@@ -90,8 +109,8 @@ func parseModelsDevLimits(data []byte) (*modelsDevLimitCatalog, error) {
 	catalog := &modelsDevLimitCatalog{
 		exact:     make(map[string]ModelsDevLimit),
 		byModelID: make(map[string]ModelsDevLimit),
+		ambiguous: make(map[string]bool),
 	}
-	ambiguous := make(map[string]bool)
 	for key, model := range models {
 		_, id, ok := strings.Cut(key, "/")
 		if !ok || id == "" || (model.Limit.Context <= 0 && model.Limit.Output <= 0) {
@@ -99,11 +118,11 @@ func parseModelsDevLimits(data []byte) (*modelsDevLimitCatalog, error) {
 		}
 		catalog.exact[key] = model.Limit
 		if _, exists := catalog.byModelID[id]; exists {
-			ambiguous[id] = true
+			catalog.ambiguous[id] = true
 		}
 		catalog.byModelID[id] = model.Limit
 	}
-	for id := range ambiguous {
+	for id := range catalog.ambiguous {
 		delete(catalog.byModelID, id)
 	}
 	if len(catalog.exact) == 0 {
