@@ -19,11 +19,31 @@ import (
 
 var (
 	setupOnce      sync.Once
-	writerMu       sync.Mutex
+	writerMu       sync.RWMutex
+	consoleMu      sync.Mutex
 	logWriter      *lumberjack.Logger
 	ginInfoWriter  *io.PipeWriter
 	ginErrorWriter *io.PipeWriter
+	consoleWriter  io.Writer = os.Stderr
 )
+
+func init() {
+	config.SetV8MigrationWarnFunc(logV8MigrationWarning)
+}
+
+func logV8MigrationWarning(section, msg string) {
+	writerMu.RLock()
+	defer writerMu.RUnlock()
+
+	log.Warn(msg)
+	if logWriter != nil {
+		consoleMu.Lock()
+		if consoleWriter != nil {
+			_, _ = fmt.Fprintf(consoleWriter, "WARNING: %s\n", msg)
+		}
+		consoleMu.Unlock()
+	}
+}
 
 // LogFormatter defines a custom log format for logrus.
 // This formatter adds timestamp, level, request ID, and source location to each log entry.

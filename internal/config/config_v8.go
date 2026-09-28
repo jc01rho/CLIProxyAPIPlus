@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -464,6 +466,30 @@ func v8AllowedRoots() map[string]bool {
 	return allowed
 }
 
+var (
+	v8WarnMu   sync.RWMutex
+	v8WarnFunc func(section, msg string)
+)
+
+// SetV8MigrationWarnFunc sets a custom warning handler (e.g. from logging package).
+func SetV8MigrationWarnFunc(fn func(section, msg string)) {
+	v8WarnMu.Lock()
+	defer v8WarnMu.Unlock()
+	v8WarnFunc = fn
+}
+
+func warnUnrecognizedV8Section(section string) {
+	msg := fmt.Sprintf("unrecognized configuration section %q commented out during v8 migration", section)
+	v8WarnMu.RLock()
+	fn := v8WarnFunc
+	v8WarnMu.RUnlock()
+	if fn != nil {
+		fn(section, msg)
+		return
+	}
+	log.Warn(msg)
+}
+
 func commentUnknownV8Sections(root *yaml.Node) error {
 	allowed := v8AllowedRoots()
 	var comments []string
@@ -472,10 +498,12 @@ func commentUnknownV8Sections(root *yaml.Node) error {
 			i += 2
 			continue
 		}
+		key := root.Content[i].Value
+		warnUnrecognizedV8Section(key)
 		entry := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: root.Content[i : i+2]}
-		data, err := yaml.Marshal(entry)
-		if err != nil {
-			return err
+		data, errMarshal := yaml.Marshal(entry)
+		if errMarshal != nil {
+			return errMarshal
 		}
 		text := strings.TrimSuffix(string(data), "\n")
 		comments = append(comments, "# "+strings.ReplaceAll(text, "\n", "\n# "))

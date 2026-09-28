@@ -63,6 +63,7 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, req cliproxy
 	body, _ = sjson.DeleteBytes(body, "client_metadata")
 	body = normalizeCodexInstructions(body)
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "meta executor", body)
+	body = helps.SanitizeMetaWebSearchTools(body)
 
 	return &metaPreparedRequest{
 		baseModel:       baseModel,
