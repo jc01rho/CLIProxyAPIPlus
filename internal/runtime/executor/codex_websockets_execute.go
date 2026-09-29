@@ -69,7 +69,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflict(body)
-	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
+	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
 	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
 	if errReplay != nil {
 		return resp, errReplay
@@ -85,14 +85,10 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if errPromptCache != nil {
 		return resp, errPromptCache
 	}
-	clientBody := body
-	var identityState codexIdentityConfuseState
-	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
-	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
+	reporter.SetTranslatedReasoningEffort(body, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
-	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, upstreamBody, opts.Headers)
+	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, body, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel)
-	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -121,7 +117,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		sess = newEphemeralCodexWebsocketSession()
 	}
 
-	wsReqBody, errFormat := prepareCodexWebsocketRequestBody(upstreamBody)
+	wsReqBody, errFormat := prepareCodexWebsocketRequestBody(body)
 	if errFormat != nil {
 		return resp, errFormat
 	}
@@ -235,7 +231,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				}
 				readCh = sess.activate(conn)
 				restoreMultiAgentV2 = !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
-				wsReqBodyRetry, errFormatRetry := prepareCodexWebsocketRequestBody(upstreamBody)
+				wsReqBodyRetry, errFormatRetry := prepareCodexWebsocketRequestBody(body)
 				if errFormatRetry != nil {
 					return resp, errFormatRetry
 				}
@@ -313,7 +309,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			continue
 		}
 		observeCodexTokenEvent(reporter, payload)
-		payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
 		helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 		helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 		payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
@@ -368,8 +363,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				reporter.EnsurePublished(ctx)
 			}
 			var param any
-			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
-			out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, clientBody, clientPayload, &param)
+			out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, payload, &param)
 			if responseFormat == sdktranslator.FormatOpenAIResponse {
 				out = helps.EnsureResponsesUsageDetails(out)
 			}

@@ -21,7 +21,7 @@ import (
 )
 
 func (e *OpenAICompatExecutor) useNativeResponses(auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) bool {
-	compat := e.resolveCompatConfig(auth)
+	compat := e.resolveCompatConfig(auth, req)
 	if compat == nil {
 		return false
 	}

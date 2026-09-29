@@ -12,6 +12,7 @@ import (
 
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
 
@@ -111,7 +112,7 @@ func (e *OpenAICompatExecutor) developerRoleCacheInstance() *openAICompatDevelop
 
 func (e *OpenAICompatExecutor) developerRoleCapabilityKey(auth *cliproxyauth.Auth, baseURL, model, endpointFamily string) openAICompatDeveloperRoleCapabilityKey {
 	identities := []string{strings.TrimSpace(e.provider)}
-	if compat := e.resolveCompatConfig(auth); compat != nil && strings.TrimSpace(compat.Name) != "" {
+	if compat := e.resolveCompatConfig(auth, cliproxyexecutor.Request{}); compat != nil && strings.TrimSpace(compat.Name) != "" {
 		identities = append(identities, compat.Name)
 	} else if auth != nil {
 		if auth.Attributes != nil {

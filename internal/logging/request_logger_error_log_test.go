@@ -54,10 +54,10 @@ func TestLogRequest_EnabledAndForce_WritesNormalAndErrorLogs(t *testing.T) {
 	}
 
 	normalLogs := countMatchingFiles(t, logsDir, func(name string) bool {
-		return strings.HasSuffix(name, "req-enabled-force.log") && !strings.HasPrefix(name, "error-")
+		return strings.HasSuffix(name, ShortRequestID("req-enabled-force")+".log") && !strings.HasPrefix(name, "error-")
 	})
 	errorLogs := countMatchingFiles(t, logsDir, func(name string) bool {
-		return strings.HasPrefix(name, "error-") && strings.HasSuffix(name, "req-enabled-force.log")
+		return strings.HasPrefix(name, "error-") && strings.HasSuffix(name, ShortRequestID("req-enabled-force")+".log")
 	})
 
 	if len(normalLogs) != 1 {
@@ -103,10 +103,10 @@ func TestLogRequest_DisabledAndForce_WritesOnlyErrorLog(t *testing.T) {
 	}
 
 	normalLogs := countMatchingFiles(t, logsDir, func(name string) bool {
-		return strings.HasSuffix(name, "req-disabled-force.log") && !strings.HasPrefix(name, "error-")
+		return strings.HasSuffix(name, ShortRequestID("req-disabled-force")+".log") && !strings.HasPrefix(name, "error-")
 	})
 	errorLogs := countMatchingFiles(t, logsDir, func(name string) bool {
-		return strings.HasPrefix(name, "error-") && strings.HasSuffix(name, "req-disabled-force.log")
+		return strings.HasPrefix(name, "error-") && strings.HasSuffix(name, ShortRequestID("req-disabled-force")+".log")
 	})
 
 	if len(normalLogs) != 0 {

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
@@ -95,13 +94,11 @@ func TestRejectInvalidCodexRequestFormatAllowsPlainSchema(t *testing.T) {
 func TestCacheHelperRejectsUniqueItemsBeforeHTTP(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","input":[],"text":{"format":{"type":"json_schema","name":"issue_exploration_plan","schema":{"type":"object","properties":{"targets":{"type":"array","items":{"type":"object","properties":{"screen_terms":{"type":"array","uniqueItems":true}}}}}}}}}`)
 	exec := &CodexExecutor{}
-	req, upstream, _, err := exec.cacheHelper(
+	req, upstream, err := exec.cacheHelper(
 		context.Background(),
 		sdktranslator.FormatOpenAIResponse,
 		"https://example.invalid/v1/responses",
-		&cliproxyauth.Auth{ID: "codex-test"},
 		cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: body},
-		nil,
 		body,
 	)
 	if err == nil {
@@ -131,13 +128,11 @@ func TestPrepareCodexWebsocketRequestBodyRejectsUniqueItems(t *testing.T) {
 func TestCacheHelperStripsRejectedInputItemFields(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}],"status":"completed","phase":"final","namespace":"chat"}]}`)
 	exec := &CodexExecutor{}
-	req, upstream, _, err := exec.cacheHelper(
+	req, upstream, err := exec.cacheHelper(
 		context.Background(),
 		sdktranslator.FormatOpenAIResponse,
 		"https://example.invalid/v1/responses",
-		&cliproxyauth.Auth{ID: "codex-test"},
 		cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: body},
-		nil,
 		body,
 	)
 	if err != nil {

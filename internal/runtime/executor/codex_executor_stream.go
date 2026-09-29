@@ -79,7 +79,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
-	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
+	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
 	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
 	if errReplay != nil {
 		return nil, errReplay
@@ -87,15 +87,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	var identityState codexIdentityConfuseState
-	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
+	httpReq, upstreamBody, err := e.cacheHelper(ctx, from, url, req, body, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyCodexRoutingHint(ctx, httpReq.Header, auth, baseModel, upstreamBody, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
-	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -131,7 +129,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
 			return nil, readErr
 		}
-		data = applyCodexIdentityConfuseResponsePayload(data, identityState)
 		if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, data); errClearReplay != nil {
 			return nil, errClearReplay
 		}
@@ -187,7 +184,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	sawOutputDelta := false
 	if buffering {
 		for scanner.Scan() {
-			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
+			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			var translatedLine []byte
 			isHandshake := false
@@ -275,7 +272,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				isHandshake = true
 			}
 
-			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param, claudeInputTokens)
 			if isHandshake && !terminalSuccess {
 				frameBytes := len(line)
@@ -361,7 +357,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}()
 		for scanner.Scan() {
-			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
+			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			var translatedLine []byte
 			terminalSuccess := false
@@ -429,7 +425,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				translatedLine = bytes.Clone(line)
 			}
 
-			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
 				select {

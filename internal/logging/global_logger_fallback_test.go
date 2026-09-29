@@ -74,7 +74,7 @@ func TestLogFormatterFallbackDiagnostics(t *testing.T) {
 			t.Errorf("formatted output missing %s=%s: %q", key, value, line)
 		}
 	}
-	if !strings.Contains(line, "[fallback-formatter] [info ") {
+	if !strings.Contains(line, "["+ShortRequestID("fallback-formatter")+"] [info ") {
 		t.Errorf("missing request ID or Info level: %q", line)
 	}
 	if strings.Count(line, "\n") != 1 || strings.ContainsAny(line, "\r\t\x1b") {

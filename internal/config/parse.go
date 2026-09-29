@@ -12,6 +12,13 @@ import (
 // ParseConfigBytes parses a YAML configuration payload into Config and applies the same
 // in-memory normalizations as LoadConfigOptional, without persisting any changes to disk.
 func ParseConfigBytes(data []byte) (*Config, error) {
+	return ParseConfigBytesForFile(data, "")
+}
+
+// ParseConfigBytesForFile is ParseConfigBytes for a payload that will be stored at
+// configFile, so config-relative defaults (the usage-export outbox path) resolve
+// exactly as LoadConfig resolves them when the file is reloaded.
+func ParseConfigBytesForFile(data []byte, configFile string) (*Config, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("config payload is empty")
 	}
@@ -61,7 +68,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if errValidate := cfg.Codex.LiveMediaRelay.Validate(); errValidate != nil {
 		return nil, errValidate
 	}
-	if errValidate := cfg.normalizeUsageExport(""); errValidate != nil {
+	if errValidate := cfg.normalizeUsageExport(configFile); errValidate != nil {
 		return nil, errValidate
 	}
 	if cfg.Discovery.ServiceType == "" {
@@ -134,6 +141,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
+	cfg.SanitizeOAuthSettings()
 	cfg.SanitizeOAuthRequestScopedErrors()
 	cfg.SanitizePayloadRules()
 

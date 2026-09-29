@@ -60,7 +60,7 @@ func fallbackLogRecords(t *testing.T, output, requestID string) []map[string]str
 	t.Helper()
 	var records []map[string]string
 	for _, line := range strings.Split(output, "\n") {
-		if !strings.Contains(line, "["+requestID+"]") || !strings.Contains(line, "fallback_source=") {
+		if !strings.Contains(line, "["+logging.ShortRequestID(requestID)+"]") || !strings.Contains(line, "fallback_source=") {
 			continue
 		}
 		if strings.ContainsAny(line, "\r\t\x1b") {
