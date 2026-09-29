@@ -2234,6 +2234,11 @@ func (e statusErr) IsCredentialScoped() bool   { return e.credentialScoped }
 
 const openAICompatTPMFallbackRetryAfter = time.Minute
 
+// openAICompatBusyRetryAfterLimit bounds how long a 503 retry hint is honored.
+// Short hints (e.g. proxy_memory_busy retry_after=5) allow one in-place retry;
+// hints at or above this limit keep the default transient cooldown instead.
+const openAICompatBusyRetryAfterLimit = 20 * time.Second
+
 func newOpenAICompatStatusError(status int, headers http.Header, body []byte) statusErr {
 	return statusErr{
 		code:       status,
@@ -2247,9 +2252,50 @@ func newOpenAICompatStatusError(status int, headers http.Header, body []byte) st
 // token limits; in that narrow case a one-minute fallback prevents immediate
 // replay of the same large request while keeping the retry wait bounded.
 func openAICompatRetryAfter(status int, headers http.Header, body []byte, now time.Time) *time.Duration {
+	if status == http.StatusServiceUnavailable {
+		return openAICompatBusyRetryAfter(headers, body, now)
+	}
 	if status != http.StatusTooManyRequests {
 		return nil
 	}
+	if delay := openAICompatRetryAfterHeader(headers, now); delay != nil {
+		return delay
+	}
+
+	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
+	message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
+	if strings.Contains(code, "tpmratelimitexceeded") ||
+		(strings.Contains(message, "tokens per minute") && strings.Contains(message, "limit") && strings.Contains(message, "exceeded")) {
+		delay := openAICompatTPMFallbackRetryAfter
+		return &delay
+	}
+	return nil
+}
+
+// openAICompatBusyRetryAfter honors a short 503 retry hint from the Retry-After
+// header or the body's error.retry_after seconds. retryable=false suppresses the
+// hint, and hints of openAICompatBusyRetryAfterLimit or more are ignored so the
+// request never waits that long for the same credential.
+func openAICompatBusyRetryAfter(headers http.Header, body []byte, now time.Time) *time.Duration {
+	if retryable := gjson.GetBytes(body, "error.retryable"); retryable.Exists() && retryable.Type == gjson.False {
+		return nil
+	}
+	delay := openAICompatRetryAfterHeader(headers, now)
+	if delay == nil {
+		hint := gjson.GetBytes(body, "error.retry_after")
+		if hint.Type != gjson.Number || hint.Float() >= openAICompatBusyRetryAfterLimit.Seconds() {
+			return nil
+		}
+		value := time.Duration(hint.Float() * float64(time.Second))
+		delay = &value
+	}
+	if *delay <= 0 || *delay >= openAICompatBusyRetryAfterLimit {
+		return nil
+	}
+	return delay
+}
+
+func openAICompatRetryAfterHeader(headers http.Header, now time.Time) *time.Duration {
 	if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
 		if seconds, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && seconds >= 0 {
 			delay := time.Duration(seconds) * time.Second
@@ -2262,14 +2308,6 @@ func openAICompatRetryAfter(status int, headers http.Header, body []byte, now ti
 			}
 			return &delay
 		}
-	}
-
-	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
-	message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
-	if strings.Contains(code, "tpmratelimitexceeded") ||
-		(strings.Contains(message, "tokens per minute") && strings.Contains(message, "limit") && strings.Contains(message, "exceeded")) {
-		delay := openAICompatTPMFallbackRetryAfter
-		return &delay
 	}
 	return nil
 }

@@ -59,9 +59,48 @@ func TestOpenAICompatRetryAfter(t *testing.T) {
 			body:   `{"error":{"code":"rate_limit"}}`,
 		},
 		{
-			name:    "non-429 ignores header",
+			name:   "503 body retry_after hint",
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":{"code":"proxy_memory_busy","http_status":503,"retry_after":5,"type":"overloaded_error"}}`,
+			want:   durationPointer(5 * time.Second),
+		},
+		{
+			name:    "503 header wins over body",
+			status:  http.StatusServiceUnavailable,
+			headers: http.Header{"Retry-After": {"3"}},
+			body:    `{"error":{"retry_after":5}}`,
+			want:    durationPointer(3 * time.Second),
+		},
+		{
+			name:   "503 hint just below limit",
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":{"retry_after":19}}`,
+			want:   durationPointer(19 * time.Second),
+		},
+		{
+			name:   "503 body hint at limit is ignored",
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":{"retry_after":20}}`,
+		},
+		{
+			name:    "503 long header hint is ignored",
 			status:  http.StatusServiceUnavailable,
 			headers: http.Header{"Retry-After": {"30"}},
+		},
+		{
+			name:   "503 retryable false suppresses hint",
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":{"retry_after":5,"retryable":false}}`,
+		},
+		{
+			name:   "503 non-positive hint is ignored",
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":{"retry_after":0}}`,
+		},
+		{
+			name:    "other 5xx ignores header",
+			status:  http.StatusBadGateway,
+			headers: http.Header{"Retry-After": {"5"}},
 		},
 	}
 
