@@ -71,6 +71,11 @@ func TestNativeResponsesBootstrapAndLateFailure(t *testing.T) {
 	failure := "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"failure\",\"http_status\":503,\"retry_after\":5},\"tools\":[\"PRIVATE\"]}}\n\n"
 	complete := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[]}}\n\n"
 	tool := "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"fc\",\"name\":\"todo\",\"arguments\":\"\"}}\n\n"
+	// Upstreams echo the full request instructions in created/in_progress, so a
+	// large request exceeds the bootstrap cap before any output is produced.
+	echo := strings.Repeat("x", 170<<10)
+	bigCreated := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r\",\"status\":\"in_progress\",\"instructions\":\"" + echo + "\"}}\n\n"
+	bigProgress := strings.Replace(bigCreated, "response.created", "response.in_progress", 1)
 	for _, tc := range []struct {
 		name, wire  string
 		wantPayload bool
@@ -85,12 +90,13 @@ func TestNativeResponsesBootstrapAndLateFailure(t *testing.T) {
 		{"empty complete", created + complete, true, false},
 		{"incomplete", created + strings.ReplaceAll(complete, "completed", "incomplete"), true, false},
 		{"normal", created + emptyItem + delta + complete, true, false},
-		{"bounded bootstrap", strings.Repeat(created, 4096), false, true},
+		{"bounded bootstrap releases stream", strings.Repeat(created, 4096), true, true},
+		{"large request echo passes through", bigCreated + bigProgress + emptyItem + delta + complete, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
-				if _, err := io.WriteString(w, tc.wire); err != nil && tc.name != "bounded bootstrap" {
+				if _, err := io.WriteString(w, tc.wire); err != nil && tc.name != "bounded bootstrap releases stream" {
 					t.Error(err)
 				}
 			}))

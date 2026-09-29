@@ -186,8 +186,11 @@ func (e *OpenAICompatExecutor) executeNativeResponsesStream(ctx context.Context,
 		// Bootstrap buffer: hold lifecycle frames until first meaningful
 		// output (text/reasoning delta, or a function/custom tool call with
 		// id+name), then flush in original order. Bounded by a byte cap so
-		// memory cannot grow unbounded. Late failures after meaningful
-		// output are delivered in-stream so the stream is not restarted.
+		// memory cannot grow unbounded: upstreams echo the full request
+		// (instructions, tools) in response.created/in_progress, so a large
+		// request can exceed the cap before any output. Hitting the cap
+		// releases the stream (flush and pass through) instead of failing it.
+		// Failures after release are delivered in-stream, not retried.
 		const bootstrapByteCap = 256 << 10
 		var buffered []frameEntry
 		bufferedBytes := 0
@@ -245,7 +248,8 @@ func (e *OpenAICompatExecutor) executeNativeResponsesStream(ctx context.Context,
 			}
 			terminal := event == "response.completed" || event == "response.incomplete"
 
-			if !meaningful && (terminal || helps.IsResponsesMeaningfulOutputEvent(event, data)) {
+			frameBytes := len(event) + len(data) + 32
+			if !meaningful && (terminal || helps.IsResponsesMeaningfulOutputEvent(event, data) || bufferedBytes+frameBytes > bootstrapByteCap) {
 				meaningful = true
 				for _, pending := range buffered {
 					if !emit(pending.event, pending.data) {
@@ -256,15 +260,10 @@ func (e *OpenAICompatExecutor) executeNativeResponsesStream(ctx context.Context,
 			}
 
 			if !meaningful {
-				frameBytes := len(event) + len(data) + 32
-				if bufferedBytes+frameBytes <= bootstrapByteCap {
-					copyData := append([]byte{}, data...)
-					buffered = append(buffered, frameEntry{event: event, data: copyData})
-					bufferedBytes += frameBytes
-					continue
-				}
-				fail(statusErr{code: http.StatusBadGateway, msg: "Responses bootstrap exceeded 256 KiB before output"})
-				return
+				copyData := append([]byte{}, data...)
+				buffered = append(buffered, frameEntry{event: event, data: copyData})
+				bufferedBytes += frameBytes
+				continue
 			}
 
 			if !emit(event, data) {
