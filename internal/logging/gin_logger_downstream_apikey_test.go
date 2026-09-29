@@ -112,3 +112,62 @@ func TestGinLogrusLoggerIncludesRawDownstreamAPIKeyOnWarnAndError(t *testing.T) 
 		})
 	}
 }
+
+func TestGinLogrusLoggerDownstreamKeyOnSuccessfulAIRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, header, key, want string
+		stream                        bool
+	}{
+		{"chat bearer", "/v1/chat/completions", "Authorization", "Bearer senpi-test-client", "Bearer(senpi-test-client)", false},
+		{"responses stream", "/v1/responses", "Authorization", "Bearer opencode-test-client", "Bearer(opencode-test-client)", true},
+		{"messages key", "/v1/messages", "X-Api-Key", "aside-test-client", "X-Api-Key(aside-test-client)", false},
+		{"no key", "/v1/chat/completions", "", "", "", false},
+		{"management success", "/v0/management/config", "Authorization", "Bearer management-secret", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previousOut := log.StandardLogger().Out
+			previousLevel := log.GetLevel()
+			t.Cleanup(func() {
+				log.SetOutput(previousOut)
+				log.SetLevel(previousLevel)
+			})
+			var buffer bytes.Buffer
+			log.SetOutput(&buffer)
+			log.SetLevel(log.InfoLevel)
+			engine := gin.New()
+			engine.Use(GinLogrusLogger(&config.Config{}))
+			engine.POST(tc.path, func(c *gin.Context) {
+				if tc.stream {
+					c.Data(http.StatusOK, "text/event-stream", []byte("data: [DONE]\n\n"))
+					return
+				}
+				c.JSON(http.StatusOK, gin.H{"result": "ok"})
+			})
+			body := `{"model":"test","messages":[{"role":"user","content":"private-prompt"}],"stream":false}`
+			if tc.stream {
+				body = strings.Replace(body, `"stream":false`, `"stream":true`, 1)
+			}
+			request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			if tc.header != "" {
+				request.Header.Set(tc.header, tc.key)
+			}
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d", recorder.Code)
+			}
+			output := buffer.String()
+			if tc.want == "" {
+				if strings.Contains(output, "downstream_api_key=") {
+					t.Fatalf("unexpected downstream key field: %s", output)
+				}
+			} else if !strings.Contains(output, "downstream_api_key="+tc.want) {
+				t.Fatalf("missing downstream key %q: %s", tc.want, output)
+			}
+			if strings.Contains(output, "private-prompt") || strings.Contains(output, "request=") || strings.Contains(output, "response=") {
+				t.Fatalf("success key logging enabled body logging: %s", output)
+			}
+		})
+	}
+}
