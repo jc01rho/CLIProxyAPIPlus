@@ -95,7 +95,7 @@ func (e *OpenAICompatExecutor) openNativeResponses(ctx context.Context, auth *cl
 			return nil, nil, errRead
 		}
 		helps.AppendAPIResponseChunk(ctx, cfg, data)
-		return nil, nil, newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, data)
+		return nil, nil, newNativeResponsesError(httpResp.StatusCode, httpResp.Header, data)
 	}
 	return httpResp, body, nil
 }
@@ -113,9 +113,15 @@ func (e *OpenAICompatExecutor) executeNativeResponses(ctx context.Context, auth 
 		return cliproxyexecutor.Response{}, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	if !gjson.ValidBytes(data) || openAICompatHasStructuredError(data) {
+		err = newNativeResponsesError(httpResp.StatusCode, httpResp.Header, data)
+		reporter.ObserveResponseModel(data)
+		reporter.PublishFailureWithDetail(ctx, helps.ParseOpenAIUsage(data), err)
+		return cliproxyexecutor.Response{}, err
+	}
 	status := gjson.GetBytes(data, "status").String()
-	if !gjson.ValidBytes(data) || openAICompatHasStructuredError(data) || status == "failed" || status == "cancelled" {
-		err = statusErr{code: http.StatusBadGateway, msg: string(data)}
+	if status == "failed" || status == "cancelled" {
+		err = newNativeResponsesError(httpResp.StatusCode, httpResp.Header, data)
 		reporter.ObserveResponseModel(data)
 		reporter.PublishFailureWithDetail(ctx, helps.ParseOpenAIUsage(data), err)
 		return cliproxyexecutor.Response{}, err
@@ -138,6 +144,12 @@ func (e *OpenAICompatExecutor) executeNativeResponses(ctx context.Context, auth 
 		out = helps.EnsureResponsesUsageDetails(out)
 	}
 	return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
+}
+
+// frameEntry preserves upstream order for replay after buffering.
+type frameEntry struct {
+	event string
+	data  []byte
 }
 
 func (e *OpenAICompatExecutor) executeNativeResponsesStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
@@ -170,6 +182,36 @@ func (e *OpenAICompatExecutor) executeNativeResponsesStream(ctx context.Context,
 		to := helps.CompatResponsesTranslationFormat(responseFormat)
 		inputTokens := helps.NewClaudeInputTokenState(opts.SourceFormat, to, responseFormat, opts.OriginalRequest)
 		var param any
+
+		// Bootstrap buffer: hold lifecycle frames until first meaningful
+		// output (text/reasoning delta, or a function/custom tool call with
+		// id+name), then flush in original order. Bounded by a byte cap so
+		// memory cannot grow unbounded. Late failures after meaningful
+		// output are delivered in-stream so the stream is not restarted.
+		const bootstrapByteCap = 256 << 10
+		var buffered []frameEntry
+		bufferedBytes := 0
+		var meaningful bool
+		emit := func(event string, data []byte) bool {
+			compact := new(bytes.Buffer)
+			if errCompact := json.Compact(compact, data); errCompact != nil {
+				fail(errCompact)
+				return false
+			}
+			frame := append([]byte("data: "), compact.Bytes()...)
+			if responseFormat == sdktranslator.FormatOpenAIResponse {
+				frame = append([]byte("event: "+event+"\n"), frame...)
+				frame = append(frame, '\n', '\n')
+			}
+			for _, chunk := range helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, frame, &param, inputTokens) {
+				if !send(cliproxyexecutor.StreamChunk{Payload: chunk}) {
+					fail(ctx.Err())
+					return false
+				}
+			}
+			return true
+		}
+
 		for {
 			event, data, errRead := reader.Next()
 			if errRead != nil {
@@ -183,7 +225,7 @@ func (e *OpenAICompatExecutor) executeNativeResponsesStream(ctx context.Context,
 			}
 			helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 			if !json.Valid(data) {
-				fail(statusErr{code: http.StatusBadGateway, msg: "invalid Responses event: " + string(data)})
+				fail(statusErr{code: http.StatusBadGateway, msg: "invalid Responses event JSON"})
 				return
 			}
 			if typ := gjson.GetBytes(data, "type").String(); typ != "" {
@@ -195,33 +237,38 @@ func (e *OpenAICompatExecutor) executeNativeResponsesStream(ctx context.Context,
 			helps.ObserveResponsesTokenEvent(reporter, data)
 			detail, ok := helps.ParseCodexUsage(data)
 			usage.Observe(detail, ok)
-			if event == "error" || event == "response.failed" || openAICompatHasStructuredError(data) || gjson.GetBytes(data, "response.status").String() == "failed" {
-				fail(statusErr{code: http.StatusBadGateway, msg: string(data)})
+
+			isErrorEvent := event == "error" || event == "response.failed" || openAICompatHasStructuredError(data) || gjson.GetBytes(data, "response.status").String() == "failed"
+			if isErrorEvent {
+				fail(newNativeResponsesError(httpResp.StatusCode, httpResp.Header, data))
 				return
 			}
 			terminal := event == "response.completed" || event == "response.incomplete"
-			var compact bytes.Buffer
-			if errCompact := json.Compact(&compact, data); errCompact != nil {
-				fail(errCompact)
+
+			if !meaningful && (terminal || helps.IsResponsesMeaningfulOutputEvent(event, data)) {
+				meaningful = true
+				for _, pending := range buffered {
+					if !emit(pending.event, pending.data) {
+						return
+					}
+				}
+				buffered = nil
+			}
+
+			if !meaningful {
+				frameBytes := len(event) + len(data) + 32
+				if bufferedBytes+frameBytes <= bootstrapByteCap {
+					copyData := append([]byte{}, data...)
+					buffered = append(buffered, frameEntry{event: event, data: copyData})
+					bufferedBytes += frameBytes
+					continue
+				}
+				fail(statusErr{code: http.StatusBadGateway, msg: "Responses bootstrap exceeded 256 KiB before output"})
 				return
 			}
-			line := append([]byte("data: "), compact.Bytes()...)
-			if responseFormat == sdktranslator.FormatOpenAIResponse {
-				frame := append([]byte("event: "+event+"\n"), line...)
-				frame = append(frame, '\n', '\n')
-				for _, chunk := range helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, frame, &param, inputTokens) {
-					if !send(cliproxyexecutor.StreamChunk{Payload: chunk}) {
-						fail(ctx.Err())
-						return
-					}
-				}
-			} else {
-				for _, chunk := range helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, line, &param, inputTokens) {
-					if !send(cliproxyexecutor.StreamChunk{Payload: chunk}) {
-						fail(ctx.Err())
-						return
-					}
-				}
+
+			if !emit(event, data) {
+				return
 			}
 			if terminal {
 				usage.Publish(ctx, reporter)
