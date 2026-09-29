@@ -97,6 +97,8 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	}
 	if oldModelCount != newModelCount {
 		details = append(details, fmt.Sprintf("models %d -> %d", oldModelCount, newModelCount))
+	} else if ComputeOpenAICompatModelsHash(oldEntry.Models) != ComputeOpenAICompatModelsHash(newEntry.Models) {
+		details = append(details, "models updated")
 	}
 	if !equalStringMap(oldEntry.Headers, newEntry.Headers) {
 		details = append(details, "headers updated")

@@ -22,6 +22,12 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	return h.executeStreamWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, false)
 }
 
+// ExecuteStreamWithAuthManagerProtocols preserves the source protocol for payload
+// rules while requesting a distinct intermediate response format.
+func (h *BaseAPIHandler) ExecuteStreamWithAuthManagerProtocols(ctx context.Context, entryProtocol, responseProtocol, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+	return h.executeStreamWithAuthManagerFormats(ctx, entryProtocol, responseProtocol, modelName, rawJSON, alt, false, modelExecutionOptions{})
+}
+
 // ExecuteImageStreamWithAuthManager executes a streaming OpenAI-compatible image endpoint request.
 func (h *BaseAPIHandler) ExecuteImageStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
 	return h.executeStreamWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, true)

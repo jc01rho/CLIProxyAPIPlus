@@ -33,6 +33,12 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 	return h.executeWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, false)
 }
 
+// ExecuteWithAuthManagerProtocols keeps the actual input protocol separate from
+// the response format when an API route needs an intermediate response shape.
+func (h *BaseAPIHandler) ExecuteWithAuthManagerProtocols(ctx context.Context, entryProtocol, responseProtocol, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	return h.executeWithAuthManagerFormats(ctx, entryProtocol, responseProtocol, modelName, rawJSON, alt, false, modelExecutionOptions{})
+}
+
 // ExecuteImageWithAuthManager executes an OpenAI-compatible image endpoint request.
 func (h *BaseAPIHandler) ExecuteImageWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	return h.executeWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, true)

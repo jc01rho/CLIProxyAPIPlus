@@ -216,6 +216,15 @@ func TestComputeOpenAICompatModelsHashIncludesUseMaxCompletionTokens(t *testing.
 	}
 }
 
+func TestComputeOpenAICompatModelsHashIncludesSupportedEndpoints(t *testing.T) {
+	base := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "m", Alias: "alias"}})
+	chat := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "m", Alias: "alias", SupportedEndpoints: []string{"/chat/completions"}}})
+	responses := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "m", Alias: "alias", SupportedEndpoints: []string{"/responses"}}})
+	if base == chat || base == responses || chat == responses {
+		t.Fatal("endpoint-only configuration changes must invalidate model routing")
+	}
+}
+
 func TestComputeExcludedModelsHash_Normalizes(t *testing.T) {
 	hash1 := ComputeExcludedModelsHash([]string{" A ", "b", "a"})
 	hash2 := ComputeExcludedModelsHash([]string{"a", " b", "A"})

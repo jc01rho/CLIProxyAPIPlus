@@ -104,6 +104,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if opts.Alt == openAICompatSystemOneAlt {
 		return e.executeSystemOne(ctx, auth, req, opts)
 	}
+	if opts.Alt == "" && e.useNativeResponses(auth, req, opts) {
+		return e.executeNativeResponses(ctx, auth, req, opts)
+	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
@@ -538,6 +541,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
 		return e.executeImagesStream(ctx, auth, req, opts, endpointPath)
+	}
+	if opts.Alt == "" && e.useNativeResponses(auth, req, opts) {
+		return e.executeNativeResponsesStream(ctx, auth, req, opts)
 	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName

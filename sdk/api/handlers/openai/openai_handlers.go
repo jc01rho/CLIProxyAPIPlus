@@ -133,12 +133,6 @@ func (h *OpenAIAPIHandler) ChatCompletions(c *gin.Context) {
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	if overrideEndpoint, ok := resolveEndpointOverride(modelName, openAIChatEndpoint); ok && overrideEndpoint == openAIResponsesEndpoint {
 		originalChat := rawJSON
-		if shouldTreatAsResponsesFormat(rawJSON) {
-			// Already responses-style payload; no conversion needed.
-		} else {
-			rawJSON = codexconverter.ConvertOpenAIRequestToCodex(modelName, rawJSON, stream)
-		}
-		stream = gjson.GetBytes(rawJSON, "stream").Bool()
 		if stream {
 			h.handleStreamingResponseViaResponses(c, rawJSON, originalChat)
 		} else {
@@ -308,7 +302,11 @@ func wrapResponsesPayloadAsCompleted(payload []byte) []byte {
 }
 
 func writeConvertedResponsesChunk(c *gin.Context, ctx context.Context, modelName string, originalChatJSON, responsesRequestJSON, chunk []byte, param *any) {
-	outputs := codexconverter.ConvertCodexResponseToOpenAI(ctx, modelName, originalChatJSON, responsesRequestJSON, chunk, param)
+	payload, found := responsesSSEDataPayload(chunk)
+	if !found {
+		return
+	}
+	outputs := codexconverter.ConvertCodexResponseToOpenAI(ctx, modelName, originalChatJSON, responsesRequestJSON, append([]byte("data: "), payload...), param)
 	for _, out := range outputs {
 		if len(out) == 0 {
 			continue
@@ -320,13 +318,7 @@ func writeConvertedResponsesChunk(c *gin.Context, ctx context.Context, modelName
 func (h *OpenAIAPIHandler) forwardResponsesAsChatStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, ctx context.Context, modelName string, originalChatJSON, responsesRequestJSON []byte, param *any) {
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
-			outputs := codexconverter.ConvertCodexResponseToOpenAI(ctx, modelName, originalChatJSON, responsesRequestJSON, chunk, param)
-			for _, out := range outputs {
-				if len(out) == 0 {
-					continue
-				}
-				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", out)
-			}
+			writeConvertedResponsesChunk(c, ctx, modelName, originalChatJSON, responsesRequestJSON, chunk, param)
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
 			if errMsg == nil {
@@ -553,7 +545,11 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponseViaResponses(c *gin.Context
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, OpenaiResponse, modelName, rawJSON, h.GetAlt(c))
+	entryProtocol := OpenAI
+	if shouldTreatAsResponsesFormat(rawJSON) {
+		entryProtocol = OpenaiResponse
+	}
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManagerProtocols(cliCtx, entryProtocol, OpenaiResponse, modelName, rawJSON, h.GetAlt(c))
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
@@ -672,7 +668,11 @@ func (h *OpenAIAPIHandler) handleStreamingResponseViaResponses(c *gin.Context, r
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, OpenaiResponse, modelName, rawJSON, h.GetAlt(c))
+	entryProtocol := OpenAI
+	if shouldTreatAsResponsesFormat(rawJSON) {
+		entryProtocol = OpenaiResponse
+	}
+	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManagerProtocols(cliCtx, entryProtocol, OpenaiResponse, modelName, rawJSON, h.GetAlt(c))
 	var param any
 
 	setSSEHeaders := func() {
