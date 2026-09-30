@@ -15,13 +15,14 @@ import (
 type providerFallbackExecutor struct {
 	id string
 
-	mu           sync.Mutex
-	executeCalls []string
-	countCalls   []string
-	streamCalls  []string
-	executeErr   error
-	countErr     error
-	streamErr    error
+	mu                  sync.Mutex
+	executeCalls        []string
+	countCalls          []string
+	streamCalls         []string
+	executeErr          error
+	countErr            error
+	streamErr           error
+	streamFirstChunkErr error
 }
 
 func (e *providerFallbackExecutor) Identifier() string { return e.id }
@@ -46,6 +47,12 @@ func (e *providerFallbackExecutor) ExecuteStream(_ context.Context, auth *Auth, 
 	e.mu.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	if e.streamFirstChunkErr != nil {
+		ch := make(chan cliproxyexecutor.StreamChunk, 1)
+		ch <- cliproxyexecutor.StreamChunk{Err: e.streamFirstChunkErr}
+		close(ch)
+		return &cliproxyexecutor.StreamResult{Headers: http.Header{"X-Provider": {auth.Provider}}, Chunks: ch}, nil
 	}
 	ch := make(chan cliproxyexecutor.StreamChunk, 1)
 	ch <- cliproxyexecutor.StreamChunk{Payload: []byte(call)}
@@ -225,6 +232,33 @@ func TestManagerExecuteStream_FallsBackToOtherProviderOn429WhenRetryBudgetIsOne(
 	}
 	if got := second.StreamCalls(); len(got) != 1 || got[0] != "second:"+t.Name()+"-second:"+model {
 		t.Fatalf("second stream calls = %v", got)
+	}
+}
+
+func TestManagerExecuteStream_FallsBackWhen429ArrivesAsFirstChunkError(t *testing.T) {
+	const model = "glm-5.1"
+	m, first, second := newProviderFallbackTestManager(t, model)
+	first.streamFirstChunkErr = &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"}
+
+	streamResult, err := m.ExecuteStream(context.Background(), []string{"first", "second"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute stream error = %v, want fallback success", err)
+	}
+	var payload []byte
+	for chunk := range streamResult.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected fallback stream error: %v", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	if got := string(payload); got != "second:"+t.Name()+"-second:"+model {
+		t.Fatalf("payload = %q, want second provider success", got)
+	}
+	if got := first.StreamCalls(); len(got) != 1 {
+		t.Fatalf("first stream calls = %v, want one first-chunk error attempt", got)
+	}
+	if got := second.StreamCalls(); len(got) != 1 {
+		t.Fatalf("second stream calls = %v, want one fallback attempt", got)
 	}
 }
 

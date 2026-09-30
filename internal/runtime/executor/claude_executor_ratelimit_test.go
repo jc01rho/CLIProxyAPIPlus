@@ -138,6 +138,140 @@ func TestClaudeExecutor_HonorsAnthropicRateLimitHeaders_ExecuteStream(t *testing
 	}
 }
 
+func TestClaudeExecutor_ExecuteStream_ClassifiesEmbeddedRateLimitErrorEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: error\n" +
+			`data: {"type":"error","error":{"type":"rate_limit_error","code":"upstream_rate_limit","message":"capacity exhausted","http_status":429,"retry_after":8,"retryable":true}}` +
+			"\n\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "test-key",
+		"base_url": server.URL,
+	}}
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-opus-5",
+		Payload: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	chunk, ok := <-result.Chunks
+	if !ok || chunk.Err == nil {
+		t.Fatalf("first stream chunk = %#v, want classified error", chunk)
+	}
+	var status interface{ StatusCode() int }
+	if !errors.As(chunk.Err, &status) || status.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("stream error status = %v, want %d", chunk.Err, http.StatusTooManyRequests)
+	}
+	var retry retryAfterProvider
+	if !errors.As(chunk.Err, &retry) || retry.RetryAfter() == nil || *retry.RetryAfter() != 8*time.Second {
+		t.Fatalf("stream retry-after = %v, want 8s", retry.RetryAfter())
+	}
+	if strings.Contains(string(chunk.Payload), "rate_limit_error") {
+		t.Fatalf("rate limit event leaked as downstream payload: %s", chunk.Payload)
+	}
+}
+
+func TestClaudeExecutor_ExecuteStream_ClassifiesEmbeddedRateLimitErrorBeforeTranslation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: error\n" +
+			`data: {"type":"error","error":{"type":"rate_limit_error","http_status":429,"message":"capacity exhausted","retry_after":8,"retryable":true}}` +
+			"\n\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "test-key",
+		"base_url": server.URL,
+	}}
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-opus-5",
+		Payload: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatOpenAIResponse,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	chunk, ok := <-result.Chunks
+	if !ok || chunk.Err == nil {
+		t.Fatalf("first translated stream chunk = %#v, want classified error", chunk)
+	}
+	var status interface{ StatusCode() int }
+	if !errors.As(chunk.Err, &status) || status.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("translated stream error status = %v, want %d", chunk.Err, http.StatusTooManyRequests)
+	}
+}
+
+func TestClaudeExecutor_ExecuteStream_EmbeddedRateLimitFallsBackToNextCredential(t *testing.T) {
+	var firstCalls, secondCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: error\n" +
+			`data: {"type":"error","error":{"type":"rate_limit_error","http_status":429,"message":"capacity exhausted","retry_after":8,"retryable":true}}` +
+			"\n\n"))
+	}))
+	t.Cleanup(first.Close)
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_stop\n" +
+			`data: {"type":"message_stop"}` +
+			"\n\n"))
+	}))
+	t.Cleanup(second.Close)
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.SetRetryConfig(0, 0, 1)
+	manager.RegisterExecutor(NewClaudeExecutor(&config.Config{}))
+	firstAuth := &cliproxyauth.Auth{ID: uuid.NewString(), Provider: "claude", Attributes: map[string]string{"api_key": "first-key", "base_url": first.URL, "priority": "100"}}
+	secondAuth := &cliproxyauth.Auth{ID: uuid.NewString(), Provider: "claude", Attributes: map[string]string{"api_key": "second-key", "base_url": second.URL, "priority": "1"}}
+	for _, auth := range []*cliproxyauth.Auth{firstAuth, secondAuth} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register auth %s: %v", auth.ID, errRegister)
+		}
+	}
+	reg := registry.GetGlobalRegistry()
+	for _, auth := range []*cliproxyauth.Auth{firstAuth, secondAuth} {
+		reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: "claude-opus-5"}})
+	}
+	t.Cleanup(func() {
+		reg.UnregisterClient(firstAuth.ID)
+		reg.UnregisterClient(secondAuth.ID)
+	})
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"claude"}, cliproxyexecutor.Request{
+		Model:   "claude-opus-5",
+		Payload: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v, want next credential success", err)
+	}
+	var payload []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("fallback stream error = %v", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	if !strings.Contains(string(payload), "message_stop") {
+		t.Fatalf("fallback stream payload = %q, want message_stop", payload)
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("upstream calls = first:%d second:%d, want 1 each", firstCalls.Load(), secondCalls.Load())
+	}
+}
+
 func TestClaudeExecutor_RateLimit_BothRejectedUsesLongest(t *testing.T) {
 	now := time.Now()
 	fiveHourReset := now.Add(5 * time.Hour).Unix()
