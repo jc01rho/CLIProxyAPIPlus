@@ -16,9 +16,9 @@ import (
 	kirocommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/kiro/common"
 )
 
-// generateThinkingSignature generates a signature for thinking content.
-// This is required by Claude API for thinking blocks in non-streaming responses.
-// The signature is a base64-encoded hash of the thinking content.
+// generateThinkingSignature is a legacy compatibility fallback ONLY for blocks
+// with no upstream signature. This content hash is not a Kiro attestation and
+// must never replace a real signature.
 func generateThinkingSignature(thinkingContent string) string {
 	if thinkingContent == "" {
 		return ""
@@ -28,22 +28,40 @@ func generateThinkingSignature(thinkingContent string) string {
 	return base64.StdEncoding.EncodeToString(hash[:])
 }
 
-// Local references to kirocommon constants for thinking block parsing
+// BuildClaudeUsage preserves aggregate input/output counts and exposes cache
+// counters without subtracting or adding them to the aggregate totals.
+// Ported from kiro-lb src/stream_anthropic.rs (1581af9).
+func BuildClaudeUsage(usageInfo usage.Detail) map[string]interface{} {
+	result := map[string]interface{}{
+		"input_tokens":  usageInfo.InputTokens,
+		"output_tokens": usageInfo.OutputTokens,
+	}
+	result["cache_read_input_tokens"] = usageInfo.CacheReadTokens
+	result["cache_creation_input_tokens"] = usageInfo.CacheCreationTokens
+	return result
+}
+
 var (
 	thinkingStartTag = kirocommon.ThinkingStartTag
 	thinkingEndTag   = kirocommon.ThinkingEndTag
 )
 
-// BuildClaudeResponse constructs a Claude-compatible response.
-// Supports tool_use blocks when tools are present in the response.
-// Supports thinking blocks - parses <thinking> tags and converts to Claude thinking content blocks.
-// stopReason is passed from upstream; fallback logic applied if empty.
+// BuildClaudeResponse constructs a Claude-compatible response. It uses a
+// deterministic hash only when no Kiro signature was supplied.
 func BuildClaudeResponse(content string, toolUses []KiroToolUse, model string, usageInfo usage.Detail, stopReason string) []byte {
+	return BuildClaudeResponseWithThinkingSignatures(content, nil, toolUses, model, usageInfo, stopReason)
+}
+
+// BuildClaudeResponseWithThinkingSignatures attaches Kiro's opaque signatures
+// to thinking blocks in order. Supply one entry per thinking block, using ""
+// for unsigned blocks. Only unsigned blocks use the legacy hash fallback.
+// Ported from kiro-lb src/stream_anthropic.rs (1581af9).
+func BuildClaudeResponseWithThinkingSignatures(content string, thinkingSignatures []string, toolUses []KiroToolUse, model string, usageInfo usage.Detail, stopReason string) []byte {
 	var contentBlocks []map[string]interface{}
 
-	// Extract thinking blocks and text from content
+	// Extract thinking blocks and text from content.
 	if content != "" {
-		blocks := ExtractThinkingFromContent(content)
+		blocks := ExtractThinkingFromContentWithSignatures(content, thinkingSignatures)
 		contentBlocks = append(contentBlocks, blocks...)
 
 		// Log if thinking blocks were extracted
@@ -99,20 +117,32 @@ func BuildClaudeResponse(content string, toolUses []KiroToolUse, model string, u
 		"model":       model,
 		"content":     contentBlocks,
 		"stop_reason": stopReason,
-		"usage": map[string]interface{}{
-			"input_tokens":  usageInfo.InputTokens,
-			"output_tokens": usageInfo.OutputTokens,
-		},
+		"usage":       BuildClaudeUsage(usageInfo),
 	}
 	result, _ := json.Marshal(response)
 	return result
 }
 
-// ExtractThinkingFromContent parses content to extract thinking blocks and text.
-// Returns a list of content blocks in the order they appear in the content.
-// Handles interleaved thinking and text blocks correctly.
+// ExtractThinkingFromContent parses thinking tags using the documented legacy
+// hash fallback when Kiro did not provide an opaque signature.
 func ExtractThinkingFromContent(content string) []map[string]interface{} {
+	return ExtractThinkingFromContentWithSignatures(content, nil)
+}
+
+// ExtractThinkingFromContentWithSignatures parses tags and assigns signatures
+// by thinking-block order (not text-block index). Missing/empty signatures use
+// the legacy hash fallback; a supplied signature is preserved byte-for-byte.
+func ExtractThinkingFromContentWithSignatures(content string, signatures []string) []map[string]interface{} {
 	var blocks []map[string]interface{}
+	thinkingIndex := 0
+	signatureForBlock := func(thinking string) string {
+		index := thinkingIndex
+		thinkingIndex++
+		if index < len(signatures) && signatures[index] != "" {
+			return signatures[index]
+		}
+		return generateThinkingSignature(thinking)
+	}
 
 	if content == "" {
 		return blocks
@@ -168,12 +198,10 @@ func ExtractThinkingFromContent(content string) []map[string]interface{} {
 		if endIdx == -1 {
 			// No closing tag found, treat rest as thinking content (incomplete response)
 			if strings.TrimSpace(remaining) != "" {
-				// Generate signature for thinking content (required by Claude API)
-				signature := generateThinkingSignature(remaining)
 				blocks = append(blocks, map[string]interface{}{
 					"type":      "thinking",
 					"thinking":  remaining,
-					"signature": signature,
+					"signature": signatureForBlock(remaining),
 				})
 				log.Warnf("kiro: extractThinkingFromContent - missing closing </thinking> tag")
 			}
@@ -183,12 +211,10 @@ func ExtractThinkingFromContent(content string) []map[string]interface{} {
 		// Extract thinking content between tags
 		thinkContent := remaining[:endIdx]
 		if strings.TrimSpace(thinkContent) != "" {
-			// Generate signature for thinking content (required by Claude API)
-			signature := generateThinkingSignature(thinkContent)
 			blocks = append(blocks, map[string]interface{}{
 				"type":      "thinking",
 				"thinking":  thinkContent,
-				"signature": signature,
+				"signature": signatureForBlock(thinkContent),
 			})
 			log.Debugf("kiro: extractThinkingFromContent - extracted thinking block (len: %d)", len(thinkContent))
 		}

@@ -82,7 +82,7 @@ func LoadImportedKiroCredential() (*KiroTokenData, error) {
 		}
 	}
 
-	var failures []string
+	var failures []error
 	for _, path := range ResolveKiroCLIDatabasePaths(home, runtime.GOOS, env) {
 		token, loadErr := LoadKiroCLICredential(path, env["KIROCLI_TOKEN_KEY"])
 		if loadErr == nil {
@@ -92,10 +92,10 @@ func LoadImportedKiroCredential() (*KiroTokenData, error) {
 		if errors.Is(loadErr, os.ErrNotExist) {
 			continue
 		}
-		failures = append(failures, loadErr.Error())
+		failures = append(failures, loadErr)
 	}
 	if len(failures) > 0 {
-		return nil, fmt.Errorf("kiro credential import failed: %s", strings.Join(failures, "; "))
+		return nil, fmt.Errorf("kiro credential import failed: %w", errors.Join(failures...))
 	}
 	return nil, os.ErrNotExist
 }
@@ -150,7 +150,10 @@ func LoadKiroCLICredential(path, selector string) (*KiroTokenData, error) {
 	profileMap := map[string]any{}
 	var profileValue string
 	if queryErr := db.QueryRowContext(ctx, "SELECT value FROM state WHERE key = ?", "api.codewhisperer.profile").Scan(&profileValue); queryErr == nil {
-		profileMap, _ = decodeKiroCredentialJSON(profileValue)
+		profileMap, err = decodeKiroCredentialJSON(profileValue)
+		if err != nil {
+			return nil, fmt.Errorf("kiro credential database profile is invalid JSON")
+		}
 	} else if !errors.Is(queryErr, sql.ErrNoRows) && !strings.Contains(strings.ToLower(queryErr.Error()), "no such table") {
 		return nil, fmt.Errorf("kiro credential database schema mismatch")
 	}
@@ -246,19 +249,29 @@ func decodeKiroCredentialJSON(value string) (map[string]any, error) {
 
 func kiroTokenDataFromMap(values map[string]any) (*KiroTokenData, error) {
 	accessToken := kiroStringField(values, "accessToken", "access_token")
-	if accessToken == "" {
-		return nil, fmt.Errorf("kiro credential token missing")
-	}
 	refreshToken := kiroStringField(values, "refreshToken", "refresh_token")
-	profileArn := kiroStringField(values, "arn", "profileArn", "profile_arn")
-	region := normalizeKiroRegion(kiroStringField(values, "region"))
-	apiRegion := normalizeKiroRegion(firstNonBlank(
-		kiroStringField(values, "apiRegion", "api_region"),
-		ExtractRegionFromProfileArn(profileArn),
-		region,
-	))
+	if accessToken == "" && refreshToken == "" {
+		return nil, fmt.Errorf("kiro credential token missing: provide accessToken or refreshToken")
+	}
+	profileArn, err := validatedKiroCredentialField(values, false, "arn", "profileArn", "profile_arn")
+	if err != nil {
+		return nil, err
+	}
+	region, err := validatedKiroCredentialField(values, true, "region")
+	if err != nil {
+		return nil, err
+	}
+	apiRegion, err := validatedKiroCredentialField(values, true, "apiRegion", "api_region")
+	if err != nil {
+		return nil, err
+	}
+	apiRegion = firstNonBlank(apiRegion, ExtractRegionFromProfileArn(profileArn), region)
 
 	expiresAt := parseImportedKiroExpiry(values, refreshToken != "")
+	// Ported from kiro-lb src/auth.rs (1581af9): refresh-only imports are immediately due.
+	if accessToken == "" {
+		expiresAt = time.Unix(0, 0).UTC().Format(time.RFC3339)
+	}
 	clientID := kiroStringField(values, "clientId", "client_id")
 	clientSecret := kiroStringField(values, "clientSecret", "client_secret")
 	authMethod := strings.ToLower(kiroStringField(values, "authMethod", "auth_method"))
@@ -349,25 +362,74 @@ func kiroStringField(values map[string]any, keys ...string) string {
 	return ""
 }
 
+// CredentialFieldError identifies malformed optional fields without exposing credentials.
+// Ported from kiro-lb src/auth.rs (1581af9): absent/null fields are not malformed.
+type CredentialFieldError struct {
+	Field    string
+	Expected string
+}
+
+func (e *CredentialFieldError) Error() string {
+	return fmt.Sprintf("invalid Kiro credential %s: expected %s; correct the field or remove it", e.Field, e.Expected)
+}
+
+func validatedKiroCredentialField(values map[string]any, region bool, keys ...string) (string, error) {
+	var selected string
+	for _, key := range keys {
+		value, present := values[key]
+		if !present || value == nil {
+			continue
+		}
+		text, ok := value.(string)
+		expected := "a CodeWhisperer profile ARN such as arn:aws:codewhisperer:us-east-1:123456789012:profile/example"
+		valid := false
+		if region {
+			expected = "a lowercase AWS region string such as us-east-1 or us-gov-west-1"
+			valid = ok && normalizeKiroRegion(text) != ""
+		} else if ok {
+			parts := strings.Split(text, ":")
+			valid = len(parts) == 6 && parts[0] == "arn" && parts[1] != "" &&
+				parts[2] == "codewhisperer" && normalizeKiroRegion(parts[3]) != "" &&
+				strings.HasPrefix(parts[5], "profile/") && len(parts[5]) > len("profile/") &&
+				!strings.ContainsAny(text, " \t\r\n?#\\") && strings.Count(parts[5], "/") == 1
+		}
+		if !valid {
+			return "", &CredentialFieldError{Field: key, Expected: expected}
+		}
+		if selected == "" {
+			selected = text
+		}
+	}
+	return selected, nil
+}
+
+// Ported from kiro-lb src/config.rs (1581af9); accept future AWS partition shapes.
 func normalizeKiroRegion(region string) string {
-	region = strings.TrimSpace(strings.ToLower(region))
-	parts := strings.Split(region, "-")
-	if len(parts) < 3 || len(parts[0]) != 2 {
+	if len(region) < 5 || len(region) > 63 {
 		return ""
 	}
-	for _, part := range parts {
+	parts := strings.Split(region, "-")
+	if len(parts) < 3 || len(parts[0]) < 2 {
+		return ""
+	}
+	for i, part := range parts[:len(parts)-1] {
 		if part == "" {
 			return ""
 		}
 		for _, char := range part {
-			if (char < 'a' || char > 'z') && (char < '0' || char > '9') {
+			if (char < 'a' || char > 'z') && (i == 0 || char < '0' || char > '9') {
 				return ""
 			}
 		}
 	}
 	last := parts[len(parts)-1]
-	if len(last) != 1 || last[0] < '0' || last[0] > '9' {
+	if last == "" || last[0] == '0' {
 		return ""
+	}
+	for _, char := range last {
+		if char < '0' || char > '9' {
+			return ""
+		}
 	}
 	return region
 }

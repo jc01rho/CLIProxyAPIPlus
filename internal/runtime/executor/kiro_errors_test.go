@@ -27,6 +27,7 @@ func TestClassifyKiroUpstreamError(t *testing.T) {
 		{"429 with body", 429, []byte(`{"message":"rate limited"}`), KiroErrorRecoverable},
 		{"400 monthly request count", 400, []byte(`{"reason":"MONTHLY_REQUEST_COUNT"}`), KiroErrorRecoverable},
 		{"400 invalid model id", 400, []byte(`{"reason":"INVALID_MODEL_ID"}`), KiroErrorRecoverable},
+		{"400 user request rate exceeded", 400, []byte(`{"reason":"USER_REQUEST_RATE_EXCEEDED"}`), KiroErrorRecoverable},
 		{"400 content length exceeds threshold", 400, []byte(`{"reason":"CONTENT_LENGTH_EXCEEDS_THRESHOLD"}`), KiroErrorFatal},
 		{"400 no reason", 400, []byte(`{"message":"Improperly formed request."}`), KiroErrorFatal},
 		{"400 unknown reason", 400, []byte(`{"reason":"SOME_OTHER_REASON"}`), KiroErrorFatal},
@@ -68,6 +69,7 @@ func TestKiroErrorReasonFromBody(t *testing.T) {
 		{"not json but contains marker substring", []byte(`some wrapper text MONTHLY_REQUEST_COUNT trailing`), "MONTHLY_REQUEST_COUNT"},
 		{"not json contains invalid model id marker", []byte(`upstream said INVALID_MODEL_ID oops`), "INVALID_MODEL_ID"},
 		{"not json contains content length marker", []byte(`error: CONTENT_LENGTH_EXCEEDS_THRESHOLD`), "CONTENT_LENGTH_EXCEEDS_THRESHOLD"},
+		{"not json contains user request rate marker", []byte(`error: USER_REQUEST_RATE_EXCEEDED`), "USER_REQUEST_RATE_EXCEEDED"},
 		{"not json, no known marker", []byte(`totally unrelated text`), ""},
 		{"malformed json falls back to substring scan", []byte(`{"reason": MONTHLY_REQUEST_COUNT malformed`), "MONTHLY_REQUEST_COUNT"},
 	}

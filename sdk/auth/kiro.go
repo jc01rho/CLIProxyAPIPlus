@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -271,6 +272,9 @@ func (a *KiroAuthenticator) LoginWithGitHub(ctx context.Context, cfg *config.Con
 // file, or the legacy Kiro IDE token file.
 func (a *KiroAuthenticator) ImportFromKiroIDE(ctx context.Context, cfg *config.Config) (*coreauth.Auth, error) {
 	tokenData, err := kiroauth.LoadImportedKiroCredential()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("failed to load Kiro CLI credentials: %w", err)
+	}
 	if err != nil {
 		tokenData, err = kiroauth.LoadKiroIDEToken()
 		if err != nil {
@@ -422,7 +426,10 @@ func (a *KiroAuthenticator) Refresh(ctx context.Context, cfg *config.Config, aut
 	updated.UpdatedAt = now
 	updated.LastRefreshedAt = now
 	updated.Metadata["access_token"] = tokenData.AccessToken
-	updated.Metadata["refresh_token"] = tokenData.RefreshToken
+	// Ported from kiro-lb src/auth.rs (1581af9): refreshToken may be omitted.
+	if strings.TrimSpace(tokenData.RefreshToken) != "" {
+		updated.Metadata["refresh_token"] = tokenData.RefreshToken
+	}
 	updated.Metadata["expires_at"] = tokenData.ExpiresAt
 	updated.Metadata["last_refresh"] = now.Format(time.RFC3339) // For double-check optimization
 	// Store clientId/clientSecret if they were loaded from device registration

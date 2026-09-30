@@ -1,6 +1,7 @@
 package kiro
 
 import (
+	"context"
 	"math"
 	"math/rand"
 	"strings"
@@ -135,6 +136,13 @@ func (rl *RateLimiter) calculateInterval() time.Duration {
 
 // WaitForToken 等待 Token 可用（带抖动的随机间隔）
 func (rl *RateLimiter) WaitForToken(tokenKey string) {
+	_ = rl.WaitForTokenContext(context.Background(), tokenKey)
+}
+
+func (rl *RateLimiter) WaitForTokenContext(ctx context.Context, tokenKey string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	rl.mu.Lock()
 	state := rl.getOrCreateState(tokenKey)
 	rl.resetDailyIfNeeded(state)
@@ -145,7 +153,9 @@ func (rl *RateLimiter) WaitForToken(tokenKey string) {
 	if now.Before(state.CooldownEnd) {
 		waitTime := state.CooldownEnd.Sub(now)
 		rl.mu.Unlock()
-		time.Sleep(waitTime)
+		if err := waitRateLimiter(ctx, waitTime); err != nil {
+			return err
+		}
 		rl.mu.Lock()
 		state = rl.getOrCreateState(tokenKey)
 		now = time.Now()
@@ -158,7 +168,9 @@ func (rl *RateLimiter) WaitForToken(tokenKey string) {
 	if now.Before(nextAllowedTime) {
 		waitTime := nextAllowedTime.Sub(now)
 		rl.mu.Unlock()
-		time.Sleep(waitTime)
+		if err := waitRateLimiter(ctx, waitTime); err != nil {
+			return err
+		}
 		rl.mu.Lock()
 		state = rl.getOrCreateState(tokenKey)
 	}
@@ -167,6 +179,18 @@ func (rl *RateLimiter) WaitForToken(tokenKey string) {
 	state.RequestCount++
 	state.DailyRequests++
 	rl.mu.Unlock()
+	return nil
+}
+
+func waitRateLimiter(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // MarkTokenFailed 标记 Token 失败

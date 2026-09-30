@@ -206,6 +206,8 @@ func kiroErrorReasonFromBody(body []byte) string {
 		return "INVALID_MODEL_ID"
 	case strings.Contains(upper, "CONTENT_LENGTH_EXCEEDS_THRESHOLD"):
 		return "CONTENT_LENGTH_EXCEEDS_THRESHOLD"
+	case strings.Contains(upper, "USER_REQUEST_RATE_EXCEEDED"):
+		return "USER_REQUEST_RATE_EXCEEDED"
 	default:
 		return ""
 	}
@@ -220,6 +222,7 @@ func kiroErrorReasonFromBody(body []byte) string {
 //   - any 429 (rate limit)
 //   - 400 + reason=MONTHLY_REQUEST_COUNT
 //   - 400 + reason=INVALID_MODEL_ID
+//   - 400 + reason=USER_REQUEST_RATE_EXCEEDED (short credential cooldown)
 //   - 502 / 503 / 504 (transient upstream gateway failures)
 //
 // FATAL (return to caller immediately):
@@ -236,7 +239,7 @@ func classifyKiroUpstreamError(statusCode int, body []byte) kiroErrorDecision {
 		return KiroErrorRecoverable
 	case 400:
 		switch kiroErrorReasonFromBody(body) {
-		case "MONTHLY_REQUEST_COUNT", "INVALID_MODEL_ID":
+		case "MONTHLY_REQUEST_COUNT", "INVALID_MODEL_ID", "USER_REQUEST_RATE_EXCEEDED":
 			return KiroErrorRecoverable
 		default:
 			return KiroErrorFatal

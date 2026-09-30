@@ -51,8 +51,8 @@ func TestSanitizeKiroToolSchema(t *testing.T) {
 	}
 
 	got := SanitizeKiroToolSchema(input)
-	if _, ok := got["additionalProperties"]; ok {
-		t.Fatal("root additionalProperties was not removed")
+	if got["additionalProperties"] != false {
+		t.Fatalf("root additionalProperties = %#v, want false", got["additionalProperties"])
 	}
 	if _, ok := got["required"]; ok {
 		t.Fatal("empty required array was not removed")
@@ -60,8 +60,8 @@ func TestSanitizeKiroToolSchema(t *testing.T) {
 
 	properties := got["properties"].(map[string]any)
 	query := properties["query"].(map[string]any)
-	if _, ok := query["additionalProperties"]; ok {
-		t.Fatal("nested additionalProperties was not removed")
+	if query["additionalProperties"] != true {
+		t.Fatalf("nested additionalProperties = %#v, want true", query["additionalProperties"])
 	}
 	nested := properties["nested"].(map[string]any)
 	if gotRequired := nested["required"].([]any); len(gotRequired) != 1 || gotRequired[0] != "value" {

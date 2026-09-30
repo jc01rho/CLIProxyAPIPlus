@@ -29,6 +29,10 @@ func BuildOpenAIResponse(content string, toolUses []KiroToolUse, model string, u
 // reasoningContent is included as reasoning_content field in the message when present.
 // stopReason is passed from upstream; fallback logic applied if empty.
 func BuildOpenAIResponseWithReasoning(content, reasoningContent string, toolUses []KiroToolUse, model string, usageInfo usage.Detail, stopReason string) []byte {
+	return buildOpenAIResponseWithSignature(content, reasoningContent, "", toolUses, model, usageInfo, stopReason)
+}
+
+func buildOpenAIResponseWithSignature(content, reasoningContent, signature string, toolUses []KiroToolUse, model string, usageInfo usage.Detail, stopReason string) []byte {
 	// Build the message object
 	message := map[string]interface{}{
 		"role":    "assistant",
@@ -38,6 +42,10 @@ func BuildOpenAIResponseWithReasoning(content, reasoningContent string, toolUses
 	// Add reasoning_content if present (for thinking/reasoning models)
 	if reasoningContent != "" {
 		message["reasoning_content"] = reasoningContent
+	}
+
+	if signature != "" {
+		message["reasoning_signature"] = signature
 	}
 
 	// Add tool_calls if present
@@ -84,15 +92,23 @@ func BuildOpenAIResponseWithReasoning(content, reasoningContent string, toolUses
 				"finish_reason": finishReason,
 			},
 		},
-		"usage": map[string]interface{}{
-			"prompt_tokens":     usageInfo.InputTokens,
-			"completion_tokens": usageInfo.OutputTokens,
-			"total_tokens":      usageInfo.InputTokens + usageInfo.OutputTokens,
-		},
+		"usage": buildOpenAIUsage(usageInfo),
 	}
 
 	result, _ := json.Marshal(response)
 	return result
+}
+
+// Preserve the Anthropic cache counters through the OpenAI bridge as additive
+// usage fields, without changing prompt/completion totals.
+func buildOpenAIUsage(usageInfo usage.Detail) map[string]interface{} {
+	return map[string]interface{}{
+		"prompt_tokens":               usageInfo.InputTokens,
+		"completion_tokens":           usageInfo.OutputTokens,
+		"total_tokens":                usageInfo.InputTokens + usageInfo.OutputTokens,
+		"cache_read_input_tokens":     usageInfo.CacheReadTokens,
+		"cache_creation_input_tokens": usageInfo.CacheCreationTokens,
+	}
 }
 
 // mapKiroStopReasonToOpenAI converts Kiro/Claude stop_reason to OpenAI finish_reason
@@ -252,11 +268,7 @@ func BuildOpenAIStreamUsageChunk(model string, usageInfo usage.Detail) []byte {
 		"created": time.Now().Unix(),
 		"model":   model,
 		"choices": []map[string]interface{}{},
-		"usage": map[string]interface{}{
-			"prompt_tokens":     usageInfo.InputTokens,
-			"completion_tokens": usageInfo.OutputTokens,
-			"total_tokens":      usageInfo.InputTokens + usageInfo.OutputTokens,
-		},
+		"usage":   buildOpenAIUsage(usageInfo),
 	}
 
 	result, _ := json.Marshal(chunk)

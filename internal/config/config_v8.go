@@ -51,6 +51,8 @@ func buildV8Paths() []configPath {
 		{"oauth-endpoint-overrides", "oauth.endpoint-overrides"}, {"incognito-browser", "oauth.incognito-browser"},
 		{"kiro-fingerprint", "oauth.providers.kiro.fingerprint"},
 		{"kiro-preferred-endpoint", "oauth.providers.kiro.preferred-endpoint"},
+		{"kiro-proxy-urls", "oauth.providers.kiro.proxy-urls"},
+		{"kiro-max-inflight", "oauth.providers.kiro.max-inflight"},
 		{"cline-free-models-only", "oauth.providers.cline.free-models-only"},
 
 		{"oauth-model-alias", "oauth.model-alias"}, {"oauth-excluded-models", "oauth.excluded-models"},

@@ -18,30 +18,6 @@ func TestFetchKiroModelsReturnsNilWithoutCredential(t *testing.T) {
 	}
 }
 
-func TestFetchKiroModelsSkipsRuntimeEndpoint(t *testing.T) {
-	auth := &cliproxyauth.Auth{Metadata: map[string]any{
-		"access_token": "tok",
-		"api_host":     "https://runtime.us-east-1.kiro.dev",
-	}}
-	if got := FetchKiroModels(context.Background(), auth, &config.Config{}); got != nil {
-		t.Fatalf("runtime.kiro.dev must skip ListAvailableModels, got %d models", len(got))
-	}
-}
-
-func TestFetchKiroModelsSkipsSocialAuthWithoutHost(t *testing.T) {
-	auth := &cliproxyauth.Auth{Metadata: map[string]any{
-		"access_token": "tok",
-		"auth_method":  "google",
-		"profile_arn":  "arn:aws:codewhisperer:us-east-1:123:profile/abc",
-	}}
-	if !isKiroRuntimeEndpoint(auth) {
-		t.Fatal("google social kiro auth must skip ListAvailableModels")
-	}
-	if got := FetchKiroModels(context.Background(), auth, &config.Config{}); got != nil {
-		t.Fatalf("social kiro auth must skip ListAvailableModels, got %d models", len(got))
-	}
-}
-
 func Test_isKiroRuntimeEndpoint(t *testing.T) {
 	tests := []struct {
 		name string

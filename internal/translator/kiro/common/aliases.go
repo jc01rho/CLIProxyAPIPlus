@@ -32,7 +32,13 @@ var kiroAdaptiveThinkingModels = map[string]struct{}{
 	"claude-sonnet-4-6": {},
 }
 
-var kiroNativeReasoningModels = map[string]struct{}{}
+// GPT native reasoning is the exact Kiro-supported allowlist.
+// Ported from kiro-lb src/native_thinking.rs (1581af9).
+var kiroNativeReasoningModels = map[string]struct{}{
+	"gpt-5-6-sol":   {},
+	"gpt-5-6-terra": {},
+	"gpt-5-6-luna":  {},
+}
 
 // CanonicalKiroUpstreamID strips kiro-/amazonq- prefixes and local suffixes,
 // then hyphenates dots so allowlist lookups are stable.
@@ -152,13 +158,29 @@ type KiroThinkingPlan struct {
 }
 
 // PlanKiroThinking builds the kiro-lb-aligned thinking plan.
-// additionalModelRequestFields only contain the verified adaptive envelope
-// (thinking.type=adaptive + output_config.effort). Unknown members 400.
+// additionalModelRequestFields are gated to verified Claude adaptive and GPT
+// native reasoning envelopes. Unknown members cause upstream 400 responses.
 func PlanKiroThinking(modelID string, thinkingEnabled bool, effort string, maxTokens int64) KiroThinkingPlan {
 	plan := KiroThinkingPlan{
 		Effort:           NormalizeKiroThinkingEffort(effort),
 		AdaptiveThinking: SupportsKiroAdaptiveThinking(modelID),
 		NativeReasoning:  SupportsKiroNativeReasoning(modelID),
+	}
+	disabled := isKiroThinkingDisabled(effort)
+	if plan.NativeReasoning {
+		if disabled {
+			plan.Effort = "none"
+		} else if thinkingEnabled && strings.TrimSpace(effort) == "" {
+			plan.Effort = "high"
+		}
+		if plan.Effort != "" {
+			plan.Fields = map[string]any{"reasoning": map[string]any{"effort": plan.Effort}}
+		}
+		return plan
+	}
+	if disabled {
+		plan.Effort = "none"
+		return plan
 	}
 	if thinkingEnabled && plan.Effort == "" {
 		plan.Effort = "high"
@@ -167,17 +189,22 @@ func PlanKiroThinking(modelID string, thinkingEnabled bool, effort string, maxTo
 		return plan
 	}
 
-	switch {
-	case plan.AdaptiveThinking:
+	if plan.AdaptiveThinking {
 		plan.Fields = map[string]any{
 			"output_config": map[string]any{"effort": plan.Effort},
 			"thinking":      map[string]any{"type": "adaptive", "display": "summarized"},
 		}
-	default:
-		// Unsupported models omit request-side thinking fields. The current
-		// Kiro CLI does not emulate reasoning through prompt tags.
 	}
 	return plan
+}
+
+func isKiroThinkingDisabled(effort string) bool {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none", "off", "disabled", "0":
+		return true
+	default:
+		return false
+	}
 }
 
 // ThinkingDirective returns the <thinking_mode> prompt prefix.

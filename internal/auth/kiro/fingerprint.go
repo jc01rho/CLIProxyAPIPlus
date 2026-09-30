@@ -1,6 +1,7 @@
 package kiro
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +21,74 @@ const (
 	KiroCLIUserAgent     = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17975 os/linux lang/rust/1.92.0 md/appVersion-2.19.1 app/AmazonQ-For-CLI"
 	KiroCLIXAmzUserAgent = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17975 os/linux lang/rust/1.92.0 m/F app/AmazonQ-For-CLI"
 )
+
+// Ported from kiro-lb src/utils.rs (1581af9). Machine IDs are account-scoped,
+// not refresh-token versions; callers persist the value as kiro_machine_id.
+const (
+	KiroIDEVersion       = "1.1.70"
+	KiroRuntimeAPI       = "kiroruntime"
+	KiroControlPlaneAPI  = "kirocontrolplanebearer"
+	KiroCodeWhispererAPI = "codewhispererruntime"
+)
+
+type machineIDContextKey struct{}
+
+func WithMachineID(ctx context.Context, machineID string) context.Context {
+	return context.WithValue(ctx, machineIDContextKey{}, machineID)
+}
+
+func MachineIDFromContext(ctx context.Context) string {
+	machineID, _ := ctx.Value(machineIDContextKey{}).(string)
+	return machineID
+}
+
+func AccountMachineID(accountKey string) string {
+	hash := sha256.Sum256([]byte("kiro-lb-machine-id\x00" + accountKey))
+	return hex.EncodeToString(hash[:])
+}
+
+func SetIDEHeaders(req *http.Request, api, machineID string) {
+	build := "KiroIDE-" + KiroIDEVersion + "-" + machineID
+	if api != KiroCodeWhispererAPI {
+		build += "-KAS/0.66.7"
+	}
+	features := "m/N,E"
+	if api == KiroRuntimeAPI {
+		features = "m/N"
+	}
+	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.0 ua/2.1 os/win32#10.0.26200 lang/js md/nodejs#24.18.0 api/%s#1.0.0 %s %s", api, features, build))
+	req.Header.Set("x-amz-user-agent", "aws-sdk-js/1.0.0 "+build)
+}
+
+// WithMachineID returns a dedicated OAuth client; the login client and its
+// transport are left untouched. Only refresh requests receive these headers.
+func (o *KiroOAuth) WithMachineID(machineID string) *KiroOAuth {
+	copyOAuth := *o
+	copyClient := *o.httpClient
+	base := copyClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	copyClient.Transport = refreshFingerprintTransport{base: base, machineID: machineID}
+	copyOAuth.httpClient = &copyClient
+	copyOAuth.machineID = machineID
+	copyOAuth.kiroVersion = KiroIDEVersion
+	return &copyOAuth
+}
+
+type refreshFingerprintTransport struct {
+	base      http.RoundTripper
+	machineID string
+}
+
+func (t refreshFingerprintTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(req.URL.Path, "/refreshToken") {
+		req = req.Clone(req.Context())
+		SetIDEHeaders(req, KiroRuntimeAPI, t.machineID)
+		req.Header.Set("User-Agent", "KiroIDE-"+KiroIDEVersion+"-"+t.machineID)
+	}
+	return t.base.RoundTrip(req)
+}
 
 // Fingerprint holds multi-dimensional fingerprint data for runtime request disguise.
 type Fingerprint struct {
@@ -76,11 +146,7 @@ var (
 		"20.18.0", "20.17.0", "20.16.0",
 	}
 	// Kiro IDE versions
-	kiroVersions = []string{
-		"0.10.32", "0.10.16", "0.10.10",
-		"0.9.47", "0.9.40", "0.9.2",
-		"0.8.206", "0.8.140", "0.8.135", "0.8.86",
-	}
+	kiroVersions = []string{KiroIDEVersion}
 	// Global singleton
 	globalFingerprintManager     *FingerprintManager
 	globalFingerprintManagerOnce sync.Once
@@ -258,6 +324,15 @@ func (fp *Fingerprint) BuildAmzUserAgent() string {
 }
 
 func SetOIDCHeaders(req *http.Request) {
+	// Executor refreshes supply the persisted account identity. Registration
+	// before an account exists retains the AWS SSO registration contract.
+	if machineID := MachineIDFromContext(req.Context()); machineID != "" {
+		SetIDEHeaders(req, "sso-oidc", machineID)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
+		req.Header.Set("amz-sdk-request", "attempt=1; max=4")
+		return
+	}
 	fp := GlobalFingerprintManager().GetFingerprint("oidc-session")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/%s KiroIDE", fp.OIDCSDKVersion))
@@ -269,10 +344,19 @@ func SetOIDCHeaders(req *http.Request) {
 }
 
 func setRuntimeHeaders(req *http.Request, accessToken string, accountKey string) {
-	_ = accountKey
+	machineID := MachineIDFromContext(req.Context())
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("x-amz-user-agent", KiroCLIXAmzUserAgent)
-	req.Header.Set("User-Agent", KiroCLIUserAgent)
+	// Keep the legacy pre-login profile discovery contract; account-bound
+	// profile requests and model/usage management use the IDE fingerprint.
+	if machineID == "" && strings.HasSuffix(req.URL.Path, "/ListAvailableProfiles") {
+		req.Header.Set("x-amz-user-agent", KiroCLIXAmzUserAgent)
+		req.Header.Set("User-Agent", KiroCLIUserAgent)
+	} else {
+		if machineID == "" {
+			machineID = AccountMachineID(accountKey)
+		}
+		SetIDEHeaders(req, KiroCodeWhispererAPI, machineID)
+	}
 	req.Header.Set("x-kiro-attempt", "1;max=3")
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	req.Header.Set("amz-sdk-request", "attempt=1; max=3")

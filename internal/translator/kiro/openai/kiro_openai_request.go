@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	kiroclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/kiro/claude"
@@ -190,15 +189,8 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 	// Extract system prompt from messages
 	systemPrompt := extractSystemPromptFromOpenAI(messages)
 
-	// Inject timestamp context
-	timestamp := time.Now().Format("2006-01-02 15:04:05 MST")
-	timestampContext := fmt.Sprintf("[Context: Current time is %s]", timestamp)
-	if systemPrompt != "" {
-		systemPrompt = timestampContext + "\n\n" + systemPrompt
-	} else {
-		systemPrompt = timestampContext
-	}
-	log.Debugf("kiro-openai: injected timestamp context: %s", timestamp)
+	// Keep the prefix stable for prompt caching; do not inject the current time.
+	// Ported from kiro-lb src/convert_core.rs (1581af9).
 
 	// Inject agentic optimization prompt for -agentic model variants
 	if isAgentic {
@@ -243,9 +235,7 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 		systemPrompt += toolDocumentation
 	}
 
-	// Thinking mode: prompt tags stay available for existing models; the
-	// additionalModelRequestFields envelope is gated to OmniRoute's
-	// adaptive/native allowlists (claude-sonnet-5 / gpt-5.6-*).
+	// Only allowlisted models receive adaptive/native thinking fields.
 	effort := ""
 	if reasoning := gjson.GetBytes(openaiBody, "reasoning_effort"); reasoning.Exists() {
 		effort = reasoning.String()
@@ -258,6 +248,8 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 	if effort == "" {
 		thinkingType := gjson.GetBytes(openaiBody, "thinking.type").String()
 		switch thinkingType {
+		case "disabled":
+			effort = "none"
 		case "adaptive":
 			effort = "high"
 		case "enabled":
@@ -265,6 +257,9 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 		}
 	}
 	thinkingPlan := kirocommon.PlanKiroThinking(modelID, thinkingEnabled, effort, maxTokens)
+	if thinkingPlan.Effort == "none" {
+		thinkingEnabled = false
+	}
 	if thinkingPlan.InjectPrompt {
 		thinkingHint := kirocommon.ThinkingDirective(thinkingPlan.ThinkingLength)
 		if systemPrompt != "" {
@@ -418,32 +413,9 @@ func extractMetadataFromMessages(messages gjson.Result, key string) string {
 }
 
 // extractSystemPromptFromOpenAI extracts system prompt from OpenAI messages.
-// Both "system" and "developer" roles are folded into the system prompt,
-// matching kiro-lb convert_openai_messages_to_unified (which treats
-// (system, developer) identically as prompt fragments).
+// Only leading system/developer messages form the cacheable prefix.
 func extractSystemPromptFromOpenAI(messages gjson.Result) string {
-	if !messages.IsArray() {
-		return ""
-	}
-
-	var systemParts []string
-	for _, msg := range messages.Array() {
-		role := msg.Get("role").String()
-		if role == "system" || role == "developer" {
-			content := msg.Get("content")
-			if content.Type == gjson.String {
-				systemParts = append(systemParts, content.String())
-			} else if content.IsArray() {
-				// Handle array content format
-				for _, part := range content.Array() {
-					if part.Get("type").String() == "text" {
-						systemParts = append(systemParts, part.Get("text").String())
-					}
-				}
-			}
-		}
-	}
-
+	systemParts, _ := kirocommon.SplitKiroSystemMessages(messages.Array())
 	return strings.Join(systemParts, "\n")
 }
 
@@ -548,7 +520,8 @@ func processOpenAIMessages(messages gjson.Result, modelID, origin string, allowS
 
 	// Roles Kiro does not understand must become user before merging, so
 	// consecutive unknown-role turns are folded into one user turn.
-	messagesArray := kirocommon.MergeAdjacentMessages(normalizeRoles(messages.Array()))
+	_, ordered := kirocommon.SplitKiroSystemMessages(messages.Array())
+	messagesArray := kirocommon.MergeAdjacentMessages(normalizeRoles(ordered))
 
 	// Track pending tool results that should be attached to the next user message
 	// This is critical for LiteLLM-translated requests where tool results appear

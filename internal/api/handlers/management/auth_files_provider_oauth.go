@@ -1833,7 +1833,11 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 			return
 		}
 
-		CompleteOAuthSession(state)
+		signedOut := []string{}
+		if kind == kiro.DeviceLoginGoogle || kind == kiro.DeviceLoginGitHub {
+			signedOut = h.probeKiroSocialCredentials(ctx, fileName)
+		}
+		completeKiroOAuthSession(state, signedOut)
 		fmt.Printf("Kiro authentication successful! Token saved to %s\n", savedPath)
 	}()
 
@@ -2134,6 +2138,102 @@ func (h *Handler) CancelAuthSession(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "cancelled": cancelled})
 }
 
+// Ported from kiro-lb src/pool.rs (1581af9). Probe the auth host even when the
+// access token is fresh; a transport failure must not change credential state.
+func (h *Handler) probeKiroSocialCredentials(ctx context.Context, exceptID string) []string {
+	signedOut := []string{}
+	if h.authManager == nil {
+		return signedOut
+	}
+	for _, auth := range h.authManager.List() {
+		if auth.ID == exceptID || auth.Disabled || auth.Status == coreauth.StatusDisabled || !strings.EqualFold(auth.Provider, "kiro") {
+			continue
+		}
+		method, _ := auth.Metadata["auth_method"].(string)
+		clientID, _ := auth.Metadata["client_id"].(string)
+		clientSecret, _ := auth.Metadata["client_secret"].(string)
+		refreshToken, _ := auth.Metadata["refresh_token"].(string)
+		if strings.EqualFold(method, "builder-id") || strings.EqualFold(method, "idc") ||
+			(clientID != "" && clientSecret != "") || strings.TrimSpace(refreshToken) == "" {
+			continue
+		}
+		cfg := h.cfg
+		if auth.ProxyURL != "" {
+			copyCfg := config.Config{}
+			if cfg != nil {
+				copyCfg = *cfg
+			}
+			copyCfg.ProxyURL = auth.ProxyURL
+			cfg = &copyCfg
+		}
+		token, errRefresh := kiro.NewKiroOAuth(cfg).RefreshTokenWithFingerprint(ctx, refreshToken, auth.ID)
+		var refreshErr *kiro.RefreshError
+		dead := errors.As(errRefresh, &refreshErr) && refreshErr.CredentialDead()
+		if errRefresh != nil && !dead {
+			log.WithField("auth_id", auth.ID).Debug("Kiro social-session probe failed transiently; credential unchanged")
+			continue
+		}
+		current, exists := h.authManager.GetByID(auth.ID)
+		if !exists || current.RegistrationEpoch != auth.RegistrationEpoch || coreauth.CredentialsChanged(auth, current) {
+			continue
+		}
+		updated := current.Clone()
+		// Persist current metadata, not the login-time token storage snapshot.
+		updated.Storage = nil
+		if dead {
+			updated.Disabled = true
+			updated.Status = coreauth.StatusDisabled
+			updated.Unavailable = true
+			updated.StatusMessage = fmt.Sprintf("Kiro credential signed out after social login (HTTP %d); log in again", refreshErr.HTTPStatus)
+			updated.Metadata["disabled"] = true
+			updated.Metadata["status_message"] = updated.StatusMessage
+		} else {
+			updated.Metadata["access_token"] = token.AccessToken
+			if strings.TrimSpace(token.RefreshToken) != "" {
+				updated.Metadata["refresh_token"] = token.RefreshToken
+			}
+			updated.Metadata["expires_at"] = token.ExpiresAt
+			updated.LastRefreshedAt = time.Now()
+			updated.Metadata["last_refresh"] = updated.LastRefreshedAt.Format(time.RFC3339)
+			updated.NextRefreshAfter = time.Time{}
+		}
+		if _, errUpdate := h.authManager.Update(ctx, updated); errUpdate != nil {
+			log.WithError(errUpdate).WithField("auth_id", auth.ID).Error("failed to update probed Kiro credential")
+			continue
+		}
+		if store := h.tokenStoreWithBaseDir(); store != nil {
+			if _, errSave := store.Save(ctx, updated); errSave != nil {
+				log.WithError(errSave).WithField("auth_id", auth.ID).Error("failed to persist probed Kiro credential")
+			}
+		}
+		if dead {
+			label := strings.TrimSpace(auth.Label)
+			if label == "" {
+				label = auth.ID
+			}
+			signedOut = append(signedOut, label)
+		}
+	}
+	return signedOut
+}
+
+// Keep only the public Kiro result in the completed session; generic completion
+// deliberately discards OAuth metadata, which may contain secrets.
+func completeKiroOAuthSession(state string, signedOut []string) {
+	oauthSessions.mu.Lock()
+	defer oauthSessions.mu.Unlock()
+	now := time.Now()
+	oauthSessions.purgeExpiredLocked(now)
+	session, ok := oauthSessions.sessions[state]
+	if !ok || session.Provider != "kiro" || session.Completed || session.Status != "" {
+		return
+	}
+	session.Completed = true
+	session.Metadata = map[string]any{"signedOut": append([]string{}, signedOut...)}
+	session.ExpiresAt = now.Add(oauthSessions.completedTTL)
+	oauthSessions.sessions[state] = session
+}
+
 func (h *Handler) GetAuthStatus(c *gin.Context) {
 	state := strings.TrimSpace(c.Query("state"))
 	if state == "" {
@@ -2151,7 +2251,13 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 		return
 	}
 	if completed {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		response := gin.H{"status": "ok"}
+		if provider == "kiro" {
+			if signedOut, okSignedOut := metadata["signedOut"]; okSignedOut {
+				response["signedOut"] = signedOut
+			}
+		}
+		c.JSON(http.StatusOK, response)
 		return
 	}
 	if status != "" {

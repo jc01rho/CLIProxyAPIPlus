@@ -64,14 +64,14 @@ func GuardKiroPayload(payload []byte, modelID string) ([]byte, KiroPayloadGuardS
 	}
 	tokenLimit := kiroPayloadLimitFromEnv("KIRO_MAX_PAYLOAD_TOKENS", defaultKiroMaxPayloadTokens)
 	byteLimit := kiroPayloadLimitFromEnv("KIRO_MAX_PAYLOAD_BYTES", defaultKiroMaxPayloadBytes)
-	originalTokens, err := countKiroPayloadTokens(encoded)
+	originalTokens, originalBytes, err := measureKiroPayload(decoded)
 	if err != nil {
 		return nil, KiroPayloadGuardStats{}, err
 	}
 	history := kiroPayloadHistory(decoded)
 	stats := KiroPayloadGuardStats{
-		OriginalBytes:          len(encoded),
-		FinalBytes:             len(encoded),
+		OriginalBytes:          originalBytes,
+		FinalBytes:             originalBytes,
 		OriginalTokens:         originalTokens,
 		FinalTokens:            originalTokens,
 		OriginalHistoryEntries: len(history),
@@ -86,15 +86,11 @@ func GuardKiroPayload(payload []byte, modelID string) ([]byte, KiroPayloadGuardS
 
 	stripEmptyKiroToolUses(history)
 	for len(history) > 2 {
-		encoded, err = marshalCompactKiroPayload(decoded)
-		if err != nil {
-			return nil, stats, err
-		}
-		currentTokens, countErr := countKiroPayloadTokens(encoded)
+		currentTokens, currentBytes, countErr := measureKiroPayload(decoded)
 		if countErr != nil {
 			return nil, stats, countErr
 		}
-		if !kiroPayloadOverLimit(len(encoded), currentTokens, byteLimit, tokenLimit) {
+		if !kiroPayloadOverLimit(currentBytes, currentTokens, byteLimit, tokenLimit) {
 			break
 		}
 		history = history[2:]
@@ -109,11 +105,11 @@ func GuardKiroPayload(payload []byte, modelID string) ([]byte, KiroPayloadGuardS
 	if err != nil {
 		return nil, stats, err
 	}
-	finalTokens, err := countKiroPayloadTokens(encoded)
+	finalTokens, finalBytes, err := measureKiroPayload(decoded)
 	if err != nil {
 		return nil, stats, err
 	}
-	stats.FinalBytes = len(encoded)
+	stats.FinalBytes = finalBytes
 	stats.FinalTokens = finalTokens
 	stats.FinalHistoryEntries = len(history)
 	stats.Trimmed = stats.FinalHistoryEntries != stats.OriginalHistoryEntries
@@ -141,6 +137,77 @@ func marshalCompactKiroPayload(value any) ([]byte, error) {
 		return nil, fmt.Errorf("encode compact Kiro payload: %w", err)
 	}
 	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
+}
+
+// measureKiroPayload measures Kiro's text budget without changing the payload
+// sent upstream. Image bytes are excluded and replaced with bounded vision-token
+// estimates; only the protocol reasoning signature is excluded. Ported from
+// kiro-lb src/payload_guard.rs (1581af9).
+func measureKiroPayload(payload map[string]any) (tokens, bytesCount int, err error) {
+	measurement, visionTokens := kiroPayloadWithoutImageData(payload)
+	blankKiroReasoningSignatures(measurement.(map[string]any))
+	encoded, err := marshalCompactKiroPayload(measurement)
+	if err != nil {
+		return 0, 0, err
+	}
+	textTokens, err := countKiroPayloadTokens(encoded)
+	if err != nil {
+		return 0, 0, err
+	}
+	return textTokens + visionTokens, len(encoded), nil
+}
+
+// Clone the decoded JSON while replacing image data in the measurement only.
+func kiroPayloadWithoutImageData(value any) (any, int) {
+	switch typed := value.(type) {
+	case map[string]any:
+		clone := make(map[string]any, len(typed))
+		visionTokens := 0
+		for key, nested := range typed {
+			copied, tokens := kiroPayloadWithoutImageData(nested)
+			clone[key] = copied
+			visionTokens += tokens
+			if key != "images" {
+				continue
+			}
+			images, _ := copied.([]any)
+			for _, imageValue := range images {
+				image, _ := imageValue.(map[string]any)
+				source, _ := image["source"].(map[string]any)
+				if data, exists := source["bytes"]; exists {
+					imageData, _ := data.(string)
+					visionTokens += EstimateKiroImageTokens(imageData)
+					source["bytes"] = ""
+				}
+			}
+		}
+		return clone, visionTokens
+	case []any:
+		clone := make([]any, len(typed))
+		visionTokens := 0
+		for i, nested := range typed {
+			copied, tokens := kiroPayloadWithoutImageData(nested)
+			clone[i] = copied
+			visionTokens += tokens
+		}
+		return clone, visionTokens
+	default:
+		return value, 0
+	}
+}
+
+func blankKiroReasoningSignatures(payload map[string]any) {
+	conversation, _ := payload["conversationState"].(map[string]any)
+	history, _ := conversation["history"].([]any)
+	for _, entryValue := range history {
+		entry, _ := entryValue.(map[string]any)
+		assistant, _ := entry["assistantResponseMessage"].(map[string]any)
+		reasoning, _ := assistant["reasoningContent"].(map[string]any)
+		reasoningText, _ := reasoning["reasoningText"].(map[string]any)
+		if _, exists := reasoningText["signature"].(string); exists {
+			reasoningText["signature"] = ""
+		}
+	}
 }
 
 func countKiroPayloadTokens(payload []byte) (int, error) {

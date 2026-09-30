@@ -15,8 +15,8 @@ func TestSupportsKiroThinkingAllowlists(t *testing.T) {
 	if !SupportsKiroAdaptiveThinking("claude-opus-4.6") || !SupportsKiroAdaptiveThinking("kiro-claude-sonnet-4-6") {
 		t.Fatal("kiro-lb adaptive set must include opus-4.6 and sonnet-4.6")
 	}
-	if SupportsKiroNativeReasoning("gpt-5.6-sol") || SupportsKiroNativeReasoning("kiro-gpt-5-6-luna") {
-		t.Fatal("Kiro CLI does not send native GPT reasoning fields")
+	if !SupportsKiroNativeReasoning("gpt-5.6-sol") || !SupportsKiroNativeReasoning("kiro-gpt-5-6-luna") {
+		t.Fatal("allowlisted GPT aliases must support native reasoning")
 	}
 	if SupportsKiroNativeReasoning("claude-sonnet-5") {
 		t.Fatal("claude-sonnet-5 must not use native reasoning")
@@ -100,8 +100,8 @@ func TestPlanKiroThinkingGatesEnvelope(t *testing.T) {
 	}
 
 	native := PlanKiroThinking("gpt-5.6-terra", true, "max", 0)
-	if native.NativeReasoning || native.InjectPrompt || native.Fields != nil {
-		t.Fatalf("gpt plan must omit unsupported request fields: %+v", native)
+	if !native.NativeReasoning || native.InjectPrompt || native.Fields["reasoning"].(map[string]any)["effort"] != "max" {
+		t.Fatalf("gpt plan must send native reasoning effort: %+v", native)
 	}
 
 	legacy := PlanKiroThinking("claude-sonnet-4.5", true, "", 0)

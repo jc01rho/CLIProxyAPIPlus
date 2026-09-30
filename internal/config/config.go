@@ -131,6 +131,10 @@ type Config struct {
 	KiroKey               []KiroKey              `yaml:"kiro" json:"kiro"`
 	KiroFingerprint       *KiroFingerprintConfig `yaml:"kiro-fingerprint,omitempty" json:"kiro-fingerprint,omitempty"`
 	KiroPreferredEndpoint string                 `yaml:"kiro-preferred-endpoint" json:"kiro-preferred-endpoint"`
+	// KiroProxyURLs is an ordered, Kiro-only proxy chain, overridden by request/auth proxy-url.
+	KiroProxyURLs []string `yaml:"kiro-proxy-urls,omitempty" json:"kiro-proxy-urls,omitempty"`
+	// KiroMaxInflight limits concurrent generations per Kiro account; zero uses four.
+	KiroMaxInflight int `yaml:"kiro-max-inflight,omitempty" json:"kiro-max-inflight,omitempty"`
 
 	// InteractionsKey defines native Google Interactions API key configurations.
 	InteractionsKey []GeminiKey `yaml:"interactions-api-key" json:"interactions-api-key"`

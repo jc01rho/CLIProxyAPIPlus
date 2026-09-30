@@ -193,28 +193,25 @@ func LoadKiroIDEToken() (*KiroTokenData, error) {
 		return nil, fmt.Errorf("failed to read Kiro IDE token file (%s): %w", tokenPath, err)
 	}
 
-	var token KiroTokenData
-	if err := json.Unmarshal(data, &token); err != nil {
+	values, err := decodeKiroCredentialJSON(string(data))
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse Kiro IDE token: %w", err)
 	}
-
-	if token.AccessToken == "" {
-		return nil, fmt.Errorf("access token is empty in Kiro IDE token file")
+	token, err := kiroTokenDataFromMap(values)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Kiro IDE token: %w", err)
 	}
-
-	// Normalize AuthMethod to lowercase (Kiro IDE uses "IdC" but we expect "idc")
-	token.AuthMethod = strings.ToLower(token.AuthMethod)
 
 	// For Enterprise Kiro IDE (IDC auth), load clientId and clientSecret from device registration
 	// The device registration file is located at ~/.aws/sso/cache/{clientIdHash}.json
 	if token.ClientIDHash != "" && token.ClientID == "" {
-		if err := loadDeviceRegistration(homeDir, token.ClientIDHash, &token); err != nil {
+		if err := loadDeviceRegistration(homeDir, token.ClientIDHash, token); err != nil {
 			// Log warning but don't fail - token might still work for some operations
 			fmt.Printf("warning: failed to load device registration for clientIdHash %s: %v\n", token.ClientIDHash, err)
 		}
 	}
 
-	return &token, nil
+	return token, nil
 }
 
 // loadDeviceRegistration loads clientId and clientSecret from the device registration file.
@@ -276,27 +273,24 @@ func LoadKiroTokenFromPath(tokenPath string) (*KiroTokenData, error) {
 		return nil, fmt.Errorf("failed to read token file (%s): %w", tokenPath, err)
 	}
 
-	var token KiroTokenData
-	if err := json.Unmarshal(data, &token); err != nil {
+	values, err := decodeKiroCredentialJSON(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse token file: %w", err)
+	}
+	token, err := kiroTokenDataFromMap(values)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse token file: %w", err)
 	}
 
-	if token.AccessToken == "" {
-		return nil, fmt.Errorf("access token is empty in token file")
-	}
-
-	// Normalize AuthMethod to lowercase (Kiro IDE uses "IdC" but we expect "idc")
-	token.AuthMethod = strings.ToLower(token.AuthMethod)
-
 	// For Enterprise Kiro IDE (IDC auth), load clientId and clientSecret from device registration
 	if token.ClientIDHash != "" && token.ClientID == "" {
-		if err := loadDeviceRegistration(homeDir, token.ClientIDHash, &token); err != nil {
+		if err := loadDeviceRegistration(homeDir, token.ClientIDHash, token); err != nil {
 			// Log warning but don't fail - token might still work for some operations
 			fmt.Printf("warning: failed to load device registration for clientIdHash %s: %v\n", token.ClientIDHash, err)
 		}
 	}
 
-	return &token, nil
+	return token, nil
 }
 
 // ListKiroTokenFiles lists all Kiro token files in the cache directory.

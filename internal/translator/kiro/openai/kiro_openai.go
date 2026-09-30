@@ -119,6 +119,13 @@ func ConvertKiroStreamToOpenAI(ctx context.Context, model string, originalReques
 				chunk := BuildOpenAISSEReasoningDelta(state, thinkingDelta)
 				results = append(results, []byte(chunk))
 			}
+		case "signature_delta":
+			if signature := eventJSON.Get("delta.signature").String(); signature != "" {
+				chunk := buildBaseChunk(state, map[string]interface{}{"reasoning_signature": signature}, nil)
+				encoded, _ := json.Marshal(chunk)
+				results = append(results, encoded)
+				state.ChunkIndex++
+			}
 		case "input_json_delta":
 			// Tool call arguments delta
 			partialJSON := eventJSON.Get("delta.partial_json").String()
@@ -142,15 +149,11 @@ func ConvertKiroStreamToOpenAI(ctx context.Context, model string, originalReques
 			results = append(results, []byte(chunk))
 		}
 
-		// Extract usage if present
+		// Extract usage if present.
 		if eventJSON.Get("usage").Exists() {
 			inputTokens := eventJSON.Get("usage.input_tokens").Int()
 			outputTokens := eventJSON.Get("usage.output_tokens").Int()
-			usageInfo := usage.Detail{
-				InputTokens:  inputTokens,
-				OutputTokens: outputTokens,
-				TotalTokens:  inputTokens + outputTokens,
-			}
+			usageInfo := claudeUsageDetail(eventJSON.Get("usage"), inputTokens, outputTokens)
 			chunk := BuildOpenAISSEUsage(state, usageInfo)
 			results = append(results, []byte(chunk))
 		}
@@ -165,11 +168,7 @@ func ConvertKiroStreamToOpenAI(ctx context.Context, model string, originalReques
 		if eventJSON.Get("usage").Exists() {
 			inputTokens := eventJSON.Get("usage.input_tokens").Int()
 			outputTokens := eventJSON.Get("usage.output_tokens").Int()
-			usageInfo := usage.Detail{
-				InputTokens:  inputTokens,
-				OutputTokens: outputTokens,
-				TotalTokens:  inputTokens + outputTokens,
-			}
+			usageInfo := claudeUsageDetail(eventJSON.Get("usage"), inputTokens, outputTokens)
 			chunk := BuildOpenAISSEUsage(state, usageInfo)
 			results = append(results, []byte(chunk))
 		}
@@ -188,6 +187,7 @@ func ConvertKiroNonStreamToOpenAI(ctx context.Context, model string, originalReq
 	// Extract content
 	var content string
 	var reasoningContent string
+	var reasoningSignature string
 	var toolUses []KiroToolUse
 	var stopReason string
 
@@ -205,6 +205,7 @@ func ConvertKiroNonStreamToOpenAI(ctx context.Context, model string, originalReq
 			case "thinking":
 				// Convert thinking blocks to reasoning_content for OpenAI format
 				reasoningContent += block.Get("thinking").String()
+				reasoningSignature += block.Get("signature").String()
 			case "tool_use":
 				toolUseID := block.Get("id").String()
 				toolName := block.Get("name").String()
@@ -229,15 +230,21 @@ func ConvertKiroNonStreamToOpenAI(ctx context.Context, model string, originalReq
 	}
 
 	// Extract usage
-	usageInfo := usage.Detail{
-		InputTokens:  response.Get("usage.input_tokens").Int(),
-		OutputTokens: response.Get("usage.output_tokens").Int(),
-	}
-	usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens
+	usageInfo := claudeUsageDetail(response.Get("usage"), response.Get("usage.input_tokens").Int(), response.Get("usage.output_tokens").Int())
 
 	// Build OpenAI response with reasoning_content support
-	openaiResponse := BuildOpenAIResponseWithReasoning(content, reasoningContent, toolUses, model, usageInfo, stopReason)
+	openaiResponse := buildOpenAIResponseWithSignature(content, reasoningContent, reasoningSignature, toolUses, model, usageInfo, stopReason)
 	return openaiResponse
+}
+
+func claudeUsageDetail(usageJSON gjson.Result, inputTokens, outputTokens int64) usage.Detail {
+	return usage.Detail{
+		InputTokens:         inputTokens,
+		OutputTokens:        outputTokens,
+		CacheReadTokens:     usageJSON.Get("cache_read_input_tokens").Int(),
+		CacheCreationTokens: usageJSON.Get("cache_creation_input_tokens").Int(),
+		TotalTokens:         inputTokens + outputTokens,
+	}
 }
 
 // ParseClaudeEvent parses a Claude SSE event and returns the event type and data

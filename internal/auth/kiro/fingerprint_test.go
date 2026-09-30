@@ -383,8 +383,8 @@ func TestSetRuntimeHeaders(t *testing.T) {
 	if amzUA == "" {
 		t.Error("expected x-amz-user-agent header to be set")
 	}
-	if amzUA != KiroCLIXAmzUserAgent {
-		t.Errorf("x-amz-user-agent = %q, want %q", amzUA, KiroCLIXAmzUserAgent)
+	if !strings.Contains(amzUA, "KiroIDE-"+KiroIDEVersion+"-"+AccountMachineID(accountKey)) {
+		t.Errorf("x-amz-user-agent = %q, want account IDE fingerprint", amzUA)
 	}
 
 	// Check User-Agent header
@@ -392,8 +392,8 @@ func TestSetRuntimeHeaders(t *testing.T) {
 	if ua == "" {
 		t.Error("expected User-Agent header to be set")
 	}
-	if ua != KiroCLIUserAgent {
-		t.Errorf("User-Agent = %q, want %q", ua, KiroCLIUserAgent)
+	if !strings.Contains(ua, "KiroIDE-"+KiroIDEVersion+"-"+AccountMachineID(accountKey)) {
+		t.Errorf("User-Agent = %q, want account IDE fingerprint", ua)
 	}
 
 	// Check amz-sdk-invocation-id (should be a UUID)
@@ -442,10 +442,10 @@ func TestSDKVersionsAreValid(t *testing.T) {
 }
 
 func TestKiroVersionsAreValid(t *testing.T) {
-	// Verify all Kiro versions match expected format (0.x.xxx)
+	// Verify Kiro IDE versions use semantic major.minor.patch values.
 	for _, v := range kiroVersions {
-		if !strings.HasPrefix(v, "0.") {
-			t.Errorf("Kiro version should start with 0.: %s", v)
+		if !strings.HasPrefix(v, "1.") {
+			t.Errorf("Kiro IDE version should start with 1.: %s", v)
 		}
 		parts := strings.Split(v, ".")
 		if len(parts) != 3 {

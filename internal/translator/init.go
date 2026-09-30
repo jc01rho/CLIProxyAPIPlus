@@ -35,4 +35,5 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/cursor/openai"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/kiro/claude"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/kiro/openai"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/kiro/responses"
 )

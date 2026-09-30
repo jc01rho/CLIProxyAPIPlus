@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	kirocommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/kiro/common"
@@ -199,15 +198,8 @@ func BuildKiroPayload(claudeBody []byte, modelID, profileArn, origin string, isA
 	// This supports Claude API format, OpenAI reasoning_effort, AMP/Cursor format, and Anthropic-Beta header
 	thinkingEnabled := IsThinkingEnabledWithHeaders(claudeBody, headers)
 
-	// Inject timestamp context
-	timestamp := time.Now().Format("2006-01-02 15:04:05 MST")
-	timestampContext := fmt.Sprintf("[Context: Current time is %s]", timestamp)
-	if systemPrompt != "" {
-		systemPrompt = timestampContext + "\n\n" + systemPrompt
-	} else {
-		systemPrompt = timestampContext
-	}
-	log.Debugf("kiro: injected timestamp context: %s", timestamp)
+	// Keep the prefix stable for prompt caching; do not inject the current time.
+	// Ported from kiro-lb src/convert_core.rs (1581af9).
 
 	// Inject agentic optimization prompt for -agentic model variants
 	if isAgentic {
@@ -237,9 +229,7 @@ func BuildKiroPayload(claudeBody []byte, modelID, profileArn, origin string, isA
 		systemPrompt += toolDocumentation
 	}
 
-	// Thinking mode: prompt tags stay available for existing models; the
-	// additionalModelRequestFields envelope is gated to OmniRoute's
-	// adaptive/native allowlists (claude-sonnet-5 / gpt-5.6-*).
+	// Only allowlisted models receive adaptive/native thinking fields.
 	effort := ""
 	if reasoning := gjson.GetBytes(claudeBody, "reasoning_effort"); reasoning.Exists() {
 		effort = reasoning.String()
@@ -252,6 +242,8 @@ func BuildKiroPayload(claudeBody []byte, modelID, profileArn, origin string, isA
 	if effort == "" {
 		thinkingType := gjson.GetBytes(claudeBody, "thinking.type").String()
 		switch thinkingType {
+		case "disabled":
+			effort = "none"
 		case "adaptive":
 			effort = "high"
 		case "enabled":
@@ -259,6 +251,9 @@ func BuildKiroPayload(claudeBody []byte, modelID, profileArn, origin string, isA
 		}
 	}
 	thinkingPlan := kirocommon.PlanKiroThinking(modelID, thinkingEnabled, effort, maxTokens)
+	if thinkingPlan.Effort == "none" {
+		thinkingEnabled = false
+	}
 	if thinkingPlan.InjectPrompt {
 		thinkingHint := kirocommon.ThinkingDirective(thinkingPlan.ThinkingLength)
 		if systemPrompt != "" {
@@ -430,15 +425,8 @@ func extractSystemPrompt(claudeBody []byte) string {
 	} else if systemField.Type == gjson.String {
 		systemParts = append(systemParts, systemField.String())
 	}
-	for _, message := range gjson.GetBytes(claudeBody, "messages").Array() {
-		role := message.Get("role").String()
-		if role != "system" && role != "developer" {
-			continue
-		}
-		if content := message.Get("content"); content.Type == gjson.String {
-			systemParts = append(systemParts, content.String())
-		}
-	}
+	leading, _ := kirocommon.SplitKiroSystemMessages(gjson.GetBytes(claudeBody, "messages").Array())
+	systemParts = append(systemParts, leading...)
 	return strings.Join(systemParts, "\n\n")
 }
 
@@ -678,8 +666,9 @@ func processMessages(messages gjson.Result, modelID, origin string, allowStructu
 	var currentUserMsg *KiroUserInputMessage
 	var currentToolResults []KiroToolResult
 
-	// Merge adjacent messages with the same role
-	messagesArray := kirocommon.MergeAdjacentMessages(kirocommon.NormalizeKiroMessageRoles(messages.Array()))
+	// Later system/developer messages remain in position as user reminders.
+	_, ordered := kirocommon.SplitKiroSystemMessages(messages.Array())
+	messagesArray := kirocommon.MergeAdjacentMessages(kirocommon.NormalizeKiroMessageRoles(ordered))
 
 	// Normalize unknown roles to user (kiro-lb normalize_message_roles).
 	messagesArray = normalizeRoles(messagesArray)

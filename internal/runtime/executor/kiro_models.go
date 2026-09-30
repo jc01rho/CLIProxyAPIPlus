@@ -1,11 +1,14 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
-	kiroauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -17,13 +20,11 @@ import (
 // nil so the caller can fall back to the provider-scoped static catalog
 // (GetKiroModels / GetAmazonQModels).
 //
-// runtime.kiro.dev does not implement ListAvailableModels (kiro-lb). Live
-// success overlays static metadata onto live IDs only. Static-only fabricated
-// IDs (auto / opus-4.x / gpt-4*) are not appended.
-//
-// kiro-lb only calls ListAvailableModels for Builder ID (SSO OIDC without
-// profileArn). Social/IdC/desktop tokens are issued for runtime.kiro.dev;
-// sending them to q.{region}.amazonaws.com returns 403 invalid bearer.
+// Live success overlays static metadata onto live IDs only. Static-only
+// fabricated IDs (auto / opus-4.x / gpt-4*) are not appended. The management
+// API accepts every Kiro account kind; failures deliberately fall back to the
+// provider-scoped static catalog. Ported from kiro-lb src/model_catalog.rs
+// (1581af9).
 func FetchKiroModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
 	if ctx == nil {
 		ctx = context.Background()
@@ -33,51 +34,13 @@ func FetchKiroModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 	if accessToken == "" || cfg == nil {
 		return nil
 	}
-	if isKiroRuntimeEndpoint(auth) {
-		log.Debugf("kiro: using static models (ListAvailableModels is builder-id only)")
-		return nil
-	}
-
-	tokenData := &kiroauth.KiroTokenData{
-		AccessToken: accessToken,
-		ProfileArn:  profileArn,
-		AuthMethod:  kiroAuthMethod(auth),
-	}
-	if auth != nil && auth.Metadata != nil {
-		if v, ok := auth.Metadata["client_id"].(string); ok {
-			tokenData.ClientID = v
-		}
-		if v, ok := auth.Metadata["refresh_token"].(string); ok {
-			tokenData.RefreshToken = v
-		}
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	kiroAuth := kiroauth.NewKiroAuth(cfg)
-	kiroModels, err := kiroAuth.ListAvailableModels(ctx, tokenData)
+	apiModels, err := fetchKiroManagementModels(ctx, auth, cfg, profileArn)
 	if err != nil {
 		log.Warnf("kiro: using static models (ListAvailableModels failed: %v)", err)
 		return nil
-	}
-	if len(kiroModels) == 0 {
-		return nil
-	}
-
-	apiModels := make([]*registry.KiroAPIModel, 0, len(kiroModels))
-	for _, km := range kiroModels {
-		if km == nil || km.ModelID == "" {
-			continue
-		}
-		apiModels = append(apiModels, &registry.KiroAPIModel{
-			ModelID:        km.ModelID,
-			ModelName:      km.ModelName,
-			Description:    km.Description,
-			RateMultiplier: km.RateMultiplier,
-			RateUnit:       km.RateUnit,
-			MaxInputTokens: km.MaxInputTokens,
-		})
 	}
 
 	dynamicModels := registry.ConvertKiroAPIModels(apiModels)
@@ -85,9 +48,64 @@ func FetchKiroModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 	return FilterKiroModels(registry.OverlayStaticMetadata(dynamicModels, registry.GetKiroModels()))
 }
 
-// isKiroRuntimeEndpoint reports hosts/accounts that do not expose
-// ListAvailableModels. kiro-lb sets api_host to runtime.{region}.kiro.dev
-// for every non-builder-id account; Builder ID stays on q.{region}.amazonaws.com.
+func fetchKiroManagementModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, profileArn string) ([]*registry.KiroAPIModel, error) {
+	payload := map[string]string{"origin": "AI_EDITOR"}
+	if arn := getEffectiveProfileArnWithWarning(auth, profileArn); arn != "" {
+		payload["profileArn"] = arn
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://management.%s.kiro.dev/", resolveKiroAPIRegion(auth)), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", kiroContentType)
+	req.Header.Set("X-Amz-Target", "KiroControlPlaneBearerService.ListAvailableModels")
+	resp, err := NewKiroExecutor(cfg).HttpRequest(ctx, auth, req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Warnf("kiro: close models response: %v", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("management host answered %d", resp.StatusCode)
+	}
+	type model struct {
+		registry.KiroAPIModel
+		TokenLimits struct {
+			MaxInputTokens int `json:"maxInputTokens"`
+		} `json:"tokenLimits"`
+	}
+	var response struct {
+		Models          []model `json:"models"`
+		AvailableModels []model `json:"availableModels"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, err
+	}
+	if len(response.Models) == 0 {
+		response.Models = response.AvailableModels
+	}
+	var models []*registry.KiroAPIModel
+	for _, item := range response.Models {
+		m := item.KiroAPIModel
+		if m.ModelID == "" {
+			continue
+		}
+		if item.TokenLimits.MaxInputTokens > 0 {
+			m.MaxInputTokens = item.TokenLimits.MaxInputTokens
+		}
+		models = append(models, &m)
+	}
+	return models, nil
+}
+
+// This distinction remains useful for region resolution, not catalog support.
 func isKiroRuntimeEndpoint(auth *cliproxyauth.Auth) bool {
 	if auth == nil {
 		return false
@@ -100,7 +118,6 @@ func isKiroRuntimeEndpoint(auth *cliproxyauth.Auth) bool {
 	return !isKiroBuilderIDAuth(auth)
 }
 
-// isKiroBuilderIDAuth matches kiro-lb: AWS SSO OIDC without a profile ARN.
 func isKiroBuilderIDAuth(auth *cliproxyauth.Auth) bool {
 	if auth == nil || kiroHasProfileArn(auth) {
 		return false
@@ -113,7 +130,7 @@ func isKiroBuilderIDAuth(auth *cliproxyauth.Auth) bool {
 	}
 	authType := getAuthValue(auth, "auth_type")
 	if authType == "aws_sso_oidc" || authType == "aws-sso-oidc" {
-		return !kiroHasProfileArn(auth)
+		return true
 	}
 	return getAuthValue(auth, "client_id") != "" && getAuthValue(auth, "client_secret") != ""
 }

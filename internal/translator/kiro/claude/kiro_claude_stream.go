@@ -11,7 +11,13 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
+// BuildClaudeMessageStartEvent constructs the initial Claude SSE event.
 func BuildClaudeMessageStartEvent(model string, inputTokens int64) []byte {
+	return BuildClaudeMessageStartEventWithUsage(model, usage.Detail{InputTokens: inputTokens})
+}
+
+// BuildClaudeMessageStartEventWithUsage includes known prompt-cache counters.
+func BuildClaudeMessageStartEventWithUsage(model string, usageInfo usage.Detail) []byte {
 	event := map[string]interface{}{
 		"type": "message_start",
 		"message": map[string]interface{}{
@@ -22,7 +28,7 @@ func BuildClaudeMessageStartEvent(model string, inputTokens int64) []byte {
 			"model":         model,
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage":         map[string]interface{}{"input_tokens": inputTokens, "output_tokens": 0},
+			"usage":         BuildClaudeUsage(usageInfo),
 		},
 	}
 	result, _ := json.Marshal(event)
@@ -109,7 +115,7 @@ func BuildClaudeThinkingBlockStopEvent(index int) []byte {
 	return []byte("event: content_block_stop\ndata: " + string(result))
 }
 
-// BuildClaudeMessageDeltaEvent creates the message_delta event with stop_reason and usage
+// BuildClaudeMessageDeltaEvent creates the message_delta event with stop_reason and usage.
 func BuildClaudeMessageDeltaEvent(stopReason string, usageInfo usage.Detail) []byte {
 	deltaEvent := map[string]interface{}{
 		"type": "message_delta",
@@ -117,10 +123,7 @@ func BuildClaudeMessageDeltaEvent(stopReason string, usageInfo usage.Detail) []b
 			"stop_reason":   stopReason,
 			"stop_sequence": nil,
 		},
-		"usage": map[string]interface{}{
-			"input_tokens":  usageInfo.InputTokens,
-			"output_tokens": usageInfo.OutputTokens,
-		},
+		"usage": BuildClaudeUsage(usageInfo),
 	}
 	deltaResult, _ := json.Marshal(deltaEvent)
 	return []byte("event: message_delta\ndata: " + string(deltaResult))
@@ -160,6 +163,22 @@ func BuildClaudeThinkingDeltaEvent(thinkingDelta string, index int) []byte {
 		"delta": map[string]interface{}{
 			"type":     "thinking_delta",
 			"thinking": thinkingDelta,
+		},
+	}
+	result, _ := json.Marshal(event)
+	return []byte("event: content_block_delta\ndata: " + string(result))
+}
+
+// BuildClaudeSignatureDeltaEvent creates the Anthropic signature_delta event
+// for Kiro's opaque thinking attestation. Ported from kiro-lb
+// src/stream_anthropic.rs (1581af9).
+func BuildClaudeSignatureDeltaEvent(signature string, index int) []byte {
+	event := map[string]interface{}{
+		"type":  "content_block_delta",
+		"index": index,
+		"delta": map[string]interface{}{
+			"type":      "signature_delta",
+			"signature": signature,
 		},
 	}
 	result, _ := json.Marshal(event)

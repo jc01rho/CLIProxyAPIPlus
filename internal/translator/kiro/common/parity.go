@@ -85,13 +85,11 @@ func NormalizeKiroModelID(modelID string) string {
 }
 
 // SanitizeKiroToolSchema recursively removes JSON Schema keywords rejected by
-// Kiro while retaining all supported structure.
+// Kiro while retaining all supported structure, including additionalProperties.
+// Ported from kiro-lb src/convert_core.rs (1581af9).
 func SanitizeKiroToolSchema(schema map[string]any) map[string]any {
 	sanitized := make(map[string]any, len(schema))
 	for key, value := range schema {
-		if key == "additionalProperties" {
-			continue
-		}
 		switch typed := value.(type) {
 		case map[string]any:
 			sanitized[key] = SanitizeKiroToolSchema(typed)

@@ -44,8 +44,8 @@ func TestBuildKiroPayloadSanitizesAndCapsToolCatalog(t *testing.T) {
 
 	first := gotTools[0].(map[string]any)["toolSpecification"].(map[string]any)
 	schema := first["inputSchema"].(map[string]any)["json"].(map[string]any)
-	if _, ok := schema["additionalProperties"]; ok {
-		t.Fatal("additionalProperties was not removed")
+	if schema["additionalProperties"] != false {
+		t.Fatalf("additionalProperties = %#v, want false", schema["additionalProperties"])
 	}
 	if _, ok := schema["required"]; ok {
 		t.Fatal("empty required was not removed")

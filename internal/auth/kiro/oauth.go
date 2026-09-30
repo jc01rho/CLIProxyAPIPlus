@@ -277,8 +277,7 @@ func (o *KiroOAuth) RefreshTokenWithFingerprint(ctx context.Context, refreshToke
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		log.Debugf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, &RefreshError{HTTPStatus: resp.StatusCode}
 	}
 
 	var tokenResp KiroTokenResponse

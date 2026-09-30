@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,15 +25,21 @@ import (
 	"github.com/google/uuid"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	kiroclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/kiro/claude"
 	kirocommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/kiro/common"
 	kiroopenai "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/kiro/openai"
+	kiroresponses "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/kiro/responses"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+	"golang.org/x/net/http2"
 )
 
 const (
@@ -59,7 +67,10 @@ const (
 	// First token timeout for streaming responses (how long to wait for first response)
 	kiroFirstTokenTimeout = 15 * time.Second
 	// Streaming read timeout (how long to wait between chunks)
-	kiroStreamingReadTimeout = 300 * time.Second
+	kiroStreamingReadTimeout    = 300 * time.Second
+	kiroEndpointFailureCooldown = time.Minute
+	kiroHTTP2ReadIdleTimeout    = 20 * time.Second
+	kiroHTTP2PingTimeout        = 10 * time.Second
 
 	kiroBuilderIDProfileARN = kiroauth.BuilderIDRequestProfileARN
 	kiroCLIUserAgent        = kiroauth.KiroCLIUserAgent
@@ -295,7 +306,7 @@ func getKiroPooledHTTPClient() *http.Client {
 			MaxIdleConns:        100,              // Max idle connections across all hosts
 			MaxIdleConnsPerHost: 20,               // Max idle connections per host
 			MaxConnsPerHost:     50,               // Max total connections per host
-			IdleConnTimeout:     90 * time.Second, // How long idle connections stay in pool
+			IdleConnTimeout:     30 * time.Minute, // Kiro keeps long-lived connections warm
 
 			// Timeouts for connection establishment
 			DialContext: (&net.Dialer{
@@ -316,6 +327,8 @@ func getKiroPooledHTTPClient() *http.Client {
 			ForceAttemptHTTP2: true,
 		}
 
+		configureKiroHTTP2Transport(transport)
+
 		kiroHTTPClientPool = &http.Client{
 			Transport: transport,
 			// No global timeout - let individual requests set their own timeouts via context
@@ -328,23 +341,42 @@ func getKiroPooledHTTPClient() *http.Client {
 	return kiroHTTPClientPool
 }
 
-// newKiroHTTPClientWithPooling creates an HTTP client that uses connection pooling when appropriate.
-// It respects proxy configuration from auth or config, falling back to the pooled client.
-// This provides the best of both worlds: custom proxy support + connection reuse.
+// configureKiroHTTP2Transport keeps Kiro HTTP/2 sessions alive while preserving the
+// caller's existing connection limits. Ported from kiro-lb src/upstream/http.rs (1581af9).
+func configureKiroHTTP2Transport(transport *http.Transport) {
+	if transport == nil {
+		return
+	}
+	transport.IdleConnTimeout = 30 * time.Minute
+	transport.ForceAttemptHTTP2 = true
+	h2, err := http2.ConfigureTransports(transport)
+	if err != nil {
+		log.Warnf("kiro: configure HTTP/2 transport: %v", err)
+		return
+	}
+	h2.ReadIdleTimeout = kiroHTTP2ReadIdleTimeout
+	h2.PingTimeout = kiroHTTP2PingTimeout
+}
+
 func newKiroHTTPClientWithPooling(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
-	// Check if a proxy is configured - if so, we need a custom client
-	var proxyURL string
-	if auth != nil {
+	// Preserve request > credential > Kiro chain > global proxy priority.
+	proxyURL := cliproxyexecutor.RequestProxyURL(ctx)
+	if proxyURL == "" && auth != nil {
 		proxyURL = strings.TrimSpace(auth.ProxyURL)
+	}
+	if proxyURL == "" && cfg != nil && len(cfg.KiroProxyURLs) > 0 {
+		return helps.NewKiroProxyChainHTTPClient(timeout, cfg.KiroProxyURLs)
 	}
 	if proxyURL == "" && cfg != nil {
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 	}
-
-	// If proxy is configured, use the existing proxy-aware client (doesn't pool)
 	if proxyURL != "" {
-		log.Debugf("kiro: using proxy-aware HTTP client (proxy=%s)", proxyURL)
-		return newProxyAwareHTTPClient(ctx, cfg, auth, timeout)
+		return helps.NewKiroProxyChainHTTPClient(timeout, []string{proxyURL})
+	}
+	if ctx != nil {
+		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+			return &http.Client{Transport: rt, Timeout: timeout}
+		}
 	}
 
 	// No proxy - use pooled client for better performance
@@ -413,10 +445,9 @@ const kiroLegacyGenerateTarget = "AmazonCodeWhispererStreamingService.GenerateAs
 // by the q.{region}.amazonaws.com host.
 const kiroAmazonQGenerateTarget = "AmazonQDeveloperStreamingService.SendMessage"
 
-// buildKiroEndpointConfigsForAuth builds generation endpoints in credential-
-// compatible order. Builder ID credentials have no profile ARN and must use
-// Amazon Q as their primary host; desktop, social, and profiled OIDC accounts
-// use Kiro Runtime. The remaining endpoints stay available as local failovers.
+// buildKiroEndpointConfigsForAuth builds generation endpoints in declared
+// Runtime-first order. Legacy CodeWhisperer and Amazon Q hosts remain local
+// failovers for every credential kind.
 func buildKiroEndpointConfigsForAuth(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	region := resolveKiroAPIRegion(auth)
 	runtime := kiroEndpointConfig{
@@ -440,18 +471,47 @@ func buildKiroEndpointConfigsForAuth(auth *cliproxyauth.Auth) []kiroEndpointConf
 		AmzTarget: kiroAmazonQGenerateTarget,
 		Name:      "AmazonQ",
 	}
-	if isKiroBuilderIDAuth(auth) {
-		return []kiroEndpointConfig{amazonQ, codewhisperer, runtime}
-	}
+	// Ported from kiro-lb src/auth.rs (1581af9): Runtime is the primary
+	// generation host for every Kiro credential. Legacy hosts remain fallbacks.
 	return []kiroEndpointConfig{runtime, codewhisperer, amazonQ}
 }
 
-// resolveKiroAPIRegion determines the AWS region for Kiro API calls.
-// Region priority:
-// 1. auth.Metadata["api_region"] - explicit API region override
-// 2. ProfileARN region - extracted from arn:aws:service:REGION:account:resource
-// 3. runtime credential region / KIRO_REGION
-// 4. kiroDefaultRegion (us-east-1) - fallback
+// validateKiroRuntimeMetadata rejects malformed present metadata before it can
+// silently select the default endpoint. Absent and null values remain valid.
+// Ported from kiro-lb src/auth.rs (1581af9).
+func validateKiroRuntimeMetadata(auth *cliproxyauth.Auth) error {
+	if auth == nil || auth.Metadata == nil {
+		return nil
+	}
+	for _, key := range []string{"api_region", "apiRegion", "region"} {
+		value, present := auth.Metadata[key]
+		if !present || value == nil {
+			continue
+		}
+		region, ok := value.(string)
+		if !ok || kiroauth.NormalizeKiroRegion(region) == "" {
+			return fmt.Errorf("invalid Kiro %s: expected a lowercase AWS region such as us-east-1", key)
+		}
+	}
+	for _, key := range []string{"profile_arn", "profileArn"} {
+		value, present := auth.Metadata[key]
+		if !present || value == nil {
+			continue
+		}
+		arn, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("invalid Kiro %s: expected an AWS CodeWhisperer profile ARN string", key)
+		}
+		parts := strings.Split(arn, ":")
+		if len(parts) != 6 || parts[0] != "arn" || parts[1] == "" || parts[2] != "codewhisperer" ||
+			kiroauth.NormalizeKiroRegion(parts[3]) == "" || strings.TrimSpace(parts[4]) == "" || !strings.HasPrefix(parts[5], "profile/") || len(strings.TrimPrefix(parts[5], "profile/")) == 0 ||
+			strings.ContainsAny(arn, " \t\r\n?#\\") || strings.Count(parts[5], "/") != 1 {
+			return fmt.Errorf("invalid Kiro %s: expected arn:aws:codewhisperer:REGION:ACCOUNT:profile/PROFILE_ID", key)
+		}
+	}
+	return nil
+}
+
 func resolveKiroAPIRegion(auth *cliproxyauth.Auth) string {
 	if region := kiroauth.NormalizeKiroRegion(os.Getenv("KIRO_API_REGION")); region != "" {
 		log.Debugf("kiro: using region %s (source: KIRO_API_REGION)", region)
@@ -513,8 +573,16 @@ func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 // KiroExecutor handles requests to AWS CodeWhisperer (Kiro) API.
 type KiroExecutor struct {
 	cfg          *config.Config
-	refreshMu    sync.Mutex // Serializes token refresh operations to prevent race conditions
-	profileArnMu sync.Mutex // Serializes profileArn fetches to prevent concurrent map writes
+	health       *kiroAccountHealthRegistry
+	profileArnMu sync.Mutex                                 // Serializes profileArn fetches to prevent concurrent map writes
+	retryWait    func(context.Context, time.Duration) error // Injectable wait for deterministic retry tests
+}
+
+func (e *KiroExecutor) waitForKiroRetry(ctx context.Context, delay time.Duration) error {
+	if e.retryWait != nil {
+		return e.retryWait(ctx, delay)
+	}
+	return sleepKiroRetry(ctx, delay)
 }
 
 // buildKiroPayloadForFormat builds the Kiro API payload based on the source format.
@@ -526,7 +594,11 @@ type KiroExecutor struct {
 func buildKiroPayloadForFormat(body []byte, modelID, profileArn, origin string, isAgentic, isChatOnly bool, sourceFormat sdktranslator.Format, headers http.Header) ([]byte, bool, error) {
 	var payload []byte
 	var thinkingEnabled bool
+	var err error
 	switch sourceFormat.String() {
+	case "openai-response":
+		log.Debugf("kiro: using OpenAI Responses payload builder for source format: %s", sourceFormat.String())
+		payload, thinkingEnabled, err = kiroresponses.BuildKiroPayloadFromResponses(body, modelID, profileArn, origin, isAgentic, isChatOnly, headers)
 	case "openai":
 		log.Debugf("kiro: using OpenAI payload builder for source format: %s", sourceFormat.String())
 		payload, thinkingEnabled = kiroopenai.BuildKiroPayloadFromOpenAI(body, modelID, profileArn, origin, isAgentic, isChatOnly, headers, nil)
@@ -538,6 +610,9 @@ func buildKiroPayloadForFormat(body []byte, modelID, profileArn, origin string, 
 		// Default to Claude format
 		log.Debugf("kiro: using Claude payload builder for source format: %s", sourceFormat.String())
 		payload, thinkingEnabled = kiroclaude.BuildKiroPayload(body, modelID, profileArn, origin, isAgentic, isChatOnly, headers, nil)
+	}
+	if err != nil {
+		return nil, thinkingEnabled, err
 	}
 	guarded, stats, err := kirocommon.GuardKiroPayload(payload, modelID)
 	if err != nil {
@@ -559,23 +634,155 @@ func buildKiroPayloadForFormat(body []byte, modelID, profileArn, origin string, 
 
 // NewKiroExecutor creates a new Kiro executor instance.
 func NewKiroExecutor(cfg *config.Config) *KiroExecutor {
-	return &KiroExecutor{cfg: cfg}
+	return &KiroExecutor{cfg: cfg, health: defaultKiroAccountHealth}
+}
+
+func (e *KiroExecutor) kiroInflightLimit() int {
+	if e != nil && e.cfg != nil && e.cfg.KiroMaxInflight > 0 {
+		return e.cfg.KiroMaxInflight
+	}
+	return kiroDefaultMaxInflight
+}
+
+func kiroHealthAccountKey(auth *cliproxyauth.Auth) string {
+	if auth != nil && strings.TrimSpace(auth.ID) != "" {
+		return auth.ID
+	}
+	return getAccountKey(auth)
+}
+
+func kiroErrorStatus(err error) (int, []byte) {
+	if err == nil {
+		return 0, nil
+	}
+	var status interface{ StatusCode() int }
+	if errors.As(err, &status) {
+		return status.StatusCode(), []byte(err.Error())
+	}
+	return 0, []byte(err.Error())
 }
 
 // Identifier returns the unique identifier for this executor.
 func (e *KiroExecutor) Identifier() string { return "kiro" }
 
-// applyDynamicFingerprint applies the fixed Kiro CLI 2.19.1 generation contract.
+// applyDynamicFingerprint matches Kiro IDE 1.1.70. Ported from kiro-lb
+// src/utils.rs (1581af9); management and generation share the machine ID.
 func applyDynamicFingerprint(req *http.Request, auth *cliproxyauth.Auth) {
-	_ = auth
-	req.Header.Set("User-Agent", kiroCLIUserAgent)
-	req.Header.Set("X-Amz-User-Agent", kiroCLIAmzUserAgent)
+	machineID := ensureKiroMachineID(auth)
+	api := kiroauth.KiroRuntimeAPI
+	if strings.HasPrefix(req.URL.Hostname(), "management.") {
+		api = kiroauth.KiroCodeWhispererAPI
+		if strings.Contains(req.Header.Get("X-Amz-Target"), "ListAvailableModels") {
+			api = kiroauth.KiroControlPlaneAPI
+		}
+	}
+	kiroauth.SetIDEHeaders(req, api, machineID)
+	req.Header.Set("x-amzn-kiro-client-attribution", "kiro-ide")
 	req.Header.Set("x-amzn-codewhisperer-optout", "true")
 	req.Header.Set("x-kiro-attempt", "1;max=3")
 	req.Header.Del("x-amzn-kiro-agent-mode")
 }
 
 // PrepareRequest prepares the HTTP request before execution.
+func ensureKiroMachineID(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return kiroauth.AccountMachineID("kiro-anonymous")
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	if machineID, ok := auth.Metadata["kiro_machine_id"].(string); ok && strings.TrimSpace(machineID) != "" {
+		return machineID
+	}
+	seed := getAccountKey(auth)
+	if auth.ID != "" {
+		seed = auth.ID
+	} else if auth.FileName != "" {
+		seed = auth.FileName
+	} else if path := auth.Attributes["path"]; path != "" {
+		seed = path
+	}
+	machineID := kiroauth.AccountMachineID(seed)
+	auth.Metadata["kiro_machine_id"] = machineID
+	return machineID
+}
+
+var kiroMachineIDMu sync.Mutex
+
+// Work on a request-local clone. Persist only the machine ID, never a stale
+// token snapshot. This preserves identity when token refresh rotates secrets.
+func (e *KiroExecutor) withKiroMachineID(auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if auth == nil {
+		return nil, nil
+	}
+	kiroMachineIDMu.Lock()
+	defer kiroMachineIDMu.Unlock()
+	copyAuth := auth.Clone()
+	path := auth.Attributes["path"]
+	if path == "" && auth.FileName != "" {
+		if filepath.IsAbs(auth.FileName) {
+			path = auth.FileName
+		} else if e.cfg != nil && e.cfg.AuthDir != "" {
+			path = filepath.Join(e.cfg.AuthDir, auth.FileName)
+		}
+	}
+	if path == "" {
+		ensureKiroMachineID(copyAuth)
+		return copyAuth, nil
+	}
+	lease, err := acquireKiroRefreshLease(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := lease.Close(); closeErr != nil {
+			log.Errorf("kiro: release machine identity lease: %v", closeErr)
+		}
+	}()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("kiro: read machine ID metadata: %w", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(raw, &metadata); err != nil {
+		return nil, fmt.Errorf("kiro: decode machine ID metadata: %w", err)
+	}
+	if id, ok := metadata["kiro_machine_id"].(string); ok && id != "" {
+		if copyAuth.Metadata == nil {
+			copyAuth.Metadata = make(map[string]any)
+		}
+		copyAuth.Metadata["kiro_machine_id"] = id
+		return copyAuth, nil
+	}
+	if metadata == nil {
+		metadata = make(map[string]any)
+	}
+	metadata["kiro_machine_id"] = ensureKiroMachineID(copyAuth)
+	raw, err = json.Marshal(metadata)
+	if err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".kiro-machine-id-*")
+	if err != nil {
+		return nil, err
+	}
+	name := tmp.Name()
+	defer func() {
+		if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Warnf("kiro: remove machine ID temporary file: %v", err)
+		}
+	}()
+	_, writeErr := tmp.Write(raw)
+	closeErr := tmp.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(name, path); err != nil {
+		return nil, err
+	}
+	return copyAuth, nil
+}
+
 func (e *KiroExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
 	if req == nil {
 		return nil
@@ -585,8 +792,12 @@ func (e *KiroExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 		return statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
 
-	// Apply dynamic fingerprint-based headers
-	applyDynamicFingerprint(req, auth)
+	localAuth, err := e.withKiroMachineID(auth)
+	if err != nil {
+		return err
+	}
+	// Apply the account-stable IDE fingerprint; it survives refresh-token rotation.
+	applyDynamicFingerprint(req, localAuth)
 
 	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
@@ -606,6 +817,9 @@ func (e *KiroExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 	}
 	if ctx == nil {
 		ctx = req.Context()
+	}
+	if err := validateKiroRuntimeMetadata(auth); err != nil {
+		return nil, statusErr{code: http.StatusBadRequest, msg: err.Error()}
 	}
 	httpReq := req.WithContext(ctx)
 	if errPrepare := e.PrepareRequest(httpReq, auth); errPrepare != nil {
@@ -665,10 +879,28 @@ func getAuthValue(auth *cliproxyauth.Auth, key string) string {
 // Execute sends the request to Kiro API and returns the response.
 // Supports automatic token refresh on 401/403 errors.
 func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if auth != nil {
+		auth = auth.Clone()
+	}
+	ctx = context.WithValue(ctx, kiroQuotaContextKey{}, kiroQuotaRecorder{e.accountHealth(), kiroHealthAccountKey(auth)})
+	if validateErr := validateKiroRuntimeMetadata(auth); validateErr != nil {
+		return resp, statusErr{code: http.StatusBadRequest, msg: validateErr.Error()}
+	}
 	accessToken, profileArn := kiroCredentials(auth)
 	if accessToken == "" {
 		return resp, fmt.Errorf("kiro: access token not found in auth")
 	}
+	healthKey := kiroHealthAccountKey(auth)
+	go e.refreshKiroQuota(ctx, auth.Clone())
+	if errHealth := e.accountHealth().admit(healthKey); errHealth != nil {
+		return resp, errHealth
+	}
+	releaseHealth, errHealth := e.accountHealth().acquire(healthKey, e.kiroInflightLimit())
+	if errHealth != nil {
+		return resp, errHealth
+	}
+	defer releaseHealth()
+	defer func() { err = e.accountHealth().result(healthKey, ctx, err) }()
 	if reason := kirocommon.RejectKiroRequestedModel(req.Model); reason != "" {
 		return resp, statusErr{code: http.StatusBadRequest, msg: reason}
 	}
@@ -688,7 +920,9 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 
 	// Wait for rate limiter before proceeding
 	log.Debugf("kiro: waiting for rate limiter for token %s", tokenKey)
-	rateLimiter.WaitForToken(tokenKey)
+	if err = rateLimiter.WaitForTokenContext(ctx, tokenKey); err != nil {
+		return resp, err
+	}
 	log.Debugf("kiro: rate limiter cleared for token %s", tokenKey)
 
 	// Check if token is expired before making request (covers both normal and web_search paths)
@@ -707,13 +941,9 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 			log.Debugf("kiro: file reload failed (%v), attempting active refresh", reloadErr)
 			refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 			if refreshErr != nil {
-				log.Warnf("kiro: pre-request token refresh failed: %v", refreshErr)
+				return resp, refreshErr
 			} else if refreshedAuth != nil {
 				auth = refreshedAuth
-				// Persist the refreshed auth to file so subsequent requests use it
-				if persistErr := e.persistRefreshedAuth(auth); persistErr != nil {
-					log.Warnf("kiro: failed to persist refreshed auth: %v", persistErr)
-				}
 				accessToken, profileArn = kiroCredentials(auth)
 				log.Infof("kiro: token refreshed successfully before request")
 			}
@@ -764,6 +994,12 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 // tokenKey is used for rate limiting and cooldown tracking.
 func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, accessToken, profileArn string, kiroPayload, body []byte, from, to sdktranslator.Format, reporter *usageReporter, currentOrigin, kiroModelID string, isAgentic, isChatOnly bool, tokenKey string) (cliproxyexecutor.Response, error) {
 	var resp cliproxyexecutor.Response
+	var identityErr error
+	auth, identityErr = e.withKiroMachineID(auth)
+	if identityErr != nil {
+		return resp, identityErr
+	}
+	var lastEndpointErr error
 	maxRetries := 2 // Allow retries for token refresh + endpoint fallback
 	rateLimiter := kiroauth.GetGlobalRateLimiter()
 	cooldownMgr := kiroauth.GetGlobalCooldownManager()
@@ -788,10 +1024,11 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			endpointIdx+1, len(endpointConfigs), url, endpointConfig.Name, currentOrigin)
 
 		for attempt := 0; attempt <= maxRetries; attempt++ {
-			// Apply human-like delay before first request (not on retries)
-			// This mimics natural user behavior patterns
+			// Use the same cancellable wait for initial jitter and retries.
 			if attempt == 0 && endpointIdx == 0 {
-				kiroauth.ApplyHumanLikeDelay()
+				if err := e.waitForKiroRetry(ctx, kiroauth.HumanLikeDelay()); err != nil {
+					return resp, err
+				}
 			}
 
 			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(kiroPayload))
@@ -850,29 +1087,26 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 
 				// Check for context deadline exceeded - request timed out
 				// Return 504 Gateway Timeout instead of 500
-				if errors.Is(err, context.DeadlineExceeded) {
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					log.Debugf("kiro: request timed out (context.DeadlineExceeded)")
 					return resp, statusErr{code: http.StatusGatewayTimeout, msg: "upstream request timed out"}
 				}
 
 				recordAPIResponseError(ctx, e.cfg, err)
 
-				// Enhanced socket retry: Check if error is retryable (network timeout, connection reset, etc.)
-				retryCfg := defaultRetryConfig()
-				if isRetryableError(err) && attempt < retryCfg.MaxRetries {
-					delay := calculateRetryDelay(attempt, retryCfg)
-					logRetryAttempt(attempt, retryCfg.MaxRetries, fmt.Sprintf("socket error: %v", err), delay, endpointConfig.Name)
-					if sleepErr := sleepKiroRetry(ctx, delay); sleepErr != nil {
+				// Ported from kiro-lb src/upstream/http.rs (1581af9): any
+				// transport failure exhausts this endpoint's budget, then rotates.
+				lastEndpointErr = err
+				if attempt < maxRetries {
+					delay := calculateRetryDelay(attempt, defaultRetryConfig())
+					logRetryAttempt(attempt, maxRetries, err.Error(), delay, endpointConfig.Name)
+					if sleepErr := e.waitForKiroRetry(ctx, delay); sleepErr != nil {
 						return resp, sleepErr
 					}
 					continue
 				}
-				if endpointConfig.Name == "KiroRuntime" && isRetryableError(err) {
-					log.Warnf("kiro: runtime endpoint unavailable, trying Q fallback: %v", err)
-					break
-				}
-
-				return resp, err
+				kiroRecordEndpointFailure(endpointConfig.Key, kiroEndpointFailureCooldown)
+				break
 			}
 			recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 
@@ -934,29 +1168,18 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				_ = httpResp.Body.Close()
 				appendAPIResponseChunk(ctx, e.cfg, respBody)
 
-				retryCfg := defaultRetryConfig()
-				// Check if this specific 5xx code is retryable (502, 503, 504)
-				if isRetryableHTTPStatus(httpResp.StatusCode) && attempt < retryCfg.MaxRetries {
-					delay := calculateRetryDelay(attempt, retryCfg)
-					logRetryAttempt(attempt, retryCfg.MaxRetries, fmt.Sprintf("HTTP %d", httpResp.StatusCode), delay, endpointConfig.Name)
-					if sleepErr := sleepKiroRetry(ctx, delay); sleepErr != nil {
-						return resp, sleepErr
-					}
-					continue
-				} else if attempt < maxRetries {
-					// Fallback for other 5xx errors (500, 501, etc.)
-					backoff := time.Duration(1<<attempt) * time.Second
-					if backoff > 30*time.Second {
-						backoff = 30 * time.Second
-					}
-					log.Warnf("kiro: server error %d, retrying in %v (attempt %d/%d)", httpResp.StatusCode, backoff, attempt+1, maxRetries)
-					if sleepErr := sleepKiroRetry(ctx, backoff); sleepErr != nil {
+				if attempt < maxRetries {
+					delay := calculateRetryDelay(attempt, defaultRetryConfig())
+					logRetryAttempt(attempt, maxRetries, fmt.Sprintf("HTTP %d", httpResp.StatusCode), delay, endpointConfig.Name)
+					if sleepErr := e.waitForKiroRetry(ctx, delay); sleepErr != nil {
 						return resp, sleepErr
 					}
 					continue
 				}
-				log.Errorf("kiro: server error %d after %d retries", httpResp.StatusCode, maxRetries)
-				return resp, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+				lastEndpointErr = statusErr{code: httpResp.StatusCode, msg: string(respBody), retryAfter: kiroRetryAfterFromHeader(httpResp.Header.Get("Retry-After"), time.Now()), credentialScoped: classifyKiroUpstreamError(httpResp.StatusCode, respBody) == KiroErrorRecoverable}
+				log.Warnf("kiro: server error %d after %d retries; trying next endpoint", httpResp.StatusCode, maxRetries)
+				kiroRecordEndpointFailure(endpointConfig.Key, kiroEndpointFailureCooldown)
+				break
 			}
 
 			// Handle 401 errors with token refresh and retry
@@ -969,16 +1192,11 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				log.Warnf("kiro: received 401 error, attempting token refresh")
 				refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 				if refreshErr != nil {
-					return resp, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+					return resp, refreshErr
 				}
 
 				if refreshedAuth != nil {
 					auth = refreshedAuth
-					// Persist the refreshed auth to file so subsequent requests use it
-					if persistErr := e.persistRefreshedAuth(auth); persistErr != nil {
-						log.Warnf("kiro: failed to persist refreshed auth: %v", persistErr)
-						// Continue anyway - the token is valid for this request
-					}
 					accessToken, profileArn = kiroCredentials(auth)
 					// Rebuild payload with new profile ARN if changed
 					kiroPayload, _, payloadErr = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
@@ -1047,16 +1265,10 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 					log.Warnf("kiro: non-suspension 403, attempting token refresh")
 					refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 					if refreshErr != nil {
-						// Token refresh failed - return error immediately
-						return resp, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+						return resp, refreshErr
 					}
 					if refreshedAuth != nil {
 						auth = refreshedAuth
-						// Persist the refreshed auth to file so subsequent requests use it
-						if persistErr := e.persistRefreshedAuth(auth); persistErr != nil {
-							log.Warnf("kiro: failed to persist refreshed auth: %v", persistErr)
-							// Continue anyway - the token is valid for this request
-						}
 						accessToken, profileArn = kiroCredentials(auth)
 						kiroPayload, _, payloadErr = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
 						if payloadErr != nil {
@@ -1084,27 +1296,38 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				// fail over to the next credential instead of returning fatal.
 				// CONTENT_LENGTH_EXCEEDS_THRESHOLD and any other 400/422/5xx
 				// stay on the existing fatal path below.
-				if httpResp.StatusCode == http.StatusBadRequest && classifyKiroUpstreamError(httpResp.StatusCode, b) == KiroErrorRecoverable {
+				if httpResp.StatusCode == http.StatusBadRequest {
 					reason := kiroErrorReasonFromBody(b)
-					if reason == "MONTHLY_REQUEST_COUNT" {
-						monthlyCooldown := kiroMonthlyQuotaCooldown(auth, b, httpResp.Header, time.Now())
-						log.Warnf("kiro: received 400 (%s), token %s set to cooldown for %v", reason, tokenKey, monthlyCooldown)
-						rateLimiter.MarkTokenFailed(tokenKey)
-						cooldownMgr.SetCooldown(tokenKey, monthlyCooldown, kiroCooldownReasonMonthlyQuota)
-						retryAfter := monthlyCooldown
+					// Ported from kiro-lb src/pool.rs (1581af9): this is a
+					// short account-level rate limit, not quota exhaustion.
+					if reason == "USER_REQUEST_RATE_EXCEEDED" {
 						if errClose := httpResp.Body.Close(); errClose != nil {
 							log.Errorf("response body close error: %v", errClose)
 						}
+						retryAfter := 10 * time.Second
 						return resp, statusErr{code: httpResp.StatusCode, msg: string(b), retryAfter: &retryAfter, credentialScoped: true}
 					}
-					// INVALID_MODEL_ID: this account/subscription cannot serve the
-					// requested model. No long cooldown - just move on to the next
-					// credential without penalizing this token's rate limit state.
-					log.Warnf("kiro: received 400 (%s), trying next credential", reason)
-					if errClose := httpResp.Body.Close(); errClose != nil {
-						log.Errorf("response body close error: %v", errClose)
+					if classifyKiroUpstreamError(httpResp.StatusCode, b) == KiroErrorRecoverable {
+						if reason == "MONTHLY_REQUEST_COUNT" {
+							monthlyCooldown := kiroMonthlyQuotaCooldown(auth, b, httpResp.Header, time.Now())
+							log.Warnf("kiro: received 400 (%s), token %s set to cooldown for %v", reason, tokenKey, monthlyCooldown)
+							rateLimiter.MarkTokenFailed(tokenKey)
+							cooldownMgr.SetCooldown(tokenKey, monthlyCooldown, kiroCooldownReasonMonthlyQuota)
+							retryAfter := monthlyCooldown
+							if errClose := httpResp.Body.Close(); errClose != nil {
+								log.Errorf("response body close error: %v", errClose)
+							}
+							return resp, statusErr{code: httpResp.StatusCode, msg: string(b), retryAfter: &retryAfter, credentialScoped: true}
+						}
+						// INVALID_MODEL_ID: this account/subscription cannot serve the
+						// requested model. No long cooldown - just move on to the next
+						// credential without penalizing this token's rate limit state.
+						log.Warnf("kiro: received 400 (%s), trying next credential", reason)
+						if errClose := httpResp.Body.Close(); errClose != nil {
+							log.Errorf("response body close error: %v", errClose)
+						}
+						return resp, statusErr{code: httpResp.StatusCode, msg: string(b), credentialScoped: true}
 					}
-					return resp, statusErr{code: httpResp.StatusCode, msg: string(b), credentialScoped: true}
 				}
 
 				err = statusErr{code: httpResp.StatusCode, msg: string(b)}
@@ -1120,7 +1343,8 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 				}
 			}()
 
-			content, toolUses, usageInfo, stopReason, err := e.parseEventStream(httpResp.Body, kiroModelID)
+			content, thinkingSignatures, toolUses, usageInfo, stopReason, creditsUsed, err := e.parseEventStream(httpResp.Body, kiroModelID)
+			consumeKiroQuota(ctx, creditsUsed)
 			if err != nil {
 				recordAPIResponseError(ctx, e.cfg, err)
 				return resp, err
@@ -1158,6 +1382,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens
 
 			appendAPIResponseChunk(ctx, e.cfg, []byte(content))
+			recordKiroCredits(ctx, creditsUsed)
 			reporter.publish(ctx, usageInfo)
 
 			// Record success for rate limiting
@@ -1170,9 +1395,9 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			// Build response in Claude format for Kiro translator
 			// stopReason is extracted from upstream response by parseEventStream
 			requestedModel := payloadRequestedModel(opts, req.Model)
-			kiroResponse := kiroclaude.BuildClaudeResponse(content, toolUses, requestedModel, usageInfo, stopReason)
+			kiroResponse := kiroclaude.BuildClaudeResponseWithThinkingSignatures(content, thinkingSignatures, toolUses, requestedModel, usageInfo, stopReason)
 			out := sdktranslator.TranslateNonStream(ctx, to, from, requestedModel, bytes.Clone(opts.OriginalRequest), body, kiroResponse, nil)
-			resp = cliproxyexecutor.Response{Payload: []byte(out)}
+			resp = cliproxyexecutor.Response{Payload: addKiroCreditsToResponse([]byte(out), creditsUsed)}
 			return resp, nil
 		}
 		// Inner retry loop exhausted for this endpoint, try next endpoint
@@ -1184,16 +1409,48 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 	if last429Err != nil {
 		return resp, last429Err
 	}
+	if lastEndpointErr != nil {
+		return resp, lastEndpointErr
+	}
 	return resp, fmt.Errorf("kiro: all endpoints exhausted")
 }
 
 // ExecuteStream handles streaming requests to Kiro API.
 // Supports automatic token refresh on 401/403 errors and quota fallback on 429.
 func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if auth != nil {
+		auth = auth.Clone()
+	}
+	ctx = context.WithValue(ctx, kiroQuotaContextKey{}, kiroQuotaRecorder{e.accountHealth(), kiroHealthAccountKey(auth)})
+	ctx, streamCancel := context.WithCancel(ctx)
+	defer func() {
+		if err != nil {
+			streamCancel()
+		}
+	}()
+	if validateErr := validateKiroRuntimeMetadata(auth); validateErr != nil {
+		return nil, statusErr{code: http.StatusBadRequest, msg: validateErr.Error()}
+	}
 	accessToken, profileArn := kiroCredentials(auth)
 	if accessToken == "" {
 		return nil, fmt.Errorf("kiro: access token not found in auth")
 	}
+	healthKey := kiroHealthAccountKey(auth)
+	go e.refreshKiroQuota(ctx, auth.Clone())
+	if errHealth := e.accountHealth().admit(healthKey); errHealth != nil {
+		return nil, errHealth
+	}
+	releaseHealth, errHealth := e.accountHealth().acquire(healthKey, e.kiroInflightLimit())
+	if errHealth != nil {
+		return nil, errHealth
+	}
+	// Streaming ownership transfers to the result channel below.
+	defer func() {
+		if err != nil {
+			err = e.accountHealth().result(healthKey, ctx, err)
+			releaseHealth()
+		}
+	}()
 	if reason := kirocommon.RejectKiroRequestedModel(req.Model); reason != "" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: reason}
 	}
@@ -1213,7 +1470,9 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 	// Wait for rate limiter before proceeding
 	log.Debugf("kiro: stream waiting for rate limiter for token %s", tokenKey)
-	rateLimiter.WaitForToken(tokenKey)
+	if err = rateLimiter.WaitForTokenContext(ctx, tokenKey); err != nil {
+		return nil, err
+	}
 	log.Debugf("kiro: stream rate limiter cleared for token %s", tokenKey)
 
 	// Check if token is expired before making request (covers both normal and web_search paths)
@@ -1232,13 +1491,9 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			log.Debugf("kiro: file reload failed (%v), attempting active refresh for stream", reloadErr)
 			refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 			if refreshErr != nil {
-				log.Warnf("kiro: pre-request token refresh failed: %v", refreshErr)
+				return nil, refreshErr
 			} else if refreshedAuth != nil {
 				auth = refreshedAuth
-				// Persist the refreshed auth to file so subsequent requests use it
-				if persistErr := e.persistRefreshedAuth(auth); persistErr != nil {
-					log.Warnf("kiro: failed to persist refreshed auth: %v", persistErr)
-				}
 				accessToken, profileArn = kiroCredentials(auth)
 				log.Infof("kiro: token refreshed successfully before stream request")
 			}
@@ -1253,7 +1508,9 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		if errWebSearch != nil {
 			return nil, errWebSearch
 		}
-		return &cliproxyexecutor.StreamResult{Chunks: streamWebSearch}, nil
+		return &cliproxyexecutor.StreamResult{Chunks: wrapKiroHealthStream(ctx, streamWebSearch, releaseHealth, func(streamErr error) error {
+			return e.accountHealth().result(healthKey, ctx, streamErr)
+		}, streamCancel)}, nil
 	}
 
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
@@ -1282,7 +1539,9 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	if errStreamKiro != nil {
 		return nil, errStreamKiro
 	}
-	return &cliproxyexecutor.StreamResult{Chunks: streamKiro}, nil
+	return &cliproxyexecutor.StreamResult{Chunks: wrapKiroHealthStream(ctx, streamKiro, releaseHealth, func(streamErr error) error {
+		return e.accountHealth().result(healthKey, ctx, streamErr)
+	}, streamCancel)}, nil
 }
 
 // executeStreamWithRetry performs the streaming HTTP request with automatic retry on auth errors.
@@ -1295,6 +1554,12 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 // affinity for this (auth, model) pair and clears that endpoint's cooldown.
 // tokenKey is used for rate limiting and cooldown tracking.
 func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, accessToken, profileArn string, kiroPayload, body []byte, from sdktranslator.Format, reporter *usageReporter, currentOrigin, kiroModelID string, isAgentic, isChatOnly bool, tokenKey string) (<-chan cliproxyexecutor.StreamChunk, error) {
+	var identityErr error
+	auth, identityErr = e.withKiroMachineID(auth)
+	if identityErr != nil {
+		return nil, identityErr
+	}
+	var lastEndpointErr error
 	maxRetries := 2 // Allow retries for token refresh + endpoint fallback
 	rateLimiter := kiroauth.GetGlobalRateLimiter()
 	cooldownMgr := kiroauth.GetGlobalCooldownManager()
@@ -1318,11 +1583,10 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 			endpointIdx+1, len(endpointConfigs), url, endpointConfig.Name, currentOrigin)
 
 		for attempt := 0; attempt <= maxRetries; attempt++ {
-			// Apply human-like delay before first streaming request (not on retries)
-			// This mimics natural user behavior patterns
-			// Note: Delay is NOT applied during streaming response - only before initial request
 			if attempt == 0 && endpointIdx == 0 {
-				kiroauth.ApplyHumanLikeDelay()
+				if err := e.waitForKiroRetry(ctx, kiroauth.HumanLikeDelay()); err != nil {
+					return nil, err
+				}
 			}
 
 			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(kiroPayload))
@@ -1338,7 +1602,8 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 			}
 			// Apply the Kiro CLI generation headers.
 			applyDynamicFingerprint(httpReq, auth)
-			httpReq.Header.Set("Connection", "close")
+			// Keep streaming connections reusable; forcing Connection: close defeats pooling.
+			httpReq.Close = false
 
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 			httpReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
@@ -1375,22 +1640,21 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 			if err != nil {
 				recordAPIResponseError(ctx, e.cfg, err)
 
-				// Enhanced socket retry for streaming: Check if error is retryable (network timeout, connection reset, etc.)
-				retryCfg := defaultRetryConfig()
-				if isRetryableError(err) && attempt < retryCfg.MaxRetries {
-					delay := calculateRetryDelay(attempt, retryCfg)
-					logRetryAttempt(attempt, retryCfg.MaxRetries, fmt.Sprintf("stream socket error: %v", err), delay, endpointConfig.Name)
-					if sleepErr := sleepKiroRetry(ctx, delay); sleepErr != nil {
+				if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+					return nil, err
+				}
+				// Ported from kiro-lb src/upstream/http.rs (1581af9).
+				lastEndpointErr = err
+				if attempt < maxRetries {
+					delay := calculateRetryDelay(attempt, defaultRetryConfig())
+					logRetryAttempt(attempt, maxRetries, err.Error(), delay, endpointConfig.Name)
+					if sleepErr := e.waitForKiroRetry(ctx, delay); sleepErr != nil {
 						return nil, sleepErr
 					}
 					continue
 				}
-				if endpointConfig.Name == "KiroRuntime" && isRetryableError(err) {
-					log.Warnf("kiro: runtime stream endpoint unavailable, trying Q fallback: %v", err)
-					break
-				}
-
-				return nil, err
+				kiroRecordEndpointFailure(endpointConfig.Key, kiroEndpointFailureCooldown)
+				break
 			}
 			recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 
@@ -1452,42 +1716,18 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				_ = httpResp.Body.Close()
 				appendAPIResponseChunk(ctx, e.cfg, respBody)
 
-				retryCfg := defaultRetryConfig()
-				// Check if this specific 5xx code is retryable (502, 503, 504)
-				if isRetryableHTTPStatus(httpResp.StatusCode) && attempt < retryCfg.MaxRetries {
-					delay := calculateRetryDelay(attempt, retryCfg)
-					logRetryAttempt(attempt, retryCfg.MaxRetries, fmt.Sprintf("stream HTTP %d", httpResp.StatusCode), delay, endpointConfig.Name)
-					if sleepErr := sleepKiroRetry(ctx, delay); sleepErr != nil {
-						return nil, sleepErr
-					}
-					continue
-				} else if attempt < maxRetries {
-					// Fallback for other 5xx errors (500, 501, etc.)
-					backoff := time.Duration(1<<attempt) * time.Second
-					if backoff > 30*time.Second {
-						backoff = 30 * time.Second
-					}
-					log.Warnf("kiro: stream server error %d, retrying in %v (attempt %d/%d)", httpResp.StatusCode, backoff, attempt+1, maxRetries)
-					if sleepErr := sleepKiroRetry(ctx, backoff); sleepErr != nil {
+				if attempt < maxRetries {
+					delay := calculateRetryDelay(attempt, defaultRetryConfig())
+					logRetryAttempt(attempt, maxRetries, fmt.Sprintf("stream HTTP %d", httpResp.StatusCode), delay, endpointConfig.Name)
+					if sleepErr := e.waitForKiroRetry(ctx, delay); sleepErr != nil {
 						return nil, sleepErr
 					}
 					continue
 				}
-				log.Errorf("kiro: stream server error %d after %d retries", httpResp.StatusCode, maxRetries)
-				return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
-			}
-
-			// Handle 400 errors - Credential/Validation issues
-			// Do NOT switch endpoints - return error immediately
-			if httpResp.StatusCode == 400 {
-				respBody, _ := io.ReadAll(httpResp.Body)
-				_ = httpResp.Body.Close()
-				appendAPIResponseChunk(ctx, e.cfg, respBody)
-
-				log.Warnf("kiro: received 400 error (attempt %d/%d), body: %s", attempt+1, maxRetries+1, summarizeErrorBody(httpResp.Header.Get("Content-Type"), respBody))
-
-				// 400 errors indicate request validation issues - return immediately without retry
-				return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+				lastEndpointErr = statusErr{code: httpResp.StatusCode, msg: string(respBody), retryAfter: kiroRetryAfterFromHeader(httpResp.Header.Get("Retry-After"), time.Now()), credentialScoped: classifyKiroUpstreamError(httpResp.StatusCode, respBody) == KiroErrorRecoverable}
+				log.Warnf("kiro: stream server error %d after %d retries; trying next endpoint", httpResp.StatusCode, maxRetries)
+				kiroRecordEndpointFailure(endpointConfig.Key, kiroEndpointFailureCooldown)
+				break
 			}
 
 			// Handle 401 errors with token refresh and retry
@@ -1500,16 +1740,11 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				log.Warnf("kiro: stream received 401 error, attempting token refresh")
 				refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 				if refreshErr != nil {
-					return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+					return nil, refreshErr
 				}
 
 				if refreshedAuth != nil {
 					auth = refreshedAuth
-					// Persist the refreshed auth to file so subsequent requests use it
-					if persistErr := e.persistRefreshedAuth(auth); persistErr != nil {
-						log.Warnf("kiro: failed to persist refreshed auth: %v", persistErr)
-						// Continue anyway - the token is valid for this request
-					}
 					accessToken, profileArn = kiroCredentials(auth)
 					// Rebuild payload with new profile ARN if changed
 					kiroPayload, _, payloadErr = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
@@ -1575,16 +1810,10 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 					log.Warnf("kiro: non-suspension 403, attempting token refresh")
 					refreshedAuth, refreshErr := e.Refresh(ctx, auth)
 					if refreshErr != nil {
-						// Token refresh failed - return error immediately
-						return nil, statusErr{code: httpResp.StatusCode, msg: string(respBody)}
+						return nil, refreshErr
 					}
 					if refreshedAuth != nil {
 						auth = refreshedAuth
-						// Persist the refreshed auth to file so subsequent requests use it
-						if persistErr := e.persistRefreshedAuth(auth); persistErr != nil {
-							log.Warnf("kiro: failed to persist refreshed auth: %v", persistErr)
-							// Continue anyway - the token is valid for this request
-						}
 						accessToken, profileArn = kiroCredentials(auth)
 						kiroPayload, _, payloadErr = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
 						if payloadErr != nil {
@@ -1612,24 +1841,35 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				// fail over to the next credential instead of returning fatal.
 				// CONTENT_LENGTH_EXCEEDS_THRESHOLD and any other 400/422/5xx
 				// stay on the existing fatal path below.
-				if httpResp.StatusCode == http.StatusBadRequest && classifyKiroUpstreamError(httpResp.StatusCode, b) == KiroErrorRecoverable {
+				if httpResp.StatusCode == http.StatusBadRequest {
 					reason := kiroErrorReasonFromBody(b)
-					if errClose := httpResp.Body.Close(); errClose != nil {
-						log.Errorf("response body close error: %v", errClose)
-					}
-					if reason == "MONTHLY_REQUEST_COUNT" {
-						monthlyCooldown := kiroMonthlyQuotaCooldown(auth, b, httpResp.Header, time.Now())
-						log.Warnf("kiro: stream received 400 (%s), token %s set to cooldown for %v", reason, tokenKey, monthlyCooldown)
-						rateLimiter.MarkTokenFailed(tokenKey)
-						cooldownMgr.SetCooldown(tokenKey, monthlyCooldown, kiroCooldownReasonMonthlyQuota)
-						retryAfter := monthlyCooldown
+					// Ported from kiro-lb src/pool.rs (1581af9): preserve a
+					// short credential-scoped retry without escalating quota cooling.
+					if reason == "USER_REQUEST_RATE_EXCEEDED" {
+						if errClose := httpResp.Body.Close(); errClose != nil {
+							log.Errorf("response body close error: %v", errClose)
+						}
+						retryAfter := 10 * time.Second
 						return nil, statusErr{code: httpResp.StatusCode, msg: string(b), retryAfter: &retryAfter, credentialScoped: true}
 					}
-					// INVALID_MODEL_ID: this account/subscription cannot serve the
-					// requested model. No long cooldown - just move on to the next
-					// credential without penalizing this token's rate limit state.
-					log.Warnf("kiro: stream received 400 (%s), trying next credential", reason)
-					return nil, statusErr{code: httpResp.StatusCode, msg: string(b), credentialScoped: true}
+					if classifyKiroUpstreamError(httpResp.StatusCode, b) == KiroErrorRecoverable {
+						if errClose := httpResp.Body.Close(); errClose != nil {
+							log.Errorf("response body close error: %v", errClose)
+						}
+						if reason == "MONTHLY_REQUEST_COUNT" {
+							monthlyCooldown := kiroMonthlyQuotaCooldown(auth, b, httpResp.Header, time.Now())
+							log.Warnf("kiro: stream received 400 (%s), token %s set to cooldown for %v", reason, tokenKey, monthlyCooldown)
+							rateLimiter.MarkTokenFailed(tokenKey)
+							cooldownMgr.SetCooldown(tokenKey, monthlyCooldown, kiroCooldownReasonMonthlyQuota)
+							retryAfter := monthlyCooldown
+							return nil, statusErr{code: httpResp.StatusCode, msg: string(b), retryAfter: &retryAfter, credentialScoped: true}
+						}
+						// INVALID_MODEL_ID: this account/subscription cannot serve the
+						// requested model. No long cooldown - just move on to the next
+						// credential without penalizing this token's rate limit state.
+						log.Warnf("kiro: stream received 400 (%s), trying next credential", reason)
+						return nil, statusErr{code: httpResp.StatusCode, msg: string(b), credentialScoped: true}
+					}
 				}
 
 				if errClose := httpResp.Body.Close(); errClose != nil {
@@ -1638,19 +1878,8 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				return nil, statusErr{code: httpResp.StatusCode, msg: string(b)}
 			}
 
-			prefetchedBody, firstTokenErr := readKiroFirstStreamByte(ctx, httpResp.Body, defaultRetryConfig().FirstTokenTmout)
-			if firstTokenErr != nil {
-				if attempt < maxRetries {
-					delay := calculateRetryDelay(attempt, defaultRetryConfig())
-					logRetryAttempt(attempt, maxRetries, firstTokenErr.Error(), delay, endpointConfig.Name)
-					if sleepErr := sleepKiroRetry(ctx, delay); sleepErr != nil {
-						return nil, sleepErr
-					}
-					continue
-				}
-				return nil, statusErr{code: http.StatusGatewayTimeout, msg: firstTokenErr.Error()}
-			}
-			httpResp.Body = prefetchedBody
+			// Start the client protocol after successful headers, not the first
+			// upstream byte. Keepalive covers slow first tokens (kiro-lb routes_v1.rs).
 			httpResp.Body = &kiroTimedReadCloser{
 				body:    httpResp.Body,
 				ctx:     ctx,
@@ -1698,6 +1927,9 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 	// All endpoints exhausted
 	if last429Err != nil {
 		return nil, last429Err
+	}
+	if lastEndpointErr != nil {
+		return nil, lastEndpointErr
 	}
 	return nil, fmt.Errorf("kiro: stream all endpoints exhausted")
 }
@@ -2027,11 +2259,23 @@ type eventStreamMessage struct {
 // Extracts text content, tool uses, and stop_reason from the response.
 // Supports embedded [Called ...] tool calls and input buffering for toolUseEvent.
 // Returns: content, toolUses, usageInfo, stopReason, error
-func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string, []kiroclaude.KiroToolUse, usage.Detail, string, error) {
+func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string, []string, []kiroclaude.KiroToolUse, usage.Detail, string, float64, error) {
 	var content strings.Builder
+	var thinkingSignatures []string
 	var toolUses []kiroclaude.KiroToolUse
 	var usageInfo usage.Detail
 	var stopReason string // Extracted from upstream response
+	var creditsUsed float64
+	thinkingOpen := false
+	var pendingOfficialText strings.Builder
+	closeThinking := func() {
+		if thinkingOpen {
+			content.WriteString(kirocommon.ThinkingEndTag)
+			thinkingOpen = false
+		}
+		content.WriteString(pendingOfficialText.String())
+		pendingOfficialText.Reset()
+	}
 	reader := bufio.NewReader(body)
 
 	// Tool use state tracking for input buffering and deduplication
@@ -2045,7 +2289,7 @@ func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string,
 		msg, eventErr := e.readEventStreamMessage(reader)
 		if eventErr != nil {
 			log.Errorf("kiro: parseEventStream error: %v", eventErr)
-			return content.String(), toolUses, usageInfo, stopReason, eventErr
+			return content.String(), thinkingSignatures, toolUses, usageInfo, stopReason, creditsUsed, eventErr
 		}
 		if msg == nil {
 			// Normal end of stream (EOF)
@@ -2073,7 +2317,7 @@ func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string,
 				errMsg = msg
 			}
 			log.Errorf("kiro: received AWS error in event stream: type=%s, message=%s", errType, errMsg)
-			return "", nil, usageInfo, stopReason, fmt.Errorf("kiro API error: %s - %s", errType, errMsg)
+			return "", nil, nil, usageInfo, stopReason, creditsUsed, fmt.Errorf("kiro API error: %s - %s", errType, errMsg)
 		}
 		if errType, hasErrType := event["type"].(string); hasErrType && (errType == "error" || errType == "exception") {
 			// Generic error event
@@ -2086,7 +2330,7 @@ func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string,
 				}
 			}
 			log.Errorf("kiro: received error event in stream: type=%s, message=%s", errType, errMsg)
-			return "", nil, usageInfo, stopReason, fmt.Errorf("kiro API error: %s", errMsg)
+			return "", nil, nil, usageInfo, stopReason, creditsUsed, fmt.Errorf("kiro API error: %s", errMsg)
 		}
 
 		// Extract stop_reason from various event formats
@@ -2100,14 +2344,45 @@ func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string,
 			log.Debugf("kiro: parseEventStream found stopReason (top-level): %s", stopReason)
 		}
 
+		creditsUsed += kiroEventCredits(event)
+		updateKiroCacheUsage(event, &usageInfo)
+		if eventType != "assistantResponseEvent" && eventType != "reasoningContentEvent" && pendingOfficialText.Len() > 0 {
+			closeThinking()
+		}
 		// Handle different event types
 		switch eventType {
+		case "reasoningContentEvent":
+			reasoning := kiroEventBody(event, eventType)
+			text, _ := reasoning["text"].(string)
+			signature, _ := reasoning["signature"].(string)
+			if !thinkingOpen && (text != "" || signature != "") {
+				content.WriteString(kirocommon.ThinkingStartTag)
+				thinkingSignatures = append(thinkingSignatures, "")
+				thinkingOpen = true
+			}
+			content.WriteString(text)
+			if signature != "" {
+				thinkingSignatures[len(thinkingSignatures)-1] += signature
+				closeThinking()
+			}
+
 		case "followupPromptEvent":
 			// Filter out followupPrompt events - these are UI suggestions, not content
 			log.Debugf("kiro: parseEventStream ignoring followupPrompt event")
 			continue
 
 		case "assistantResponseEvent":
+			if thinkingOpen {
+				assistant := kiroEventBody(event, eventType)
+				if text, ok := assistant["content"].(string); ok {
+					pendingOfficialText.WriteString(text)
+				}
+				if _, hasTools := assistant["toolUses"]; !hasTools {
+					continue
+				}
+				closeThinking()
+				delete(assistant, "content") // already collected above
+			}
 			if assistantResp, ok := event["assistantResponseEvent"].(map[string]interface{}); ok {
 				if contentText, ok := assistantResp["content"].(string); ok {
 					content.WriteString(contentText)
@@ -2177,7 +2452,7 @@ func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string,
 			// Handle dedicated tool use events with input buffering
 			completedToolUses, newState, toolErr := kiroclaude.ProcessToolUseEvent(event, currentToolUse, processedIDs)
 			if toolErr != nil {
-				return "", nil, usageInfo, stopReason, toolErr
+				return "", nil, nil, usageInfo, stopReason, creditsUsed, toolErr
 			}
 			currentToolUse = newState
 			toolUses = append(toolUses, completedToolUses...)
@@ -2191,6 +2466,7 @@ func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string,
 			}
 
 		case "messageStopEvent", "message_stop":
+			event = kiroEventBody(event, eventType)
 			// Handle message stop events which may contain stop_reason
 			if sr := kirocommon.GetString(event, "stop_reason"); sr != "" {
 				stopReason = sr
@@ -2398,7 +2674,7 @@ func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string,
 
 			// For other errors, return the error
 			if errMsg != "" {
-				return "", nil, usageInfo, stopReason, fmt.Errorf("kiro API error (%s): %s", errType, errMsg)
+				return "", nil, nil, usageInfo, stopReason, creditsUsed, fmt.Errorf("kiro API error (%s): %s", errType, errMsg)
 			}
 
 		default:
@@ -2463,12 +2739,13 @@ func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string,
 		}
 	}
 	if currentToolUse != nil && !processedIDs[currentToolUse.ToolUseID] {
-		return "", nil, usageInfo, stopReason, fmt.Errorf(
+		return "", nil, nil, usageInfo, stopReason, creditsUsed, fmt.Errorf(
 			"kiro: incomplete tool use %s reached EOF before stop event",
 			currentToolUse.ToolUseID,
 		)
 	}
 
+	closeThinking()
 	// Parse embedded tool calls from content (e.g., [Called tool_name with args: {...}])
 	contentStr := content.String()
 	cleanedContent, embeddedToolUses := kiroclaude.ParseEmbeddedToolCalls(contentStr, processedIDs)
@@ -2496,7 +2773,7 @@ func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string,
 	}
 	normalizedStopReason, stopErr := normalizeKiroStopReason(stopReason, strings.TrimSpace(cleanedContent) != "", len(toolUses) > 0)
 	if stopErr != nil {
-		return "", nil, usageInfo, "", stopErr
+		return "", nil, nil, usageInfo, "", creditsUsed, stopErr
 	}
 	stopReason = normalizedStopReason
 
@@ -2521,101 +2798,220 @@ func (e *KiroExecutor) parseEventStream(body io.Reader, modelID string) (string,
 		}
 	}
 
-	return cleanedContent, toolUses, usageInfo, stopReason, nil
+	return cleanedContent, thinkingSignatures, toolUses, usageInfo, stopReason, creditsUsed, nil
 }
 
-// readEventStreamMessage reads and validates a single AWS Event Stream message.
-// Returns the parsed message or a structured error for different failure modes.
-// This function implements boundary protection and detailed error classification.
-//
-// AWS Event Stream binary format:
-// - Prelude (12 bytes): total_length (4) + headers_length (4) + prelude_crc (4)
-// - Headers (variable): header entries
-// - Payload (variable): JSON data
-// - Message CRC (4 bytes): CRC32C of entire message (not validated, just skipped)
+func kiroEventBody(event map[string]interface{}, eventType string) map[string]interface{} {
+	if nested, ok := event[eventType].(map[string]interface{}); ok {
+		return nested
+	}
+	return event
+}
+
+func numberValue(value any) (float64, bool) {
+	switch n := value.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	default:
+		return 0, false
+	}
+}
+
+func kiroEventCredits(event map[string]interface{}) float64 {
+	body := kiroEventBody(event, "meteringEvent")
+	unit, _ := body["unit"].(string)
+	value, ok := numberValue(body["usage"])
+	if !ok {
+		value, ok = numberValue(body["amount"])
+	}
+	if plural, exists := body["unitPlural"]; exists {
+		if _, ok := plural.(string); !ok {
+			return 0
+		}
+	}
+	if !ok || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) || (unit != "credit" && unit != "credits") {
+		return 0
+	}
+	return value
+}
+
+func updateKiroCacheUsage(event map[string]interface{}, info *usage.Detail) {
+	// Cache counters are also emitted on metering and usage events.
+	for _, key := range []string{"meteringEvent", "usage", "usageEvent"} {
+		if nested, ok := event[key].(map[string]interface{}); ok {
+			updateKiroCacheUsage(nested, info)
+		}
+	}
+	var body map[string]interface{}
+	if nested, ok := event["messageMetadataEvent"].(map[string]interface{}); ok {
+		body = nested
+	} else if nested, ok := event["metadataEvent"].(map[string]interface{}); ok {
+		body = nested
+	} else {
+		body = event
+	}
+	if nested, ok := body["tokenUsage"].(map[string]interface{}); ok {
+		body = nested
+	}
+	if value, ok := numberValue(body["cacheReadInputTokens"]); ok {
+		info.CacheReadTokens = int64(value)
+	}
+	if value, ok := numberValue(body["cacheWriteInputTokens"]); ok {
+		info.CacheCreationTokens = int64(value)
+	}
+	if value, ok := numberValue(body["cacheCreationInputTokens"]); ok {
+		info.CacheCreationTokens = int64(value)
+	}
+	if value, ok := numberValue(body["cache_read_input_tokens"]); ok {
+		info.CacheReadTokens = int64(value)
+	}
+	if value, ok := numberValue(body["cache_creation_input_tokens"]); ok {
+		info.CacheCreationTokens = int64(value)
+	}
+}
+
+// Credits live in Kiro-local usage metadata, leaving the shared token schema
+// unchanged. Ported from kiro-lb src/usage_tracking.rs (1581af9).
+func recordKiroCredits(ctx context.Context, credits float64) {
+	internallogging.MergeResponseHeaders(ctx, http.Header{"X-Kiro-Credits-Used": []string{strconv.FormatFloat(credits, 'f', -1, 64)}})
+}
+
+func addKiroCreditsToResponse(payload []byte, credits float64) []byte {
+	start := 0
+	if i := bytes.Index(payload, []byte("data: ")); i >= 0 {
+		start = i + len("data: ")
+	}
+	data := bytes.TrimSpace(payload[start:])
+	if !gjson.GetBytes(data, "usage").IsObject() {
+		return payload
+	}
+	updated, err := sjson.SetBytes(data, "usage.credits_used", credits)
+	if err != nil {
+		log.Errorf("kiro: encode response credits: %v", err)
+		return payload
+	}
+	return append(bytes.Clone(payload[:start]), updated...)
+}
+
+// Ported from kiro-lb src/parser.rs (1581af9). Scan JSON rather than trusting
+// malformed binary lengths. Byte-wise scanning preserves split UTF-8 and escape
+// sequences, stays linear, and never buffers more than one bounded frame.
 func (e *KiroExecutor) readEventStreamMessage(reader *bufio.Reader) (*eventStreamMessage, *EventStreamError) {
-	// Read prelude (first 12 bytes: total_len + headers_len + prelude_crc)
-	prelude := make([]byte, 12)
-	_, err := io.ReadFull(reader, prelude)
-	if err == io.EOF {
-		return nil, nil // Normal end of stream
+	var prefix, payload []byte
+	depth := 0
+	inString, escaped := false, false
+	for {
+		b, err := reader.ReadByte()
+		if err != nil {
+			if err == io.EOF && depth == 0 {
+				return nil, nil
+			}
+			return nil, &EventStreamError{Type: ErrStreamFatal, Message: "incomplete event stream frame", Cause: err}
+		}
+		if depth == 0 {
+			if b != '{' {
+				prefix = append(prefix, b)
+				if len(prefix) > 4096 {
+					prefix = append(prefix[:0], prefix[len(prefix)-2048:]...)
+				}
+				continue
+			}
+			// A binary length or CRC can contain '{'; it is not a JSON prefix.
+			if next, err := reader.Peek(1); err == nil && next[0] != '"' && next[0] != '}' && next[0] != ' ' && next[0] != '\n' && next[0] != '\r' && next[0] != '\t' {
+				prefix = append(prefix, b)
+				continue
+			}
+			payload = append(payload[:0], b)
+			depth = 1
+			continue
+		}
+		payload = append(payload, b)
+		if len(payload) > maxEventStreamMsgSize {
+			return nil, &EventStreamError{Type: ErrStreamMalformed, Message: "event stream frame exceeds 16MB"}
+		}
+		if inString {
+			if escaped {
+				escaped = false
+			} else if b == '\\' {
+				escaped = true
+			} else if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+		}
+		if depth != 0 {
+			continue
+		}
+		if !json.Valid(payload) {
+			log.Warn("kiro: skipping malformed JSON event")
+			prefix = prefix[:0]
+			continue
+		}
+		eventType := ""
+		// Recover AWS error/exception headers even when their payload has no type.
+		for _, name := range []string{":exception-type", ":error-code", ":event-type"} {
+			marker := append([]byte{byte(len(name))}, []byte(name)...)
+			if i := bytes.LastIndex(prefix, marker); i >= 0 {
+				offset := i + len(marker)
+				if offset+3 <= len(prefix) && prefix[offset] == 7 {
+					n := int(binary.BigEndian.Uint16(prefix[offset+1 : offset+3]))
+					if offset+3+n <= len(prefix) {
+						eventType = string(prefix[offset+3 : offset+3+n])
+						break
+					}
+				}
+			}
+		}
+		if eventType == "" {
+			eventType = inferKiroEventType(payload)
+		}
+		if eventType == "" {
+			prefix = prefix[:0]
+			continue
+		}
+		if strings.HasSuffix(strings.ToLower(eventType), "exception") || eventType == "error" || eventType == "exception" {
+			return nil, &EventStreamError{Type: ErrStreamFatal, Message: fmt.Sprintf("kiro API error (%s): %s", eventType, payload)}
+		}
+		return &eventStreamMessage{EventType: eventType, Payload: payload}, nil
 	}
-	if err != nil {
-		return nil, &EventStreamError{
-			Type:    ErrStreamFatal,
-			Message: "failed to read prelude",
-			Cause:   err,
+}
+
+func inferKiroEventType(payload []byte) string {
+	value := gjson.ParseBytes(payload)
+	for _, name := range []string{"assistantResponseEvent", "toolUseEvent", "reasoningContentEvent", "messageMetadataEvent", "metadataEvent", "meteringEvent", "contextUsageEvent", "messageStopEvent", "usageEvent", "metricsEvent", "supplementaryWebLinksEvent", "followupPromptEvent", "error", "exception", "internalServerException", "invalidStateEvent"} {
+		if value.Get(name).Exists() {
+			return name
 		}
 	}
-
-	totalLength := binary.BigEndian.Uint32(prelude[0:4])
-	headersLength := binary.BigEndian.Uint32(prelude[4:8])
-	// Note: prelude[8:12] is prelude_crc - we read it but don't validate (no CRC check per requirements)
-
-	// Boundary check: minimum frame size
-	if totalLength < minEventStreamFrameSize {
-		return nil, &EventStreamError{
-			Type:    ErrStreamMalformed,
-			Message: fmt.Sprintf("invalid message length: %d (minimum is %d)", totalLength, minEventStreamFrameSize),
+	for _, item := range []struct{ key, event string }{
+		{"_type", "error"}, {"__type", "error"}, {"followupPrompt", "followupPromptEvent"},
+		{"content", "assistantResponseEvent"}, {"name", "toolUseEvent"}, {"input", "toolUseEvent"}, {"stop", "toolUseEvent"},
+		{"text", "reasoningContentEvent"}, {"signature", "reasoningContentEvent"}, {"unit", "meteringEvent"},
+		{"contextUsagePercentage", "contextUsageEvent"}, {"stopReason", "messageStopEvent"}, {"stop_reason", "messageStopEvent"},
+		{"tokenUsage", "messageMetadataEvent"}, {"usage", "usageEvent"}, {"inputTokens", "usageEvent"}, {"outputTokens", "usageEvent"},
+	} {
+		if value.Get(item.key).Exists() {
+			return item.event
 		}
 	}
-
-	// Boundary check: maximum message size
-	if totalLength > maxEventStreamMsgSize {
-		return nil, &EventStreamError{
-			Type:    ErrStreamMalformed,
-			Message: fmt.Sprintf("message too large: %d bytes (maximum is %d)", totalLength, maxEventStreamMsgSize),
-		}
+	if typ := value.Get("type").String(); typ == "error" || typ == "exception" {
+		return typ
 	}
-
-	// Boundary check: headers length within message bounds
-	// Message structure: prelude(12) + headers(headersLength) + payload + message_crc(4)
-	// So: headersLength must be <= totalLength - 16 (12 for prelude + 4 for message_crc)
-	if headersLength > totalLength-16 {
-		return nil, &EventStreamError{
-			Type:    ErrStreamMalformed,
-			Message: fmt.Sprintf("headers length %d exceeds message bounds (total: %d)", headersLength, totalLength),
-		}
-	}
-
-	// Read the rest of the message (total - 12 bytes already read)
-	remaining := make([]byte, totalLength-12)
-	_, err = io.ReadFull(reader, remaining)
-	if err != nil {
-		return nil, &EventStreamError{
-			Type:    ErrStreamFatal,
-			Message: "failed to read message body",
-			Cause:   err,
-		}
-	}
-
-	// Extract event type from headers
-	// Headers start at beginning of 'remaining', length is headersLength
-	var eventType string
-	if headersLength > 0 && headersLength <= uint32(len(remaining)) {
-		eventType = e.extractEventTypeFromBytes(remaining[:headersLength])
-	}
-
-	// Calculate payload boundaries
-	// Payload starts after headers, ends before message_crc (last 4 bytes)
-	payloadStart := headersLength
-	payloadEnd := uint32(len(remaining)) - 4 // Skip message_crc at end
-
-	// Validate payload boundaries
-	if payloadStart >= payloadEnd {
-		// No payload, return empty message
-		return &eventStreamMessage{
-			EventType: eventType,
-			Payload:   nil,
-		}, nil
-	}
-
-	payload := remaining[payloadStart:payloadEnd]
-
-	return &eventStreamMessage{
-		EventType: eventType,
-		Payload:   payload,
-	}, nil
+	return ""
 }
 
 func skipEventStreamHeaderValue(headers []byte, offset int, valueType byte) (int, bool) {
@@ -2729,6 +3125,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 		}
 	}
 	var totalUsage usage.Detail
+	var creditsUsed float64
 	var hasToolUses bool          // Track if any tool uses were emitted
 	var upstreamStopReason string // Track stop_reason from upstream events
 
@@ -2800,28 +3197,77 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	}
 
 	contentBlockIndex := -1
-	messageStartSent := false
 	isTextBlockOpen := false
+	var pendingOfficialText strings.Builder
+	closeOfficialThinking := func() {
+		if isThinkingBlockOpen {
+			blockStop := kiroclaude.BuildClaudeThinkingBlockStopEvent(thinkingBlockIndex)
+			for _, chunk := range sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStop, &translatorParam) {
+				enqueueTranslatedSSE(out, chunk)
+			}
+			isThinkingBlockOpen = false
+		}
+		if pendingOfficialText.Len() > 0 {
+			contentBlockIndex++
+			isTextBlockOpen = true
+			blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "text", "", "")
+			textDelta := kiroclaude.BuildClaudeStreamEvent(pendingOfficialText.String(), contentBlockIndex)
+			for _, event := range [][]byte{blockStart, textDelta} {
+				for _, chunk := range sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, event, &translatorParam) {
+					enqueueTranslatedSSE(out, chunk)
+				}
+			}
+			pendingOfficialText.Reset()
+		}
+	}
+	// Ported from kiro-lb src/routes_v1.rs (1581af9).
+	keepalive := time.NewTimer(10 * time.Second)
+	defer keepalive.Stop()
+	msgStart := kiroclaude.BuildClaudeMessageStartEventWithUsage(model, totalUsage)
+	startData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, msgStart, &translatorParam)
+	for _, chunk := range startData {
+		enqueueTranslatedSSE(out, chunk)
+	}
 	var outputLen int
 
 	// Ensure usage is published even on early return
 	defer func() {
+		recordKiroCredits(ctx, creditsUsed)
 		reporter.publish(ctx, totalUsage)
 	}()
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
+		type eventRead struct {
+			msg *eventStreamMessage
+			err *EventStreamError
 		}
-
-		msg, eventErr := e.readEventStreamMessage(reader)
+		readResult := make(chan eventRead, 1)
+		go func() {
+			msg, err := e.readEventStreamMessage(reader)
+			readResult <- eventRead{msg: msg, err: err}
+		}()
+		var result eventRead
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-keepalive.C:
+				// Keepalive is protocol-only: never fabricate usage during silence.
+				if targetFormat.String() == "claude" || targetFormat.String() == "kiro" {
+					enqueueTranslatedSSE(out, []byte("event: ping\ndata: {\"type\":\"ping\"}"))
+				} else {
+					sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: []byte(": ping\n\n")})
+				}
+				keepalive.Reset(10 * time.Second)
+			case result = <-readResult:
+				goto eventReadComplete
+			}
+		}
+	eventReadComplete:
+		eventErr := result.err
+		msg := result.msg
 		if eventErr != nil {
-			// Log the error
 			log.Errorf("kiro: streamToChannel error: %v", eventErr)
-
-			// Send error to channel for client notification
 			sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: eventErr})
 			return
 		}
@@ -2847,6 +3293,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 		if len(payload) == 0 {
 			continue
 		}
+		keepalive.Reset(10 * time.Second)
 		appendAPIResponseChunk(ctx, e.cfg, payload)
 
 		var event map[string]interface{}
@@ -2893,16 +3340,12 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			log.Debugf("kiro: streamToChannel found stopReason (top-level): %s", upstreamStopReason)
 		}
 
-		// Send message_start on first event
-		if !messageStartSent {
-			msgStart := kiroclaude.BuildClaudeMessageStartEvent(model, totalUsage.InputTokens)
-			sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, msgStart, &translatorParam)
-			for _, chunk := range sseData {
-				enqueueTranslatedSSE(out, chunk)
-			}
-			messageStartSent = true
+		creditsUsed += kiroEventCredits(event)
+		consumeKiroQuota(ctx, kiroEventCredits(event))
+		updateKiroCacheUsage(event, &totalUsage)
+		if hasOfficialReasoningEvent && eventType != "assistantResponseEvent" && eventType != "reasoningContentEvent" {
+			closeOfficialThinking()
 		}
-
 		switch eventType {
 		case "followupPromptEvent":
 			// Filter out followupPrompt events - these are UI suggestions, not content
@@ -2910,6 +3353,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			continue
 
 		case "messageStopEvent", "message_stop":
+			event = kiroEventBody(event, eventType)
 			// Handle message stop events which may contain stop_reason
 			if sr := kirocommon.GetString(event, "stop_reason"); sr != "" {
 				upstreamStopReason = sr
@@ -2932,14 +3376,14 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				if u, ok := metering["usage"].(float64); ok {
 					usageVal = u
 				}
-				upstreamCreditUsage = usageVal
+				upstreamCreditUsage += usageVal
 				hasUpstreamUsage = true
 				log.Infof("kiro: streamToChannel received meteringEvent: usage=%.4f %s", usageVal, unit)
 			} else {
 				// Try direct fields (event is meteringEvent itself)
 				if unit, ok := event["unit"].(string); ok {
 					if usage, ok := event["usage"].(float64); ok {
-						upstreamCreditUsage = usage
+						upstreamCreditUsage += usage
 						hasUpstreamUsage = true
 						log.Debugf("kiro: streamToChannel received meteringEvent (direct): usage=%.4f %s", usage, unit)
 					}
@@ -3011,7 +3455,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			// Format: {"unit":"credit","unitPlural":"credits","usage":1.458}
 			if unit, ok := event["unit"].(string); ok && unit == "credit" {
 				if usage, ok := event["usage"].(float64); ok {
-					upstreamCreditUsage = usage
+					upstreamCreditUsage += usage
 					hasUpstreamUsage = true
 					log.Debugf("kiro: received upstream credit usage: %.4f", upstreamCreditUsage)
 				}
@@ -3160,8 +3604,13 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 					lastUsageUpdateTime = time.Now()
 				}
 
+				if hasOfficialReasoningEvent && isThinkingBlockOpen && len(toolUses) == 0 {
+					pendingOfficialText.WriteString(contentDelta)
+					continue
+				}
 				if hasOfficialReasoningEvent {
-					processText := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(contentDelta, kirocommon.ThinkingStartTag, ""), kirocommon.ThinkingEndTag, ""))
+					closeOfficialThinking()
+					processText := strings.ReplaceAll(strings.ReplaceAll(contentDelta, kirocommon.ThinkingStartTag, ""), kirocommon.ThinkingEndTag, "")
 					if processText != "" {
 						if !isTextBlockOpen {
 							contentBlockIndex++
@@ -3178,7 +3627,10 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 							enqueueTranslatedSSE(out, chunk)
 						}
 					}
-					continue
+					if len(toolUses) == 0 {
+						continue
+					}
+					contentDelta = "" // Text was emitted; still deliver attached tools.
 				}
 
 				// TAG-BASED THINKING PARSING: Parse <thinking> tags from content
@@ -3344,6 +3796,9 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				}
 			}
 
+			if len(toolUses) > 0 {
+				closeOfficialThinking()
+			}
 			// Handle tool uses in response (with deduplication)
 			for _, tu := range toolUses {
 				toolUseID := kirocommon.GetString(tu, "toolUseId")
@@ -3428,7 +3883,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				}
 			}
 
-			if thinkingText != "" {
+			if thinkingText != "" || signature != "" {
 				hasOfficialReasoningEvent = true
 				// Close text block if open before starting thinking block
 				if isTextBlockOpen && contentBlockIndex >= 0 {
@@ -3452,11 +3907,13 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 					}
 				}
 
-				// Send thinking content
-				thinkingEvent := kiroclaude.BuildClaudeThinkingDeltaEvent(thinkingText, thinkingBlockIndex)
-				sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, thinkingEvent, &translatorParam)
-				for _, chunk := range sseData {
-					enqueueTranslatedSSE(out, chunk)
+				// Signature-only events still need an open thinking block.
+				if thinkingText != "" {
+					thinkingEvent := kiroclaude.BuildClaudeThinkingDeltaEvent(thinkingText, thinkingBlockIndex)
+					sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, thinkingEvent, &translatorParam)
+					for _, chunk := range sseData {
+						enqueueTranslatedSSE(out, chunk)
+					}
 				}
 
 				// Accumulate for token counting
@@ -3464,9 +3921,15 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				log.Debugf("kiro: received reasoningContentEvent, text length: %d, has signature: %v", len(thinkingText), signature != "")
 			}
 
-			// Note: We don't close the thinking block here - it will be closed when we see
-			// the next assistantResponseEvent or at the end of the stream
-			_ = signature // Signature can be used for verification if needed
+			// Ported from kiro-lb src/stream_anthropic.rs (1581af9).
+			if signature != "" && isThinkingBlockOpen {
+				signatureEvent := kiroclaude.BuildClaudeSignatureDeltaEvent(signature, thinkingBlockIndex)
+				sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, signatureEvent, &translatorParam)
+				for _, chunk := range sseData {
+					enqueueTranslatedSSE(out, chunk)
+				}
+				closeOfficialThinking()
+			}
 
 		case "toolUseEvent":
 			// Handle dedicated tool use events with input buffering
@@ -3477,6 +3940,9 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			}
 			currentToolUse = newState
 
+			if len(completedToolUses) > 0 {
+				closeOfficialThinking()
+			}
 			// Emit completed tool uses
 			for _, tu := range completedToolUses {
 				// Skip truncated tools - don't emit fake marker tool_use
@@ -3703,6 +4169,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 		}
 	}
 
+	closeOfficialThinking()
 	// Close content block if open
 	if isTextBlockOpen && contentBlockIndex >= 0 {
 		blockStop := kiroclaude.BuildClaudeContentBlockStopEvent(contentBlockIndex)
@@ -3786,7 +4253,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			log.Debugf("kiro: streamToChannel using fallback stop_reason: end_turn")
 		}
 	}
-	stopReason, stopErr := normalizeKiroStopReason(stopReason, strings.TrimSpace(accumulatedContent.String()) != "", hasToolUses)
+	stopReason, stopErr := normalizeKiroStopReason(stopReason, strings.TrimSpace(accumulatedContent.String()) != "" || accumulatedThinkingContent.Len() > 0, hasToolUses)
 	if stopErr != nil {
 		sendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: stopErr})
 		return
@@ -3799,9 +4266,10 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 	// Send message_delta event
 	msgDelta := kiroclaude.BuildClaudeMessageDeltaEvent(stopReason, totalUsage)
+	msgDelta = addKiroCreditsToResponse(msgDelta, creditsUsed)
 	sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, msgDelta, &translatorParam)
 	for _, chunk := range sseData {
-		enqueueTranslatedSSE(out, chunk)
+		enqueueTranslatedSSE(out, addKiroCreditsToResponse(chunk, creditsUsed))
 	}
 
 	// Send message_stop event separately
@@ -3863,11 +4331,7 @@ func (e *KiroExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth,
 // Refresh refreshes the Kiro OAuth token.
 // Supports both AWS Builder ID (SSO OIDC) and Google OAuth (social login).
 // Uses mutex to prevent race conditions when multiple concurrent requests try to refresh.
-func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
-	// Serialize token refresh operations to prevent race conditions
-	e.refreshMu.Lock()
-	defer e.refreshMu.Unlock()
-
+func (e *KiroExecutor) refreshKiroUnlocked(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	var authID string
 	if auth != nil {
 		authID = auth.ID
@@ -3879,18 +4343,13 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		return nil, fmt.Errorf("kiro executor: auth is nil")
 	}
 
-	// Double-check: After acquiring lock, verify token still needs refresh
-	// Another goroutine may have already refreshed while we were waiting
-	// NOTE: This check has a design limitation - it reads from the auth object passed in,
-	// not from persistent storage. If another goroutine returns a new Auth object (via Clone),
-	// this check won't see those updates. The mutex still prevents truly concurrent refreshes,
-	// but queued goroutines may still attempt redundant refreshes. This is acceptable as
-	// the refresh operation is idempotent and the extra API calls are infrequent.
+	// Refresh supplies the durable snapshot read under the per-file lease.
+	now := e.accountHealth().clock()
 	if auth.Metadata != nil {
 		if lastRefresh, ok := auth.Metadata["last_refresh"].(string); ok {
 			if refreshTime, err := time.Parse(time.RFC3339, lastRefresh); err == nil {
 				// If token was refreshed within the last 30 seconds, skip refresh
-				if time.Since(refreshTime) < 30*time.Second {
+				if now.Sub(refreshTime) >= 0 && now.Sub(refreshTime) < 30*time.Second {
 					log.Debugf("kiro executor: token was recently refreshed by another goroutine, skipping")
 					return auth, nil
 				}
@@ -3900,14 +4359,14 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		if expiresAt, ok := auth.Metadata["expires_at"].(string); ok {
 			if expTime, err := time.Parse(time.RFC3339, expiresAt); err == nil {
 				// If token expires more than 20 minutes from now, it's still valid
-				if time.Until(expTime) > 20*time.Minute {
+				if expTime.Sub(now) > 20*time.Minute {
 					log.Debugf("kiro executor: token is still valid (expires in %v), skipping refresh", time.Until(expTime))
 					// CRITICAL FIX: Set NextRefreshAfter to prevent frequent refresh checks
 					// Without this, shouldRefresh() will return true again in 30 seconds
 					updated := auth.Clone()
 					// Set next refresh to 20 minutes before expiry, or at least 30 seconds from now
 					nextRefresh := expTime.Add(-20 * time.Minute)
-					minNextRefresh := time.Now().Add(30 * time.Second)
+					minNextRefresh := now.Add(30 * time.Second)
 					if nextRefresh.Before(minNextRefresh) {
 						nextRefresh = minNextRefresh
 					}
@@ -3919,31 +4378,22 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		}
 	}
 
-	refreshSource := auth
-	tokenData, err := e.refreshKiroToken(ctx, refreshSource)
-	if err != nil && isKiroRefreshBadRequest(err) {
-		reloaded, reloadErr := e.reloadRawAuthFromFile(auth)
-		if reloadErr == nil {
-			log.Warnf("kiro executor: token refresh failed with HTTP 400; retrying once with raw file credentials")
-			refreshSource = reloaded
-			tokenData, err = e.refreshKiroToken(ctx, refreshSource)
-		} else {
-			log.Debugf("kiro executor: raw credential reload after HTTP 400 failed: %v", reloadErr)
-		}
-	}
+	refreshSource := auth.Clone()
+	machineID := ensureKiroMachineID(refreshSource)
+	tokenData, err := e.refreshKiroToken(kiroauth.WithMachineID(ctx, machineID), refreshSource)
 	if err != nil {
 		return nil, fmt.Errorf("kiro executor: token refresh failed: %w", err)
 	}
 
 	refreshToken, _ := refreshSource.Metadata["refresh_token"].(string)
 	updated := refreshSource.Clone()
-	now := time.Now()
 	updated.UpdatedAt = now
 	updated.LastRefreshedAt = now
 
 	if updated.Metadata == nil {
 		updated.Metadata = make(map[string]any)
 	}
+	updated.Metadata["kiro_machine_id"] = machineID
 	updated.Metadata["access_token"] = tokenData.AccessToken
 	updated.Metadata["refresh_token"] = refreshToken
 	if tokenData.RefreshToken != "" {
@@ -4016,7 +4466,7 @@ func (e *KiroExecutor) refreshKiroToken(ctx context.Context, auth *cliproxyauth.
 		return ssoClient.RefreshToken(ctx, clientID, clientSecret, refreshToken)
 	default:
 		log.Debugf("kiro executor: using Kiro OAuth refresh endpoint")
-		return kiroauth.NewKiroOAuth(e.cfg).RefreshToken(ctx, refreshToken)
+		return kiroauth.NewKiroOAuth(e.cfg).WithMachineID(kiroauth.MachineIDFromContext(ctx)).RefreshToken(ctx, refreshToken)
 	}
 }
 
@@ -4030,51 +4480,30 @@ func isKiroRefreshBadRequest(err error) bool {
 		strings.Contains(message, "status code 400")
 }
 
-// persistRefreshedAuth persists a refreshed auth record to disk.
-// This ensures token refreshes from inline retry are saved to the auth file.
-func (e *KiroExecutor) persistRefreshedAuth(auth *cliproxyauth.Auth) error {
-	if auth == nil || auth.Metadata == nil {
-		return fmt.Errorf("kiro executor: cannot persist nil auth or metadata")
+// Only profile discovery uses this helper; Refresh commits under its own lease.
+// Never write a request-local token snapshot during profile discovery.
+func (e *KiroExecutor) persistRefreshedAuth(auth *cliproxyauth.Auth) (err error) {
+	path := e.kiroAuthPath(auth)
+	if path == "" {
+		return fmt.Errorf("kiro: auth has no file path")
 	}
-
-	// Determine the file path from auth attributes or filename
-	var authPath string
-	if auth.Attributes != nil {
-		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
-			authPath = p
-		}
-	}
-	if authPath == "" {
-		fileName := strings.TrimSpace(auth.FileName)
-		if fileName == "" {
-			return fmt.Errorf("kiro executor: auth has no file path or filename")
-		}
-		if filepath.IsAbs(fileName) {
-			authPath = fileName
-		} else if e.cfg != nil && e.cfg.AuthDir != "" {
-			authPath = filepath.Join(e.cfg.AuthDir, fileName)
-		} else {
-			return fmt.Errorf("kiro executor: cannot determine auth file path")
-		}
-	}
-
-	// Marshal metadata to JSON
-	raw, err := json.Marshal(auth.Metadata)
+	lease, err := acquireKiroRefreshLease(path)
 	if err != nil {
-		return fmt.Errorf("kiro executor: marshal metadata failed: %w", err)
+		return err
 	}
-
-	// Write to temp file first, then rename (atomic write)
-	tmp := authPath + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("kiro executor: write temp auth file failed: %w", err)
+	defer func() { err = errors.Join(err, lease.Close()) }()
+	current, err := readKiroMetadata(path)
+	if err != nil {
+		return err
 	}
-	if err := os.Rename(tmp, authPath); err != nil {
-		return fmt.Errorf("kiro executor: rename auth file failed: %w", err)
+	if lineage, _ := auth.Metadata[kiroLineageKey].(string); lineage != "" && current[kiroLineageKey] != lineage {
+		return errKiroCredentialReplaced
 	}
-
-	log.Debugf("kiro executor: persisted refreshed auth to %s", authPath)
-	return nil
+	if kiroCredentialFingerprint(current) != kiroCredentialFingerprint(auth.Metadata) {
+		return errKiroCredentialReplaced
+	}
+	current["profile_arn"] = auth.Metadata["profile_arn"]
+	return writeKiroMetadata(path, current)
 }
 
 // fetchAndSaveProfileArn fetches profileArn from API if missing, updates auth and persists to file.
@@ -4101,7 +4530,7 @@ func (e *KiroExecutor) fetchAndSaveProfileArn(ctx context.Context, auth *cliprox
 	refreshToken, _ := auth.Metadata["refresh_token"].(string)
 
 	ssoClient := kiroauth.NewSSOOIDCClient(e.cfg)
-	profileArn := ssoClient.FetchProfileArn(ctx, accessToken, clientID, refreshToken)
+	profileArn := ssoClient.FetchProfileArn(kiroauth.WithMachineID(ctx, ensureKiroMachineID(auth)), accessToken, clientID, refreshToken)
 	if profileArn == "" {
 		log.Debugf("kiro executor: FetchProfileArn returned no profiles")
 		return ""
@@ -4631,7 +5060,9 @@ func (e *KiroExecutor) handleWebSearchStream(
 			totalUsage.InputTokens = 1
 		}
 		var accumulatedOutputLen int
+		var creditsUsed float64
 		defer func() {
+			recordKiroCredits(ctx, creditsUsed)
 			if wsErr != nil {
 				return // let trackFailure handle failure reporting
 			}
@@ -4731,6 +5162,10 @@ func (e *KiroExecutor) handleWebSearchStream(
 				return
 			}
 
+			// Count each physical generation once, never sum repeated cumulative
+			// usage snapshots. Ported from kiro-lb src/stream_openai.rs (1581af9).
+			creditsUsed += kiroBufferedGenerationCredits(kiroChunks)
+
 			// Analyze response
 			analysis := kiroclaude.AnalyzeBufferedStream(kiroChunks)
 			log.Infof("kiro/websearch: iteration %d — stop_reason: %s, has_tool_use: %v",
@@ -4754,6 +5189,7 @@ func (e *KiroExecutor) handleWebSearchStream(
 
 			// Model returned final response — stream to client
 			for _, chunk := range kiroChunks {
+				chunk = addKiroCreditsToResponse(chunk, creditsUsed)
 				if contentBlockIndex > 0 && len(chunk) > 0 {
 					adjusted, shouldForward := kiroclaude.AdjustSSEChunk(chunk, contentBlockIndex)
 					if !shouldForward {
@@ -4876,6 +5312,19 @@ func (e *KiroExecutor) handleWebSearch(
 	}
 
 	return resp, nil
+}
+
+func kiroBufferedGenerationCredits(chunks [][]byte) float64 {
+	var credits float64
+	for _, chunk := range chunks {
+		for _, line := range bytes.Split(chunk, []byte{'\n'}) {
+			data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			if value := gjson.GetBytes(data, "usage.credits_used"); value.Type == gjson.Number {
+				credits = value.Float()
+			}
+		}
+	}
+	return credits
 }
 
 // callKiroAndBuffer calls the Kiro API and buffers all response chunks.

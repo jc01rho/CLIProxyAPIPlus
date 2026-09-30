@@ -290,8 +290,7 @@ func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		log.Debugf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("token refresh failed (status %d)", resp.StatusCode)
+		return nil, &RefreshError{HTTPStatus: resp.StatusCode}
 	}
 
 	var tokenResp SocialTokenResponse

@@ -500,8 +500,8 @@ func TestBuildKiroPayloadFromOpenAIAdaptiveAndNativeFields(t *testing.T) {
 	if err := json.Unmarshal(gptResult, &gptPayload); err != nil {
 		t.Fatalf("unmarshal gpt: %v", err)
 	}
-	if gptPayload.AdditionalModelRequestFields != nil {
-		t.Fatalf("gpt-5.6 must omit unsupported request fields: %#v", gptPayload.AdditionalModelRequestFields)
+	if got := gptPayload.AdditionalModelRequestFields["reasoning"].(map[string]any)["effort"]; got != "max" {
+		t.Fatalf("gpt-5.6 native reasoning effort = %#v, want max", got)
 	}
 
 	legacy := []byte(`{

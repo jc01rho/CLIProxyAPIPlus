@@ -165,29 +165,32 @@ func (c *UsageChecker) GetQuotaStatus(ctx context.Context, tokenData *KiroTokenD
 		return nil, err
 	}
 
+	if len(usage.UsageBreakdownList) == 0 {
+		return nil, fmt.Errorf("usage response has no quota breakdown")
+	}
 	status := &QuotaStatus{
-		IsExhausted: IsQuotaExhausted(usage),
+		IsExhausted:    IsQuotaExhausted(usage),
+		RemainingQuota: GetRemainingQuota(usage),
 	}
 
 	if len(usage.UsageBreakdownList) > 0 {
 		breakdown := usage.UsageBreakdownList[0]
 		status.TotalLimit = breakdown.UsageLimitWithPrecision
 		status.CurrentUsage = breakdown.CurrentUsageWithPrecision
-		status.RemainingQuota = breakdown.UsageLimitWithPrecision - breakdown.CurrentUsageWithPrecision
 		status.ResourceType = breakdown.ResourceType
 
 		if breakdown.FreeTrialInfo != nil {
 			status.TotalLimit += breakdown.FreeTrialInfo.UsageLimitWithPrecision
 			status.CurrentUsage += breakdown.FreeTrialInfo.CurrentUsageWithPrecision
-			freeRemaining := breakdown.FreeTrialInfo.UsageLimitWithPrecision - breakdown.FreeTrialInfo.CurrentUsageWithPrecision
-			if freeRemaining > 0 {
-				status.RemainingQuota += freeRemaining
-			}
 		}
 	}
 
 	if usage.NextDateReset > 0 {
-		status.NextReset = time.Unix(int64(usage.NextDateReset/1000), 0)
+		reset := usage.NextDateReset
+		if reset >= 1e12 {
+			reset /= 1000
+		}
+		status.NextReset = time.Unix(int64(reset), 0)
 	}
 
 	return status, nil

@@ -59,7 +59,30 @@ func TestBuildKiroEndpointConfigsRuntimeCredentialUsesRuntimePrimary(t *testing.
 	}
 }
 
-func TestBuildKiroEndpointConfigsBuilderIDUsesAmazonQ(t *testing.T) {
+func TestValidateKiroRuntimeMetadataRejectsMalformedPresentValues(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		meta map[string]any
+	}{
+		{"region type", map[string]any{"region": 42}},
+		{"region value", map[string]any{"api_region": "not-a-region"}},
+		{"profile ARN type", map[string]any{"profile_arn": 42}},
+		{"profile ARN value", map[string]any{"profile_arn": "arn:aws:codewhisperer:not-real:123:profile/x"}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateKiroRuntimeMetadata(&cliproxyauth.Auth{Metadata: test.meta}); err == nil {
+				t.Fatal("expected malformed present metadata to be rejected")
+			}
+		})
+	}
+	if err := validateKiroRuntimeMetadata(&cliproxyauth.Auth{Metadata: map[string]any{"region": nil, "profile_arn": nil}}); err != nil {
+		t.Fatalf("absent/null metadata should remain valid: %v", err)
+	}
+}
+
+func TestBuildKiroEndpointConfigsBuilderIDUsesRuntimePrimary(t *testing.T) {
 	t.Parallel()
 
 	auth := &cliproxyauth.Auth{
@@ -71,15 +94,14 @@ func TestBuildKiroEndpointConfigsBuilderIDUsesAmazonQ(t *testing.T) {
 	}
 
 	configs := buildKiroEndpointConfigsForAuth(auth)
-	// Builder ID has no profile ARN, so Amazon Q must be primary while the
-	// other hosts remain available as local failovers.
+	// Builder ID now uses Runtime as primary; legacy hosts remain fallbacks.
 	if len(configs) != 3 {
-		t.Fatalf("endpoint configs = %#v, want 3 endpoints with Amazon Q first", configs)
+		t.Fatalf("endpoint configs = %#v, want 3 endpoints with Runtime first", configs)
 	}
-	if got, want := configs[0].Name, "AmazonQ"; got != want {
+	if got, want := configs[0].Name, "KiroRuntime"; got != want {
 		t.Fatalf("endpoint name = %q, want %q", got, want)
 	}
-	if got, want := configs[0].URL, "https://q.us-east-1.amazonaws.com/generateAssistantResponse"; got != want {
+	if got, want := configs[0].URL, "https://runtime.us-east-1.kiro.dev/"; got != want {
 		t.Fatalf("endpoint URL = %q, want %q", got, want)
 	}
 	if got, want := configs[0].Origin, "AI_EDITOR"; got != want {
@@ -190,7 +212,7 @@ func TestKiroTimedReadCloserBoundsInterChunkDelay(t *testing.T) {
 	}
 }
 
-func TestApplyKiroGenerationHeadersMatchesCLI2191(t *testing.T) {
+func TestApplyKiroGenerationHeadersMatchesIDE1170(t *testing.T) {
 	t.Parallel()
 
 	req, err := http.NewRequest(http.MethodPost, "https://runtime.us-east-1.kiro.dev/", nil)
@@ -199,11 +221,11 @@ func TestApplyKiroGenerationHeadersMatchesCLI2191(t *testing.T) {
 	}
 	applyDynamicFingerprint(req, &cliproxyauth.Auth{ID: "auth"})
 
-	if got := req.Header.Get("User-Agent"); got != kiroCLIUserAgent {
-		t.Fatalf("User-Agent = %q, want %q", got, kiroCLIUserAgent)
+	if got := req.Header.Get("User-Agent"); !strings.Contains(got, "KiroIDE-1.1.70-") {
+		t.Fatalf("User-Agent = %q, want Kiro IDE account fingerprint", got)
 	}
-	if got := req.Header.Get("x-amz-user-agent"); got != kiroCLIAmzUserAgent {
-		t.Fatalf("x-amz-user-agent = %q, want %q", got, kiroCLIAmzUserAgent)
+	if got := req.Header.Get("x-amz-user-agent"); !strings.Contains(got, "KiroIDE-1.1.70-") {
+		t.Fatalf("x-amz-user-agent = %q, want Kiro IDE account fingerprint", got)
 	}
 	if got := req.Header.Get("x-kiro-attempt"); got != "1;max=3" {
 		t.Fatalf("x-kiro-attempt = %q", got)

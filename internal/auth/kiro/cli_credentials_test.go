@@ -3,8 +3,10 @@ package kiro
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -119,6 +121,68 @@ func TestLoadKiroCLICredentialSupportsCorrectOIDCKey(t *testing.T) {
 	}
 	if got.AuthMethod != "idc" {
 		t.Fatalf("auth method = %q, want idc", got.AuthMethod)
+	}
+}
+
+func TestKiroTokenDataFromMapValidatesOptionalCredentialFields(t *testing.T) {
+	t.Parallel()
+
+	validARN := "arn:aws:codewhisperer:us-gov-west-1:123456789012:profile/test"
+	for _, tc := range []struct {
+		name   string
+		values map[string]any
+		want   string
+	}{
+		{name: "absent fields", values: map[string]any{"accessToken": "access"}},
+		{name: "null fields", values: map[string]any{"accessToken": "access", "region": nil, "profileArn": nil}},
+		{name: "valid fields", values: map[string]any{"accessToken": "access", "region": "us-gov-west-1", "profileArn": validARN}, want: "us-gov-west-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := kiroTokenDataFromMap(tc.values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.APIRegion != tc.want {
+				t.Fatalf("APIRegion = %q, want %q", got.APIRegion, tc.want)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		values map[string]any
+		field  string
+	}{
+		{name: "region wrong type", values: map[string]any{"accessToken": "access", "region": 1}, field: "region"},
+		{name: "region invalid", values: map[string]any{"accessToken": "access", "region": "US-east-1"}, field: "region"},
+		{name: "profile ARN wrong type", values: map[string]any{"accessToken": "access", "profileArn": 1}, field: "profileArn"},
+		{name: "profile ARN malformed", values: map[string]any{"accessToken": "access", "profileArn": "arn:aws:codewhisperer:us-east-1:123:profile"}, field: "profileArn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := kiroTokenDataFromMap(tc.values)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			fieldErr := &CredentialFieldError{}
+			if !errors.As(err, &fieldErr) || fieldErr.Field != tc.field {
+				t.Fatalf("error = %v, want actionable error for %q", err, tc.field)
+			}
+		})
+	}
+}
+
+func TestKiroTokenDataFromMapAcceptsRefreshTokenOnly(t *testing.T) {
+	t.Parallel()
+
+	got, err := kiroTokenDataFromMap(map[string]any{"refreshToken": "refresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessToken != "" || got.RefreshToken != "refresh" {
+		t.Fatalf("tokens = %#v", got)
+	}
+	if got.ExpiresAt != time.Unix(0, 0).UTC().Format(time.RFC3339) {
+		t.Fatalf("ExpiresAt = %q, want immediately expired", got.ExpiresAt)
 	}
 }
 

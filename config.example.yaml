@@ -931,6 +931,12 @@ oauth:
     # Kiro client identity and endpoint preference (file-backed credentials).
     # kiro:
     #   preferred-endpoint: ""
+    #   # Ordered Kiro-only proxy chain. Ready proxies are tried first; transport failures
+    #   # cool a proxy for 60s. No automatic direct fallback when this list is non-empty.
+    #   # Request/credential proxy-url overrides the list. When absent/empty, the existing
+    #   # single requests.proxy-url still applies. Entries support http/https/socks5/socks5h
+    #   # URLs and explicit "direct"/"none". Legacy flat key: kiro-proxy-urls.
+    #   proxy-urls: ["http://proxy-one.example:8080", "socks5://proxy-two.example:1080"]
     #   fingerprint:
     #     kiro-version: ""
 

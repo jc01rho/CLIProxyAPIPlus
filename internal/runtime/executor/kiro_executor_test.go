@@ -72,15 +72,15 @@ func TestBuildKiroEndpointConfigsForAuthSelectsHostByCredentialKind(t *testing.T
 		wantURL  string
 	}{
 		{
-			name: "builder id without profile uses Amazon Q",
+			name: "builder id without profile uses Kiro Runtime",
 			metadata: map[string]any{
 				"auth_method":   "builder-id",
 				"client_id":     "client",
 				"client_secret": "secret",
 				"api_region":    "eu-west-1",
 			},
-			wantName: "AmazonQ",
-			wantURL:  "https://q.eu-west-1.amazonaws.com/generateAssistantResponse",
+			wantName: "KiroRuntime",
+			wantURL:  "https://runtime.eu-west-1.kiro.dev/",
 		},
 		{
 			name: "profiled OIDC uses Kiro Runtime",
@@ -368,8 +368,8 @@ func TestKiroRefreshReloadsRawFileOnceAndRetainsRefreshToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
 	}
-	if len(refreshTokens) != 2 || refreshTokens[0] != "stale-refresh" || refreshTokens[1] != "fresh-refresh" {
-		t.Fatalf("refresh attempts = %#v, want [stale-refresh fresh-refresh]", refreshTokens)
+	if len(refreshTokens) != 1 || refreshTokens[0] != "fresh-refresh" {
+		t.Fatalf("refresh attempts = %#v, want [fresh-refresh]", refreshTokens)
 	}
 	if got := updated.Metadata["access_token"]; got != "new-access" {
 		t.Fatalf("access_token = %#v, want new-access", got)

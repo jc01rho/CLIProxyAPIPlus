@@ -177,6 +177,19 @@ func TestKiroEndpointAttemptOrder_NeverRemovesAnEndpoint(t *testing.T) {
 	}
 }
 
+func TestKiroEndpointRecordFailureCoolsEndpointAfterTransportOrServerFailure(t *testing.T) {
+	kiroResetEndpointRotationState()
+
+	kiroRecordEndpointFailure("runtime", kiroEndpointFailureCooldown)
+
+	kiroEndpointRotation.mu.Lock()
+	until, cooling := kiroEndpointRotation.cooldownUntil["runtime"]
+	kiroEndpointRotation.mu.Unlock()
+	if !cooling || until.Before(time.Now().Add(kiroEndpointFailureCooldown-time.Second)) {
+		t.Fatalf("endpoint failure cooldown = %v, want approximately %v", until, kiroEndpointFailureCooldown)
+	}
+}
+
 func TestKiroEndpointRecordFailure_NonPositiveCooldownIsNoop(t *testing.T) {
 	kiroResetEndpointRotationState()
 

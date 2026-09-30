@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,12 +15,16 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/net/http2"
 )
 
 // httpClientCache caches HTTP clients by proxy URL to enable connection reuse
 var (
 	httpClientCache      = make(map[string]*http.Client)
 	httpClientCacheMutex sync.RWMutex
+	kiroProxyChainMu     sync.Mutex
+	kiroProxyCooling     = make(map[string]time.Time)
+	kiroProxyTransports  = NewTransportCache[string](DefaultTransportCacheCapacity)
 )
 
 const (
@@ -90,6 +95,107 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 
 	return httpClient
+}
+
+// NewKiroProxyChainHTTPClient builds a Kiro-only ordered proxy chain. A
+// transport failure cools that proxy for 60 seconds and the next ready proxy
+// is attempted. Ported from kiro-lb src/upstream/http.rs (1581af9).
+func NewKiroProxyChainHTTPClient(timeout time.Duration, proxyURLs []string) *http.Client {
+	transports := make([]kiroProxyTransport, 0, len(proxyURLs))
+	seen := make(map[string]struct{}, len(proxyURLs))
+	for _, raw := range proxyURLs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return &http.Client{Transport: kiroProxyConfigError{fmt.Errorf("kiro proxy-urls: empty entry; use direct for an explicit direct connection")}, Timeout: timeout}
+		}
+		if _, ok := seen[raw]; ok {
+			continue
+		}
+		seen[raw] = struct{}{}
+		transport, err := kiroProxyTransports.Get(raw, func() (*http.Transport, error) {
+			transport, _, err := proxyutil.BuildHTTPTransport(raw)
+			if err != nil {
+				return nil, fmt.Errorf("kiro proxy-urls (%s): %w", proxyutil.Redact(raw), err)
+			}
+			tuneHTTPTransport(transport)
+			if err := configureKiroProxyHTTP2(transport); err != nil {
+				return nil, err
+			}
+			return transport, nil
+		})
+		if err != nil {
+			return &http.Client{Transport: kiroProxyConfigError{err}, Timeout: timeout}
+		}
+		transports = append(transports, kiroProxyTransport{key: raw, transport: withStreamingIdleTimeout(transport)})
+	}
+	return &http.Client{Transport: kiroProxyChainRoundTripper{transports: transports}, Timeout: timeout}
+}
+
+type kiroProxyConfigError struct{ err error }
+
+func (rt kiroProxyConfigError) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		if err := req.Body.Close(); err != nil {
+			return nil, errors.Join(rt.err, err)
+		}
+	}
+	return nil, rt.err
+}
+
+type kiroProxyTransport struct {
+	key       string
+	transport http.RoundTripper
+}
+
+type kiroProxyChainRoundTripper struct{ transports []kiroProxyTransport }
+
+func (rt kiroProxyChainRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	ordered := make([]kiroProxyTransport, 0, len(rt.transports))
+	var cooling []kiroProxyTransport
+	now := time.Now()
+	kiroProxyChainMu.Lock()
+	for _, candidate := range rt.transports {
+		if until, ok := kiroProxyCooling[candidate.key]; ok && until.After(now) {
+			cooling = append(cooling, candidate)
+		} else {
+			delete(kiroProxyCooling, candidate.key)
+			ordered = append(ordered, candidate)
+		}
+	}
+	ordered = append(ordered, cooling...)
+	kiroProxyChainMu.Unlock()
+	var lastErr error
+	for i, candidate := range ordered {
+		attempt := req.Clone(req.Context())
+		if i > 0 && req.Body != nil && req.Body != http.NoBody {
+			if req.GetBody == nil {
+				return nil, fmt.Errorf("kiro: cannot replay request through next proxy: %w", lastErr)
+			}
+			body, err := req.GetBody()
+			if err != nil {
+				return nil, fmt.Errorf("kiro: replay proxy request body: %w", err)
+			}
+			attempt.Body = body
+		}
+		resp, err := candidate.transport.RoundTrip(attempt)
+		if err == nil {
+			kiroProxyChainMu.Lock()
+			delete(kiroProxyCooling, candidate.key)
+			kiroProxyChainMu.Unlock()
+			return resp, nil
+		}
+		lastErr = err
+		if req.Context().Err() != nil {
+			return nil, err
+		}
+		kiroProxyChainMu.Lock()
+		kiroProxyCooling[candidate.key] = time.Now().Add(time.Minute)
+		kiroProxyChainMu.Unlock()
+	}
+	if lastErr == nil {
+		return nil, fmt.Errorf("kiro: no proxy in proxy chain is available")
+	}
+	return nil, lastErr
 }
 
 // NewStandardHTTPClient uses the standard transport without response or stream
@@ -233,6 +339,18 @@ func tuneHTTPTransport(transport *http.Transport) {
 	if transport.TLSHandshakeTimeout == 0 {
 		transport.TLSHandshakeTimeout = defaultTLSHandshakeTimeout
 	}
+}
+
+func configureKiroProxyHTTP2(transport *http.Transport) error {
+	transport.IdleConnTimeout = 30 * time.Minute
+	transport.ForceAttemptHTTP2 = true
+	h2Transport, err := http2.ConfigureTransports(transport)
+	if err != nil {
+		return fmt.Errorf("kiro: configure proxy HTTP/2: %w", err)
+	}
+	h2Transport.ReadIdleTimeout = 20 * time.Second
+	h2Transport.PingTimeout = 10 * time.Second
+	return nil
 }
 
 func withStreamingIdleTimeout(rt http.RoundTripper) http.RoundTripper {
