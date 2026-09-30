@@ -924,7 +924,7 @@ oauth:
   # Provider options below apply to OAuth/file-backed credentials.
   # API-key credentials use their own group/key options.
   providers:
-    # Restrict the dynamically fetched Cline catalog to models containing :free.
+    # Restrict Cline to the live free feed, zero-price models, and :free IDs.
     cline:
       free-models-only: false
 

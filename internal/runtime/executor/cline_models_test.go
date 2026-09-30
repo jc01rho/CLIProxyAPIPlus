@@ -159,33 +159,44 @@ func TestFilterClineModelsAppliesToFallbackCatalog(t *testing.T) {
 	}
 }
 
-func TestFilterClineModelsIncludesCuratedZeroCostPicks(t *testing.T) {
-	// The Cline UI advertises these as FREE despite nonzero list pricing.
-	curated := []string{
-		"meta/muse-spark-1.3-contributor",
-		"deepseek/deepseek-v4-flash",
-		"z-ai/glm-5.3-flash",
-		"upstage/solar-pro4",
-		"meituan/longcat-2.0",
-		"poolside/laguna-s-2.1",
-	}
-	models := []*registry.ModelInfo{{ID: "provider/paid"}}
-	for _, id := range curated {
-		models = append(models, &registry.ModelInfo{ID: id})
-	}
-	models = append(models, &registry.ModelInfo{ID: "provider/bucket:free"})
+func TestFetchClineModelsIncludesRecommendedFreeModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/ai/cline/models":
+			_, _ = w.Write([]byte(`{"data":[
+				{"id":"stealth/space-bunny-alpha","pricing":{"prompt":"0","completion":"0"}},
+				{"id":"xiaomi/mimo-v2.6-flash","pricing":{"prompt":"0.00000014","completion":"0.00000028"}},
+				{"id":"meta/muse-spark-1.3-contributor","pricing":{"prompt":"0.0000001","completion":"0.0000002"}},
+				{"id":"deepseek/deepseek-v4.1-flash","pricing":{"prompt":"0.0000003","completion":"0.0000012"}},
+				{"id":"provider/paid","pricing":{"prompt":"0.001","completion":"0.002"}}
+			]}`))
+		case "/ai/cline/recommended-models":
+			_, _ = w.Write([]byte(`{"free":[
+				{"id":"stealth/space-bunny-alpha"},
+				{"id":"cline-free/mimo-v2.6-flash"},
+				{"id":"cline-free/muse-spark-1.3-contributor"},
+				{"id":"cline-free/deepseek-v4.1-flash"}
+			]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
 
-	filtered := FilterClineModels(models, true)
-	if len(filtered) != len(curated)+1 {
-		t.Fatalf("filtered models = %d, want %d", len(filtered), len(curated)+1)
+	models := fetchClineModels(context.Background(), nil, &config.Config{ClineFreeModelsOnly: true}, server.URL+"/ai/cline/models")
+	seen := make(map[string]bool, len(models))
+	for _, model := range models {
+		seen[model.ID] = true
 	}
-	seen := map[string]bool{}
-	for _, m := range filtered {
-		seen[m.ID] = true
-	}
-	for _, id := range append(curated, "provider/bucket:free") {
-		if !seen[id] {
-			t.Errorf("expected %q in free-only results", id)
+	for _, want := range []string{
+		"stealth/space-bunny-alpha",
+		"cline-free/mimo-v2.6-flash",
+		"cline-free/muse-spark-1.3-contributor",
+		"cline-free/deepseek-v4.1-flash",
+	} {
+		if !seen[want] {
+			t.Errorf("expected %q in free-only results", want)
 		}
 	}
 	if seen["provider/paid"] {

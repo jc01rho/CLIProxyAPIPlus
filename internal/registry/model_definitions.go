@@ -742,7 +742,6 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - kilocode (alias for kilo)
 //   - antigravity (returns static overrides only)
 //   - xai
-//   - cline
 //   - devin
 //   - meta
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
@@ -783,7 +782,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	case "cursor":
 		return GetCursorModels()
 	case "cline":
-		return GetClineModels()
+		// Cline is known, but all of its model definitions are fetched live.
+		return []*ModelInfo{}
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
 	case "devin":
@@ -867,7 +867,6 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetAmazonQModels(),
 		GetCodeBuddyModels(),
 		GetCursorModels(),
-		GetClineModels(),
 		data.XAI,
 		data.Mistral,
 		data.Devin,

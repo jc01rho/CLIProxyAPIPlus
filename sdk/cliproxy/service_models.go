@@ -161,10 +161,6 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = applyExcludedModels(models, excluded)
 	case "cline":
 		models = executor.FetchClineModels(ctx, a, s.cfg)
-		if len(models) == 0 {
-			models = registry.GetClineModels()
-		}
-		models = executor.FilterClineModels(models, s.cfg != nil && s.cfg.ClineFreeModelsOnly)
 		models = applyExcludedModels(models, excluded)
 	case "workbuddy":
 		models = executor.FetchWorkBuddyModels(ctx, a, s.cfg)

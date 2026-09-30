@@ -121,6 +121,7 @@ func TestModelCatalogUpdaterPlan(t *testing.T) {
 		wantModels      bool
 		wantCodexClient bool
 		wantDevin       bool
+		wantCline       bool
 	}{
 		{
 			name:            "normal CPA refreshes all catalogs",
@@ -129,6 +130,7 @@ func TestModelCatalogUpdaterPlan(t *testing.T) {
 			wantModels:      true,
 			wantCodexClient: true,
 			wantDevin:       true,
+			wantCline:       true,
 		},
 		{
 			name:            "home mode keeps models.json local and refreshes codex templates and devin",
@@ -137,6 +139,7 @@ func TestModelCatalogUpdaterPlan(t *testing.T) {
 			wantModels:      false,
 			wantCodexClient: true,
 			wantDevin:       true,
+			wantCline:       true,
 		},
 		{
 			name:            "local-model disables all remote catalogs",
@@ -157,10 +160,10 @@ func TestModelCatalogUpdaterPlan(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotModels, gotCodex, gotDevin := modelCatalogUpdaterPlan(tt.localModel, tt.homeEnabled)
-			if gotModels != tt.wantModels || gotCodex != tt.wantCodexClient || gotDevin != tt.wantDevin {
-				t.Fatalf("modelCatalogUpdaterPlan(%v, %v) = (%v, %v, %v), want (%v, %v, %v)",
-					tt.localModel, tt.homeEnabled, gotModels, gotCodex, gotDevin, tt.wantModels, tt.wantCodexClient, tt.wantDevin)
+			gotModels, gotCodex, gotDevin, gotCline := modelCatalogUpdaterPlan(tt.localModel, tt.homeEnabled)
+			if gotModels != tt.wantModels || gotCodex != tt.wantCodexClient || gotDevin != tt.wantDevin || gotCline != tt.wantCline {
+				t.Fatalf("modelCatalogUpdaterPlan(%v, %v) = (%v, %v, %v, %v), want (%v, %v, %v, %v)",
+					tt.localModel, tt.homeEnabled, gotModels, gotCodex, gotDevin, gotCline, tt.wantModels, tt.wantCodexClient, tt.wantDevin, tt.wantCline)
 			}
 		})
 	}

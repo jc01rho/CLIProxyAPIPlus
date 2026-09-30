@@ -983,25 +983,28 @@ func resolveManagementBaseURL(flagURL string, cfg *config.Config) string {
 }
 
 // modelCatalogUpdaterPlan decides which remote model catalogs should refresh.
-// Codex client and Devin catalogs still refresh under Home mode because
-// template metadata and Devin models stay edge-local.
-func modelCatalogUpdaterPlan(localModel, homeEnabled bool) (startModels, startCodexClient, startDevin bool) {
+// Codex client, Devin, and Cline catalogs still refresh under Home mode because
+// their model registrations stay edge-local.
+func modelCatalogUpdaterPlan(localModel, homeEnabled bool) (startModels, startCodexClient, startDevin, startCline bool) {
 	if localModel {
-		return false, false, false
+		return false, false, false, false
 	}
-	return !homeEnabled, true, true
+	return !homeEnabled, true, true, true
 }
 
 func startModelCatalogUpdaters(localModel, homeEnabled bool) {
 	if err := registry.RefreshModelsDevLimits(context.Background(), registry.ModelsDevLimitsURL); err != nil {
 		log.Warnf("models.dev model limits unavailable; using existing metadata: %v", err)
 	}
-	startModels, startCodexClient, startDevin := modelCatalogUpdaterPlan(localModel, homeEnabled)
+	startModels, startCodexClient, startDevin, startCline := modelCatalogUpdaterPlan(localModel, homeEnabled)
 	if startCodexClient {
 		registry.StartCodexClientModelsUpdater(context.Background())
 	}
 	if startDevin {
 		registry.StartDevinModelsUpdater(context.Background())
+	}
+	if startCline {
+		registry.StartClineModelsUpdater(context.Background())
 	}
 	if startModels {
 		registry.StartModelsUpdater(context.Background())

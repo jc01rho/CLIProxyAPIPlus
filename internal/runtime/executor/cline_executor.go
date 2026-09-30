@@ -819,38 +819,87 @@ func fetchClineModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 			Type:                "cline",
 			Object:              "model",
 			Created:             now,
-			// Carry the upstream list pricing verdict into the listing so
-			// the free-only filter can honor genuinely zero-cost models
-			// (e.g. stealth/union-alpha) whose IDs carry no ":free"
-			// marker and are not part of the curated UI picks.
+			// Preserve catalog pricing for the free-only filter.
 			IsFree: clineIsFreeModel(m),
 		})
 	}
 
 	freeOnly := cfg != nil && cfg.ClineFreeModelsOnly
+	if freeOnly {
+		recommendedReq := req.Clone(ctx)
+		recommendedReq.URL.Path = strings.TrimSuffix(req.URL.Path, "/models") + "/recommended-models"
+		freeModels, errFree := fetchClineRecommendedFreeModels(httpClient, recommendedReq)
+		if errFree != nil {
+			log.Warnf("cline: free model feed unavailable; using live zero-price and :free models only: %v", errFree)
+		} else {
+			// The feed IDs are executable free routes, not aliases for paid
+			// vendor routes. Only borrow metadata when the match is unique.
+			byID := make(map[string]*registry.ModelInfo, len(dynamicModels))
+			bySlug := make(map[string]*registry.ModelInfo, len(dynamicModels))
+			for _, model := range dynamicModels {
+				byID[model.ID] = model
+				slug := model.ID[strings.LastIndex(model.ID, "/")+1:]
+				if _, exists := bySlug[slug]; exists {
+					bySlug[slug] = nil
+				} else {
+					bySlug[slug] = model
+				}
+			}
+			for _, free := range freeModels {
+				if model := byID[free.ID]; model != nil {
+					model.IsFree = true
+					continue
+				}
+				model := &registry.ModelInfo{
+					ID: free.ID, DisplayName: free.Name, Description: free.Description,
+					Object: "model", OwnedBy: "cline", Type: "cline", Created: now,
+				}
+				slug := free.ID[strings.LastIndex(free.ID, "/")+1:]
+				if source := bySlug[slug]; source != nil {
+					*model = *source
+					model.ID = free.ID
+				}
+				if model.DisplayName == "" {
+					model.DisplayName = free.ID
+				}
+				model.IsFree = true
+				byID[free.ID] = model
+				dynamicModels = append(dynamicModels, model)
+			}
+		}
+	}
 	dynamicModels = FilterClineModels(dynamicModels, freeOnly)
 	log.Infof("cline: fetched %d models from API", len(dynamicModels))
 	return dynamicModels
 }
 
-// clineCuratedFreeModels are model IDs the Cline UI advertises as FREE even
-// though the catalog API reports nonzero list pricing for them (e.g.
-// z-ai/glm-5.3-flash, upstage/solar-pro4, meituan/longcat-2.0). They are the
-// server-recommended zero-cost picks alongside the official ":free" bucket,
-// mirroring OmniRoute's curated cline catalog.
-var clineCuratedFreeModels = map[string]bool{
-	"meta/muse-spark-1.3-contributor": true,
-	"deepseek/deepseek-v4-flash":      true,
-	"z-ai/glm-5.3-flash":              true,
-	"upstage/solar-pro4":              true,
-	"meituan/longcat-2.0":             true,
-	"poolside/laguna-s-2.1":           true,
+func fetchClineRecommendedFreeModels(httpClient *http.Client, req *http.Request) ([]ClineModel, error) {
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("recommended models returned status %d", resp.StatusCode)
+	}
+	var response struct {
+		Free []ClineModel `json:"free"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, err
+	}
+	freeModels := make([]ClineModel, 0, len(response.Free))
+	for _, model := range response.Free {
+		model.ID = strings.TrimSpace(model.ID)
+		if model.ID != "" {
+			freeModels = append(freeModels, model)
+		}
+	}
+	return freeModels, nil
 }
 
-// FilterClineModels limits a Cline catalog to free models when enabled: IDs
-// containing ":free", the curated zero-cost picks the Cline UI advertises as
-// FREE despite nonzero list pricing, and any model the upstream catalog marks
-// as zero-cost (prompt and completion both parse as 0).
+// FilterClineModels limits a Cline catalog to model IDs marked :free or
+// entries marked free by live pricing or the official recommendation feed.
 func FilterClineModels(models []*registry.ModelInfo, freeOnly bool) []*registry.ModelInfo {
 	if !freeOnly {
 		return models
@@ -860,7 +909,7 @@ func FilterClineModels(models []*registry.ModelInfo, freeOnly bool) []*registry.
 		if model == nil {
 			continue
 		}
-		if strings.Contains(model.ID, ":free") || clineCuratedFreeModels[strings.ToLower(strings.TrimSpace(model.ID))] || model.IsFree {
+		if strings.Contains(model.ID, ":free") || model.IsFree {
 			filtered = append(filtered, model)
 		}
 	}
