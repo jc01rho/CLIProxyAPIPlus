@@ -122,6 +122,12 @@ jobs:
             goarch: amd64
             asset_arch: amd64
             archive_format: zip
+          - target: windows-arm64
+            runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+            asset_arch: aarch64
+            archive_format: zip
     steps:
       - uses: actions/checkout@v6
         with:
@@ -245,6 +251,11 @@ jobs:
             goarch: amd64
             asset_arch: amd64
             manylinux_image: quay.io/pypa/manylinux2014_x86_64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            goarch: arm64
+            asset_arch: aarch64
+            manylinux_image: quay.io/pypa/manylinux2014_aarch64
     steps:
       - uses: actions/checkout@v6
         with:
@@ -376,6 +387,9 @@ jobs:
           - target: linux-amd64-no-plugin
             goarch: amd64
             asset_arch: amd64
+          - target: linux-arm64-no-plugin
+            goarch: arm64
+            asset_arch: aarch64
     steps:
       - uses: actions/checkout@v6
         with:
