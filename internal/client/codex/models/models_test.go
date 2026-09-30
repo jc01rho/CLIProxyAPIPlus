@@ -1613,6 +1613,55 @@ func TestCodexClientModelsResponse_DevinDisplayName(t *testing.T) {
 	}
 }
 
+func TestCodexClientModelsResponse_DevinBindingFallbackPrecedence(t *testing.T) {
+	// Case A: Exact model has explicit non-devin provider binding -> must NOT receive (Devin)
+	// Case B: Exact model has NO binding, but base "swe-2" is Devin in registry -> receives (Devin)
+	// Case C: Exact model has NO binding, and base provider lookup returns "devin" -> receives (Devin)
+	availableModels := []map[string]any{
+		{"id": "channel/swe-2", "display_name": "Channel SWE-2"},
+		{"id": "prefix/swe-2", "display_name": "Prefix SWE-2"},
+		{"id": "prefix/custom-devin-base", "display_name": "Prefix Custom"},
+	}
+
+	providerLookup := func(id string) []string {
+		switch id {
+		case "channel/swe-2":
+			// Explicit non-devin binding for the exact ID
+			return []string{"openai"}
+		case "custom-devin-base":
+			// Base provider is devin (when exact ID has no binding)
+			return []string{"devin"}
+		default:
+			return nil
+		}
+	}
+
+	resp := BuildResponseForClient(availableModels, providerLookup, false, "0.153.4")
+	models, ok := resp["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("resp models type = %T, want []map[string]any", resp["models"])
+	}
+	bySlug := make(map[string]map[string]any, len(models))
+	for _, m := range models {
+		bySlug[stringModelValue(m, "slug")] = m
+	}
+
+	// channel/swe-2 has explicit non-devin binding -> no suffix
+	if got := stringModelValue(bySlug["channel/swe-2"], "display_name"); got != "Channel SWE-2" {
+		t.Errorf("channel/swe-2 display_name = %q, want %q", got, "Channel SWE-2")
+	}
+
+	// prefix/swe-2 has NO exact binding, but registry base "swe-2" is Devin -> receives suffix
+	if got := stringModelValue(bySlug["prefix/swe-2"], "display_name"); got != "Prefix SWE-2 (Devin)" {
+		t.Errorf("prefix/swe-2 display_name = %q, want %q", got, "Prefix SWE-2 (Devin)")
+	}
+
+	// prefix/custom-devin-base has NO exact binding, but base provider is devin -> receives suffix
+	if got := stringModelValue(bySlug["prefix/custom-devin-base"], "display_name"); got != "Prefix Custom (Devin)" {
+		t.Errorf("prefix/custom-devin-base display_name = %q, want %q", got, "Prefix Custom (Devin)")
+	}
+}
+
 func TestMarshalCompactJSONIsSingleLine(t *testing.T) {
 	body, errMarshal := MarshalCompact(map[string]any{
 		"models": []any{

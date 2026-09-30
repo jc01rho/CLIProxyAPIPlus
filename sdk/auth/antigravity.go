@@ -376,7 +376,10 @@ func FetchAntigravityProjectInfo(ctx context.Context, accessToken string, httpCl
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return nil, &antigravity.HTTPStatusError{
+			StatusCodeValue: resp.StatusCode,
+			Message:         fmt.Sprintf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes))),
+		}
 	}
 
 	var loadResp map[string]any

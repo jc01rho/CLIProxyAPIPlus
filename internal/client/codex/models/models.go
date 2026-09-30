@@ -342,24 +342,32 @@ func isCodexClientDevinModel(id string, model map[string]any, entry map[string]a
 		if strings.EqualFold(info.Type, "devin") || strings.EqualFold(info.OwnedBy, "cognition") || strings.HasPrefix(strings.ToLower(info.ID), "devin/") {
 			return true
 		}
-	} else if idx := strings.Index(id, "/"); idx != -1 {
+	}
+	// An explicit provider binding for the exact ID is authoritative: it wins
+	// over base-name registry inference (e.g. "channel/swe-2" bound to openai
+	// must not be treated as Devin just because bare "swe-2" is a Devin model).
+	if providersForModel != nil {
+		if providers := providersForModel(id); len(providers) > 0 {
+			for _, p := range providers {
+				if strings.EqualFold(strings.TrimSpace(p), "devin") {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	if idx := strings.Index(id, "/"); idx != -1 {
 		base := strings.TrimSpace(id[idx+1:])
 		if info := registry.LookupModelInfo(base); info != nil {
 			if strings.EqualFold(info.Type, "devin") || strings.EqualFold(info.OwnedBy, "cognition") || strings.HasPrefix(strings.ToLower(info.ID), "devin/") {
 				return true
 			}
 		}
-	}
-	if providersForModel != nil {
-		providers := providersForModel(id)
-		if len(providers) == 0 && strings.Contains(id, "/") {
-			idx := strings.Index(id, "/")
-			base := strings.TrimSpace(id[idx+1:])
-			providers = providersForModel(base)
-		}
-		for _, p := range providers {
-			if strings.EqualFold(strings.TrimSpace(p), "devin") {
-				return true
+		if providersForModel != nil {
+			for _, p := range providersForModel(base) {
+				if strings.EqualFold(strings.TrimSpace(p), "devin") {
+					return true
+				}
 			}
 		}
 	}

@@ -125,6 +125,11 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
+	if errTokens := antigravityEnsureRequestTokens(auth, requestPayload); errTokens != nil {
+		err = errTokens
+		antigravityRecordRequestOutcome(auth, http.StatusTooManyRequests, nil, errTokens)
+		return nil, err
+	}
 	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
@@ -136,6 +141,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
 			return nil, errDo
 		}
+		antigravityRecordRequestOutcome(auth, 0, nil, errDo)
 		err = errDo
 		return nil, err
 	}
@@ -159,6 +165,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			return nil, err
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+		antigravityAttemptSessionRecovery(ctx, auth, bodyBytes)
 		if httpResp.StatusCode == http.StatusTooManyRequests {
 			decision := decideAntigravity429(bodyBytes)
 
@@ -185,11 +192,14 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
+		antigravityRecordRequestOutcome(auth, httpResp.StatusCode, bodyBytes, nil)
 		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
 		return nil, err
 	}
 
 	// Stream success
+	antigravityRecordRequestOutcome(auth, httpResp.StatusCode, nil, nil)
+	antigravityConsumeRequestTokens(auth, requestPayload)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
@@ -206,6 +216,9 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
+		terminalSeen := false
+		contentSeen := false
+		terminalFinishReason := ""
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -221,6 +234,25 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			if payload == nil {
 				continue
 			}
+			if streamErr := antigravityEmbeddedStreamError(payload); streamErr != nil {
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			if candidate := gjson.GetBytes(payload, "response.candidates.0"); candidate.Exists() {
+				if finishReason := strings.TrimSpace(candidate.Get("finishReason").String()); finishReason != "" {
+					terminalSeen = true
+					terminalFinishReason = finishReason
+				}
+				if antigravityCandidateHasContent(candidate) {
+					contentSeen = true
+				}
+			}
+
 			reporter.ObserveResponseModel(payload)
 
 			if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
@@ -248,6 +280,26 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			// Only a clean end of stream may produce a synthetic terminal event.
 			// Translating [DONE] after a read error would report a truncated
 			// stream as a successful completion.
+			if !terminalSeen && !contentSeen {
+				streamErr := fmt.Errorf("antigravity stream ended without a terminal candidate response")
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			if !contentSeen {
+				streamErr := fmt.Errorf("antigravity returned an empty response (%s)", terminalFinishReason)
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+				case <-ctx.Done():
+				}
+				return
+			}
 			tail := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("[DONE]"), &param, claudeInputTokens)
 			for i := range tail {
 				select {

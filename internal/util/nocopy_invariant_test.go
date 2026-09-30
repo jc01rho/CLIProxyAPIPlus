@@ -104,16 +104,18 @@ type reviewedInPlaceByteWrite struct {
 }
 
 var reviewedInPlaceByteWrites = map[string]reviewedInPlaceByteWrite{
-	"internal/runtime/executor/claude_signing.go":           {2, "writes CCH digits into bytes.Clone(body); the caller's body is never touched"},
-	"internal/runtime/executor/claude_executor_cloaking.go": {1, "shifts []string headers to prepend a block; no byte of any payload is rewritten"},
-	"internal/runtime/executor/claude_executor_request.go":  {3, "shifts []string headers to insert a part; no byte of any payload is rewritten"},
-	"internal/runtime/executor/helps/claude_mcp_alias.go":   {1, "copies an HMAC sum into a local fixed-size digest array"},
-	"internal/client/codex/live/tcp_proxy.go":               {1, "copies header and payload into a freshly allocated frame"},
-	"internal/home/client.go":                               {1, "zeroes a secret buffer after json.Unmarshal has copied every value out"},
-	"internal/pluginstore/auth.go":                          {1, "zeroes a locally built credential buffer after base64 encoding copied it out"},
-	"internal/auth/cursor/proto/connect.go":                 {1, "copies payload into a freshly allocated frame; the source data is never modified"},
-	"internal/keeperexport/runtime.go":                      {1, "zeroes a freshly hex-decoded fingerprint secret buffer private to the writer"},
-	"internal/keeperexport/exporter.go":                     {2, "zeroes freshly hex-decoded fingerprint secret buffers private to the writer"},
+	"internal/runtime/executor/claude_signing.go":                {2, "writes CCH digits into bytes.Clone(body); the caller's body is never touched"},
+	"internal/runtime/executor/claude_executor_cloaking.go":      {1, "shifts []string headers to prepend a block; no byte of any payload is rewritten"},
+	"internal/runtime/executor/claude_executor_request.go":       {3, "shifts []string headers to insert a part; no byte of any payload is rewritten"},
+	"internal/runtime/executor/helps/claude_mcp_alias.go":        {1, "copies an HMAC sum into a local fixed-size digest array"},
+	"internal/runtime/executor/openai_compat_zen_fingerprint.go": {1, "copies a SHA-256 digest into a local UUID array; neither array aliases the request payload"},
+	"internal/runtime/executor/zcode_executor.go":                {1, "copies locally generated random UUID bytes into a private fixed-size array; no GJSON reader sees either buffer"},
+	"internal/client/codex/live/tcp_proxy.go":                    {1, "copies header and payload into a freshly allocated frame"},
+	"internal/home/client.go":                                    {1, "zeroes a secret buffer after json.Unmarshal has copied every value out"},
+	"internal/pluginstore/auth.go":                               {1, "zeroes a locally built credential buffer after base64 encoding copied it out"},
+	"internal/auth/cursor/proto/connect.go":                      {1, "copies payload into a freshly allocated frame; the source data is never modified"},
+	"internal/keeperexport/runtime.go":                           {1, "zeroes a freshly hex-decoded fingerprint secret buffer private to the writer"},
+	"internal/keeperexport/exporter.go":                          {2, "zeroes freshly hex-decoded fingerprint secret buffers private to the writer"},
 }
 
 // TestInPlaceByteWritesAreReviewed keeps the set of in-place byte writes small

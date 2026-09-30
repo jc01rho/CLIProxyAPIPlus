@@ -378,7 +378,9 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	// Get models from registry
 	reg := registry.GetGlobalRegistry()
 	models := reg.GetModelsForClient(authID)
-	if len(models) == 0 && matchedAuth != nil {
+	// A disabled auth is intentionally unregistered by the status sync hook;
+	// do not resurrect the provider's static catalog for it.
+	if len(models) == 0 && matchedAuth != nil && !matchedAuth.Disabled {
 		models = registry.GetStaticModelDefinitionsByChannel(matchedAuth.Provider)
 	}
 	excluded := authFileExcludedModelSet(matchedAuth, h.cfg)

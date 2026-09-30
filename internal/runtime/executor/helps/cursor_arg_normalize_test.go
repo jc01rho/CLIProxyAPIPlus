@@ -80,21 +80,21 @@ func TestNormalizeCursorArgKeys_AliasCanonicalNotInSchema(t *testing.T) {
 }
 
 func TestNormalizeCursorArgKeys_DuplicateAliasDropped(t *testing.T) {
-	// Two aliases for the same canonical: only the first survives.
+	// Two aliases for the same canonical: the lexically first key survives.
 	schema := map[string]interface{}{
 		"type":       "object",
 		"properties": map[string]interface{}{"path": map[string]interface{}{"type": "string"}},
 	}
 	args := map[string]interface{}{"filepath": "/a", "filename": "/b"}
 	got := NormalizeCursorArgKeys(args, schema)
-	if got["path"] != "/a" {
-		t.Fatalf("first alias must fill the canonical slot: %v", got)
+	if got["path"] != "/b" {
+		t.Fatalf("lexically first alias must fill the canonical slot: %v", got)
 	}
 	if _, ok := got["filename"]; ok {
-		t.Fatalf("second alias for the same canonical must be dropped: %v", got)
+		t.Fatalf("selected alias key must not remain alongside canonical: %v", got)
 	}
 	if _, ok := got["filepath"]; ok {
-		t.Fatalf("first alias key must not remain alongside canonical: %v", got)
+		t.Fatalf("later alias for the same canonical must be dropped: %v", got)
 	}
 }
 

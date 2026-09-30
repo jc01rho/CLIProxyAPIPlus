@@ -4,6 +4,7 @@ package chat_completions
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -17,6 +18,22 @@ import (
 )
 
 const antigravityFunctionThoughtSignature = "skip_thought_signature_validator"
+
+var antigravityOpenAIResponseNameInvalidChars = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
+
+// antigravityOpenAIResponseFunctionName falls back to the tool call id when the
+// declared function name is empty, so the call and its response stay paired
+// under the same name. Id-less entries are dropped by the caller instead.
+func antigravityOpenAIResponseFunctionName(name, fallback string) string {
+	name = util.SanitizeFunctionName(name)
+	if strings.TrimSpace(name) == "" {
+		name = antigravityOpenAIResponseNameInvalidChars.ReplaceAllString(strings.TrimSpace(fallback), "_")
+	}
+	if strings.TrimSpace(name) == "" {
+		return "unknown"
+	}
+	return util.SanitizeFunctionName(name)
+}
 
 // ConvertOpenAIRequestToAntigravity converts an OpenAI Chat Completions request (raw JSON)
 // into a complete Antigravity request JSON. All JSON construction uses sjson and lookups use gjson.
@@ -260,7 +277,10 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						}
 						functionName := util.MapSanitizedFunctionName(functionNameMap, tc.Get("function.name").String())
 						if functionName == "" {
-							continue
+							if rawID == "" {
+								continue
+							}
+							functionName = antigravityOpenAIResponseFunctionName("", rawID)
 						}
 						functionArgs := tc.Get("function.arguments").String()
 						part := []byte(`{"functionCall":{"id":"","name":""}}`)

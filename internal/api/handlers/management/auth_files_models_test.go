@@ -315,7 +315,94 @@ func TestGetAuthFileModelsReturnsDevinModels(t *testing.T) {
 	if recStatic.Code != http.StatusOK {
 		t.Fatalf("expected status 200 for model-definitions/devin, got %d with body %s", recStatic.Code, recStatic.Body.String())
 	}
-	if !containsModelID(recStatic.Body.String(), "swe-2-high") {
-		t.Fatalf("expected swe-2-high in model-definitions/devin, got %s", recStatic.Body.String())
+	if !containsModelID(recStatic.Body.String(), "swe-2") {
+		t.Fatalf("expected swe-2 in model-definitions/devin, got %s", recStatic.Body.String())
 	}
+}
+
+// TestGetAuthFileModelsDisabledAuthNeverResurrectsStaticCatalog pins the
+// fallback guard added for TestPatchAuthFileStatusRestoresModelsViaSyncHook:
+// a disabled auth that was never registered (so GetModelsForClient is empty)
+// must return an empty list, never the provider's static catalog.
+// Transitions use manager.Update so the actual manager state is observable.
+func TestGetAuthFileModelsDisabledAuthNeverResurrectsStaticCatalog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "codex-disabled-noreg",
+		Provider: "codex",
+		FileName: "codex-disabled-noreg.json",
+		Disabled: true,
+		Status:   coreauth.StatusDisabled,
+	}
+	registered, err := manager.Register(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("failed to register auth: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	getModels := func() string {
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+		ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/models?name=codex-disabled-noreg.json", nil)
+		h.GetAuthFileModels(ginCtx)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+
+	managerUpdate := func(disabled bool) {
+		a := registered.Clone()
+		a.Disabled = disabled
+		if disabled {
+			a.Status = coreauth.StatusDisabled
+		} else {
+			a.Status = coreauth.StatusActive
+		}
+		if _, err := manager.Update(context.Background(), a); err != nil {
+			t.Fatalf("manager.Update: %v", err)
+		}
+	}
+
+	// Prove actual manager state: disabled auth after register.
+	for _, a := range manager.List() {
+		if a.ID == registered.ID {
+			if !a.Disabled || a.Status != coreauth.StatusDisabled {
+				t.Fatalf("manager state after register: Disabled=%v Status=%s, want disabled", a.Disabled, a.Status)
+			}
+			break
+		}
+	}
+
+	// Disabled and never registered: must be empty, never the static catalog.
+	if got := getModels(); !bodyHasZeroModels(got) {
+		t.Fatalf("expected 0 models for disabled never-registered auth, got: %s", got)
+	}
+
+	// Re-enable via manager.Update; guard must release and static fallback apply.
+	managerUpdate(false)
+	for _, a := range manager.List() {
+		if a.ID == registered.ID {
+			if a.Disabled || a.Status != coreauth.StatusActive {
+				t.Fatalf("manager state after enable: Disabled=%v Status=%s, want enabled", a.Disabled, a.Status)
+			}
+			break
+		}
+	}
+	if got := getModels(); !containsModelID(got, "gpt-6-astra") {
+		t.Fatalf("expected static codex fallback models after re-enable, got: %s", got)
+	}
+}
+
+func bodyHasZeroModels(body string) bool {
+	var payload struct {
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return false
+	}
+	return len(payload.Models) == 0
 }

@@ -123,6 +123,11 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
+	if errTokens := antigravityEnsureRequestTokens(auth, requestPayload); errTokens != nil {
+		err = errTokens
+		antigravityRecordRequestOutcome(auth, http.StatusTooManyRequests, nil, errTokens)
+		return resp, err
+	}
 
 	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, false, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
@@ -136,6 +141,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
 			return resp, errDo
 		}
+		antigravityRecordRequestOutcome(auth, 0, nil, errDo)
 		err = errDo
 		return resp, err
 	}
@@ -151,6 +157,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+	antigravityAttemptSessionRecovery(ctx, auth, bodyBytes)
 
 	if httpResp.StatusCode == http.StatusTooManyRequests {
 		decision := decideAntigravity429(bodyBytes)
@@ -179,11 +186,14 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
+		antigravityRecordRequestOutcome(auth, httpResp.StatusCode, bodyBytes, nil)
 		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
 		return resp, err
 	}
 
 	// Success
+	antigravityRecordRequestOutcome(auth, httpResp.StatusCode, bodyBytes, nil)
+	antigravityConsumeRequestTokens(auth, requestPayload)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
@@ -331,6 +341,11 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
+	if errTokens := antigravityEnsureRequestTokens(auth, requestPayload); errTokens != nil {
+		err = errTokens
+		antigravityRecordRequestOutcome(auth, http.StatusTooManyRequests, nil, errTokens)
+		return resp, err
+	}
 	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
@@ -342,6 +357,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
 			return resp, errDo
 		}
+		antigravityRecordRequestOutcome(auth, 0, nil, errDo)
 		err = errDo
 		return resp, err
 	}
@@ -365,6 +381,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			return resp, err
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+		antigravityAttemptSessionRecovery(ctx, auth, bodyBytes)
 		if httpResp.StatusCode == http.StatusTooManyRequests {
 			decision := decideAntigravity429(bodyBytes)
 
@@ -391,11 +408,14 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
+		antigravityRecordRequestOutcome(auth, httpResp.StatusCode, bodyBytes, nil)
 		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
 		return resp, err
 	}
 
 	// Stream success
+	antigravityRecordRequestOutcome(auth, httpResp.StatusCode, nil, nil)
+	antigravityConsumeRequestTokens(auth, requestPayload)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}

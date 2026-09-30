@@ -1107,12 +1107,25 @@ func TestConvertOpenAIResponsesRequestToClaude_OrphanToolResultBecomesText(t *te
 	if got := root.Get("messages.0.role").String(); got != "user" {
 		t.Fatalf("message role = %q, want user. Output: %s", got, string(out))
 	}
-	if root.Get("messages.0.content.0.type").String() == "tool_result" {
-		t.Fatalf("orphan function_call_output should not become Anthropic tool_result. Output: %s", string(out))
+	content := root.Get("messages.0.content")
+	text := ""
+	if content.IsArray() {
+		for _, block := range content.Array() {
+			if block.Get("type").String() == "tool_result" {
+				t.Fatalf("orphan function_call_output should not become Anthropic tool_result. Output: %s", string(out))
+			}
+			if block.Get("type").String() == "text" {
+				text += block.Get("text").String()
+			}
+		}
+	} else {
+		text = content.String()
 	}
-	content := root.Get("messages.0.content").String()
-	if content != "[tool_result without adjacent tool_use: missing_call]\nstale tool output" {
-		t.Fatalf("message content = %q, want orphan marker text. Output: %s", content, string(out))
+	// Anthropic rejects tool_result blocks with no tool_use, so the orphan
+	// output must surface as plain user text and its payload must survive
+	// verbatim.
+	if text != "stale tool output" {
+		t.Fatalf("message content = %q, want preserved orphan output text. Output: %s", text, string(out))
 	}
 }
 

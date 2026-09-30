@@ -1,6 +1,10 @@
 package helps
 
-import "strings"
+import (
+	"maps"
+	"slices"
+	"strings"
+)
 
 // Cursor argument-key normalization (ported from opencodex/src/adapters/cursor/arg-normalize.ts).
 //
@@ -74,7 +78,8 @@ func cursorSchemaPropertyNames(schema interface{}) map[string]struct{} {
 // NormalizeCursorArgKeys rewrites args to use schema-declared canonical keys when the original
 // key has a known alias. Keys already matching the schema are preserved. Conflicting aliases
 // (same canonical key already supplied explicitly) drop the alias entirely rather than
-// creating a duplicate. Returns the original map reference if no changes were made so callers
+// creating a duplicate. Multiple aliases without an explicit canonical key use lexical key
+// order so Go map iteration cannot change the selected value. Returns the original map reference if no changes were made so callers
 // can skip downstream work on the common pass-through path.
 func NormalizeCursorArgKeys(args map[string]interface{}, schema interface{}) map[string]interface{} {
 	declared := cursorSchemaPropertyNames(schema)
@@ -89,7 +94,8 @@ func NormalizeCursorArgKeys(args map[string]interface{}, schema interface{}) map
 	}
 	changed := false
 	result := make(map[string]interface{}, len(args))
-	for k, v := range args {
+	for _, k := range slices.Sorted(maps.Keys(args)) {
+		v := args[k]
 		if _, ok := declared[k]; ok {
 			result[k] = v
 			continue
