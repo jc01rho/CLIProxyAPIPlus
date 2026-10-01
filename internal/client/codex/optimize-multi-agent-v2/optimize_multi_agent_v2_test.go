@@ -647,6 +647,60 @@ func TestRewriteCodexMultiAgentV2Input_StripsAuthorAndRecipient_Issue6136(t *tes
 	})
 }
 
+func TestRewriteCodexMultiAgentV2Input_CompatModeWithoutOptimize_Issue6233(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"model":"gpt-6-luna","input":[{
+		"type":"agent_message",
+		"id":"amsg_probe",
+		"author":"/root/worker",
+		"recipient":"/root",
+		"content":[
+			{"type":"input_text","text":"Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\ndone"},
+			{"type":"encrypted_content","encrypted_content":"test task payload"}
+		],
+		"internal_chat_message_metadata_passthrough":{"turn_id":"turn_probe"}
+	}]}`)
+
+	t.Run("compat mode converts agent_message to message/user and normalizes content even when optimize is false", func(t *testing.T) {
+		headers := http.Header{"User-Agent": []string{"Codex Desktop/0.158.0-alpha.2.1"}}
+		// Simulate v8 API-key config view where OptimizeMultiAgentV2 is zeroed out by ForAPIKey()
+		cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: false}}
+		got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, cfg, true)
+
+		// Item 0: must be converted to message with role user
+		messageType := gjson.GetBytes(got, "input.0.type").String()
+		if messageType != "message" {
+			t.Fatalf("input.0.type = %q, want message (must not stay agent_message without author)", messageType)
+		}
+		role := gjson.GetBytes(got, "input.0.role").String()
+		if role != "user" {
+			t.Fatalf("input.0.role = %q, want user", role)
+		}
+
+		// Encrypted content must be normalized to input_text
+		contentType := gjson.GetBytes(got, "input.0.content.1.type").String()
+		if contentType != "input_text" {
+			t.Fatalf("input.0.content.1.type = %q, want input_text", contentType)
+		}
+		contentText := gjson.GetBytes(got, "input.0.content.1.text").String()
+		if contentText != "test task payload" {
+			t.Fatalf("input.0.content.1.text = %q, want test task payload", contentText)
+		}
+
+		// Non-standard metadata must be stripped
+		if author := gjson.GetBytes(got, "input.0.author"); author.Exists() {
+			t.Fatalf("input.0.author was not stripped; got=%s", author.String())
+		}
+		if recipient := gjson.GetBytes(got, "input.0.recipient"); recipient.Exists() {
+			t.Fatalf("input.0.recipient was not stripped; got=%s", recipient.String())
+		}
+		if passthrough := gjson.GetBytes(got, "input.0.internal_chat_message_metadata_passthrough"); passthrough.Exists() {
+			t.Fatalf("input.0.internal_chat_message_metadata_passthrough was not stripped; got=%s", passthrough.String())
+		}
+	})
+}
+
 func TestRewriteCodexMultiAgentV2InputConditions(t *testing.T) {
 	t.Parallel()
 

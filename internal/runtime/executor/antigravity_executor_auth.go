@@ -18,6 +18,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const antigravityCredentialAcquisitionTimeout = 30 * time.Second
+
 // Refresh refreshes the authentication credentials using the refresh token.
 func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
@@ -126,7 +128,10 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	refreshToken = strings.TrimSpace(refreshToken)
 
 	result, errRefresh, _ := antigravityRefreshGroup.Do(refreshToken, func() (interface{}, error) {
-		return e.refreshTokenSingleFlight(context.WithoutCancel(ctx), auth, refreshToken)
+		// A caller may leave, but shared credential acquisition must still be bounded.
+		refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), antigravityCredentialAcquisitionTimeout)
+		defer cancelRefresh()
+		return e.refreshTokenSingleFlight(refreshCtx, auth, refreshToken)
 	})
 	if errRefresh != nil {
 		return auth, errRefresh
@@ -151,7 +156,7 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
 		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
 	}
-	e.updateAntigravityCreditsBalance(ctx, auth, tokenResp.AccessToken)
+	e.queueAntigravityCreditsRefresh(ctx, auth, tokenResp.AccessToken, 0)
 	return auth, nil
 }
 
@@ -238,8 +243,14 @@ func (e *AntigravityExecutor) fetchAntigravityProjectID(ctx context.Context, aut
 		return "", nil
 	}
 
-	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
-	projectID, errFetch := sdkAuth.FetchAntigravityProjectID(ctx, token, httpClient)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Project discovery is required credential preparation, not a generation request.
+	acquisitionCtx, cancelAcquisition := context.WithTimeout(ctx, antigravityCredentialAcquisitionTimeout)
+	defer cancelAcquisition()
+	httpClient := newAntigravityHTTPClient(acquisitionCtx, e.cfg, auth, 0)
+	projectID, errFetch := sdkAuth.FetchAntigravityProjectID(acquisitionCtx, token, httpClient)
 	if errFetch != nil {
 		return "", errFetch
 	}

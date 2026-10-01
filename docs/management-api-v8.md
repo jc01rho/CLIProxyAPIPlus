@@ -78,9 +78,6 @@ retain the corresponding business operation's fields.
 | `/observability/logs/requests/<id>` | GET | Get a request log. |
 | `/observability/usage/api-keys` | GET | Get API-key usage. |
 | `/observability/usage/queue` | GET | Get queued usage events. |
-| `/credentials/quota/providers` | GET | List quota providers. |
-| `/credentials/quota/fetch` | POST | Fetch credential quota. |
-| `/credentials/quota/reset` | POST | Reset credential quota. |
 | `/credentials` | GET, POST, DELETE | List, upload, or delete credential files. |
 | `/credentials/models` | GET | Get credential models. |
 | `/credentials/download` | GET | Download a credential file. |

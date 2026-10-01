@@ -64,6 +64,7 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, req cliproxy
 	body = normalizeCodexInstructions(body)
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "meta executor", body)
 	body = helps.SanitizeMetaWebSearchTools(body)
+	body = helps.NormalizeCodexToolIntegerTypes(body, opts.Headers)
 
 	return &metaPreparedRequest{
 		baseModel:       baseModel,

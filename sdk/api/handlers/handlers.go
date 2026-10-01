@@ -134,7 +134,7 @@ func BuildErrorResponseBodyWithError(status int, errText string, err error) []by
 		errType = "invalid_request_error"
 		code = "model_not_found"
 	case http.StatusRequestTimeout:
-		errType = "invalid_request_error"
+		errType = "server_error"
 		code = "request_timeout"
 	case http.StatusGatewayTimeout:
 		errType = "server_error"

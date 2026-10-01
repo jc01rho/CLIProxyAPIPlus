@@ -39,6 +39,15 @@ func RewriteCodexOrphanDelegationInput(ctx context.Context, headers http.Header,
 // TranslateRequestWithCodexMultiAgentV2 normalizes official Codex multi-agent
 // input before translating it to a non-Codex target protocol.
 func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream bool) []byte {
+	return TranslateRequestWithCodexMultiAgentV2ForExecutor(ctx, headers, cfg, "", from, to, model, payload, stream)
+}
+
+// TranslateRequestWithCodexMultiAgentV2ForExecutor applies Codex client
+// compatibility while respecting the actual target executor identity.
+func TranslateRequestWithCodexMultiAgentV2ForExecutor(ctx context.Context, headers http.Header, cfg *config.Config, targetExecutor string, from, to sdktranslator.Format, model string, payload []byte, stream bool) []byte {
+	if IsCodexUserAgent(headers) && !isCodexTargetExecutor(targetExecutor) {
+		payload = NormalizeCodexToolIntegerTypes(payload, headers)
+	}
 	return multiagentv2.TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)
 }
 
@@ -110,18 +119,38 @@ func TranslateRequestPairWithAPIKeyModelCompatibilityAndUpdateIntent(ctx context
 // TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntent returns the
 // plugin normalizer's request-scoped update decision for Responses targets.
 func TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntent(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream, isCompat bool) ([]byte, bool) {
+	return TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntentForExecutor(ctx, headers, cfg, "", from, to, model, payload, stream, isCompat)
+}
+
+// TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntentForExecutor
+// translates a request while applying client schema compatibility for the
+// actual target executor.
+func TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntentForExecutor(ctx context.Context, headers http.Header, cfg *config.Config, targetExecutor string, from, to sdktranslator.Format, model string, payload []byte, stream, isCompat bool) ([]byte, bool) {
 	if !isCompat || (to == sdktranslator.FormatCodex && from != sdktranslator.FormatClaude) {
-		translated := TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx, headers, cfg, from, to, sdktranslator.RequestEnvelope{Format: from, Model: model, Stream: stream, Body: payload})
+		translated := sdktranslator.RequestEnvelope{Format: from, Model: model, Stream: stream, Body: payload}
+		if IsCodexUserAgent(headers) && !isCodexTargetExecutor(targetExecutor) {
+			translated.Body = NormalizeCodexToolIntegerTypes(translated.Body, headers)
+		}
+		translated = multiagentv2.TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx, headers, cfg, from, to, translated)
 		return translated.Body, translated.ConfigurationUpdatesChanged
 	}
-	return TranslateRequestWithAPIKeyModelCompatibility(ctx, headers, cfg, from, to, model, payload, stream, isCompat), false
+	return TranslateRequestWithAPIKeyModelCompatibilityForExecutor(ctx, headers, cfg, targetExecutor, from, to, model, payload, stream, isCompat), false
 }
 
 // TranslateRequestWithAPIKeyModelCompatibility applies compatibility-aware
 // request translators when a configured API-key model enables compatibility mode.
 func TranslateRequestWithAPIKeyModelCompatibility(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream, isCompat bool) []byte {
+	return TranslateRequestWithAPIKeyModelCompatibilityForExecutor(ctx, headers, cfg, "", from, to, model, payload, stream, isCompat)
+}
+
+// TranslateRequestWithAPIKeyModelCompatibilityForExecutor applies compatibility-aware
+// request translation while preserving the actual target executor's schema policy.
+func TranslateRequestWithAPIKeyModelCompatibilityForExecutor(ctx context.Context, headers http.Header, cfg *config.Config, targetExecutor string, from, to sdktranslator.Format, model string, payload []byte, stream, isCompat bool) []byte {
+	if IsCodexUserAgent(headers) && !isCodexTargetExecutor(targetExecutor) {
+		payload = NormalizeCodexToolIntegerTypes(payload, headers)
+	}
 	if !isCompat {
-		return TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)
+		return TranslateRequestWithCodexMultiAgentV2ForExecutor(ctx, headers, cfg, targetExecutor, from, to, model, payload, stream)
 	}
 	if from == sdktranslator.FormatOpenAIResponse {
 		payload = RewriteCodexOrphanDelegationInput(ctx, headers, payload, cfg)
@@ -145,7 +174,7 @@ func TranslateRequestWithAPIKeyModelCompatibility(ctx context.Context, headers h
 	case from == sdktranslator.FormatOpenAIResponse && to == sdktranslator.FormatClaude:
 		translated = responsesclaude.ConvertOpenAIResponsesRequestToClaudeWithCompat(model, payload, stream)
 	default:
-		return TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)
+		return TranslateRequestWithCodexMultiAgentV2ForExecutor(ctx, headers, cfg, targetExecutor, from, to, model, payload, stream)
 	}
 
 	summaryConfig := thinking.ExtractTranslatedSummaryConfig(payload, from.String(), to.String())

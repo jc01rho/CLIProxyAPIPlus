@@ -3,8 +3,8 @@ package main
 import "testing"
 
 func TestDefaultClientVersionIncludesGPT6SolAndLuna(t *testing.T) {
-	if defaultClientVersion != "0.155.0" {
-		t.Fatalf("defaultClientVersion = %q, want %q", defaultClientVersion, "0.155.0")
+	if defaultClientVersion != "0.159.0" {
+		t.Fatalf("defaultClientVersion = %q, want %q", defaultClientVersion, "0.159.0")
 	}
 }
 

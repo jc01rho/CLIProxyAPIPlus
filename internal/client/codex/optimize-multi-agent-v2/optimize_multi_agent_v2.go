@@ -64,13 +64,13 @@ func RewriteCodexSpawnAgentDescription(ctx context.Context, headers http.Header,
 }
 
 // RewriteCodexMultiAgentV2Input converts official Codex multi-agent input into
-// standard Responses API messages when multi-agent v2 optimization is enabled.
-// When isCompat is true, it proactively removes non-standard metadata fields
-// (author, recipient, internal_chat_message_metadata_passthrough) from agent_message
-// and regular message items, even if optimize-multi-agent-v2 is disabled.
+// standard Responses API messages when multi-agent v2 optimization or model
+// compatibility mode is enabled. When isCompat is true, it converts agent_message
+// items to portable message/user input and proactively removes non-standard metadata
+// fields (author, recipient, internal_chat_message_metadata_passthrough).
 func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config, isCompat ...bool) []byte {
 	compatMode := len(isCompat) > 0 && isCompat[0]
-	optimizeEnabled := cfg != nil && cfg.Codex.OptimizeMultiAgentV2 && (compatMode || isCodexMultiAgentClient(codexClientUserAgent(ctx, headers)))
+	optimizeEnabled := compatMode || (cfg != nil && cfg.Codex.OptimizeMultiAgentV2 && isCodexMultiAgentClient(codexClientUserAgent(ctx, headers)))
 	if !compatMode && !optimizeEnabled {
 		return payload
 	}

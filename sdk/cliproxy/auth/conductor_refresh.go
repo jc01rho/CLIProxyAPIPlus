@@ -327,25 +327,63 @@ func lookupMetadataTime(meta map[string]any, keys ...string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func (m *Manager) markRefreshPending(id string, now time.Time) bool {
+func (m *Manager) markRefreshPending(loop *authAutoRefreshLoop, id string, registrationEpoch uint64, now time.Time) *authRefreshJob {
 	m.mu.Lock()
-	auth, ok := m.auths[id]
-	if !ok || auth == nil || hasDisabledInvalidGrantFailure(auth) {
+	auth := m.auths[id]
+	if auth == nil || auth.RegistrationEpoch != registrationEpoch || hasUnauthorizedAuthFailure(auth) || hasDisabledInvalidGrantFailure(auth) {
 		m.mu.Unlock()
-		return false
+		return nil
 	}
-	if !auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter) {
+	if m.refreshJobs[id] != nil || (!auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter)) {
 		m.mu.Unlock()
-		return false
+		return nil
 	}
-	auth.NextRefreshAfter = now.Add(refreshPendingBackoff)
+	job := &authRefreshJob{
+		id:                id,
+		registrationEpoch: registrationEpoch,
+		pendingUntil:      now.Add(refreshPendingBackoff),
+		loop:              loop,
+	}
+	if m.refreshJobs == nil {
+		m.refreshJobs = make(map[string]*authRefreshJob)
+	}
+	m.refreshJobs[id] = job
+	auth.NextRefreshAfter = job.pendingUntil
 	auth.Generation++
 	auth.UpdatedAt = now
-	m.auths[id] = auth
 	m.mu.Unlock()
 
 	m.queueRefreshReschedule(id)
+	return job
+}
+
+func (m *Manager) beginRefreshJob(ctx context.Context, job *authRefreshJob) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	auth := m.auths[job.id]
+	if ctx.Err() != nil || m.refreshJobs[job.id] != job || auth == nil || auth.RegistrationEpoch != job.registrationEpoch {
+		return false
+	}
+	job.running = true
 	return true
+}
+
+func (m *Manager) finishRefreshJob(job *authRefreshJob, retryAt time.Time, queuedOnly bool) {
+	m.mu.Lock()
+	if m.refreshJobs[job.id] != job || (queuedOnly && job.running) {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.refreshJobs, job.id)
+	if auth := m.auths[job.id]; auth != nil && auth.RegistrationEpoch == job.registrationEpoch && auth.NextRefreshAfter.Equal(job.pendingUntil) {
+		// Clear only this job's pending marker, preserving newer refresh outcomes.
+		auth.NextRefreshAfter = retryAt
+		auth.Generation++
+		auth.UpdatedAt = time.Now()
+	}
+	m.mu.Unlock()
+	// Notify the current loop, which may differ from the job's original loop.
+	m.queueRefreshReschedule(job.id)
 }
 
 type authRefreshLock struct {
@@ -522,6 +560,10 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 // failedAccessToken lets concurrent callers reuse a refresh that already replaced the
 // access token that produced the unauthorized response.
 func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessToken string) (*Auth, error) {
+	return m.refreshAuthForRequestAtEpoch(ctx, id, failedAccessToken, 0)
+}
+
+func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAccessToken string, registrationEpoch uint64) (*Auth, error) {
 	if m == nil {
 		return nil, errors.New("auth manager is nil")
 	}
@@ -544,7 +586,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	defer lock.mu.Unlock()
 
 	m.mu.RLock()
-	auth := m.auths[id]
+	auth := m.auths[id].Clone()
 	var exec ProviderExecutor
 	if auth != nil {
 		// Use the same effective provider key as request execution so OpenAI-compat
@@ -557,6 +599,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	}
 	if authHasCustomBaseURL(auth) {
 		return nil, errors.New("custom base_url credential skips token refresh")
+	}
+	if registrationEpoch != 0 && auth.RegistrationEpoch != registrationEpoch {
+		return nil, errors.New("auth registration changed before refresh")
 	}
 	if hasDisabledInvalidGrantFailure(auth) {
 		return nil, errors.New("auth is disabled with invalid grant")
@@ -684,7 +729,8 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	}
 	saved, errUpdate := m.UpdateRefreshedAuth(ctx, base, updated)
 	if errUpdate != nil {
-		log.Debugf("persist refreshed auth %s (%s) failed: %v", auth.Provider, auth.ID, errUpdate)
+		// Warn, not debug: a restart after a lost persist fails with invalid_grant.
+		log.WithFields(log.Fields{"auth_id": auth.ID, "credential": auth.ID, "provider": auth.Provider}).Warnf("persist refreshed auth %s (%s) failed: %v", auth.Provider, auth.ID, errUpdate)
 		return nil, errUpdate
 	}
 	if saved == nil {
