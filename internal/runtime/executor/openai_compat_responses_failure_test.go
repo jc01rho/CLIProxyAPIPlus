@@ -90,8 +90,9 @@ func TestNativeResponsesBootstrapAndLateFailure(t *testing.T) {
 		{"empty complete", created + complete, true, false},
 		{"incomplete", created + strings.ReplaceAll(complete, "completed", "incomplete"), true, false},
 		{"normal", created + emptyItem + delta + complete, true, false},
-		{"bounded bootstrap releases stream", strings.Repeat(created, 4096), true, true},
+		{"bounded bootstrap releases stream", strings.Repeat(bigCreated, 50), true, true},
 		{"large request echo passes through", bigCreated + bigProgress + emptyItem + delta + complete, true, false},
+		{"large request echo then failure stays pre-stream", bigCreated + bigProgress + emptyItem + failure, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
