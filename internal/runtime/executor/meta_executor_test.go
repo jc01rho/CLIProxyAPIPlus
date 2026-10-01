@@ -1582,3 +1582,7 @@ func TestMetaExecutor_NormalizesToolFieldsForCodexUserAgent(t *testing.T) {
 		t.Fatalf("Meta stream additional_tools yield_time_ms type = %q, want integer", gotType)
 	}
 }
+
+func TestMetaApplyPatchResponsesExecutor(t *testing.T) {
+	testApplyPatchResponsesExecutor(t, "meta", NewMetaExecutor(&config.Config{}), "muse-spark-1.3")
+}

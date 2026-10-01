@@ -7,6 +7,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
+	applypatch "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/apply-patch"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -1255,10 +1256,6 @@ func convertResponsesContentPartToClaude(part gjson.Result) []byte {
 	return nil
 }
 
-func isOpenAIResponsesApplyPatchCustomTool(toolType string, tool gjson.Result) bool {
-	return toolType == "custom" && strings.TrimSpace(tool.Get("name").String()) == "apply_patch"
-}
-
 func convertResponsesToolDescriptorToClaude(descriptor responsesToolDescriptor, claudeName string) ([]byte, bool) {
 	overrideName := claudeName
 	if overrideName == "" && !descriptor.direct {
@@ -1351,9 +1348,7 @@ func responsesToolDescriptors(root gjson.Result) []responsesToolDescriptor {
 			case "", "function":
 				appendDescriptor(child, qualifiedName, childName, namespaceName, "function", sourcePriority, false)
 			case "custom":
-				if !isOpenAIResponsesApplyPatchCustomTool("custom", child) {
-					appendDescriptor(child, qualifiedName, childName, namespaceName, "custom", sourcePriority, false)
-				}
+				appendDescriptor(child, qualifiedName, childName, namespaceName, "custom", sourcePriority, false)
 			}
 			return true
 		})
@@ -1365,9 +1360,7 @@ func responsesToolDescriptors(root gjson.Result) []responsesToolDescriptor {
 			case "", "function":
 				appendDescriptor(tool, responsesToolName(tool), "", "", "function", source.priority, true)
 			case "custom":
-				if !isOpenAIResponsesApplyPatchCustomTool("custom", tool) {
-					appendDescriptor(tool, responsesToolName(tool), "", "", "custom", source.priority, true)
-				}
+				appendDescriptor(tool, responsesToolName(tool), "", "", "custom", source.priority, true)
 			case "namespace":
 				appendNamespaceChildren(tool, source.priority)
 			case "web_search":
@@ -1576,6 +1569,10 @@ func convertResponsesCustomToolToClaude(tool gjson.Result, overrideName string) 
 	tJSON, _ = sjson.SetBytes(tJSON, "name", name)
 	if description := responsesToolDescription(tool); description != "" {
 		tJSON, _ = sjson.SetBytes(tJSON, "description", description)
+	}
+	if applypatch.IsCustomTool(tool) {
+		tJSON, _ = sjson.SetBytes(tJSON, "description", applypatch.Description(tool))
+		tJSON, _ = sjson.SetRawBytes(tJSON, "input_schema", applypatch.Parameters())
 	}
 	tJSON = common.AttachCacheControl(tJSON, tool)
 	return tJSON, true

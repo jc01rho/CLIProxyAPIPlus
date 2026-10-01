@@ -6,6 +6,9 @@ package config
 
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
+	// Client configures client-facing compatibility behavior.
+	Client ClientConfig `yaml:"client" json:"client"`
+
 	// OAuthOnlyFields records v8 provider settings that must wait for credential
 	// selection and must not affect API-key credentials. Config YAML snapshots
 	// preserve the corresponding v8 paths instead of serializing this metadata.
@@ -63,9 +66,6 @@ type SDKConfig struct {
 	// "summary" restores the previous summarized format using HTML title/JSON error extraction.
 	DetailedAPIErrorBodyLogFormat string `yaml:"detailed-api-error-body-log-format" json:"detailed-api-error-body-log-format"`
 
-	// CodexOptimizeMultiAgentV2 mirrors the provider-wide runtime setting for API handlers.
-	CodexOptimizeMultiAgentV2 bool `yaml:"-" json:"-"`
-
 	// CodexOrphanDelegationCompatibility mirrors the provider-wide runtime setting for API handlers.
 	CodexOrphanDelegationCompatibility bool `yaml:"-" json:"-"`
 
@@ -89,6 +89,22 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+}
+
+// ClientConfig configures client-facing compatibility behavior.
+type ClientConfig struct {
+	Codex CodexClientConfig `yaml:"codex" json:"codex"`
+}
+
+// CodexClientConfig configures Codex client compatibility and the model catalog.
+type CodexClientConfig struct {
+	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests across providers.
+	// Default false leaves the client's multi-agent behavior unchanged.
+	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
+
+	// EnableApplyPatch advertises freeform apply_patch only for supported models.
+	// Default false clears the capability regardless of template metadata.
+	EnableApplyPatch bool `yaml:"enable-apply-patch" json:"enable-apply-patch"`
 }
 
 // ClaudeCodeConfig configures Claude Code compatibility behavior.

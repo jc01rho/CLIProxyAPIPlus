@@ -23,6 +23,7 @@ import (
 )
 
 type xaiPreparedRequest struct {
+	applyPatch            *helps.ApplyPatchResponsesState
 	baseModel             string
 	from                  sdktranslator.Format
 	responseFormat        sdktranslator.Format
@@ -90,9 +91,20 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body = helps.RewriteCodexMultiAgentV2Input(ctx, opts.Headers, body, e.cfg)
+	applyPatch := helps.NewApplyPatchResponsesState(from, originalPayload, originalTranslated)
+	var errNormalizePatch error
+	body, errNormalizePatch = helps.NormalizeApplyPatchResponsesRequest(body, originalPayload)
+	if errNormalizePatch != nil {
+		return nil, errNormalizePatch
+	}
 	willInjectXSearch := e.cfg != nil && e.cfg.XAI.InjectXSearch
 	shouldFold := xaiShouldFoldNamespaceTools(body, willInjectXSearch)
 	namespaceTools := collectXAINamespaceToolRefsWithFold(body, shouldFold)
+	for name, ref := range namespaceTools {
+		if ref.isDispatcher {
+			applyPatch.AddDispatcher(name, ref.namespace)
+		}
+	}
 	// Collect before normalizeXAITools flattens namespace wrappers so keys match
 	// the post-restore (namespace, short-name) shape used by the response filter.
 	clientDeclaredTools := collectXAIClientDeclaredToolKeys(body)
@@ -146,6 +158,7 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	}
 
 	return &xaiPreparedRequest{
+		applyPatch:            applyPatch,
 		baseModel:             baseModel,
 		from:                  from,
 		responseFormat:        responseFormat,
@@ -1552,9 +1565,6 @@ func normalizeXAITool(tool gjson.Result, namespaceName string, keepImageGenerati
 		return nil, true, true
 	}
 	if toolType == xaiImageGenerationToolType && !keepImageGeneration {
-		return nil, true, true
-	}
-	if toolType == xaiCustomToolType && tool.Get("name").String() == "apply_patch" {
 		return nil, true, true
 	}
 

@@ -305,6 +305,20 @@ requests:
   #         # Nested additional_tools structure in input[] (Codex CLI >= 0.154 "Responses Lite"):
   #         - 'input.#(type=="additional_tools")#.tools.#(name=="functions")#.tools.#(name=="apply_patch")#'
 
+# Client-facing compatibility settings apply to both OAuth and API-key routes.
+client:
+  codex:
+    # Default false clears apply_patch_tool_type in /v1/models?client_version= catalogs.
+    # When true, only models supported by every routing executor advertise "freeform".
+    enable-apply-patch: false
+    # When true, optimize Codex Desktop, codex-tui, and codex_cli_rs requests for multi-agent v2.
+    # This refreshes Codex spawn_agent model details, removes message parameter encryption,
+    # normalizes encrypted agent_message content for Codex, and converts agent_message input
+    # into standard user messages for non-Codex upstream protocols.
+    # Default false. Applies to both OAuth and API-key credentials across providers.
+    # Legacy provider paths migrate here; this path wins conflicts, including explicit false.
+    optimize-multi-agent-v2: false
+
 # API-key upstreams are separate from access.api-keys (client authentication).
 # Each provider contains named groups: one base-url, shared settings, and a keys list.
 # Add another group for another endpoint; base-url belongs to the group, not a key.
@@ -481,7 +495,7 @@ requests:
 #           max-context-length: 1048576 # optional: override Codex client context window metadata
 #           force-mapping: true    # optional: rewrite response model fields back to the alias
 #           # Preserve thinking blocks with empty signatures for compatible upstreams.
-#           # OAuth optimize-multi-agent-v2 does not apply to API-key credentials.
+#           # client.codex.optimize-multi-agent-v2 applies to both OAuth and API-key credentials.
 #           is-compat: false
 #           # Optional: enable configuration_update for this API-key model; omitted defaults to false.
 #           support-configuration-update: false
@@ -1014,11 +1028,6 @@ oauth:
       # is applied, and buffering relies purely on the 48-frame and 1MB byte budget.
       # Default: "0" (unlimited)
       stream-bootstrap-timeout: "0"
-      # When true, optimize Codex Desktop, codex-tui, and codex_cli_rs requests for multi-agent v2.
-      # This refreshes Codex spawn_agent model details, removes message parameter encryption,
-      # normalizes encrypted agent_message content for Codex, and converts agent_message input
-      # into standard user messages for non-Codex upstream protocols.
-      optimize-multi-agent-v2: false
       # When true, enable opt-in compatibility for orphan Codex delegation outputs.
       # Converts orphan function_call_output items from codex_app/create_thread and
       # codex_app/send_message_to_thread (which lack a valid call_id or matching function_call)

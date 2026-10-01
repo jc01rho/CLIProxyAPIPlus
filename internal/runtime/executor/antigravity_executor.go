@@ -1133,3 +1133,6 @@ func antigravityApplyPackagePayloadTransforms(modelName string, payload []byte) 
 	}
 	return sjson.SetRawBytes(payload, "request", requestPayload)
 }
+
+// SupportsApplyPatch reports the actual executor contract, independent of its provider name.
+func (e *AntigravityExecutor) SupportsApplyPatch() bool { return e != nil }

@@ -535,7 +535,7 @@ func (h *OpenAIResponsesAPIHandler) OpenAIResponsesModels(c *gin.Context) {
 }
 
 func (h *OpenAIResponsesAPIHandler) prepareCodexMultiAgentV2Tools(c *gin.Context, payload []byte) []byte {
-	if h == nil || h.Cfg == nil || h.Cfg.OAuthOnlyFields["codex.optimize-multi-agent-v2"] {
+	if h == nil || h.Cfg == nil {
 		return payload
 	}
 
@@ -554,7 +554,7 @@ func (h *OpenAIResponsesAPIHandler) prepareCodexMultiAgentV2Tools(c *gin.Context
 		requestCtx,
 		requestHeaders,
 		payload,
-		h.Cfg.CodexOptimizeMultiAgentV2,
+		h.Cfg.Client.Codex.OptimizeMultiAgentV2,
 		homeEnabled,
 	)
 	if prepared && c != nil {

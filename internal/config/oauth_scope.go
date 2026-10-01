@@ -20,9 +20,6 @@ func (cfg *Config) ForAPIKey() *Config {
 			value.FieldByIndex(indexes).SetZero()
 		}
 	}
-	if cfg.OAuthOnlyFields["codex.optimize-multi-agent-v2"] {
-		filtered.CodexOptimizeMultiAgentV2 = false
-	}
 	if cfg.OAuthOnlyFields["codex.orphan-delegation-compatibility"] {
 		filtered.CodexOrphanDelegationCompatibility = false
 	}

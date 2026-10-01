@@ -492,6 +492,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		scanner := bufio.NewScanner(decodedBody)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
+		helps.InitializeApplyPatchStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), bodyForTranslation, &param)
 		var upstreamMessageID string
 		upstreamCompleted := false
 		streamEventName := ""
@@ -525,16 +526,17 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				to,
 				responseFormat,
 				req.Model,
-				opts.OriginalRequest,
+				helps.ApplyPatchOriginalRequest(req, opts),
 				bodyForTranslation,
 				bytes.Clone(line),
 				&param,
 			)
-			if responseFormat == sdktranslator.FormatOpenAIResponse {
+			if responseFormat == sdktranslator.FormatOpenAIResponse && helps.ApplyPatchTranslationError(param) == nil {
 				for i, chunk := range chunks {
 					chunks[i] = helps.EnsureResponsesUsageDetails(chunk)
 				}
 			}
+			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
@@ -543,12 +545,18 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					return
 				}
 			}
+			if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
+				return
+			}
 			if upstreamCompleted {
 				break
 			}
 			if len(trimmedLine) == 0 {
 				streamEventName = ""
 			}
+		}
+		if helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
+			return
 		}
 		if !upstreamCompleted {
 			if emitCancellation(scanner.Err()) {

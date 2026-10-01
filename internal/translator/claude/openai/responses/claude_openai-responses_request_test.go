@@ -1160,7 +1160,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SynthesizesMissingToolResult(t *t
 	}
 }
 
-func TestConvertOpenAIResponsesRequestToClaude_DropsApplyPatchCustomTool(t *testing.T) {
+func TestConvertOpenAIResponsesRequestToClaude_KeepsApplyPatchCustomTool(t *testing.T) {
 	raw := []byte(`{
 		"model":"claude-test",
 		"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],
@@ -1183,14 +1183,17 @@ func TestConvertOpenAIResponsesRequestToClaude_DropsApplyPatchCustomTool(t *test
 	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
 	root := gjson.ParseBytes(out)
 
-	if got := root.Get("tools.#").Int(); got != 1 {
-		t.Fatalf("tools count = %d, want 1. Output: %s", got, string(out))
+	if got := root.Get("tools.#").Int(); got != 2 {
+		t.Fatalf("tools count = %d, want 2. Output: %s", got, out)
 	}
-	if got := root.Get("tools.0.name").String(); got != "exec_command" {
-		t.Fatalf("tools.0.name = %q, want exec_command. Output: %s", got, string(out))
+	tool := root.Get(`tools.#(name=="apply_patch")`)
+	for _, instruction := range []string{"*** Begin Patch", "*** End Patch", "*** Add File:", "*** Delete File:", "*** Update File:", "*** Move to:", "*** End of File", "@@", "start: patch", "JSON object"} {
+		if !strings.Contains(tool.Get("description").String(), instruction) {
+			t.Errorf("missing patch instruction %q", instruction)
+		}
 	}
-	if got := root.Get("tools.#(name==\"apply_patch\")").Raw; got != "" {
-		t.Fatalf("apply_patch custom tool should be dropped. Output: %s", string(out))
+	if tool.Get("input_schema.additionalProperties").Bool() || !tool.Get("input_schema.additionalProperties").Exists() || tool.Get("input_schema.required.0").String() != "input" {
+		t.Fatalf("patch schema is not strict: %s", tool.Raw)
 	}
 }
 
@@ -2866,5 +2869,31 @@ func TestConvertOpenAIResponsesRequestToClaude_LongToolChoiceAndHistory(t *testi
 	}
 	if foundHistoryToolUseName != declaredPricesName {
 		t.Fatalf("history tool_use.name = %q, want %q", foundHistoryToolUseName, declaredPricesName)
+	}
+}
+
+func TestApplyPatchClaudeRequestContractAndHistory(t *testing.T) {
+	request := []byte(`{"tools":[{"type":"namespace","name":"editor","tools":[{"type":"custom","name":"apply_patch","description":"Edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.","format":{"type":"grammar","syntax":"lark","definition":"start: patch"},"cache_control":{"type":"ephemeral"}}]}],"input":[{"type":"custom_tool_call","namespace":"editor","name":"apply_patch","call_id":"c1","input":"*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch"},{"type":"custom_tool_call_output","call_id":"c1","output":"done"}]}`)
+	result := gjson.ParseBytes(ConvertOpenAIResponsesRequestToClaude("test", request, false))
+	tool := result.Get("tools.0")
+	description := tool.Get("description").String()
+	schema := tool.Get("input_schema")
+	for _, instruction := range []string{"*** Begin Patch", "*** End Patch", "*** Add File:", "*** Delete File:", "*** Update File:", "*** Move to:", "*** End of File", "@@", "start: patch", "JSON object"} {
+		if !strings.Contains(description, instruction) {
+			t.Errorf("missing instruction %q", instruction)
+		}
+	}
+	if strings.Contains(description, "do not wrap the patch in JSON") {
+		t.Fatal("contradictory freeform instructions")
+	}
+	if schema.Get("additionalProperties").Bool() || !schema.Get("additionalProperties").Exists() || schema.Get("required.0").String() != "input" {
+		t.Fatalf("not strict schema: %s", schema.Raw)
+	}
+	call := result.Get("messages.0.content.0")
+	if tool.Get("cache_control.type").String() != "ephemeral" {
+		t.Fatalf("cache control lost: %s", tool.Raw)
+	}
+	if call.Get("name").String() != "editor__apply_patch" || call.Get("input.input").String() != "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch" || call.Get("id").String() != "c1" || result.Get("messages.1.content.0.tool_use_id").String() != "c1" || result.Get("messages.1.content.0.content").String() != "done" {
+		t.Fatalf("history mismatch: %s", result.Raw)
 	}
 }

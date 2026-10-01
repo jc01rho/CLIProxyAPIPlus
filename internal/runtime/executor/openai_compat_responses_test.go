@@ -475,7 +475,7 @@ func TestOpenAICompatNativeResponsesProxyAndOAuthScope(t *testing.T) {
 					t.Errorf("OAuth settings changed %s: %s", field, body)
 				}
 			}
-			if !cfg.Codex.OptimizeMultiAgentV2 || !cfg.Codex.OrphanDelegationCompatibility {
+			if !cfg.Client.Codex.OptimizeMultiAgentV2 || !cfg.Codex.OrphanDelegationCompatibility {
 				t.Error("shared OAuth config changed")
 			}
 		})

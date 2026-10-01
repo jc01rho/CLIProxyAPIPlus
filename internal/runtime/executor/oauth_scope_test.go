@@ -84,13 +84,13 @@ oauth:
 						t.Fatalf("orphan delegation type = %q, OAuth = %t; body=%s", got, wantOAuth, body)
 					}
 					if provider == "codex" {
-						if got := gjson.GetBytes(body, "tools.0.name").String(); (got == "collaboration-optimize") != wantOAuth {
-							t.Fatalf("collaboration namespace = %q, OAuth = %t", got, wantOAuth)
+						if got := gjson.GetBytes(body, "tools.0.name").String(); got != "collaboration-optimize" {
+							t.Fatalf("client collaboration namespace = %q, want collaboration-optimize", got)
 						}
 					} else if injected := gjson.GetBytes(body, `tools.#(type=="x_search")`).Exists(); injected != wantOAuth {
 						t.Fatalf("x_search injected = %t, OAuth = %t", injected, wantOAuth)
 					}
-					if !cfg.Codex.OptimizeMultiAgentV2 || !cfg.Codex.OrphanDelegationCompatibility || !cfg.XAI.InjectXSearch {
+					if !cfg.Client.Codex.OptimizeMultiAgentV2 || !cfg.Codex.OrphanDelegationCompatibility || !cfg.XAI.InjectXSearch {
 						t.Fatal("request changed shared configuration")
 					}
 				})

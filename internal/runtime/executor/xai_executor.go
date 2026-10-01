@@ -113,3 +113,6 @@ func (e *XAIExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)
 }
+
+// SupportsApplyPatch reports the actual executor contract, independent of its provider name.
+func (e *XAIExecutor) SupportsApplyPatch() bool { return e != nil }

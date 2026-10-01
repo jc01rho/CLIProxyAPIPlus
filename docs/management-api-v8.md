@@ -37,6 +37,7 @@ the corresponding group value. Legacy field names are rejected by v8 writes.
 | `/config/access/api-keys` | Client authentication keys, for example `["client-key"]`. |
 | `/config/api-keys` | All upstream provider groups. |
 | `/config/api-keys/codex` | Codex upstream groups. |
+| `/config/client/codex/optimize-multi-agent-v2` | Boolean, default `false`; applies to Codex clients across OAuth and API-key routes. |
 | `/config/observability/logs/debug` | A boolean, for example `true`. |
 | `/config/routing/retry/request-retry` | A number, for example `0`. |
 | `/config/plugins/configs/<id>` | A plugin configuration object. |
@@ -60,6 +61,22 @@ The Home-owned revision fields
 `credentials.concurrency.lifecycle-config-revision`,
 `credentials.concurrency.observation-barrier-revision`, and `plugins.auth-revision`
 cannot be changed through these endpoints.
+
+### Codex multi-agent configuration migration
+
+`client.codex.optimize-multi-agent-v2` is the sole runtime setting. Loading older
+YAML accepts `providers.codex.optimize-multi-agent-v2`,
+`oauth.providers.codex.optimize-multi-agent-v2`, and the flat
+`codex.optimize-multi-agent-v2` path. The client path always wins conflicts,
+including explicit `false` or `null`. If it is absent, the historical OAuth path
+wins over `providers`, which wins over the flat path.
+
+These aliases now have client-wide semantics, not OAuth-only scope. Loading does
+not rewrite legacy-only settings; normalization removes aliases conflicting with
+the client path. A successful v8 write migrates the aliases while preserving their
+comments. New v8 writes must use the client path. Home configuration publishers
+need matching client schema support before emitting the new path; older YAML
+payloads remain readable.
 
 ## Operational endpoints
 
