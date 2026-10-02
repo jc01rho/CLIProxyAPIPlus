@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -805,6 +806,61 @@ func disableThinkingIfToolChoiceForced(body []byte) []byte {
 		if oc := gjson.GetBytes(body, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
 			body, _ = sjson.DeleteBytes(body, "output_config")
 		}
+	}
+	return body
+}
+
+// claudeAdaptiveThinkingOnlyModels remembers upstream models that rejected
+// thinking.type "disabled"/"enabled" (for example claude-opus-5-5), so later
+// requests send adaptive thinking up front instead of failing once each.
+var claudeAdaptiveThinkingOnlyModels sync.Map
+
+type claudeAdaptiveThinkingRetryKey struct{}
+
+// isClaudeAdaptiveThinkingRequiredError matches Anthropic's 400 for models whose
+// thinking can only be controlled by thinking.type "adaptive" plus effort.
+func isClaudeAdaptiveThinkingRequiredError(status int, body []byte) bool {
+	if status != http.StatusBadRequest || gjson.GetBytes(body, "error.type").String() != "invalid_request_error" {
+		return false
+	}
+	msg := gjson.GetBytes(body, "error.message").String()
+	if !strings.Contains(msg, "is not supported for this model") || !strings.Contains(msg, `"thinking.type.adaptive"`) {
+		return false
+	}
+	return strings.Contains(msg, `"thinking.type.disabled"`) || strings.Contains(msg, `"thinking.type.enabled"`)
+}
+
+// shouldRetryClaudeWithAdaptiveThinking records the rejecting model and reports
+// whether the request may be rebuilt and sent once more. The retry context
+// carries a marker so a rebuilt request is never retried again.
+func shouldRetryClaudeWithAdaptiveThinking(ctx context.Context, sentBody []byte, status int, errBody []byte) bool {
+	if ctx.Value(claudeAdaptiveThinkingRetryKey{}) != nil || !isClaudeAdaptiveThinkingRequiredError(status, errBody) {
+		return false
+	}
+	model := gjson.GetBytes(sentBody, "model").String()
+	if model == "" {
+		return false
+	}
+	claudeAdaptiveThinkingOnlyModels.Store(model, struct{}{})
+	return true
+}
+
+// forceAdaptiveThinkingForAdaptiveOnlyModel rewrites thinking "disabled" or
+// manual "enabled" into adaptive thinking for models that rejected them.
+// A disabled request asked for the least thinking, so it maps to effort "low";
+// a manual budget has no exact effort equivalent and keeps the model default.
+func forceAdaptiveThinkingForAdaptiveOnlyModel(body []byte) []byte {
+	if _, ok := claudeAdaptiveThinkingOnlyModels.Load(gjson.GetBytes(body, "model").String()); !ok {
+		return body
+	}
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
+	if thinkingType != "disabled" && thinkingType != "enabled" {
+		return body
+	}
+	body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
+	body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
+	if thinkingType == "disabled" && !gjson.GetBytes(body, "output_config.effort").Exists() {
+		body, _ = sjson.SetBytes(body, "output_config.effort", "low")
 	}
 	return body
 }

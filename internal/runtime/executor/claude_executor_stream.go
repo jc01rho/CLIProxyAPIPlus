@@ -21,6 +21,7 @@ import (
 )
 
 func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	retryCtx, retryReq := ctx, req
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
@@ -44,7 +45,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	cchSigning := claudeCCHSigningEnabled(apiKey, claudeCCHUpstreamAnthropic, fp.ProfileClaudeCodeCLI, url)
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
-	defer reporter.TrackFailure(ctx, &err)
+	retriedAdaptiveThinking := false
+	defer func() {
+		if !retriedAdaptiveThinking {
+			reporter.TrackFailure(ctx, &err)
+		}
+	}()
 	if upstreamModel != baseModel {
 		reporter.SetUpstreamModel(upstreamModel)
 	}
@@ -210,6 +216,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
+	body = forceAdaptiveThinkingForAdaptiveOnlyModel(body)
 	body = reconcileClaudeCodeContextManagement(body, contextManagementState)
 	body = normalizeClaudeSamplingForUpstream(body, confirmedClaudeCode)
 
@@ -363,6 +370,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		if errClose := errBody.Close(); errClose != nil {
 			log.Errorf("response body close error: %v", errClose)
+		}
+		if shouldRetryClaudeWithAdaptiveThinking(retryCtx, bodyForUpstream, httpResp.StatusCode, b) {
+			helps.LogWithRequestID(ctx).Infof("claude executor: model %s requires adaptive thinking, retrying once with adaptive thinking", gjson.GetBytes(bodyForUpstream, "model").String())
+			retriedAdaptiveThinking = true
+			return e.ExecuteStream(context.WithValue(retryCtx, claudeAdaptiveThinkingRetryKey{}, true), auth, retryReq, opts)
 		}
 		if fastRequest {
 			return nil, newClaudeFastDirectResponseError(httpResp, b)
