@@ -117,12 +117,17 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	authClone := auth.Clone()
 	m.auths[auth.ID] = authClone
 	antigravityReconcileChanged := m.reconcileSoleAntigravityPrimaryLocked("")
+	// Snapshot before unlocking: MarkResult mutates the published auth in place.
+	var schedulerSnapshot *Auth
+	if m.scheduler != nil {
+		schedulerSnapshot = authClone.Clone()
+	}
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
 	if m.scheduler != nil {
-		m.scheduler.upsertAuth(authClone.Clone())
+		m.scheduler.upsertAuth(schedulerSnapshot)
 		for _, changed := range antigravityReconcileChanged {
 			if changed.ID != auth.ID {
 				m.scheduler.upsertAuth(changed.Clone())
@@ -282,12 +287,17 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		preferredID = auth.ID
 	}
 	antigravityReconcileChanged := m.reconcileSoleAntigravityPrimaryLocked(preferredID)
+	// Snapshot before unlocking: MarkResult mutates the published auth in place.
+	var schedulerSnapshot *Auth
+	if m.scheduler != nil {
+		schedulerSnapshot = authClone.Clone()
+	}
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
 	if m.scheduler != nil {
-		m.scheduler.upsertAuth(authClone.Clone())
+		m.scheduler.upsertAuth(schedulerSnapshot)
 		for _, changed := range antigravityReconcileChanged {
 			if changed.ID != auth.ID {
 				m.scheduler.upsertAuth(changed.Clone())
