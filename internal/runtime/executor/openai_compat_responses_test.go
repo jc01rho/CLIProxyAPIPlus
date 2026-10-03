@@ -449,7 +449,10 @@ func TestOpenAICompatNativeResponsesProxyAndOAuthScope(t *testing.T) {
 			defer proxy.Close()
 			executor, auth := nativeResponsesExecutor("http://native.invalid/v1")
 			auth.ProxyURL = proxy.URL
-			cfg, err := config.ParseConfigBytes([]byte("oauth:\n  providers:\n    codex: {optimize-multi-agent-v2: true, orphan-delegation-compatibility: true}\n"))
+			// orphan-delegation-compatibility now lives under upstream.codex and
+			// applies to API-key credentials too, so only the client-side Codex
+			// multi-agent rewrite is checked here.
+			cfg, err := config.ParseConfigBytes([]byte("oauth:\n  providers:\n    codex: {optimize-multi-agent-v2: true}\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -475,7 +478,7 @@ func TestOpenAICompatNativeResponsesProxyAndOAuthScope(t *testing.T) {
 					t.Errorf("OAuth settings changed %s: %s", field, body)
 				}
 			}
-			if !cfg.Client.Codex.OptimizeMultiAgentV2 || !cfg.Codex.OrphanDelegationCompatibility {
+			if !cfg.Client.Codex.OptimizeMultiAgentV2 {
 				t.Error("shared OAuth config changed")
 			}
 		})

@@ -780,13 +780,10 @@ func normalizeV8PrivateIPAlias(root *yaml.Node, migrate bool) (bool, error) {
 // restoreV8Layout lets v0 handlers update the effective runtime fields without
 // reintroducing their legacy spellings into an existing v8 document.
 func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.Node) error {
-	v8Layout := yamlPath(layout, "config-version") != nil
 	for _, path := range v8Paths {
 		upstreams := yamlPath(layout, "api-keys")
 		clientKeyCollision := path.old == "api-keys" && upstreams != nil && upstreams.Kind == yaml.MappingNode
-		// A document with v8 fields should never gain legacy spellings when
-		// v0 management saves runtime defaults or fork settings absent in YAML.
-		if yamlPath(layout, path.current) == nil && !clientKeyCollision && !v8Layout {
+		if yamlPath(layout, path.current) == nil && !clientKeyCollision {
 			continue
 		}
 		value := legacyPath(root, path.old)
@@ -801,12 +798,6 @@ func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.N
 	for _, family := range v8KeyFamilies {
 		groups := yamlPath(layout, "api-keys."+family.current)
 		if groups == nil {
-			if v8Layout {
-				if keys := yamlPath(root, family.old); keys != nil {
-					setYAMLPath(root, "api-keys."+family.current, groupLegacyKeys(keys, family.current))
-					deleteYAMLPath(root, family.old)
-				}
-			}
 			continue
 		}
 		if baseline == nil {

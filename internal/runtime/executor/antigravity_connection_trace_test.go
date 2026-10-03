@@ -65,7 +65,9 @@ func TestAntigravityProjectDiscoveryConnectionTrace(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("connection entries=%d, want 2", len(entries))
 	}
-	for i, host := range []string{"cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com"} {
+	// The fork discovers projects through sdk/auth, which sends both
+	// loadCodeAssist and onboardUser to the production endpoint.
+	for i, host := range []string{"cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"} {
 		fields := entries[i].Data
 		if fields["operation"] != "project_discovery" || fields["request_id"] != "discovery-request-id" || fields["auth_index"] != "discovery-index" || fields["upstream_host"] != host {
 			t.Fatalf("unexpected trace fields: %v", fields)

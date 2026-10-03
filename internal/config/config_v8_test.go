@@ -239,7 +239,7 @@ observability:
 	}
 }
 
-func TestV8SavePartiallyMigratedForkSettingsKeepsLegacyOnlyFields(t *testing.T) {
+func TestV8SavePartiallyMigratedForkSettingsMigrateWithoutLoss(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	raw := "server: {port: 8317}\nrequest-log-success-body: true\ncommandcode-api-key: [{api-key: command, base-url: 'https://command.example.invalid'}]\n"
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
@@ -260,10 +260,22 @@ func TestV8SavePartiallyMigratedForkSettingsKeepsLegacyOnlyFields(t *testing.T) 
 	if err = yaml.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if yamlPath(doc.Content[0], "request-log-success-body") == nil || yamlPath(doc.Content[0], "commandcode-api-key") == nil ||
-		yamlPath(doc.Content[0], "observability.logs.request-log-success-body") != nil ||
-		yamlPath(doc.Content[0], "api-keys.commandcode") != nil {
-		t.Fatalf("v0 save migrated legacy-only settings in a partially migrated file:\n%s", data)
+	root := doc.Content[0]
+	if yamlPath(root, "request-log-success-body") != nil || yamlPath(root, "commandcode-api-key") != nil {
+		t.Fatalf("v0 save kept legacy spellings in a v8 document:\n%s", data)
+	}
+	if value := yamlPath(root, "observability.logs.request-log-success-body"); value == nil || value.Value != "true" {
+		t.Fatalf("fork setting request-log-success-body was lost:\n%s", data)
+	}
+	if baseURL := yamlPath(root, "api-keys.commandcode"); baseURL == nil || !strings.Contains(string(data), "https://command.example.invalid") {
+		t.Fatalf("fork commandcode credentials were lost:\n%s", data)
+	}
+	reloaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.RequestLogSuccessBody || len(reloaded.CommandCodeKey) != 1 || reloaded.CommandCodeKey[0].APIKey != "command" {
+		t.Fatalf("migrated fork settings did not round-trip: success-body=%v commandcode=%+v", reloaded.RequestLogSuccessBody, reloaded.CommandCodeKey)
 	}
 }
 
