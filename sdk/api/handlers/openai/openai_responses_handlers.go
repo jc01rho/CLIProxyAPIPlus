@@ -564,7 +564,7 @@ func (h *OpenAIResponsesAPIHandler) prepareCodexMultiAgentV2Tools(c *gin.Context
 }
 
 func (h *OpenAIResponsesAPIHandler) prepareCodexOrphanDelegation(c *gin.Context, payload []byte) []byte {
-	if h == nil || h.Cfg == nil || !h.Cfg.CodexOrphanDelegationCompatibility || h.Cfg.OAuthOnlyFields["codex.orphan-delegation-compatibility"] {
+	if h == nil || h.Cfg == nil || !h.Cfg.CodexOrphanDelegationCompatibility {
 		return payload
 	}
 	requestCtx := context.Background()

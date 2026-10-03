@@ -395,6 +395,18 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 			return
 		}
+		if errScan := scanner.Err(); errScan != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+			reporter.PublishFailure(ctx, errScan)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
 		lines := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), body, []byte("[DONE]"), &param, claudeInputTokens)
 		helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 		for i := range lines {
@@ -406,14 +418,6 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 		if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 			return
-		}
-		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
-			}
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
@@ -889,14 +893,14 @@ func translateGeminiInteractionsRequestBody(ctx context.Context, cfg *config.Con
 }
 
 // translateGeminiInteractionsRequestPair translates the working payload and the
-// payload-config baseline. Identical inputs are translated once when no plugin
-// hooks are installed. The baseline is captured before model and thinking
-// mutations, and the working buffer is a separate copy so those mutations cannot
-// change it. Distinct inputs and plugin hooks keep the existing order: working
-// payload first, then the payload-config source.
+// payload-config baseline. Identical inputs are translated once, including plugin
+// hooks. The baseline is captured before model and thinking mutations, and the
+// working buffer is a separate copy so those mutations cannot change it. Distinct
+// inputs keep the existing order: working payload first, then the payload-config
+// source.
 func translateGeminiInteractionsRequestPair(ctx context.Context, cfg *config.Config, model string, payload []byte, opts cliproxyexecutor.Options, stream, isCompat bool) (original, working []byte) {
 	source := geminiInteractionsPayloadConfigInput(opts, payload)
-	if geminiInteractionsSameByteSlice(payload, source) && !sdktranslator.HasPluginHooks() {
+	if geminiInteractionsSameByteSlice(payload, source) {
 		original = translateGeminiInteractionsRequestBody(ctx, cfg, model, payload, opts, stream, isCompat)
 		return original, bytes.Clone(original)
 	}

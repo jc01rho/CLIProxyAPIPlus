@@ -135,7 +135,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		err = errReq
 		return nil, err
 	}
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate_stream").Do(httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -286,7 +286,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
 			}
-		} else {
+		} else if ctx.Err() == nil {
 			// Only a clean end of stream may produce a synthetic terminal event.
 			// Translating [DONE] after a read error would report a truncated
 			// stream as a successful completion.
@@ -322,6 +322,9 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			if replayAccumulator != nil {
 				replayAccumulator.Commit(ctx)
 			}
+			// The reporter keeps only the first outcome. Publish the buffered
+			// usage before EnsurePublished, which otherwise records an empty detail.
+			streamUsage.Publish(ctx, reporter)
 			reporter.EnsurePublished(ctx)
 		}
 	}(httpResp)

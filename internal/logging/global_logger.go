@@ -56,7 +56,8 @@ var logFieldOrder = []string{
 	"plugin_id", "plugin_name", "source_id",
 	"version", "active_version", "retired_version", "overwritten",
 	"mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error",
-	"credential", "auth_id", "connection", "proxy_scheme", "remote_transport",
+	"credential", "auth_id", "auth_index", "connection", "proxy_scheme", "remote_transport",
+	"operation", "upstream_host", "reused", "was_idle", "idle_time",
 	"media_session_id", "call_id", "peer", "state", "reason",
 }
 
@@ -67,8 +68,11 @@ var routeFallbackFieldOrder = []string{
 }
 
 var quotedLogFields = map[string]struct{}{
-	"auth_id":                 {},
 	"credential":              {},
+	"auth_id":                 {},
+	"auth_index":              {},
+	"upstream_host":           {},
+	"operation":               {},
 	"connection":              {},
 	"proxy_scheme":            {},
 	"remote_transport":        {},
