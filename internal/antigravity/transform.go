@@ -3,6 +3,7 @@ package antigravity
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	"math"
 	"os"
 	"strings"
@@ -1969,7 +1970,15 @@ func sanitizeParts(parts []any, targetFamily ModelFamily, preserveNonSignature b
 		partCopy := copyMap(partMap)
 		stripped := 0
 		if targetFamily == ModelFamilyClaude {
+			// A Claude-native signature (Antigravity CAQS) replayed in thoughtSignature is not
+			// Gemini metadata and must survive; only foreign signatures are stripped.
+			nativeSig, _ := partCopy["thoughtSignature"].(string)
+			_, keepNative := signature.CompatibleAntigravityClaudeThinkingSignature(nativeSig)
 			partCopy, stripped = StripGeminiThinkingMetadata(partCopy, preserveNonSignature)
+			if keepNative && nativeSig != "" {
+				partCopy["thoughtSignature"] = nativeSig
+				stripped--
+			}
 		} else if isGeminiTransformFamily(targetFamily) {
 			partCopy, stripped = StripClaudeThinkingFields(partCopy)
 		}

@@ -190,6 +190,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", cache.ID)
 	}
 	rawJSON = helps.SanitizeCodexInputItemIDs(rawJSON)
+	rawJSON = helps.FinalizePayload(ctx, rawJSON)
 	if errFormat := rejectInvalidCodexRequestFormat(rawJSON); errFormat != nil {
 		return nil, nil, errFormat
 	}
@@ -475,6 +476,22 @@ func resolveCodexImageGenerationMode(cfg *config.Config, auth *cliproxyauth.Auth
 		return global
 	}
 	return mode
+}
+
+// codexPayloadConfigForAuth lets the final payload barrier honor a per-credential
+// disable-image-generation override; the barrier otherwise re-applies the global mode
+// after ensureImageGenerationTool and would undo a per-credential "off".
+func codexPayloadConfigForAuth(cfg *config.Config, auth *cliproxyauth.Auth) *config.Config {
+	if cfg == nil {
+		return nil
+	}
+	mode := resolveCodexImageGenerationMode(cfg, auth)
+	if mode == cfg.DisableImageGeneration {
+		return cfg
+	}
+	override := *cfg
+	override.DisableImageGeneration = mode
+	return &override
 }
 
 func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header) []byte {

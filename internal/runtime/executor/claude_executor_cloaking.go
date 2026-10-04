@@ -1270,11 +1270,10 @@ type claudeCodeContextManagementState struct {
 	eligible              bool
 	callerOwned           bool
 	automaticallyInjected bool
-	payloadRuleTouched    bool
 }
 
-// reconcileClaudeCodeContextManagement resolves automatic ownership after all
-// payload rules and forced tool-choice processing have completed.
+// reconcileClaudeCodeContextManagement resolves built-in ownership after forced
+// tool-choice processing. User payload rules run later and never need reconciliation.
 func reconcileClaudeCodeContextManagement(payload []byte, state claudeCodeContextManagementState) []byte {
 	contextManagement := gjson.GetBytes(payload, "context_management")
 
@@ -1283,7 +1282,7 @@ func reconcileClaudeCodeContextManagement(payload []byte, state claudeCodeContex
 	// thinking field after injection, so this also covers a request that was
 	// still eligible when injectClaudeCodeContextManagement ran.
 	if !claudeThinkingAcceptsClearThinking(payload) {
-		if state.callerOwned || !state.automaticallyInjected || state.payloadRuleTouched {
+		if state.callerOwned || !state.automaticallyInjected {
 			return payload
 		}
 		if contextManagement.Raw != claudeCodeContextManagement {
@@ -1296,7 +1295,7 @@ func reconcileClaudeCodeContextManagement(payload []byte, state claudeCodeContex
 		return updated
 	}
 
-	if !state.eligible || state.callerOwned || state.payloadRuleTouched || contextManagement.Exists() {
+	if !state.eligible || state.callerOwned || contextManagement.Exists() {
 		return payload
 	}
 	updated, err := sjson.SetRawBytes(payload, "context_management", []byte(claudeCodeContextManagement))
