@@ -1861,7 +1861,7 @@ func restoreClaudeOAuthToolNamesFromResponse(body []byte, prefix string, prefixD
 		return body, err
 	}
 	if !prefixDisabled {
-		body = stripClaudeToolPrefixFromResponse(body, prefix)
+		body = stripClaudeToolPrefixFromResponse(body, prefix, reverseMap)
 	}
 	return body, nil
 }
@@ -1874,7 +1874,7 @@ func restoreClaudeOAuthToolNamesFromStreamLine(line []byte, prefix string, prefi
 		return line, err
 	}
 	if !prefixDisabled {
-		line = stripClaudeToolPrefixFromStreamLine(line, prefix)
+		line = stripClaudeToolPrefixFromStreamLine(line, prefix, reverseMap)
 	}
 	return line, nil
 }
@@ -3008,7 +3008,28 @@ func applyClaudeToolPrefix(body []byte, prefix string, reverseMaps ...map[string
 	return body
 }
 
-func stripClaudeToolPrefixFromResponse(body []byte, prefix string) []byte {
+// shouldStripClaudeToolPrefix reports whether name still carries the prefix that
+// applyClaudeToolPrefix added. That function never prefixes a name that follows
+// the Claude MCP convention, and the request-local reverse map holds every name
+// the client declared, including the one an alias was restored to just before
+// this step. Such names are client-owned even when they start with the prefix
+// text (senpi names its MCP tools mcp_<server>_<tool>), so stripping them would
+// corrupt the name the client has to match.
+func shouldStripClaudeToolPrefix(name, prefix string, reverseMaps []map[string]string) bool {
+	if !strings.HasPrefix(name, prefix) || helps.IsClaudeMCPToolName(name) {
+		return false
+	}
+	for _, reverseMap := range reverseMaps {
+		for _, clientName := range reverseMap {
+			if clientName == name {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func stripClaudeToolPrefixFromResponse(body []byte, prefix string, reverseMaps ...map[string]string) []byte {
 	if prefix == "" {
 		return body
 	}
@@ -3021,14 +3042,14 @@ func stripClaudeToolPrefixFromResponse(body []byte, prefix string) []byte {
 		switch partType {
 		case "tool_use":
 			name := part.Get("name").String()
-			if !strings.HasPrefix(name, prefix) {
+			if !shouldStripClaudeToolPrefix(name, prefix, reverseMaps) {
 				return true
 			}
 			path := fmt.Sprintf("content.%d.name", index.Int())
 			body, _ = sjson.SetBytes(body, path, lowerFirstToolName(strings.TrimPrefix(name, prefix)))
 		case "tool_reference":
 			toolName := part.Get("tool_name").String()
-			if !strings.HasPrefix(toolName, prefix) {
+			if !shouldStripClaudeToolPrefix(toolName, prefix, reverseMaps) {
 				return true
 			}
 			path := fmt.Sprintf("content.%d.tool_name", index.Int())
@@ -3040,7 +3061,7 @@ func stripClaudeToolPrefixFromResponse(body []byte, prefix string) []byte {
 				nestedContent.ForEach(func(nestedIndex, nestedPart gjson.Result) bool {
 					if nestedPart.Get("type").String() == "tool_reference" {
 						nestedToolName := nestedPart.Get("tool_name").String()
-						if strings.HasPrefix(nestedToolName, prefix) {
+						if shouldStripClaudeToolPrefix(nestedToolName, prefix, reverseMaps) {
 							nestedPath := fmt.Sprintf("content.%d.content.%d.tool_name", index.Int(), nestedIndex.Int())
 							body, _ = sjson.SetBytes(body, nestedPath, lowerFirstToolName(strings.TrimPrefix(nestedToolName, prefix)))
 						}
@@ -3054,7 +3075,7 @@ func stripClaudeToolPrefixFromResponse(body []byte, prefix string) []byte {
 	return body
 }
 
-func stripClaudeToolPrefixFromStreamLine(line []byte, prefix string) []byte {
+func stripClaudeToolPrefixFromStreamLine(line []byte, prefix string, reverseMaps ...map[string]string) []byte {
 	if prefix == "" {
 		return line
 	}
@@ -3074,7 +3095,7 @@ func stripClaudeToolPrefixFromStreamLine(line []byte, prefix string) []byte {
 	switch blockType {
 	case "tool_use":
 		name := contentBlock.Get("name").String()
-		if !strings.HasPrefix(name, prefix) {
+		if !shouldStripClaudeToolPrefix(name, prefix, reverseMaps) {
 			return line
 		}
 		updated, err = sjson.SetBytes(payload, "content_block.name", lowerFirstToolName(strings.TrimPrefix(name, prefix)))
@@ -3083,7 +3104,7 @@ func stripClaudeToolPrefixFromStreamLine(line []byte, prefix string) []byte {
 		}
 	case "tool_reference":
 		toolName := contentBlock.Get("tool_name").String()
-		if !strings.HasPrefix(toolName, prefix) {
+		if !shouldStripClaudeToolPrefix(toolName, prefix, reverseMaps) {
 			return line
 		}
 		updated, err = sjson.SetBytes(payload, "content_block.tool_name", lowerFirstToolName(strings.TrimPrefix(toolName, prefix)))

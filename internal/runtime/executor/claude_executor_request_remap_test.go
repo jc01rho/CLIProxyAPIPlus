@@ -1030,3 +1030,56 @@ func TestReverseRemapOAuthToolNames_UndeclaredToolFailsOpen(t *testing.T) {
 		t.Fatalf("restoredLine = %s, want %s forwarded unchanged", string(restoredLine), string(line))
 	}
 }
+
+// The proxy prefix ("mcp_") is also how senpi names its own MCP tools
+// (mcp_<server>_<tool>). Restoring a response must never strip a prefix that is
+// part of the client's own tool name, whether the model answered with the
+// request-local alias or with the declared name itself.
+func TestRestoreClaudeOAuthToolNames_KeepsClientOwnedMCPPrefix(t *testing.T) {
+	tests := []struct {
+		name  string
+		tools []string
+	}{
+		{name: "senpi style names next to a plain tool", tools: []string{"mcp_aside-remote_repl", "mcp_jira_jira_search", "read"}},
+		{name: "claude convention passthrough next to an aliased tool", tools: []string{"mcp__context7__query-docs", "mcp_aside-remote_repl"}},
+		{name: "only claude convention passthrough tools", tools: []string{"mcp__context7__query-docs"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			declared := make([]string, 0, len(tc.tools))
+			for _, tool := range tc.tools {
+				declared = append(declared, fmt.Sprintf(`{"name":%q,"input_schema":{"type":"object"}}`, tool))
+			}
+			body := []byte(`{"messages":[{"role":"user","content":"hi"}],"tools":[` + strings.Join(declared, ",") + `]}`)
+			upstream, reverseMap := prepareClaudeOAuthToolNamesForUpstream(body, claudeToolPrefix, false)
+
+			for index, original := range tc.tools {
+				wire := gjson.GetBytes(upstream, fmt.Sprintf("tools.%d.name", index)).String()
+				// The model may answer with the wire name, or with the declared name.
+				for _, called := range []string{wire, original} {
+					resp := []byte(fmt.Sprintf(`{"content":[{"type":"tool_use","id":"toolu_1","name":%q,"input":{}},{"type":"tool_reference","tool_name":%q}]}`, called, called))
+					restored, err := restoreClaudeOAuthToolNamesFromResponse(resp, claudeToolPrefix, false, reverseMap)
+					if err != nil {
+						t.Fatalf("restoreClaudeOAuthToolNamesFromResponse(%q) error = %v", called, err)
+					}
+					if got := gjson.GetBytes(restored, "content.0.name").String(); got != original {
+						t.Fatalf("tool_use %q restored to %q, want %q", called, got, original)
+					}
+					if got := gjson.GetBytes(restored, "content.1.tool_name").String(); got != original {
+						t.Fatalf("tool_reference %q restored to %q, want %q", called, got, original)
+					}
+
+					line := []byte(fmt.Sprintf(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}}`, called))
+					restoredLine, errStream := restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, false, reverseMap)
+					if errStream != nil {
+						t.Fatalf("restoreClaudeOAuthToolNamesFromStreamLine(%q) error = %v", called, errStream)
+					}
+					payload := strings.TrimPrefix(strings.TrimSpace(string(restoredLine)), "data: ")
+					if got := gjson.Get(payload, "content_block.name").String(); got != original {
+						t.Fatalf("stream tool_use %q restored to %q, want %q", called, got, original)
+					}
+				}
+			}
+		})
+	}
+}
