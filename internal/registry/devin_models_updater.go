@@ -2,9 +2,7 @@ package registry
 
 import (
 	"context"
-	"io"
 	"net/http"
-	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -12,36 +10,19 @@ import (
 
 const maxDevinModelsSize = 8 << 20
 
+// modelsFetchTimeout bounds one remote catalog request made through an injected client.
+const modelsFetchTimeout = 30 * time.Second
+
 var devinModelsURLs = []string{
 	"https://raw.githubusercontent.com/router-for-me/models/refs/heads/main/devin_models.json",
 	"https://models.router-for.me/devin_models.json",
 }
 
-var devinModelsUpdaterOnce sync.Once
-
 // StartDevinModelsUpdater starts a background updater that fetches the
 // Devin model catalog immediately and refreshes it every 3 hours.
 // Safe to call multiple times; only one updater runs.
 func StartDevinModelsUpdater(ctx context.Context) {
-	devinModelsUpdaterOnce.Do(func() {
-		go runDevinModelsUpdater(ctx)
-	})
-}
-
-func runDevinModelsUpdater(ctx context.Context) {
-	tryRefreshDevinModels(ctx, "startup Devin model refresh")
-
-	ticker := time.NewTicker(modelsRefreshInterval)
-	defer ticker.Stop()
-	log.Infof("periodic Devin model refresh started (interval=%s)", modelsRefreshInterval)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			tryRefreshDevinModels(ctx, "periodic Devin model refresh")
-		}
-	}
+	devinCatalogUpdater.configure(ctx, "")
 }
 
 func tryRefreshDevinModels(ctx context.Context, label string) {
@@ -64,48 +45,18 @@ func tryRefreshDevinModels(ctx context.Context, label string) {
 }
 
 func fetchDevinModelsFromRemote(ctx context.Context) ([]byte, string) {
-	return fetchDevinModelsFromRemoteWithClient(ctx, &http.Client{Timeout: modelsFetchTimeout})
+	return fetchDevinModelsFromRemoteWithClient(ctx, http.DefaultClient)
 }
 
 func fetchDevinModelsFromRemoteWithClient(ctx context.Context, client *http.Client) ([]byte, string) {
-	for _, sourceURL := range devinModelsURLs {
-		reqCtx, cancel := context.WithTimeout(ctx, modelsFetchTimeout)
-		req, errReq := http.NewRequestWithContext(reqCtx, http.MethodGet, sourceURL, nil)
-		if errReq != nil {
-			cancel()
-			log.Warnf("devin models updater: invalid request for %s: %v", sourceURL, errReq)
-			continue
+	for _, source := range devinModelsURLs {
+		data, errRead := readCatalogSourceWithClient(ctx, client, source)
+		if errRead == nil && validateDevinCatalogBytes(data) == nil {
+			return data, source
 		}
-
-		resp, errDo := client.Do(req)
-		if errDo != nil {
-			cancel()
-			log.Warnf("devin models updater: fetch failed from %s: %v", sourceURL, errDo)
-			continue
+		if ctx.Err() != nil {
+			break
 		}
-
-		if resp.StatusCode != http.StatusOK {
-			if errClose := resp.Body.Close(); errClose != nil {
-				log.Warnf("devin models updater: response close failed for %s: %v", sourceURL, errClose)
-			}
-			cancel()
-			log.Warnf("devin models updater: unexpected status %d from %s", resp.StatusCode, sourceURL)
-			continue
-		}
-
-		body, errRead := io.ReadAll(io.LimitReader(resp.Body, maxDevinModelsSize))
-		errClose := resp.Body.Close()
-		cancel()
-		if errRead != nil {
-			log.Warnf("devin models updater: read failed from %s: %v", sourceURL, errRead)
-			continue
-		}
-		if errClose != nil {
-			log.Warnf("devin models updater: response close failed for %s: %v", sourceURL, errClose)
-			continue
-		}
-
-		return body, sourceURL
 	}
 	return nil, ""
 }

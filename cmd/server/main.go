@@ -223,7 +223,7 @@ func main() {
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
 	flag.StringVar(&managementBaseURL, "management-base-url", "", "Base URL of remote management API for TUI client mode (e.g. https://proxy.example.com)")
-	flag.BoolVar(&localModel, "local-model", false, "Use embedded registry, Codex and Devin catalogs; still fetch models.dev limits on each server start")
+	flag.BoolVar(&localModel, "local-model", false, "Use embedded model catalogs unless models.catalog, models.codex-catalog, or models.devin-catalog explicitly overrides the source; still fetch models.dev limits on each server start")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -868,14 +868,15 @@ func main() {
 			return
 		}
 		if localModel && (!tuiMode || standalone) {
-			log.Info("Local model mode: using embedded model catalogs, remote model updates disabled")
+			log.Info("Local model mode: using embedded catalogs unless an explicit catalog source is configured")
 		}
 		if tuiMode {
 			if standalone {
 				// Standalone mode: start an embedded local server and connect TUI client to it.
 				managementasset.StartAutoUpdater(context.Background(), configFilePath)
 				misc.StartAntigravityVersionUpdater(context.Background())
-				startModelCatalogUpdaters(localModel, cfg.Home.Enabled)
+				registry.SetLocalModelCatalogs(localModel)
+				startForkModelCatalogExtras(localModel)
 				hook := tui.NewLogHook(2000)
 				hook.SetFormatter(&logging.LogFormatter{})
 				log.AddHook(hook)
@@ -950,7 +951,8 @@ func main() {
 			// Start the main proxy service
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
 			misc.StartAntigravityVersionUpdater(context.Background())
-			startModelCatalogUpdaters(localModel, cfg.Home.Enabled)
+			registry.SetLocalModelCatalogs(localModel)
+			startForkModelCatalogExtras(localModel)
 
 			if cfg.AuthDir != "" {
 				kiro.InitializeAndStart(cfg.AuthDir, cfg)
@@ -980,37 +982,6 @@ func resolveManagementBaseURL(flagURL string, cfg *config.Config) string {
 		port = cfg.Port
 	}
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
-}
-
-// modelCatalogUpdaterPlan decides which remote model catalogs should refresh.
-// Codex client, Devin, and Cline catalogs still refresh under Home mode because
-// their model registrations stay edge-local.
-func modelCatalogUpdaterPlan(localModel, homeEnabled bool) (startModels, startCodexClient, startDevin, startCline bool) {
-	if localModel {
-		return false, false, false, false
-	}
-	return !homeEnabled, true, true, true
-}
-
-func startModelCatalogUpdaters(localModel, homeEnabled bool) {
-	if err := registry.RefreshModelsDevLimits(context.Background(), registry.ModelsDevLimitsURL); err != nil {
-		log.Warnf("models.dev model limits unavailable; using existing metadata: %v", err)
-	}
-	startModels, startCodexClient, startDevin, startCline := modelCatalogUpdaterPlan(localModel, homeEnabled)
-	if startCodexClient {
-		registry.StartCodexClientModelsUpdater(context.Background())
-	}
-	if startDevin {
-		registry.StartDevinModelsUpdater(context.Background())
-	}
-	if startCline {
-		registry.StartClineModelsUpdater(context.Background())
-	}
-	if startModels {
-		registry.StartModelsUpdater(context.Background())
-	} else if homeEnabled {
-		log.Info("Home mode: remote models.json updates disabled; Codex client model list follows Home model IDs")
-	}
 }
 
 func pluginBootstrapConfigPath(args []string, defaultPath string) string {
@@ -1123,4 +1094,16 @@ func splitArgvFlag(arg string) (name, value string, hasValue bool) {
 	arg = strings.TrimPrefix(arg, "-")
 	name, value, hasValue = strings.Cut(arg, "=")
 	return name, value, hasValue
+}
+
+// startForkModelCatalogExtras keeps the fork-only catalog behavior that the shared
+// catalog runtime does not own: models.dev limits refresh on every start (even with
+// --local-model) and the Cline live catalog, which refreshes under Home mode too.
+func startForkModelCatalogExtras(localModel bool) {
+	if err := registry.RefreshModelsDevLimits(context.Background(), registry.ModelsDevLimitsURL); err != nil {
+		log.Warnf("models.dev model limits unavailable; using existing metadata: %v", err)
+	}
+	if !localModel {
+		registry.StartClineModelsUpdater(context.Background())
+	}
 }

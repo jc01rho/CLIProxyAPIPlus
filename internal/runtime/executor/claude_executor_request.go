@@ -1710,6 +1710,8 @@ func isClaudeOAuthToken(apiKey string) bool {
 
 type claudeMCPAliasOptions struct {
 	secret string
+	// prefixDisabled turns off the fork's "mcp_" tool prefix for this request.
+	prefixDisabled bool
 }
 
 func resolveClaudeMCPAliasOptions(ctx context.Context) claudeMCPAliasOptions {

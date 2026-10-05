@@ -22,9 +22,9 @@ func StartClineModelsUpdater(ctx context.Context) {
 func runClineModelsUpdater(ctx context.Context) {
 	notifyModelRefresh([]string{"cline"})
 
-	ticker := time.NewTicker(modelsRefreshInterval)
+	ticker := time.NewTicker(ModelsRefreshInterval)
 	defer ticker.Stop()
-	log.Infof("periodic Cline model refresh started (interval=%s)", modelsRefreshInterval)
+	log.Infof("periodic Cline model refresh started (interval=%s)", ModelsRefreshInterval)
 	for {
 		select {
 		case <-ctx.Done():
