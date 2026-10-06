@@ -114,6 +114,10 @@ v6.10.0以降、CLIProxyAPIおよび [CPAMC](https://github.com/router-for-me/Cl
 
 リクエスト単位の監視とコスト推定を備えたCLIProxyAPI向けのフル管理センターです。CPA-Managerは、収集したリクエストをアカウント、モデル、チャネル、レイテンシ、ステータス、Token使用量ごとに追跡し、編集可能なモデル価格とLiteLLM価格のワンクリック同期でコストを推定します。SQLiteでイベントを永続化し、Codexアカウントプール向けに一括検査、クォータ判定、異常アカウント検出、クリーンアップ提案、ワンクリック実行を提供し、日常的なマルチアカウント運用に適しています。
 
+### [Oh-My-CPA](https://github.com/WizisCool/oh-my-cpa)
+
+Ant Design を採用した CLIProxyAPI v8+ 向けのモダンな管理コンソール。CPAMC に相当する主要な管理機能と、SQLite に永続化するリクエスト記録・使用量分析を統合し、OAuth アカウント、API プロバイダー、クライアントキー、クォータ、料金設定、CPA 運用を一つの画面で管理できます。リクエストごとのレイテンシ、最初のトークンまでの時間（TTFT）、トークン数、コストを追跡し、多条件フィルター、リアルタイムダッシュボード、トークンヒートマップを提供します。OpenRouter の価格同期、カスタム料金、リクエストごとの価格スナップショットで過去のコストを保持し、組み込み Agent と MCP ツールで分析と日常管理を支援します。
+
 ## SDKドキュメント
 
 - 使い方：[docs/sdk-usage.md](docs/sdk-usage.md)
@@ -249,6 +253,10 @@ Claude Code のステータスライン。現在の CPA インスタンスに対
 
 CLIProxyAPI 向けのクロスプラットフォームな Electron トレイダッシュボード。ChatGPT/Codex、Claude、Gemini/Antigravity、Grok、Kimi、Cursor の各アカウントにおける実際の OAuth クォータウィンドウを表示し、利用キューコストを試算し、OpenAI/Claude のサービスステータスを追跡します。ダークなターミナル風 UI。Windows および Linux で動作します。
 
+### [panel4cliproxyapi](https://github.com/yaanlaan/panel4cliproxyapi)
+
+React と Tailwind CSS で構築された、CLIProxyAPI 向けのモダンでレスポンシブな Web ダッシュボードおよび管理コンソール。LAN リダイレクト支援付きの複数プロバイダー対応 OAuth ログイン、YAML 不要の直感的なビジュアル設定、リアルタイムのトラフィック分析チャート、クライアント API キー管理、コアのバージョン確認とホットリロード、およびライブ SSE ストリーミングのプレイグラウンドを備えています。
+
 > [!NOTE]
 > CLIProxyAPIをベースにプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。
 
@@ -269,6 +277,10 @@ OmniRouteはマルチプロバイダーLLM向けのAIゲートウェイです：
 ### [Codex Switch](https://github.com/9ycrooked/CodexSwitch)
 
 Tauri 2 + Vue 3で構築された、複数のOpenAI Codexデスクトップアカウントを管理するためのツールです。保存済みのChatGPT/Codex認証プロファイルを切り替え、5時間および週次クォータ使用量をリアルタイムで確認し、tokenの状態を検証し、現在のアカウント詳細を表示し、手動コピーなしでauth.jsonファイルをインポートまたは保存できます。
+
+### [cliproxy-rs](https://github.com/vayungodara/cliproxy-rs)
+
+CLIProxyAPIのRust移植版です。同じ`config.yaml`と認証ファイルを読み込み、同じルートとv8 Management APIを提供するため、両者の間をどちらの方向にも切り替えられます。管理ダッシュボード（アカウントごとの5時間・週次クォータ表示、アカウントのサインイン、クライアント設定ガイド）を内蔵した単一バイナリで、週次ウィンドウが最も早くリセットされるアカウントから使うオプトインの`soonest-reset`ルーティング戦略も追加しています。
 
 > [!NOTE]
 > CLIProxyAPIの移植版またはそれに触発されたプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。

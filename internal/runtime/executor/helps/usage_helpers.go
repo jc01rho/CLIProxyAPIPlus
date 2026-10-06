@@ -219,12 +219,6 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
 	}
 }
 
-// ObserveCodexResponseModel stores the model reported by a codex upstream event and
-// ignores payloads without one; the substitution warning is emitted at publish time.
-func (r *UsageReporter) ObserveCodexResponseModel(payload []byte) {
-	r.ObserveResponseModel(payload)
-}
-
 // SetResponseModel sets the reported model directly if valid and not already marked final.
 func (r *UsageReporter) SetResponseModel(model string) {
 	if r == nil || r.responseModelFinal.Load() {
@@ -267,8 +261,8 @@ func (r *UsageReporter) IsResponseModelFinal() bool {
 	return r != nil && r.responseModelFinal.Load()
 }
 
-// warnModelSubstitution warns about a silent upstream model swap, throttled per
-// credential and model pair, and labels the credential by index only, never by account.
+// warnModelSubstitution warns about a silent upstream model swap, and labels the
+// credential by index only, never by account.
 func (r *UsageReporter) warnModelSubstitution(ctx context.Context) {
 	if r == nil {
 		return
@@ -284,29 +278,11 @@ func (r *UsageReporter) warnModelSubstitution(ctx context.Context) {
 	if r.model != "" && !IsModelSubstituted(r.model, served) {
 		return
 	}
-	// The throttle key uses the same normalized names as the substitution check, so
-	// aliases of one pair share a window instead of each warning on its own.
-	requested := normalizeModelName(expectedModel)
-	servedNormalized := normalizeModelName(served)
-	providerName := r.provider
+	providerName := strings.TrimSpace(r.provider)
 	if providerName == "" {
-		providerName = "codex"
-	}
-	if !codexModelSubstitutionWarns.allow(codexModelSubstitutionKey{
-		provider:  providerName,
-		authID:    r.authID,
-		requested: requested,
-		served:    servedNormalized,
-	}) {
-		return
+		providerName = "unknown"
 	}
 	LogWithRequestID(ctx).Warnf("%s executor: upstream served model %q for requested model %q (auth_index=%s)", providerName, served, r.model, r.authIndexForLog())
-}
-
-// warnCodexModelSubstitution warns about a silent upstream model swap, throttled per
-// credential and model pair, and labels the credential by index only, never by account.
-func (r *UsageReporter) warnCodexModelSubstitution(ctx context.Context) {
-	r.warnModelSubstitution(ctx)
 }
 
 // authIndexForLog labels the credential without exposing its file name or account.
