@@ -702,8 +702,25 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
 	if statusCode == http.StatusTooManyRequests || (statusCode >= 400 && statusCode < 600) {
 		retryAfter = helps.ParseClaudeRateLimitReset(headers, time.Now())
 	}
+	if retryAfter == nil && statusCode == http.StatusTooManyRequests {
+		retryAfter = claudeBodyRetryAfter(body)
+	}
 	err := statusErr{code: statusCode, msg: string(body), retryAfter: retryAfter}
 	return classifyClaudeStatusError(err, headers, modelLevelCooling)
+}
+
+// claudeBodyRetryAfter reads error.retry_after (seconds) from an Anthropic-style 429
+// body for gateways that carry the hint only there. retryable=false suppresses it.
+func claudeBodyRetryAfter(body []byte) *time.Duration {
+	if retryable := gjson.GetBytes(body, "error.retryable"); retryable.Exists() && retryable.Type == gjson.False {
+		return nil
+	}
+	hint := gjson.GetBytes(body, "error.retry_after")
+	if hint.Type != gjson.Number || hint.Float() <= 0 {
+		return nil
+	}
+	delay := time.Duration(hint.Float() * float64(time.Second))
+	return &delay
 }
 
 func classifyClaudeStatusError(err statusErr, headers http.Header, modelLevelCooling bool) error {
