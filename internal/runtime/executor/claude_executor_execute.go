@@ -255,6 +255,8 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if touchedPayloadPaths["diagnostics"] {
 		diagnosticsState = claudeDiagnosticsRequestState{}
 	}
+	// Upstream hard limits win over user payload rules: a rejected request cannot be retried usefully.
+	bodyForUpstream = e.capMaxTokens(bodyForUpstream, baseModel)
 	extraBetas, bodyForUpstream = extractAndRemoveBetas(bodyForUpstream)
 	bodyForUpstream = stripPromptCacheOptions(bodyForUpstream)
 	if cchSigning {

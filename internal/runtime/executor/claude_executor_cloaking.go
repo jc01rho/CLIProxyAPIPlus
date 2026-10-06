@@ -2411,6 +2411,27 @@ func injectSystemCacheControl(payload []byte) []byte {
 	return payload
 }
 
+// capMaxTokens lowers max_tokens to the upstream limit for the model. Values at or
+// below the cap, and requests without max_tokens, are left untouched.
+func (e *ClaudeExecutor) capMaxTokens(body []byte, modelID string) []byte {
+	if e == nil || e.upstreamMaxTokensCap == nil || len(body) == 0 {
+		return body
+	}
+	current := gjson.GetBytes(body, "max_tokens")
+	if !current.Exists() || current.Type != gjson.Number {
+		return body
+	}
+	limit := e.upstreamMaxTokensCap(strings.TrimSpace(modelID))
+	if limit <= 0 || current.Int() <= int64(limit) {
+		return body
+	}
+	capped, err := sjson.SetBytes(body, "max_tokens", limit)
+	if err != nil {
+		return body
+	}
+	return capped
+}
+
 func ensureModelMaxTokens(body []byte, modelID string) []byte {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return body

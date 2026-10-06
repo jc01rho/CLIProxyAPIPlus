@@ -22,6 +22,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/zcode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
@@ -126,8 +127,25 @@ type ZcodeExecutor struct {
 }
 
 // NewZcodeExecutor creates a zcode executor.
+// zcodeMaxOutputTokens is the output limit api.z.ai enforces on GLM models; a larger
+// max_tokens is rejected with error 1210 (accepted range [1,131072]).
+const zcodeMaxOutputTokens = 131072
+
+// zcodeMaxTokensCap prefers a limit declared in the static catalog and otherwise
+// falls back to the provider-wide limit, so live-discovered models are covered too.
+func zcodeMaxTokensCap(model string) int {
+	for _, info := range registry.GetZcodeModels() {
+		if info != nil && strings.EqualFold(info.ID, model) && info.MaxCompletionTokens > 0 {
+			return info.MaxCompletionTokens
+		}
+	}
+	return zcodeMaxOutputTokens
+}
+
 func NewZcodeExecutor(cfg *config.Config) *ZcodeExecutor {
-	return &ZcodeExecutor{ClaudeExecutor: NewClaudeExecutor(cfg)}
+	base := NewClaudeExecutor(cfg)
+	base.upstreamMaxTokensCap = zcodeMaxTokensCap
+	return &ZcodeExecutor{ClaudeExecutor: base}
 }
 
 // Identifier returns the executor identifier.

@@ -7,6 +7,16 @@ package registry
 func GetZcodeModels() []*ModelInfo {
 	return []*ModelInfo{
 		{
+			ID:                        "glm-5.3-flash",
+			Object:                    "model",
+			Type:                      "claude",
+			DisplayName:               "GLM-5.3-Flash",
+			ContextLength:             1000000,
+			MaxCompletionTokens:       131072,
+			SupportedInputModalities:  []string{"TEXT"},
+			SupportedOutputModalities: []string{"TEXT"},
+		},
+		{
 			ID:                        "glm-5.2",
 			Object:                    "model",
 			Type:                      "claude",
