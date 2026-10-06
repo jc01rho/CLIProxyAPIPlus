@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // commandCodeWireFixture is the shared OpenAI chat-completions payload that
@@ -328,5 +329,34 @@ func Test_CommandCodeRequest_reasoning_effort_omitted_when_absent(t *testing.T) 
 	}
 	if gjson.GetBytes(got, "params.reasoning_effort").Exists() {
 		t.Fatalf("params.reasoning_effort present, want the key never forwarded to the wire")
+	}
+}
+
+func Test_CommandCodeRequest_max_tokens_is_capped_at_upstream_limit(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int64
+		want int64
+	}{
+		{"above limit is lowered", 1000000, 200000},
+		{"just above limit is lowered", 200001, 200000},
+		{"at limit is kept", 200000, 200000},
+		{"below limit is kept", 4096, 4096},
+		{"absent uses the default", 0, 64000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := sjson.SetBytes(commandCodeWireFixture(), "max_tokens", tt.in)
+			if err != nil {
+				t.Fatalf("set max_tokens: %v", err)
+			}
+			got, err := buildCommandCodePayload(body, "deepseek/deepseek-v4.1-flash", true)
+			if err != nil {
+				t.Fatalf("buildCommandCodePayload() error = %v", err)
+			}
+			if value := gjson.GetBytes(got, "params.max_tokens").Int(); value != tt.want {
+				t.Fatalf("params.max_tokens = %d, want %d", value, tt.want)
+			}
+		})
 	}
 }

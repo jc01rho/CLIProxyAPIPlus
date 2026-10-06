@@ -21,7 +21,10 @@ import (
 const (
 	// commandCodeDefaultMaxTokens mirrors the npm default output token limit (64e3).
 	commandCodeDefaultMaxTokens = 64000
-	commandCodePermissionMode   = "standard"
+	// commandCodeMaxTokensLimit is the largest params.max_tokens /alpha/generate accepts;
+	// a bigger value is rejected with BAD_REQUEST ("Too big: expected number to be <=200000").
+	commandCodeMaxTokensLimit = 200000
+	commandCodePermissionMode = "standard"
 	// commandCodeMode mirrors the run mode the CLI sends on the /alpha/generate
 	// wire (opencodex and the installed CLI both send "agent").
 	commandCodeMode = "agent"
@@ -364,6 +367,9 @@ func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([
 	maxTokens := request.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = commandCodeDefaultMaxTokens
+	}
+	if maxTokens > commandCodeMaxTokensLimit {
+		maxTokens = commandCodeMaxTokensLimit
 	}
 	workspace := commandCodeWorkspaceConfig()
 	envelope := commandCodeWireEnvelope{
