@@ -230,6 +230,12 @@ type ModelRegistry struct {
 	registrationEpoch atomic.Uint64
 	// hook is an optional callback sink for model registration changes
 	hook ModelRegistryHook
+	// refreshUnknownModels fetches a models.dev snapshot when a new model ID
+	// is absent from the current snapshot. Nil disables the refresh.
+	refreshUnknownModels    func(context.Context) error
+	modelsDevMu             sync.Mutex
+	modelsDevRefreshRunning bool
+	modelsDevRefreshPending bool
 }
 
 // Global model registry instance
@@ -465,8 +471,9 @@ func (r *ModelRegistry) triggerModelsUnregistered(provider, clientID string) {
 //   - models: List of models that this client can provide
 func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models []*ModelInfo) {
 	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	r.registerClientLocked(clientID, clientProvider, models, false)
+	unknown := r.registerClientLocked(clientID, clientProvider, models, false)
+	r.mutex.Unlock()
+	r.scheduleModelsDevRefresh(unknown)
 }
 
 // ReplaceClientModels replaces a client's models only if its registration epoch matches.
@@ -477,16 +484,19 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 // The successful epoch is returned under the same lock as the replacement.
 func (r *ModelRegistry) ReplaceClientModels(clientID, clientProvider string, expectedEpoch uint64, models []*ModelInfo) (uint64, bool) {
 	r.mutex.Lock()
-	defer r.mutex.Unlock()
 	if r.clientEpochs[clientID] != expectedEpoch {
+		r.mutex.Unlock()
 		return 0, false
 	}
-	r.registerClientLocked(clientID, clientProvider, models, true)
-	return r.clientEpochs[clientID], true
+	unknown := r.registerClientLocked(clientID, clientProvider, models, true)
+	epoch := r.clientEpochs[clientID]
+	r.mutex.Unlock()
+	r.scheduleModelsDevRefresh(unknown)
+	return epoch, true
 }
 
 // registerClientLocked reconciles a client's models while the registry mutex is held.
-func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, models []*ModelInfo, preserveState bool) {
+func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, models []*ModelInfo, preserveState bool) []string {
 	r.ensureAvailableModelsCacheLocked()
 
 	if r.clientGenerations == nil {
@@ -523,7 +533,7 @@ func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, mo
 		delete(r.clientProviders, clientID)
 		r.invalidateAvailableModelsCacheLocked()
 		misc.LogCredentialSeparator()
-		return
+		return nil
 	}
 
 	oldModels, hadExisting := r.clientModels[clientID]
@@ -538,12 +548,15 @@ func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, mo
 	}
 	r.registrationEpoch.Add(1)
 
+	var unknown []string
 	now := time.Now()
 	if !hadExisting {
 		// Pure addition path.
 		for _, modelID := range rawModelIDs {
 			model := newModels[modelID]
-			r.addModelRegistration(modelID, provider, model, now, clientID)
+			if r.addModelRegistration(modelID, provider, model, now, clientID) {
+				unknown = noteUnknownModelsDevID(unknown, modelID)
+			}
 		}
 		r.clientModels[clientID] = append([]string(nil), rawModelIDs...)
 		// Store client's own model infos
@@ -561,7 +574,7 @@ func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, mo
 		r.triggerModelsRegistered(provider, clientID, models)
 		log.Debugf("Registered client %s from provider %s with %d models", clientID, clientProvider, len(rawModelIDs))
 		misc.LogCredentialSeparator()
-		return
+		return unknown
 	}
 
 	oldCounts := make(map[string]int, len(oldModels))
@@ -643,7 +656,9 @@ func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, mo
 		model := newModels[id]
 		diff := newCount - oldCount
 		for i := 0; i < diff; i++ {
-			r.addModelRegistration(id, provider, model, now, clientID)
+			if r.addModelRegistration(id, provider, model, now, clientID) {
+				unknown = noteUnknownModelsDevID(unknown, id)
+			}
 		}
 	}
 
@@ -715,16 +730,17 @@ func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, mo
 	r.triggerModelsRegistered(provider, clientID, models)
 	if len(added) == 0 && len(removed) == 0 && !providerChanged {
 		// Only metadata (e.g., display name) changed; keep no-op re-registration quiet.
-		return
+		return unknown
 	}
 
 	log.Debugf("Reconciled client %s (provider %s) models: +%d, -%d", clientID, provider, len(added), len(removed))
 	misc.LogCredentialSeparator()
+	return unknown
 }
 
-func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *ModelInfo, now time.Time, excludeClientID string) {
+func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *ModelInfo, now time.Time, excludeClientID string) bool {
 	if model == nil || modelID == "" {
-		return
+		return false
 	}
 	if existing, exists := r.models[modelID]; exists {
 		existing.Count++
@@ -748,7 +764,7 @@ func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *Mo
 			existing.InfoByProvider[provider].SupportsWebSearch = hasProvWebSearch
 		}
 		log.Debugf("Incremented count for model %s, now %d clients", modelID, existing.Count)
-		return
+		return false
 	}
 
 	registration := &ModelRegistration{
@@ -765,6 +781,7 @@ func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *Mo
 	}
 	r.models[modelID] = registration
 	log.Debugf("Registered new model %s from provider %s", modelID, provider)
+	return true
 }
 
 // removeModelRegistration may preserve state when only a duplicate binding is removed.

@@ -1103,6 +1103,9 @@ func startForkModelCatalogExtras(localModel bool) {
 	if err := registry.RefreshModelsDevLimits(context.Background(), registry.ModelsDevLimitsURL); err != nil {
 		log.Warnf("models.dev model limits unavailable; using existing metadata: %v", err)
 	}
+	registry.GetGlobalRegistry().SetRefreshUnknownModels(func(ctx context.Context) error {
+		return registry.RefreshModelsDevLimits(ctx, registry.ModelsDevLimitsURL)
+	})
 	if !localModel {
 		registry.StartClineModelsUpdater(context.Background())
 	}
