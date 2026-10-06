@@ -1331,6 +1331,11 @@ type OpenAICompatibility struct {
 	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
 
+	// RejectModelSubstitution discards a response whose model differs from the requested
+	// model and retries the request up to two more times before failing it, so a
+	// gateway that silently swaps in another model never reaches the client.
+	RejectModelSubstitution bool `yaml:"reject-model-substitution,omitempty" json:"reject-model-substitution,omitempty"`
+
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
 }

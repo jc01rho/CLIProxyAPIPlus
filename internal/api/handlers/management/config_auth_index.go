@@ -77,20 +77,21 @@ type openAICompatibilityAPIKeyWithAuthIndex struct {
 }
 
 type openAICompatibilityWithAuthIndex struct {
-	Name                  string                                   `json:"name"`
-	Priority              int                                      `json:"priority,omitempty"`
-	Disabled              bool                                     `json:"disabled"`
-	Prefix                string                                   `json:"prefix,omitempty"`
-	BaseURL               string                                   `json:"base-url"`
-	APIKeyEntries         []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
-	Models                []config.OpenAICompatibilityModel        `json:"models,omitempty"`
-	Headers               map[string]string                        `json:"headers,omitempty"`
-	SupportPromptCacheKey bool                                     `json:"support-prompt-cache-key,omitempty"`
-	SystemContentAsString bool                                     `json:"system-content-as-string,omitempty"`
-	DisableCooling        *bool                                    `json:"disable-cooling,omitempty"`
-	RequestRetry          *int                                     `json:"request-retry,omitempty"`
-	RequestScopedErrors   []config.RequestScopedErrorRule          `json:"request-scoped-errors,omitempty"`
-	AuthIndex             string                                   `json:"auth-index,omitempty"`
+	Name                    string                                   `json:"name"`
+	Priority                int                                      `json:"priority,omitempty"`
+	Disabled                bool                                     `json:"disabled"`
+	Prefix                  string                                   `json:"prefix,omitempty"`
+	BaseURL                 string                                   `json:"base-url"`
+	APIKeyEntries           []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
+	Models                  []config.OpenAICompatibilityModel        `json:"models,omitempty"`
+	Headers                 map[string]string                        `json:"headers,omitempty"`
+	SupportPromptCacheKey   bool                                     `json:"support-prompt-cache-key,omitempty"`
+	SystemContentAsString   bool                                     `json:"system-content-as-string,omitempty"`
+	RejectModelSubstitution bool                                     `json:"reject-model-substitution,omitempty"`
+	DisableCooling          *bool                                    `json:"disable-cooling,omitempty"`
+	RequestRetry            *int                                     `json:"request-retry,omitempty"`
+	RequestScopedErrors     []config.RequestScopedErrorRule          `json:"request-scoped-errors,omitempty"`
+	AuthIndex               string                                   `json:"auth-index,omitempty"`
 }
 
 func liveAuthIndexFromManager(manager *coreauth.Manager) map[string]string {
@@ -1052,19 +1053,20 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 		idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
 
 		response := openAICompatibilityWithAuthIndex{
-			Name:                  entry.Name,
-			Priority:              entry.Priority,
-			Disabled:              entry.Disabled,
-			Prefix:                entry.Prefix,
-			BaseURL:               entry.BaseURL,
-			Models:                entry.Models,
-			Headers:               entry.Headers,
-			SupportPromptCacheKey: entry.SupportPromptCacheKey,
-			SystemContentAsString: entry.SystemContentAsString,
-			DisableCooling:        entry.DisableCooling,
-			RequestRetry:          entry.RequestRetry,
-			RequestScopedErrors:   entry.RequestScopedErrors,
-			AuthIndex:             "",
+			Name:                    entry.Name,
+			Priority:                entry.Priority,
+			Disabled:                entry.Disabled,
+			Prefix:                  entry.Prefix,
+			BaseURL:                 entry.BaseURL,
+			Models:                  entry.Models,
+			Headers:                 entry.Headers,
+			SupportPromptCacheKey:   entry.SupportPromptCacheKey,
+			SystemContentAsString:   entry.SystemContentAsString,
+			RejectModelSubstitution: entry.RejectModelSubstitution,
+			DisableCooling:          entry.DisableCooling,
+			RequestRetry:            entry.RequestRetry,
+			RequestScopedErrors:     entry.RequestScopedErrors,
+			AuthIndex:               "",
 		}
 		if len(entry.APIKeyEntries) == 0 {
 			id, _ := idGen.Next(idKind, entry.BaseURL)

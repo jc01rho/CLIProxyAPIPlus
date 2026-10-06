@@ -21,6 +21,25 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// openAICompatModelSubstitutionRetries is how many extra attempts follow a response
+// whose model differs from the requested one.
+const openAICompatModelSubstitutionRetries = 2
+
+// rejectModelSubstitution reports whether this credential's provider asked for
+// substituted responses to be discarded.
+func (e *OpenAICompatExecutor) rejectModelSubstitution(auth *cliproxyauth.Auth, req cliproxyexecutor.Request) bool {
+	compat := e.resolveCompatConfig(auth, req)
+	return compat != nil && compat.RejectModelSubstitution
+}
+
+func newModelSubstitutionError(requested, served string) statusErr {
+	return statusErr{code: http.StatusBadGateway, msg: fmt.Sprintf("upstream served model %q for requested model %q", served, requested)}
+}
+
+func logModelSubstitutionRetry(ctx context.Context, provider, requested, served string, attempt int) {
+	helps.LogWithRequestID(ctx).Warnf("%s: upstream served model %q for requested model %q; discarding response (attempt %d/%d)", provider, served, requested, attempt, openAICompatModelSubstitutionRetries+1)
+}
+
 func (e *OpenAICompatExecutor) useNativeResponses(auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) bool {
 	compat := e.resolveCompatConfig(auth, req)
 	if compat == nil {
@@ -116,11 +135,16 @@ func (e *OpenAICompatExecutor) executeNativeResponses(ctx context.Context, auth 
 		data     []byte
 		status   string
 	)
-	for relax := false; ; relax = true {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	rejectSubstitution := e.rejectModelSubstitution(auth, req)
+	substitutions := 0
+	relax := false
+	for {
 		httpResp, body, err = e.openNativeResponses(ctx, auth, req, opts, false, reporter, relax)
 		if err != nil {
 			if !relax && nativeResponsesForcedToolChoiceRejected(body, err) {
 				logForcedToolChoiceRelax(req.Model, err)
+				relax = true
 				continue
 			}
 			return cliproxyexecutor.Response{}, err
@@ -136,11 +160,23 @@ func (e *OpenAICompatExecutor) executeNativeResponses(ctx context.Context, auth 
 			err = newNativeResponsesError(httpResp.StatusCode, httpResp.Header, data)
 			if !relax && nativeResponsesForcedToolChoiceRejected(body, err) {
 				logForcedToolChoiceRelax(req.Model, err)
+				relax = true
 				continue
 			}
 			reporter.ObserveResponseModel(data)
 			reporter.PublishFailureWithDetail(ctx, helps.ParseOpenAIUsage(data), err)
 			return cliproxyexecutor.Response{}, err
+		}
+		if rejectSubstitution {
+			if served := helps.ServedModelFromPayload(data, ""); served != "" && helps.IsMaterialModelSubstitution(baseModel, served) {
+				substitutions++
+				logModelSubstitutionRetry(ctx, e.provider, baseModel, served, substitutions)
+				if substitutions > openAICompatModelSubstitutionRetries {
+					err = newModelSubstitutionError(baseModel, served)
+					return cliproxyexecutor.Response{}, err
+				}
+				continue
+			}
 		}
 		break
 	}
@@ -174,6 +210,9 @@ func (e *OpenAICompatExecutor) executeNativeResponsesStream(ctx context.Context,
 	reporter := helps.NewExecutorUsageReporter(ctx, e, thinking.ParseSuffix(req.Model).ModelName, auth)
 	defer reporter.TrackFailure(ctx, &err)
 	relaxed := false
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	rejectSubstitution := e.rejectModelSubstitution(auth, req)
+	substitutions := 0
 	httpResp, body, err := e.openNativeResponses(ctx, auth, req, opts, true, reporter, false)
 	if err != nil && nativeResponsesForcedToolChoiceRejected(body, err) {
 		logForcedToolChoiceRelax(req.Model, err)
@@ -261,6 +300,33 @@ func (e *OpenAICompatExecutor) executeNativeResponsesStream(ctx context.Context,
 				event = typ
 			} else if event != "" {
 				data, _ = sjson.SetBytes(data, "type", event)
+			}
+			// Nothing has been emitted yet, so a response from a substituted model can
+			// still be discarded and the request reopened; the events are never observed.
+			if rejectSubstitution && !meaningful {
+				if served := helps.ServedModelFromPayload(data, ""); served != "" && helps.IsMaterialModelSubstitution(baseModel, served) {
+					substitutions++
+					logModelSubstitutionRetry(ctx, e.provider, baseModel, served, substitutions)
+					if substitutions > openAICompatModelSubstitutionRetries {
+						fail(newModelSubstitutionError(baseModel, served))
+						return
+					}
+					closeCompatResponsesBody(httpResp.Body)
+					retryResp, retryBody, errRetry := e.openNativeResponses(ctx, auth, req, opts, true, reporter, relaxed)
+					if errRetry != nil {
+						httpResp = &http.Response{Body: http.NoBody}
+						fail(errRetry)
+						return
+					}
+					httpResp, body = retryResp, retryBody
+					reader = helps.NewResponsesEventReader(httpResp.Body)
+					inputTokens = helps.NewClaudeInputTokenState(opts.SourceFormat, to, responseFormat, opts.OriginalRequest)
+					param = nil
+					usage = helps.StreamUsageBuffer{}
+					buffered = nil
+					bufferedBytes = 0
+					continue
+				}
 			}
 			reporter.ObserveResponseModel(data)
 			helps.ObserveResponsesTokenEvent(reporter, data)

@@ -247,6 +247,27 @@ func stripModelProviderPrefix(model string) string {
 	return model
 }
 
+// ServedModelFromPayload returns the model an upstream response or event reports, or
+// an empty string when the payload names none. It keeps no state, so a caller that
+// discards a response can inspect the next attempt without the reporter's final-model latch.
+func ServedModelFromPayload(payload []byte, provider string) string {
+	served, _ := extractResponseModelEvent(payload, provider)
+	return served
+}
+
+// IsMaterialModelSubstitution is the stricter test used to discard a response: a
+// pricing-tier tag (":free" or "-free") on one side only is a legitimate routing of the
+// same model, not a swap, so it never counts.
+func IsMaterialModelSubstitution(requested, served string) bool {
+	return IsModelSubstituted(stripFreeTierTag(requested), stripFreeTierTag(served))
+}
+
+func stripFreeTierTag(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	model = strings.TrimSuffix(model, ":free")
+	return strings.TrimSuffix(model, "-free")
+}
+
 // IsModelSubstituted reports whether the upstream served a model other than the
 // requested one for any provider; dated aliases and snapshot pins are accepted.
 func IsModelSubstituted(requested, served string) bool {

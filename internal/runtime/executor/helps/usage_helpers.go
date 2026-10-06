@@ -267,15 +267,8 @@ func (r *UsageReporter) warnModelSubstitution(ctx context.Context) {
 	if r == nil {
 		return
 	}
-	served := r.ResponseModel()
-	expectedModel := r.UpstreamModel()
-	if expectedModel == "" {
-		expectedModel = r.model
-	}
-	if served == "" || !IsModelSubstituted(expectedModel, served) {
-		return
-	}
-	if r.model != "" && !IsModelSubstituted(r.model, served) {
+	served, substituted := r.ModelSubstituted()
+	if !substituted {
 		return
 	}
 	providerName := strings.TrimSpace(r.provider)
@@ -283,6 +276,26 @@ func (r *UsageReporter) warnModelSubstitution(ctx context.Context) {
 		providerName = "unknown"
 	}
 	LogWithRequestID(ctx).Warnf("%s executor: upstream served model %q for requested model %q (auth_index=%s)", providerName, served, r.model, r.authIndexForLog())
+}
+
+// ModelSubstituted reports whether the response model observed so far differs from
+// both the expected upstream model and the requested model, and returns that model.
+func (r *UsageReporter) ModelSubstituted() (served string, substituted bool) {
+	if r == nil {
+		return "", false
+	}
+	served = r.ResponseModel()
+	expectedModel := r.UpstreamModel()
+	if expectedModel == "" {
+		expectedModel = r.model
+	}
+	if served == "" || !IsMaterialModelSubstitution(expectedModel, served) {
+		return "", false
+	}
+	if r.model != "" && !IsMaterialModelSubstitution(r.model, served) {
+		return "", false
+	}
+	return served, true
 }
 
 // authIndexForLog labels the credential without exposing its file name or account.

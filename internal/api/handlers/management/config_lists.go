@@ -994,20 +994,21 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 }
 func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	type openAICompatPatch struct {
-		Name                  *string                             `json:"name"`
-		Priority              *int                                `json:"priority"`
-		Prefix                *string                             `json:"prefix"`
-		Disabled              *bool                               `json:"disabled"`
-		DisableCooling        json.RawMessage                     `json:"disable-cooling"`
-		BaseURL               *string                             `json:"base-url"`
-		BillingClass          *string                             `json:"billing-class"`
-		APIKeyEntries         *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
-		Models                *[]config.OpenAICompatibilityModel  `json:"models"`
-		Headers               *map[string]string                  `json:"headers"`
-		SupportPromptCacheKey *bool                               `json:"support-prompt-cache-key"`
-		SystemContentAsString *bool                               `json:"system-content-as-string"`
-		RequestRetry          *int                                `json:"request-retry"`
-		RequestScopedErrors   *[]config.RequestScopedErrorRule    `json:"request-scoped-errors"`
+		Name                    *string                             `json:"name"`
+		Priority                *int                                `json:"priority"`
+		Prefix                  *string                             `json:"prefix"`
+		Disabled                *bool                               `json:"disabled"`
+		DisableCooling          json.RawMessage                     `json:"disable-cooling"`
+		BaseURL                 *string                             `json:"base-url"`
+		BillingClass            *string                             `json:"billing-class"`
+		APIKeyEntries           *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
+		Models                  *[]config.OpenAICompatibilityModel  `json:"models"`
+		Headers                 *map[string]string                  `json:"headers"`
+		SupportPromptCacheKey   *bool                               `json:"support-prompt-cache-key"`
+		SystemContentAsString   *bool                               `json:"system-content-as-string"`
+		RejectModelSubstitution *bool                               `json:"reject-model-substitution"`
+		RequestRetry            *int                                `json:"request-retry"`
+		RequestScopedErrors     *[]config.RequestScopedErrorRule    `json:"request-scoped-errors"`
 	}
 	var body struct {
 		Name  *string            `json:"name"`
@@ -1091,6 +1092,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.SystemContentAsString != nil {
 		entry.SystemContentAsString = *body.Value.SystemContentAsString
+	}
+	if body.Value.RejectModelSubstitution != nil {
+		entry.RejectModelSubstitution = *body.Value.RejectModelSubstitution
 	}
 	if body.Value.RequestScopedErrors != nil {
 		entry.RequestScopedErrors = append([]config.RequestScopedErrorRule(nil), *body.Value.RequestScopedErrors...)
