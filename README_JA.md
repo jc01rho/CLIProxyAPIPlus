@@ -140,6 +140,10 @@ Ant Design を採用した CLIProxyAPI v8+ 向けのモダンな管理コンソ�
 
 CLIProxyAPIをベースにした以下のプロジェクトがあります：
 
+### [omo-cpa](https://github.com/jc01rho/omo-cpa)
+
+このプロキシ向けの omo(senpi) プラグイン。ライブのモデル一覧を主力プロバイダ `cliproxyapi` と最終手段プロバイダ `cliproxyapi-last` として登録し、状態・アカウント使用量・フォールバックチェーンを扱います。
+
 ### [vibeproxy](https://github.com/automazeio/vibeproxy)
 
 macOSネイティブのメニューバーアプリで、Claude CodeとChatGPTのサブスクリプションをAIコーディングツールで使用可能 - APIキー不要

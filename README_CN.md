@@ -146,6 +146,10 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 这些项目基于 CLIProxyAPI:
 
+### [omo-cpa](https://github.com/jc01rho/omo-cpa)
+
+面向 omo(senpi) 的插件。把本代理的实时模型目录注册为主力提供方 `cliproxyapi` 与最后手段提供方 `cliproxyapi-last`，并查看健康状态、账号用量和回退链。
+
 ### [vibeproxy](https://github.com/automazeio/vibeproxy)
 
 一个原生 macOS 菜单栏应用，让您可以使用 Claude Code & ChatGPT 订阅服务和 AI 编程工具，无需 API 密钥。

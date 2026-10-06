@@ -139,6 +139,10 @@ v6.10.0 이후 CLIProxyAPI와 [CPAMC](https://github.com/router-for-me/Cli-Proxy
 
 다음 프로젝트들은 CLIProxyAPI를 기반으로 합니다:
 
+### [omo-cpa](https://github.com/jc01rho/omo-cpa)
+
+이 프록시용 omo(senpi) 플러그인. 라이브 모델 목록을 주력 프로바이더 `cliproxyapi`와 최후수단 프로바이더 `cliproxyapi-last`로 등록하고, 상태·계정 사용량·폴백 체인을 다룹니다.
+
 ### [vibeproxy](https://github.com/automazeio/vibeproxy)
 
 Claude Code & ChatGPT 구독을 AI 코딩 도구와 함께 사용할 수 있는 네이티브 macOS 메뉴 바 앱 — API 키 불필요.

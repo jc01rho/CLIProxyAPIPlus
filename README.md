@@ -286,6 +286,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 Those projects are based on CLIProxyAPI:
 
+### [omo-cpa](https://github.com/jc01rho/omo-cpa)
+
+omo(senpi) plugin for this proxy. It registers the live model catalog as the primary provider `cliproxyapi` and the last-resort provider `cliproxyapi-last`, and reports health, account usage, and fallback chains.
+
 ### [vibeproxy](https://github.com/automazeio/vibeproxy)
 
 Native macOS menu bar app to use your Claude Code & ChatGPT subscriptions with AI coding tools - no API keys needed
