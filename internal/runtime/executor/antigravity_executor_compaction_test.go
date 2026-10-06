@@ -241,7 +241,7 @@ func TestAntigravityCompactionReplayNextTurn(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		if strings.Contains(r.URL.Path, "generateContent") {
+		if strings.Contains(strings.ToLower(r.URL.Path), "generatecontent") {
 			gotBody = body
 			gotContents = gjson.GetBytes(body, "request.contents").Array()
 		}
@@ -362,7 +362,7 @@ func TestAntigravityCompactionSequentialCompactionPreservesContext(t *testing.T)
 	var summaryRequestBodies [][]byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		if strings.Contains(r.URL.Path, "generateContent") {
+		if strings.Contains(strings.ToLower(r.URL.Path), "generatecontent") {
 			summaryRequestBodies = append(summaryRequestBodies, body)
 		}
 

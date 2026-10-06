@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -227,6 +228,20 @@ func decodeLoadManagedProjectResponse(response *http.Response, baseEndpoint stri
 	return &payload, true
 }
 
+// antigravityOnboardRequestBody is the onboardUser body shared with the login
+// client: snake_case tier_id plus control-plane metadata. tierID stays the
+// server-selected default; free-tier is only the caller's fallback.
+func antigravityOnboardRequestBody(tierID, userAgent string) map[string]any {
+	return map[string]any{
+		"tier_id": strings.TrimSpace(tierID),
+		"metadata": map[string]string{
+			"ide_type":    "ANTIGRAVITY",
+			"ide_name":    "antigravity",
+			"ide_version": misc.AntigravityVersionFromUserAgent(userAgent),
+		},
+	}
+}
+
 // OnboardManagedProject onboards a managed project, retrying until completion when needed.
 func OnboardManagedProject(ctx context.Context, accessToken, tierID, projectID string, attempts int, delay time.Duration) string {
 	if ctx == nil {
@@ -238,7 +253,7 @@ func OnboardManagedProject(ctx context.Context, accessToken, tierID, projectID s
 	if delay <= 0 {
 		delay = 5 * time.Second
 	}
-	requestBody := map[string]any{"tierId": tierID}
+	requestBody := antigravityOnboardRequestBody(tierID, misc.AntigravityOnboardUserUserAgent(""))
 	rawBody, errMarshal := json.Marshal(requestBody)
 	if errMarshal != nil {
 		log.WithError(errMarshal).Debug("Failed to marshal onboard request")

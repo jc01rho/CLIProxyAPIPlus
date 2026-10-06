@@ -460,6 +460,103 @@ func fetchAvailableModelsOnce(ctx context.Context, client *http.Client, endpoint
 	return parsed, resp.StatusCode, "", nil
 }
 
+// UserQuotaSummaryBucket is one window inside retrieveUserQuotaSummary.
+type UserQuotaSummaryBucket struct {
+	BucketID          string   `json:"bucketId,omitempty"`
+	DisplayName       string   `json:"displayName,omitempty"`
+	Window            string   `json:"window,omitempty"`
+	RemainingFraction *float64 `json:"remainingFraction,omitempty"`
+	ResetTime         string   `json:"resetTime,omitempty"`
+}
+
+// UserQuotaSummaryGroup is one model family in retrieveUserQuotaSummary.
+type UserQuotaSummaryGroup struct {
+	DisplayName string                   `json:"displayName,omitempty"`
+	Description string                   `json:"description,omitempty"`
+	Buckets     []UserQuotaSummaryBucket `json:"buckets,omitempty"`
+}
+
+// UserQuotaSummary is the retrieveUserQuotaSummary response.
+// It is a different verb and shape from fetchAvailableModels quotaInfo.
+type UserQuotaSummary struct {
+	Groups []UserQuotaSummaryGroup `json:"groups,omitempty"`
+}
+
+// FetchUserQuotaSummary posts {"project": projectID} to v1internal:retrieveUserQuotaSummary.
+// Hosts follow FetchAvailableModelsEndpointFallbacks. A 403 tries the next host:
+// consumer credentials are rejected by the prod host while daily answers.
+func FetchUserQuotaSummary(ctx context.Context, client *http.Client, accessToken, projectID string, endpoints ...string) (UserQuotaSummary, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if len(endpoints) == 0 {
+		endpoints = FetchAvailableModelsEndpointFallbacks
+	}
+	userAgent := GetRandomizedHeaders(HeaderStyleAntigravity, "").UserAgent
+	errs := []string{}
+	for _, endpoint := range endpoints {
+		endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+		if endpoint == "" {
+			continue
+		}
+		parsed, status, snip, err := fetchUserQuotaSummaryOnce(ctx, client, endpoint, accessToken, projectID, userAgent)
+		if err == nil && status >= 200 && status < 300 {
+			return parsed, nil
+		}
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("retrieveUserQuotaSummary network error at %s: %v", endpoint, err))
+			continue
+		}
+		if status == http.StatusTooManyRequests || status == http.StatusForbidden || status >= 500 {
+			errs = append(errs, fmt.Sprintf("retrieveUserQuotaSummary %d at %s%s", status, endpoint, formatSnippet(snip)))
+			continue
+		}
+		return UserQuotaSummary{}, fmt.Errorf("retrieveUserQuotaSummary %d at %s%s", status, endpoint, formatSnippet(snip))
+	}
+	if len(errs) == 0 {
+		return UserQuotaSummary{}, fmt.Errorf("retrieveUserQuotaSummary failed")
+	}
+	return UserQuotaSummary{}, fmt.Errorf("%s", strings.Join(errs, "; "))
+}
+
+func fetchUserQuotaSummaryOnce(ctx context.Context, client *http.Client, endpoint, accessToken, projectID, userAgent string) (UserQuotaSummary, int, string, error) {
+	cctx, cancel := context.WithTimeout(ctx, time.Duration(FetchTimeoutMS)*time.Millisecond)
+	defer cancel()
+	bodyMap := map[string]string{}
+	if strings.TrimSpace(projectID) != "" {
+		bodyMap["project"] = projectID
+	}
+	body, errMarshal := json.Marshal(bodyMap)
+	if errMarshal != nil {
+		return UserQuotaSummary{}, 0, "", errMarshal
+	}
+	req, err := http.NewRequestWithContext(cctx, http.MethodPost, endpoint+"/v1internal:retrieveUserQuotaSummary", bytes.NewReader(body))
+	if err != nil {
+		return UserQuotaSummary{}, 0, "", err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := client.Do(req)
+	if err != nil {
+		return UserQuotaSummary{}, 0, "", err
+	}
+	defer resp.Body.Close()
+	b, err := readQuotaResponseBody(resp)
+	if err != nil {
+		return UserQuotaSummary{}, resp.StatusCode, "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return UserQuotaSummary{}, resp.StatusCode, snippet(b), nil
+	}
+	var parsed UserQuotaSummary
+	if err := json.Unmarshal(b, &parsed); err != nil {
+		return UserQuotaSummary{}, resp.StatusCode, "", err
+	}
+	return parsed, resp.StatusCode, "", nil
+}
+
 // FetchGeminiCLIQuota fetches Gemini CLI quota buckets using the Gemini CLI user-agent.
 func FetchGeminiCLIQuota(ctx context.Context, client *http.Client, accessToken, projectID string, endpoints ...string) RetrieveUserQuotaResponse {
 	if client == nil {

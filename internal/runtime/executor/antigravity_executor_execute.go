@@ -127,7 +127,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, err
 	}
 
-	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, false, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
+	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
 		return resp, err
@@ -189,7 +189,8 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, err
 	}
 
-	// Success
+	// Success. Upstream is SSE; a non-stream client still gets one JSON body.
+	bodyBytes = e.convertStreamToNonStream(bodyBytes)
 	antigravityRecordRequestOutcome(auth, httpResp.StatusCode, bodyBytes, nil)
 	antigravityConsumeRequestTokens(auth, requestPayload)
 	if useCredits {

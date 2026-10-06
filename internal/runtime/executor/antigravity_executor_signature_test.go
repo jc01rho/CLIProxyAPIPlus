@@ -698,7 +698,7 @@ func TestAntigravityRequestPathsDoNotFallbackEndpoints(t *testing.T) {
 		model    string
 		wantPath string
 	}{
-		{name: "generate non-stream", kind: "execute", model: "gemini-3.6-flash-high", wantPath: antigravityGeneratePath},
+		{name: "generate non-stream", kind: "execute", model: "gemini-3.6-flash-high", wantPath: antigravityStreamPath},
 		{name: "Claude non-stream", kind: "execute", model: "claude-sonnet-4-6", wantPath: antigravityStreamPath},
 		{name: "generate stream", kind: "stream", model: "gemini-3.6-flash-high", wantPath: antigravityStreamPath},
 		{name: "count tokens", kind: "count", model: "gemini-3.6-flash-high", wantPath: antigravityCountTokensPath},

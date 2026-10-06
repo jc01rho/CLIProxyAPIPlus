@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/antigravity"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -111,6 +113,17 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 		}
 	}
 
+	if strings.EqualFold(provider, "antigravity") {
+		quotaResp, errFetch := fetchAntigravityCredentialQuota(c.Request.Context(), auth)
+		if errFetch != nil {
+			log.WithError(errFetch).Warnf("failed to fetch antigravity quota for credential %s", auth.Index)
+			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch quota: %v", errFetch)})
+			return
+		}
+		c.JSON(http.StatusOK, quotaResp)
+		return
+	}
+
 	// Fallback to declarative quota probe if configured in metadata
 	if auth.Metadata != nil {
 		if rawProbe, okProbe := auth.Metadata["quota_probe"]; okProbe && rawProbe != nil {
@@ -129,6 +142,47 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "no quota provider available for credential"})
+}
+
+func fetchAntigravityCredentialQuota(ctx context.Context, auth *coreauth.Auth) (pluginapi.QuotaFetchResponse, error) {
+	if auth == nil || auth.Metadata == nil {
+		return pluginapi.QuotaFetchResponse{}, fmt.Errorf("antigravity quota: missing credential")
+	}
+	token, _ := auth.Metadata["access_token"].(string)
+	project, _ := auth.Metadata["project_id"].(string)
+	token = strings.TrimSpace(token)
+	project = strings.TrimSpace(project)
+	if token == "" {
+		return pluginapi.QuotaFetchResponse{}, fmt.Errorf("antigravity quota: missing access token")
+	}
+	var endpoints []string
+	if auth.Attributes != nil {
+		if base := strings.TrimRight(strings.TrimSpace(auth.Attributes["base_url"]), "/"); base != "" {
+			endpoints = []string{base}
+		}
+	}
+	summary, errFetch := antigravity.FetchUserQuotaSummary(ctx, nil, token, project, endpoints...)
+	if errFetch != nil {
+		return pluginapi.QuotaFetchResponse{}, errFetch
+	}
+	groups := make([]pluginapi.QuotaGroup, 0, len(summary.Groups))
+	for _, group := range summary.Groups {
+		buckets := make([]pluginapi.QuotaBucket, 0, len(group.Buckets))
+		for _, bucket := range group.Buckets {
+			fraction := 0.0
+			if bucket.RemainingFraction != nil {
+				fraction = *bucket.RemainingFraction
+			}
+			buckets = append(buckets, pluginapi.QuotaBucket{
+				Window:            bucket.Window,
+				RemainingFraction: fraction,
+				ResetTime:         bucket.ResetTime,
+				Description:       bucket.DisplayName,
+			})
+		}
+		groups = append(groups, pluginapi.QuotaGroup{DisplayName: group.DisplayName, Buckets: buckets})
+	}
+	return pluginapi.QuotaFetchResponse{Groups: groups}, nil
 }
 
 // ResetCredentialQuota resets quota or usage for a credential.

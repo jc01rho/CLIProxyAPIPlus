@@ -235,8 +235,12 @@ func TestInteractionsAntigravityModelUsesTranslatorBridge(t *testing.T) {
 	model := "interactions-antigravity-bridge-model"
 	var upstreamBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1internal:generateContent" {
+		if r.URL.Path != "/v1internal:streamGenerateContent" {
 			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		if r.URL.Query().Get("alt") != "sse" {
+			http.Error(w, "missing alt=sse", http.StatusNotFound)
 			return
 		}
 		body, errRead := io.ReadAll(r.Body)

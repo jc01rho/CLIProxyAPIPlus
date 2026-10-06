@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1202,5 +1203,66 @@ func TestFetchCredentialQuota_MissingTokenDoesNotHitUpstream(t *testing.T) {
 	// Upstream must NEVER be contacted
 	if upstreamHit {
 		t.Fatal("upstream server must NOT be contacted when template requires token but token is missing")
+	}
+}
+
+func TestFetchCredentialQuota_AntigravitySummary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var gotPath, gotProject string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, errRead := io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Errorf("read body: %v", errRead)
+		}
+		gotProject = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.25,"resetTime":"2026-09-04T01:27:21Z"}]}]}`))
+	}))
+	defer server.Close()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "antigravity-auth-1",
+		FileName: "antigravity.json",
+		Provider: "antigravity",
+		Attributes: map[string]string{
+			"base_url": server.URL,
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"project_id":   "proj-1",
+		},
+	}
+	authIndex := auth.EnsureIndex()
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("failed to register auth: %v", errRegister)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/quota/fetch", strings.NewReader(`{"auth_index":"`+authIndex+`"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.FetchCredentialQuota(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/v1internal:retrieveUserQuotaSummary" {
+		t.Fatalf("path = %s", gotPath)
+	}
+	if !strings.Contains(gotProject, `"project":"proj-1"`) {
+		t.Fatalf("body = %s", gotProject)
+	}
+	var quotaResp pluginapi.QuotaFetchResponse
+	if errUnmarshal := json.Unmarshal(rec.Body.Bytes(), &quotaResp); errUnmarshal != nil {
+		t.Fatalf("parse: %v", errUnmarshal)
+	}
+	if len(quotaResp.Groups) != 1 || quotaResp.Groups[0].DisplayName != "Gemini Models" {
+		t.Fatalf("groups = %+v", quotaResp.Groups)
+	}
+	if len(quotaResp.Groups[0].Buckets) != 1 || quotaResp.Groups[0].Buckets[0].RemainingFraction != 0.25 || quotaResp.Groups[0].Buckets[0].Window != "weekly" {
+		t.Fatalf("bucket = %+v", quotaResp.Groups[0].Buckets)
 	}
 }

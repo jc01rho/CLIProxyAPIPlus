@@ -881,6 +881,12 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 			entry["quota_provider"] = auth.Provider
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		entry["supports_quota"] = true
+		if _, exists := entry["quota_provider"]; !exists {
+			entry["quota_provider"] = auth.Provider
+		}
+	}
 	if auth.Metadata != nil {
 		if probe, okProbe := auth.Metadata["quota_probe"]; okProbe && probe != nil {
 			entry["supports_quota"] = true
