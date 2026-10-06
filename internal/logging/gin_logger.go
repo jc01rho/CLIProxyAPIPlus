@@ -459,7 +459,7 @@ func GinLogrusLogger(configs ...*config.Config) gin.HandlerFunc {
 		// Read request headers because routing may not have populated apiKey
 		// on errors. Successful non-AI requests keep credentials out of the log.
 		if (isAIAPIPath(path) || statusCode >= http.StatusBadRequest) && c.Request != nil {
-			if apiKeyValue := extractDownstreamAPIKey(c.Request.Header); apiKeyValue != "" {
+			if apiKeyValue := extractDownstreamAPIKeyFromRequest(c.Request); apiKeyValue != "" {
 				logLine = logLine + " | downstream_api_key=" + apiKeyValue
 			}
 		}
@@ -568,6 +568,28 @@ func creditsUsed(c *gin.Context) bool {
 // WARN/ERROR access log.
 func extractDownstreamAPIKey(header http.Header) string {
 	return util.ExtractDownstreamAPIKey(header)
+}
+
+// extractDownstreamAPIKeyFromRequest falls back to the query credentials the access
+// provider also accepts (?key= and ?auth_token=), so a rejected request is still
+// attributable when the caller sent no credential header.
+func extractDownstreamAPIKeyFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if value := extractDownstreamAPIKey(r.Header); value != "" {
+		return value
+	}
+	if r.URL == nil {
+		return ""
+	}
+	query := r.URL.Query()
+	for _, name := range []string{"key", "auth_token"} {
+		if secret := strings.TrimSpace(query.Get(name)); secret != "" {
+			return "Query-" + name + "(" + secret + ")"
+		}
+	}
+	return ""
 }
 
 // extractUsageFromAPIResponse parses usage information from the API_RESPONSE body

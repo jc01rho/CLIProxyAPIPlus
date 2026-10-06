@@ -37,10 +37,12 @@ func ExtractDownstreamAPIKey(header http.Header) string {
 				}
 				secret = strings.TrimSpace(raw[idx+1:])
 			} else {
-				// "Bearer" without a following space-separated token means the
-				// caller sent a malformed header (e.g., "Bearer " or "Bearer").
-				// Treat as no token to avoid emitting a misleading preview.
-				continue
+				// A bare "Bearer" is a malformed header, not a key. Any other single
+				// token is a raw key that the access provider also accepts as-is.
+				if strings.EqualFold(raw, "bearer") {
+					continue
+				}
+				return fmt.Sprintf("Authorization(%s)", raw)
 			}
 		}
 		if secret == "" {

@@ -22,6 +22,7 @@ func TestExtractDownstreamAPIKey(t *testing.T) {
 		{name: "x-goog-api-key", header: http.Header{"X-Goog-Api-Key": {secret}}, want: "X-Goog-Api-Key(" + secret + ")"},
 		{name: "authorization wins", header: http.Header{"Authorization": {"Bearer " + secret}, "X-Api-Key": {"sk-other"}}, want: "Bearer(" + secret + ")"},
 		{name: "non-bearer authorization", header: http.Header{"Authorization": {"Basic abc"}, "X-Api-Key": {secret}}, want: ""},
+		{name: "raw authorization without scheme", header: http.Header{"Authorization": {secret}}, want: "Authorization(" + secret + ")"},
 		{name: "bearer without token", header: http.Header{"Authorization": {"Bearer"}}, want: ""},
 	}
 	for _, tt := range tests {

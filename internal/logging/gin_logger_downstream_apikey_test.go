@@ -171,3 +171,57 @@ func TestGinLogrusLoggerDownstreamKeyOnSuccessfulAIRequests(t *testing.T) {
 		})
 	}
 }
+
+func TestGinLogrusLoggerIncludesQueryCredentialOnUnauthorized(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"key param", "?key=sk-query-secret", "downstream_api_key=Query-key(sk-query-secret)"},
+		{"auth_token param", "?auth_token=tok-secret", "downstream_api_key=Query-auth_token(tok-secret)"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var logBuffer bytes.Buffer
+			log.SetOutput(&logBuffer)
+			log.SetLevel(log.WarnLevel)
+
+			engine := gin.New()
+			engine.Use(GinLogrusLogger(&config.Config{}))
+			engine.POST("/v1/chat/completions", func(c *gin.Context) {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "Invalid API key"}})
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions"+test.query, bytes.NewReader([]byte(`{"model":"glm-5-2"}`)))
+			engine.ServeHTTP(httptest.NewRecorder(), req)
+
+			if !strings.Contains(logBuffer.String(), test.want) {
+				t.Fatalf("expected %q in log, got: %s", test.want, logBuffer.String())
+			}
+		})
+	}
+}
+
+func TestGinLogrusLoggerHeaderCredentialWinsOverQuery(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var logBuffer bytes.Buffer
+	log.SetOutput(&logBuffer)
+	log.SetLevel(log.WarnLevel)
+
+	engine := gin.New()
+	engine.Use(GinLogrusLogger(&config.Config{}))
+	engine.POST("/v1/chat/completions", func(c *gin.Context) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "Invalid API key"}})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?key=from-query", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Authorization", "Bearer from-header")
+	engine.ServeHTTP(httptest.NewRecorder(), req)
+
+	out := logBuffer.String()
+	if !strings.Contains(out, "downstream_api_key=Bearer(from-header)") || strings.Contains(out, "from-query)") {
+		t.Fatalf("header credential must win, got: %s", out)
+	}
+}
