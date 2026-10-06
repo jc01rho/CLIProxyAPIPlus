@@ -7,6 +7,7 @@
 package executor
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -290,6 +294,14 @@ func commandCodeGitWorkspaceInfo(workingDir string) *commandCodeGitInfo {
 // buildCommandCodePayload constructs the CommandCode envelope from an OpenAI-format payload.
 // System/developer messages are extracted into params.system; tools and tool-related
 // messages are converted to the typed CommandCode wire shapes.
+// logCommandCodeMaxTokensCap reports when the builder lowered a client max_tokens
+// to the upstream limit, so oversized senders can be identified.
+func logCommandCodeMaxTokensCap(ctx context.Context, model string, openAIPayload []byte) {
+	if requested := gjson.GetBytes(openAIPayload, "max_tokens").Int(); requested > commandCodeMaxTokensLimit {
+		helps.LogMaxTokensCapped(ctx, "commandcode", model, requested, commandCodeMaxTokensLimit)
+	}
+}
+
 func buildCommandCodePayload(openAIPayload []byte, model string, stream bool) ([]byte, error) {
 	var request commandCodeOpenAIRequest
 	if err := json.Unmarshal(openAIPayload, &request); err != nil {

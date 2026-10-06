@@ -145,6 +145,7 @@ func zcodeMaxTokensCap(model string) int {
 func NewZcodeExecutor(cfg *config.Config) *ZcodeExecutor {
 	base := NewClaudeExecutor(cfg)
 	base.upstreamMaxTokensCap = zcodeMaxTokensCap
+	base.maxTokensCapProvider = "zcode"
 	return &ZcodeExecutor{ClaudeExecutor: base}
 }
 

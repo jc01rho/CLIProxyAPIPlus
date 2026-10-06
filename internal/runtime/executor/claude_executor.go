@@ -28,6 +28,8 @@ type ClaudeExecutor struct {
 	// upstreamMaxTokensCap returns the highest max_tokens the upstream accepts for a
 	// model (0 = no known cap). It clamps the final payload, after user rules.
 	upstreamMaxTokensCap func(model string) int
+	// maxTokensCapProvider labels the provider in the "max_tokens lowered" log line.
+	maxTokensCapProvider string
 	oauthProfileFetcher  claudeOAuthProfileFetcher
 	// oauthToolAliases is shared by every ForAPIKey copy of this executor;
 	// constructors allocate it so copies made per request reuse one store.

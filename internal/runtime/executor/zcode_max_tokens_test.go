@@ -34,7 +34,7 @@ func TestCapMaxTokens(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.exec.capMaxTokens([]byte(tt.body), tt.model)
+			got := tt.exec.capMaxTokens(context.Background(), []byte(tt.body), tt.model)
 			value := gjson.GetBytes(got, "max_tokens")
 			if tt.want == "" {
 				if value.Exists() {

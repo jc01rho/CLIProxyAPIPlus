@@ -2413,7 +2413,7 @@ func injectSystemCacheControl(payload []byte) []byte {
 
 // capMaxTokens lowers max_tokens to the upstream limit for the model. Values at or
 // below the cap, and requests without max_tokens, are left untouched.
-func (e *ClaudeExecutor) capMaxTokens(body []byte, modelID string) []byte {
+func (e *ClaudeExecutor) capMaxTokens(ctx context.Context, body []byte, modelID string) []byte {
 	if e == nil || e.upstreamMaxTokensCap == nil || len(body) == 0 {
 		return body
 	}
@@ -2429,6 +2429,7 @@ func (e *ClaudeExecutor) capMaxTokens(body []byte, modelID string) []byte {
 	if err != nil {
 		return body
 	}
+	helps.LogMaxTokensCapped(ctx, e.maxTokensCapProvider, modelID, current.Int(), int64(limit))
 	return capped
 }
 

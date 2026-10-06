@@ -81,6 +81,7 @@ func (e *CommandCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	to := sdktranslator.FromString("openai")
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), false)
 
+	logCommandCodeMaxTokensCap(ctx, baseModel, translated)
 	payload, err := buildCommandCodePayload(translated, baseModel, true)
 	if err != nil {
 		return resp, fmt.Errorf("commandcode: build payload: %w", err)
@@ -155,6 +156,7 @@ func (e *CommandCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	to := sdktranslator.FromString("openai")
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), true)
 
+	logCommandCodeMaxTokensCap(ctx, baseModel, translated)
 	payload, err := buildCommandCodePayload(translated, baseModel, true)
 	if err != nil {
 		return nil, fmt.Errorf("commandcode: build payload: %w", err)
