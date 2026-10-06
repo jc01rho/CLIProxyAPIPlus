@@ -2334,6 +2334,9 @@ func openAICompatRetryAfter(status int, headers http.Header, body []byte, now ti
 	if delay := openAICompatRetryAfterHeader(headers, now); delay != nil {
 		return delay
 	}
+	if delay := openAICompatRateLimitBodyRetryAfter(body); delay != nil {
+		return delay
+	}
 
 	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
 	message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
@@ -2343,6 +2346,20 @@ func openAICompatRetryAfter(status int, headers http.Header, body []byte, now ti
 		return &delay
 	}
 	return nil
+}
+
+// openAICompatRateLimitBodyRetryAfter reads the body's error.retry_after seconds for
+// gateways that send a 429 hint only in the JSON body. retryable=false suppresses it.
+func openAICompatRateLimitBodyRetryAfter(body []byte) *time.Duration {
+	if retryable := gjson.GetBytes(body, "error.retryable"); retryable.Exists() && retryable.Type == gjson.False {
+		return nil
+	}
+	hint := gjson.GetBytes(body, "error.retry_after")
+	if hint.Type != gjson.Number || hint.Float() <= 0 {
+		return nil
+	}
+	delay := time.Duration(hint.Float() * float64(time.Second))
+	return &delay
 }
 
 // openAICompatBusyRetryAfter honors a short 503 retry hint from the Retry-After

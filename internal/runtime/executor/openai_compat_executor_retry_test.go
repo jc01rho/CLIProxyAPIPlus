@@ -54,6 +54,35 @@ func TestOpenAICompatRetryAfter(t *testing.T) {
 			want:    durationPointer(5 * time.Second),
 		},
 		{
+			name:   "429 body retry_after hint",
+			status: http.StatusTooManyRequests,
+			body:   `{"error":{"code":"upstream_rate_limit","http_status":429,"retry_after":8,"retryable":true,"type":"rate_limit_error"}}`,
+			want:   durationPointer(8 * time.Second),
+		},
+		{
+			name:    "429 header wins over body hint",
+			status:  http.StatusTooManyRequests,
+			headers: http.Header{"Retry-After": {"3"}},
+			body:    `{"error":{"retry_after":8}}`,
+			want:    durationPointer(3 * time.Second),
+		},
+		{
+			name:   "429 long body hint is honored",
+			status: http.StatusTooManyRequests,
+			body:   `{"error":{"retry_after":120}}`,
+			want:   durationPointer(120 * time.Second),
+		},
+		{
+			name:   "429 retryable false suppresses body hint",
+			status: http.StatusTooManyRequests,
+			body:   `{"error":{"retry_after":8,"retryable":false}}`,
+		},
+		{
+			name:   "429 non-positive body hint is ignored",
+			status: http.StatusTooManyRequests,
+			body:   `{"error":{"retry_after":0}}`,
+		},
+		{
 			name:   "generic 429 has no invented deadline",
 			status: http.StatusTooManyRequests,
 			body:   `{"error":{"code":"rate_limit"}}`,
