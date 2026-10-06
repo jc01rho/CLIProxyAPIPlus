@@ -84,3 +84,20 @@ func TestLogFormatterFallbackDiagnostics(t *testing.T) {
 		t.Errorf("formatter dumped non-allowlisted fields: %q", line)
 	}
 }
+
+func TestLogFormatterRendersMaxTokensCapFields(t *testing.T) {
+	var output bytes.Buffer
+	logger := log.New()
+	logger.SetOutput(&output)
+	logger.SetFormatter(&LogFormatter{})
+	logger.WithFields(log.Fields{
+		"provider": "commandcode", "model": "deepseek/deepseek-v4.1-flash",
+		"requested_tokens": int64(1000000), "applied_tokens": int64(200000), "downstream_apikey": "sk-a...wxyz",
+	}).Warn("max_tokens exceeds the upstream limit; lowered")
+	line := output.String()
+	for _, want := range []string{"requested_tokens=1000000", "applied_tokens=200000", "downstream_apikey=sk-a...wxyz"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("log line missing %q: %q", want, line)
+		}
+	}
+}
