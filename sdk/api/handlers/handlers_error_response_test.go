@@ -468,6 +468,18 @@ func TestBuildErrorResponseBodyWithError_RequestTimeoutIsServerError(t *testing.
 	}
 }
 
+func TestBuildErrorResponseBody_CompactsPrettyPrintedJSON(t *testing.T) {
+	prettyJSON := "{\n  \"error\": {\n    \"code\": 500,\n    \"message\": \"Internal error encountered.\",\n    \"status\": \"INTERNAL\"\n  }\n}"
+	body := BuildErrorResponseBody(http.StatusInternalServerError, prettyJSON)
+	if strings.Contains(string(body), "\n") {
+		t.Fatalf("expected compacted JSON without newlines for SSE compatibility, got:\n%s", string(body))
+	}
+	expected := `{"error":{"code":500,"message":"Internal error encountered.","status":"INTERNAL"}}`
+	if string(body) != expected {
+		t.Fatalf("body = %s, want %s", string(body), expected)
+	}
+}
+
 func TestEnrichAuthSelectionError_PropagatesTerminalAuth(t *testing.T) {
 	terminalErr := coreauth.NewTerminalAuthError(&coreauth.Error{
 		Code:       "auth_unavailable",
