@@ -860,7 +860,7 @@ func claudeMidConversationSystemMessagesAtEnd(payload []byte) bool {
 	for insertAt < len(messageBlocks) && messageBlocks[insertAt].Get("role").String() == "user" {
 		insertAt++
 	}
-	return insertAt > firstUserIdx+1 && insertAt == len(messageBlocks)
+	return insertAt == len(messageBlocks) || insertAt > firstUserIdx+1
 }
 
 func insertClaudeMidConversationSystemMessages(payload []byte, texts []string) []byte {

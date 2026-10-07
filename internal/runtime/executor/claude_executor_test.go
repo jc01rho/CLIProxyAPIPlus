@@ -1236,8 +1236,11 @@ func TestClaudeExecutor_CopiedVSCodeAgentSDKHeadersWithoutMetadataAreCloaked(t *
 	if got := seenHeaders.Get("User-Agent"); got != "claude-cli/2.1.280 (external, cli)" {
 		t.Fatalf("User-Agent = %q, want CLI cloak", got)
 	}
-	if got := gjson.GetBytes(seenBody, "system.#").Int(); got != 2 {
-		t.Fatalf("system block count = %d, want billing and CLI identity only", got)
+	if got := gjson.GetBytes(seenBody, "system.#").Int(); got != 3 {
+		t.Fatalf("system block count = %d, want billing, CLI identity, and caller system", got)
+	}
+	if got := gjson.GetBytes(seenBody, "system.2.text").String(); got != "spoofed-system" {
+		t.Fatalf("system.2.text = %q, want spoofed-system", got)
 	}
 	content := gjson.GetBytes(seenBody, "messages.0.content").Array()
 	if len(content) != 2 {
@@ -1245,7 +1248,9 @@ func TestClaudeExecutor_CopiedVSCodeAgentSDKHeadersWithoutMetadataAreCloaked(t *
 	}
 	assertClaudeCodeCurrentDateBlock(t, content[0])
 	assertEphemeralUserTextBlock(t, content[1], "x", "")
-	assertClaudeMidConversationSystemMessage(t, seenBody, 1, "spoofed-system", "")
+	if got := gjson.GetBytes(seenBody, "messages.#").Int(); got != 1 {
+		t.Fatalf("message count = %d, want no trailing system turn", got)
+	}
 }
 
 func TestClaudeExecutor_AgentSDKEntrypointWithStrongSignalsUsesCLICloak(t *testing.T) {
@@ -2620,7 +2625,9 @@ func TestClaudeExecutor_CountTokensCloakRelocatesCallerSystemAndObfuscates(t *te
 				"cloak_sensitive_words": sensitiveWord,
 			}}
 			payload := []byte(`{"model":"` + testCase.model + `","system":[{"type":"text","text":"` + callerSystem + `"}],` +
-				`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"tools":[]}`)
+				`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]},` +
+				`{"role":"assistant","content":[{"type":"text","text":"acknowledged"}]},` +
+				`{"role":"user","content":[{"type":"text","text":"follow-up"}]}],"tools":[]}`)
 
 			_, errCount := NewClaudeExecutor(&config.Config{}).countTokensUpstream(ctx, auth,
 				cliproxyexecutor.Request{Model: testCase.model, Payload: payload},
@@ -4211,7 +4218,7 @@ func TestInjectClaudeCodeCurrentDateFollowsAllLeadingToolResults(t *testing.T) {
 // Test case 1: String system prompt becomes an authoritative mid-conversation
 // system message after the first user turn.
 func TestCheckSystemInstructionsWithMode_StringSystemPreserved(t *testing.T) {
-	payload := []byte(`{"model":"claude-opus-5","system":"You are a helpful assistant.","messages":[{"role":"user","content":"hi"}]}`)
+	payload := []byte(`{"model":"claude-opus-5","system":"You are a helpful assistant.","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"follow-up"}]}`)
 
 	out := checkSystemInstructionsWithMode(payload, false)
 
@@ -4279,7 +4286,7 @@ func TestClaudeUsesLegacySystemReminder(t *testing.T) {
 }
 
 func TestCheckSystemInstructionsWithMode_FutureModelDefaultsToMidSystem(t *testing.T) {
-	payload := []byte(`{"model":"claude-opus-6","system":"future instructions","messages":[{"role":"user","content":"hi"}]}`)
+	payload := []byte(`{"model":"claude-opus-6","system":"future instructions","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"follow-up"}]}`)
 
 	out := checkSystemInstructionsWithMode(payload, false)
 	if got := gjson.GetBytes(out, "system.#").Int(); got != 2 {
@@ -4380,7 +4387,7 @@ func TestCheckSystemInstructionsWithMode_EmptyStringSystemIgnored(t *testing.T) 
 
 // Test case 4: Array system prompt becomes one mid-conversation system message.
 func TestCheckSystemInstructionsWithMode_ArraySystemStillWorks(t *testing.T) {
-	payload := []byte(`{"model":"claude-opus-5","system":[{"type":"text","text":"Be concise."}],"messages":[{"role":"user","content":"hi"}]}`)
+	payload := []byte(`{"model":"claude-opus-5","system":[{"type":"text","text":"Be concise."}],"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"follow-up"}]}`)
 
 	out := checkSystemInstructionsWithMode(payload, false)
 
@@ -4401,11 +4408,11 @@ func TestCheckSystemInstructionsWithMode_ArraySystemKeepsBlocksAsSeparateMessage
 	payload := []byte(`{"model":"claude-opus-5","system":[` +
 		`{"type":"text","text":"first guidance","cache_control":{"type":"ephemeral","ttl":"1h"}},` +
 		`{"type":"text","text":"second guidance"}],` +
-		`"messages":[{"role":"user","content":"hi"}]}`)
+		`"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"follow-up"}]}`)
 
 	out := checkSystemInstructionsWithMode(payload, false)
-	if got := gjson.GetBytes(out, "messages.#").Int(); got != 3 {
-		t.Fatalf("message count = %d, want user and two separate system messages: %s", got, out)
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 5 {
+		t.Fatalf("message count = %d, want user, two system messages, assistant, and user: %s", got, out)
 	}
 	content := gjson.GetBytes(out, "messages.0.content").Array()
 	if len(content) != 2 {
@@ -4440,6 +4447,44 @@ func TestCheckSystemInstructionsWithMode_TerminalUserRunKeepsSystemTopLevel(t *t
 	}
 }
 
+func TestCheckSystemInstructionsWithMode_SingleTerminalUserKeepsSystemTopLevel(t *testing.T) {
+	payload := []byte(`{"model":"claude-opus-5","system":[` +
+		`{"type":"text","text":"caller guidance"}],` +
+		`"messages":[{"role":"user","content":"request"}]}`)
+
+	out := checkSystemInstructionsWithMode(payload, false)
+	if got := gjson.GetBytes(out, "system.#").Int(); got != 3 {
+		t.Fatalf("top-level system block count = %d, want 3 (2 identity + caller block): %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 1 {
+		t.Fatalf("message count = %d, want 1 without trailing system turn: %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "system.2.text").String(); got != "caller guidance" {
+		t.Fatalf("system.2.text = %q, want caller guidance", got)
+	}
+	if got := gjson.GetBytes(out, "system.2.cache_control.type").String(); got != "ephemeral" {
+		t.Fatalf("system.2.cache_control.type = %q, want ephemeral", got)
+	}
+}
+
+func TestCheckSystemInstructionsWithMode_LeadingUserRunKeepsSystemTopLevelAfterAssistantTurn(t *testing.T) {
+	payload := []byte(`{"model":"claude-opus-5","system":[` +
+		`{"type":"text","text":"caller guidance"}],` +
+		`"messages":[{"role":"user","content":"prompt"},{"role":"user","content":"context"},` +
+		`{"role":"assistant","content":"answer"},{"role":"user","content":"follow-up"}]}`)
+
+	out := checkSystemInstructionsWithMode(payload, false)
+	if got := gjson.GetBytes(out, "system.#").Int(); got != 3 {
+		t.Fatalf("top-level system block count = %d, want 3 (2 identity + caller block): %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "system.2.text").String(); got != "caller guidance" {
+		t.Fatalf("system.2.text = %q, want caller guidance", got)
+	}
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 4 {
+		t.Fatalf("message count = %d, want unchanged conversation shape: %s", got, out)
+	}
+}
+
 func TestRelocateClaudeSystemPromptForCountTokens_TerminalUserRunKeepsSystemTopLevel(t *testing.T) {
 	payload := []byte(`{"model":"claude-opus-5","system":[` +
 		`{"type":"text","text":"first guidance"},` +
@@ -4463,6 +4508,41 @@ func TestRelocateClaudeSystemPromptForCountTokens_TerminalUserRunKeepsSystemTopL
 	}
 }
 
+func TestRelocateClaudeSystemPromptForCountTokens_SingleTerminalUserKeepsSystemTopLevel(t *testing.T) {
+	payload := []byte(`{"model":"claude-opus-5","system":[` +
+		`{"type":"text","text":"caller guidance"}],` +
+		`"messages":[{"role":"user","content":"request"}]}`)
+
+	out := relocateClaudeSystemPromptForCountTokens(payload, false)
+	if got := gjson.GetBytes(out, "system.#").Int(); got != 1 {
+		t.Fatalf("top-level system block count = %d, want 1 caller block: %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "system.0.text").String(); got != "caller guidance" {
+		t.Fatalf("system.0.text = %q, want caller guidance", got)
+	}
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 1 {
+		t.Fatalf("message count = %d, want 1 without trailing system turn: %s", got, out)
+	}
+}
+
+func TestRelocateClaudeSystemPromptForCountTokens_LeadingUserRunKeepsSystemTopLevelAfterAssistantTurn(t *testing.T) {
+	payload := []byte(`{"model":"claude-opus-5","system":[` +
+		`{"type":"text","text":"caller guidance"}],` +
+		`"messages":[{"role":"user","content":"prompt"},{"role":"user","content":"context"},` +
+		`{"role":"assistant","content":"answer"},{"role":"user","content":"follow-up"}]}`)
+
+	out := relocateClaudeSystemPromptForCountTokens(payload, false)
+	if got := gjson.GetBytes(out, "system.#").Int(); got != 1 {
+		t.Fatalf("top-level system block count = %d, want 1 caller block: %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "system.0.text").String(); got != "caller guidance" {
+		t.Fatalf("system.0.text = %q, want caller guidance", got)
+	}
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 4 {
+		t.Fatalf("message count = %d, want unchanged conversation shape: %s", got, out)
+	}
+}
+
 func TestRelocateClaudeSystemPromptForCountTokensKeepsBlocksSeparate(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -4478,7 +4558,7 @@ func TestRelocateClaudeSystemPromptForCountTokensKeepsBlocksSeparate(t *testing.
 			payload := []byte(`{"model":"` + test.model + `","system":[` +
 				`{"type":"text","text":"first guidance"},` +
 				`{"type":"text","text":"second guidance"}],` +
-				`"messages":[{"role":"user","content":"hi"}]}`)
+				`"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"follow-up"}]}`)
 
 			out := relocateClaudeSystemPromptForCountTokens(payload, false)
 			if gjson.GetBytes(out, "system").Exists() {
@@ -4500,8 +4580,8 @@ func TestRelocateClaudeSystemPromptForCountTokensKeepsBlocksSeparate(t *testing.
 				}
 				return
 			}
-			if got := gjson.GetBytes(out, "messages.#").Int(); got != 3 {
-				t.Fatalf("message count = %d, want user and two system messages: %s", got, out)
+			if got := gjson.GetBytes(out, "messages.#").Int(); got != 5 {
+				t.Fatalf("message count = %d, want user, two system messages, assistant, and user: %s", got, out)
 			}
 			assertClaudeMidConversationSystemMessage(t, out, 1, "first guidance", "")
 			assertClaudeMidConversationSystemMessage(t, out, 2, "second guidance", "")
@@ -4756,15 +4836,17 @@ func TestCheckSystemInstructionsWithMode_NormalTextWithAdvisorWordDoesNotBypassM
 			{"type": "text", "text": "second guidance"}
 		],
 		"messages": [
-			{"role": "user", "content": "I need an advisor on financial planning."}
+			{"role": "user", "content": "I need an advisor on financial planning."},
+			{"role": "assistant", "content": "I can help."},
+			{"role": "user", "content": "Please continue."}
 		]
 	}`)
 
 	out := checkSystemInstructionsWithMode(payload, false)
 
 	// Since there is no advisor tool invocation/result, normal mid-conversation system insertion occurs.
-	if got := gjson.GetBytes(out, "messages.#").Int(); got != 3 {
-		t.Fatalf("messages count = %d, want 3 (user + 2 system messages): %s", got, out)
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 5 {
+		t.Fatalf("messages count = %d, want 5 (user + 2 system messages + assistant + user): %s", got, out)
 	}
 	assertClaudeMidConversationSystemMessage(t, out, 1, "first guidance", "")
 	assertClaudeMidConversationSystemMessage(t, out, 2, "second guidance", "")
@@ -4960,7 +5042,7 @@ func TestRelocateClaudeSystemPromptForCountTokens_ClientToolNamedAdvisorRelocate
 
 // Test case 5: Special characters survive the mid-conversation system move.
 func TestCheckSystemInstructionsWithMode_StringWithSpecialChars(t *testing.T) {
-	payload := []byte(`{"model":"claude-opus-5","system":"Use <xml> tags & \"quotes\" in output.","messages":[{"role":"user","content":"hi"}]}`)
+	payload := []byte(`{"model":"claude-opus-5","system":"Use <xml> tags & \"quotes\" in output.","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"follow-up"}]}`)
 
 	out := checkSystemInstructionsWithMode(payload, false)
 
@@ -4982,10 +5064,11 @@ func TestCheckSystemInstructionsWithSigningMode_LongPromptIsExactAndIdempotent(t
 	payloadMap := map[string]any{
 		"model":  "claude-opus-5",
 		"system": wantSystem,
-		"messages": []any{map[string]any{
-			"role":    "user",
-			"content": "hello",
-		}},
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+			map[string]any{"role": "assistant", "content": "acknowledged"},
+			map[string]any{"role": "user", "content": "follow-up"},
+		},
 	}
 	payload, errMarshal := json.Marshal(payloadMap)
 	if errMarshal != nil {
@@ -5000,8 +5083,8 @@ func TestCheckSystemInstructionsWithSigningMode_LongPromptIsExactAndIdempotent(t
 	if got := gjson.GetBytes(first, "system.#").Int(); got != 2 {
 		t.Fatalf("top-level system block count = %d, want 2", got)
 	}
-	if got := gjson.GetBytes(first, "messages.#").Int(); got != 2 {
-		t.Fatalf("message count = %d, want user then system", got)
+	if got := gjson.GetBytes(first, "messages.#").Int(); got != 4 {
+		t.Fatalf("message count = %d, want user, system, assistant, and user", got)
 	}
 	content := gjson.GetBytes(first, "messages.0.content").Array()
 	if len(content) != 2 {
@@ -8253,8 +8336,11 @@ func TestClaudeExecutor_ExecuteOAuthCustomToolMCPAliasRoundTrip(t *testing.T) {
 	if got := gjson.GetBytes(upstreamBody, "system.1.text").String(); got != claudeCodeCLIIdentity {
 		t.Fatalf("Messages system.1.text = %q, want official CLI identity", got)
 	}
-	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 2 {
-		t.Fatalf("Messages top-level system block count = %d, want 2", got)
+	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 3 {
+		t.Fatalf("Messages top-level system block count = %d, want 3", got)
+	}
+	if got := gjson.GetBytes(upstreamBody, "system.2.text").String(); got != "messages-system-prompt" {
+		t.Fatalf("Messages system.2.text = %q, want messages-system-prompt", got)
 	}
 	content := gjson.GetBytes(upstreamBody, "messages.0.content").Array()
 	if len(content) != 2 {
@@ -8262,7 +8348,9 @@ func TestClaudeExecutor_ExecuteOAuthCustomToolMCPAliasRoundTrip(t *testing.T) {
 	}
 	assertClaudeCodeCurrentDateBlock(t, content[0])
 	assertEphemeralUserTextBlock(t, content[1], "search", "1h")
-	assertClaudeMidConversationSystemMessage(t, upstreamBody, 1, "messages-system-prompt", "1h")
+	if got := gjson.GetBytes(upstreamBody, "messages.#").Int(); got != 1 {
+		t.Fatalf("Messages count = %d, want no trailing system turn", got)
+	}
 }
 
 func TestClaudeExecutor_ExecuteStreamOAuthCustomToolMCPAliasRoundTrip(t *testing.T) {
@@ -8330,8 +8418,11 @@ func TestClaudeExecutor_ExecuteStreamOAuthCustomToolMCPAliasRoundTrip(t *testing
 	if got := gjson.GetBytes(upstreamBody, "system.1.text").String(); got != claudeCodeCLIIdentity {
 		t.Fatalf("streaming system.1.text = %q, want official CLI identity", got)
 	}
-	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 2 {
-		t.Fatalf("streaming top-level system block count = %d, want 2", got)
+	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 3 {
+		t.Fatalf("streaming top-level system block count = %d, want 3", got)
+	}
+	if got := gjson.GetBytes(upstreamBody, "system.2.text").String(); got != "stream-system-prompt" {
+		t.Fatalf("streaming system.2.text = %q, want stream-system-prompt", got)
 	}
 	content := gjson.GetBytes(upstreamBody, "messages.0.content").Array()
 	if len(content) != 2 {
@@ -8339,7 +8430,9 @@ func TestClaudeExecutor_ExecuteStreamOAuthCustomToolMCPAliasRoundTrip(t *testing
 	}
 	assertClaudeCodeCurrentDateBlock(t, content[0])
 	assertEphemeralUserTextBlock(t, content[1], "fetch", "1h")
-	assertClaudeMidConversationSystemMessage(t, upstreamBody, 1, "stream-system-prompt", "1h")
+	if got := gjson.GetBytes(upstreamBody, "messages.#").Int(); got != 1 {
+		t.Fatalf("streaming message count = %d, want no trailing system turn", got)
+	}
 	assertClaudeCredentialIdentity(t, upstreamBody, upstreamHeaders, deviceIDs, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 	if !strings.Contains(downstream.String(), `"name":"fetch_url"`) {
 		t.Fatalf("downstream stream did not restore fetch_url: %s", downstream.String())

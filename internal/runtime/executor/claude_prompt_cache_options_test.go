@@ -761,23 +761,15 @@ func TestClaudeExecutor_CountTokensUpstream_Cloaked_ExplicitPreservesClientSyste
 	if gjson.GetBytes(seenBody, "messages.0.content.0.cache_control").Exists() {
 		t.Fatalf("user message must not receive auto cache_control: %s", string(seenBody))
 	}
-	// Verify client system breakpoint was preserved with scope: global
+	// Verify client system breakpoint was preserved with scope: global.
 	foundClientSystemCC := false
-	messages := gjson.GetBytes(seenBody, "messages")
-	if messages.IsArray() {
-		messages.ForEach(func(_, msg gjson.Result) bool {
-			if msg.Get("role").String() == "system" {
-				content := msg.Get("content")
-				if content.IsArray() {
-					content.ForEach(func(_, part gjson.Result) bool {
-						if part.Get("text").String() == "Count tokens system instructions" &&
-							part.Get("cache_control.type").String() == "ephemeral" &&
-							part.Get("cache_control.scope").String() == "global" {
-							foundClientSystemCC = true
-						}
-						return true
-					})
-				}
+	system := gjson.GetBytes(seenBody, "system")
+	if system.IsArray() {
+		system.ForEach(func(_, part gjson.Result) bool {
+			if part.Get("text").String() == "Count tokens system instructions" &&
+				part.Get("cache_control.type").String() == "ephemeral" &&
+				part.Get("cache_control.scope").String() == "global" {
+				foundClientSystemCC = true
 			}
 			return true
 		})
