@@ -157,6 +157,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
 	body = forceAdaptiveThinkingForAdaptiveOnlyModel(body)
+	// Fast mode is not enabled for proxied requests; translated priority
+	// service tiers would otherwise reach the upstream as speed:"fast" and be rejected.
+	body = stripClaudeFastSpeed(body)
 	body = reconcileClaudeCodeContextManagement(body, contextManagementState)
 	body = normalizeClaudeSamplingForUpstream(body, confirmedClaudeCode)
 

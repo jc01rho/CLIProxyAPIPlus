@@ -187,21 +187,22 @@ func TestIsAnthropicUpstreamBase(t *testing.T) {
 	}
 }
 
-// Streaming previously never reached the fast-mode derivation, so speed:"fast"
-// produced a 400 on every streamed request.
-func TestApplyClaudeHeaders_FastModeBetaMatchesAcrossStreamModes(t *testing.T) {
+// Fast mode is not enabled for proxied requests: neither speed:"fast" nor a
+// caller-sent fast-mode beta may put the beta on the wire, in either stream mode.
+func TestApplyClaudeHeaders_FastModeBetaDroppedAcrossStreamModes(t *testing.T) {
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-fast-parity"}}
 	body := []byte(`{"model":"claude-opus-5","speed":"fast"}`)
+	incoming := http.Header{"Anthropic-Beta": []string{claudeFastModeBeta}}
 
 	var seen []string
 	for _, stream := range []bool{false, true} {
 		req := newClaudeHeaderTestRequest(t, nil)
-		if err := applyClaudeHeaders(req, auth, "key-fast-parity", stream, nil, body, nil, nil, false); err != nil {
+		if err := applyClaudeHeaders(req, auth, "key-fast-parity", stream, []string{claudeFastModeBeta}, body, nil, incoming, false); err != nil {
 			t.Fatalf("applyClaudeHeaders(stream=%v) error = %v", stream, err)
 		}
 		got := req.Header.Get("Anthropic-Beta")
-		if !strings.Contains(got, claudeFastModeBeta) {
-			t.Fatalf("stream=%v: Anthropic-Beta = %q, want %s", stream, got, claudeFastModeBeta)
+		if strings.Contains(got, claudeFastModeBeta) {
+			t.Fatalf("stream=%v: Anthropic-Beta = %q, must not contain %s", stream, got, claudeFastModeBeta)
 		}
 		seen = append(seen, got)
 	}
@@ -210,11 +211,11 @@ func TestApplyClaudeHeaders_FastModeBetaMatchesAcrossStreamModes(t *testing.T) {
 	}
 }
 
-// The current OAuth CLI profile places fast-mode immediately before the
-// extended-cache-ttl trailer.
-func TestApplyClaudeHeaders_FastModePrecedesOAuthTrailer(t *testing.T) {
+// Dropping the fast-mode beta on the OAuth CLI profile keeps the
+// extended-cache-ttl trailer last.
+func TestApplyClaudeHeaders_FastModeDroppedKeepsOAuthTrailer(t *testing.T) {
 	req := newClaudeHeaderTestRequest(t, nil)
-	if err := applyClaudeHeaders(req, claudeOAuthAuthForBetaPolicy(), claudeRaceProbeOAuthKey, true, nil,
+	if err := applyClaudeHeaders(req, claudeOAuthAuthForBetaPolicy(), claudeRaceProbeOAuthKey, true, []string{claudeFastModeBeta},
 		[]byte(`{"model":"claude-opus-5","speed":"fast"}`), nil, nil, false); err != nil {
 		t.Fatalf("applyClaudeHeaders() error = %v", err)
 	}
@@ -223,8 +224,8 @@ func TestApplyClaudeHeaders_FastModePrecedesOAuthTrailer(t *testing.T) {
 	if parts[len(parts)-1] != claudeExtendedCacheTTLBeta {
 		t.Fatalf("Anthropic-Beta = %q, want %s last", got, claudeExtendedCacheTTLBeta)
 	}
-	if parts[len(parts)-2] != claudeFastModeBeta {
-		t.Fatalf("Anthropic-Beta = %q, want %s before the OAuth cache trailer", got, claudeFastModeBeta)
+	if strings.Contains(got, claudeFastModeBeta) {
+		t.Fatalf("Anthropic-Beta = %q, must not contain %s", got, claudeFastModeBeta)
 	}
 	if strings.Contains(got, claudeCacheDiagnosisBeta) {
 		t.Fatalf("Anthropic-Beta = %q, contains %s without a diagnostics body", got, claudeCacheDiagnosisBeta)

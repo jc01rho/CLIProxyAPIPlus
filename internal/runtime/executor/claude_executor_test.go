@@ -83,10 +83,8 @@ func assertClaudeFingerprint(t *testing.T, headers http.Header, userAgent, pkgVe
 	}
 }
 
-func TestApplyClaudeHeaders_FastModeBetaIsConditional(t *testing.T) {
-	baseline := claudeCodeCLIBetas([]byte(`{"model":"claude-opus-5"}`), nil, false)
-	betasWithoutFastMode := baseline
-	betasWithFastMode := baseline + "," + claudeFastModeBeta
+func TestApplyClaudeHeaders_FastModeBetaIsNeverSent(t *testing.T) {
+	betasWithoutFastMode := claudeCodeCLIBetas([]byte(`{"model":"claude-opus-5"}`), nil, false)
 
 	tests := []struct {
 		name string
@@ -99,14 +97,14 @@ func TestApplyClaudeHeaders_FastModeBetaIsConditional(t *testing.T) {
 			want: betasWithoutFastMode,
 		},
 		{
-			name: "fast speed appends fast mode beta",
+			name: "fast speed does not add fast mode beta",
 			body: `{"model":"claude-opus-5","speed":"fast"}`,
-			want: betasWithFastMode,
+			want: betasWithoutFastMode,
 		},
 		{
-			name: "explicit body beta appends fast mode beta",
+			name: "explicit body beta is dropped",
 			body: `{"model":"claude-opus-5","betas":["fast-mode-2026-02-01"]}`,
-			want: betasWithFastMode,
+			want: betasWithoutFastMode,
 		},
 	}
 

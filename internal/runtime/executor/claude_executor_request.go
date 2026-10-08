@@ -1314,6 +1314,9 @@ func applyClaudeHeadersWithNativeProfile(
 		}
 	}
 	applyBetaHeader := func() {
+		// Fast mode is not enabled for proxied requests: the body speed field is
+		// stripped, and a caller-sent fast-mode beta is dropped as well.
+		baseBetas = withoutClaudeBeta(baseBetas, claudeFastModeBeta)
 		// Enforce strict native Claude Code 2.1.280 model & turn beta gating:
 		if !claudeRequestSupportsEffort(body, nil) {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeEffortBeta)
