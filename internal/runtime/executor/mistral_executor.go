@@ -135,6 +135,7 @@ func (e *MistralExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	body = normalizeMistralArrayContent(body, false)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	reporter.EnsurePublished(ctx)
 
@@ -232,10 +233,11 @@ func (e *MistralExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 				continue
 			}
 			helps.AppendAPIResponseChunk(ctx, e.cfg, trimmed)
+			normalized := normalizeMistralStreamLine(trimmed)
 			if detail, ok := helps.ParseOpenAIStreamUsage(trimmed); ok {
 				reporter.Publish(ctx, detail)
 			}
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmed), &param)
+			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(normalized), &param)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
@@ -362,4 +364,76 @@ func shouldDropEmptyAssistantMessage(msg gjson.Result) bool {
 	}
 	content := strings.TrimSpace(msg.Get("content").String())
 	return content == ""
+}
+
+// normalizeMistralArrayContent rewrites Mistral's array-shaped content into the
+// flat shape expected by OpenAI-compatible translators. Mistral returns
+// `content` as an array of parts, for example:
+//
+//	{"type":"thinking","thinking":[{"type":"text","text":"..."}],"closed":true}
+//	{"type":"text","text":"..."}
+//
+// Downstream translators expect a string `content`, so thinking parts are moved
+// to `reasoning_content` and text parts are joined into `content`. Without this
+// the raw array leaks into the assistant output.
+func normalizeMistralArrayContent(payload []byte, stream bool) []byte {
+	choices := gjson.GetBytes(payload, "choices")
+	if !choices.Exists() || !choices.IsArray() {
+		return payload
+	}
+	container := "message"
+	if stream {
+		container = "delta"
+	}
+	updated := payload
+	for idx, choice := range choices.Array() {
+		base := "choices." + strconv.Itoa(idx) + "." + container
+		content := choice.Get(container + ".content")
+		if !content.Exists() || !content.IsArray() {
+			continue
+		}
+		var text strings.Builder
+		var reasoning strings.Builder
+		for _, part := range content.Array() {
+			switch strings.TrimSpace(part.Get("type").String()) {
+			case "thinking":
+				for _, thought := range part.Get("thinking").Array() {
+					reasoning.WriteString(thought.Get("text").String())
+				}
+			case "text":
+				text.WriteString(part.Get("text").String())
+			}
+		}
+		if next, err := sjson.SetBytes(updated, base+".content", text.String()); err == nil {
+			updated = next
+		}
+		if reasoning.Len() > 0 {
+			existing := gjson.GetBytes(updated, base+".reasoning_content").String()
+			if next, err := sjson.SetBytes(updated, base+".reasoning_content", existing+reasoning.String()); err == nil {
+				updated = next
+			}
+		}
+	}
+	return updated
+}
+
+// normalizeMistralStreamLine applies normalizeMistralArrayContent to a single
+// SSE `data:` line, leaving non-JSON lines untouched.
+func normalizeMistralStreamLine(line []byte) []byte {
+	trimmed := bytes.TrimSpace(line)
+	if !bytes.HasPrefix(trimmed, []byte("data:")) {
+		return line
+	}
+	payload := bytes.TrimSpace(trimmed[len("data:"):])
+	if len(payload) == 0 || payload[0] != '{' {
+		return line
+	}
+	normalized := normalizeMistralArrayContent(payload, true)
+	if bytes.Equal(normalized, payload) {
+		return line
+	}
+	out := make([]byte, 0, len(normalized)+len("data: "))
+	out = append(out, "data: "...)
+	out = append(out, normalized...)
+	return out
 }
