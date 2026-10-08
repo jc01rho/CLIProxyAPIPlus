@@ -93,6 +93,7 @@ func sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx context.Context, body 
 		sanitized, report = sigcompat.SanitizeClaudeMessagesForClaudeUpstream(body, baseModel, preserveEmptyThinkingBlocks...)
 		logClaudeSignatureSanitizeReport(ctx, baseModel, report)
 	}
+	sanitized = helps.NormalizeClaudeToolUseInputs(sanitized)
 	return sanitizeClaudeWebSearchDomains(sanitized)
 }
 
