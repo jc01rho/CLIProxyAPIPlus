@@ -98,6 +98,9 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body"})
 			return
 		}
+		if !yamlRequest {
+			clearConfigV8NodeStyle(update.Content[0])
+		}
 		stripAPIKeysAuthIndexesFromUpdate(parts, &update)
 		if len(parts) == 0 && update.Content[0].Kind != yaml.MappingNode {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "config_must_be_object"})
@@ -193,6 +196,19 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 }
 
 var v8ICEServersPath = []string{"oauth", "providers", "codex", "live-media-relay", "ice-servers"}
+
+// clearConfigV8NodeStyle drops the flow and quoting styles that parsing a JSON
+// body records, so values written by JSON clients are saved as block-style YAML
+// instead of one long JSON-like line. YAML uploads keep the author's styles.
+func clearConfigV8NodeStyle(node *yaml.Node) {
+	if node == nil {
+		return
+	}
+	node.Style = 0
+	for _, child := range node.Content {
+		clearConfigV8NodeStyle(child)
+	}
+}
 
 // JSON reads redact TURN secrets. Preserve omitted credentials when a client
 // writes that JSON back, matching by endpoint rather than array position so a
