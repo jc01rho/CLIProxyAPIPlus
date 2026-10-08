@@ -34,10 +34,7 @@ const (
 	glAPIVersion = "v1beta"
 
 	// streamScannerBuffer is the buffer size for SSE stream scanning.
-	streamScannerBuffer = 52_428_800
-
-	// geminiInteractionsAPIRevision is the default API revision for native Interactions requests.
-	geminiInteractionsAPIRevision = "2026-05-20"
+	streamScannerBuffer = helps.StreamScannerBuffer
 )
 
 // GeminiExecutor is a stateless executor for the official Gemini API using API keys.
@@ -878,42 +875,11 @@ func nativeInteractionsSourceFormat(format sdktranslator.Format) bool {
 // - `function_result` (FunctionResultStep) requires `call_id` and rejects `id`
 // - other steps and content parts do not support `id`
 func sanitizeGeminiInteractionsUnsupportedInputIDs(body []byte) []byte {
-	input := gjson.GetBytes(body, "input")
-	if !input.IsArray() {
-		return body
-	}
-	for i, item := range input.Array() {
-		stepType := item.Get("type").String()
-		if stepType == "function_call" {
-			if !item.Get("id").Exists() && item.Get("call_id").Exists() {
-				body, _ = sjson.SetBytes(body, fmt.Sprintf("input.%d.id", i), item.Get("call_id").String())
-			}
-			if item.Get("call_id").Exists() {
-				body, _ = sjson.DeleteBytes(body, fmt.Sprintf("input.%d.call_id", i))
-			}
-		} else {
-			if item.Get("id").Exists() {
-				body, _ = sjson.DeleteBytes(body, fmt.Sprintf("input.%d.id", i))
-			}
-		}
-		content := item.Get("content")
-		if !content.IsArray() {
-			continue
-		}
-		for j, part := range content.Array() {
-			if part.Get("id").Exists() {
-				body, _ = sjson.DeleteBytes(body, fmt.Sprintf("input.%d.content.%d.id", i, j))
-			}
-		}
-	}
-	return body
+	return helps.SanitizeGeminiInteractionsUnsupportedInputIDs(body)
 }
 
 func translateGeminiInteractionsRequestBody(ctx context.Context, cfg *config.Config, model string, payload []byte, opts cliproxyexecutor.Options, stream, isCompat bool) ([]byte, error) {
-	if opts.SourceFormat == "" || opts.SourceFormat == sdktranslator.FormatInteractions {
-		return bytes.Clone(payload), nil
-	}
-	return helps.TranslateRequestReturningError(ctx, opts.Headers, cfg, opts.SourceFormat, sdktranslator.FormatInteractions, model, payload, stream, isCompat)
+	return helps.TranslateGeminiInteractionsRequestBody(ctx, cfg, model, payload, opts, stream, isCompat)
 }
 
 // translateGeminiInteractionsRequestPair translates the working payload and the
@@ -923,18 +889,11 @@ func translateGeminiInteractionsRequestBody(ctx context.Context, cfg *config.Con
 // inputs keep the existing order: working payload first, then the payload-config
 // source.
 func translateGeminiInteractionsRequestPair(ctx context.Context, cfg *config.Config, model string, payload []byte, opts cliproxyexecutor.Options, stream, isCompat bool) (original, working []byte, err error) {
-	source := geminiInteractionsPayloadConfigInput(opts, payload)
-	if geminiInteractionsSameByteSlice(payload, source) {
-		original, err = translateGeminiInteractionsRequestBody(ctx, cfg, model, payload, opts, stream, isCompat)
-		return original, bytes.Clone(original), err
-	}
-	working, err = translateGeminiInteractionsRequestBody(ctx, cfg, model, payload, opts, stream, isCompat)
-	original, _ = geminiInteractionsPayloadConfigSource(ctx, cfg, model, payload, opts, stream, isCompat)
-	return original, working, err
+	return helps.TranslateGeminiInteractionsRequestPair(ctx, cfg, model, payload, opts, stream, isCompat)
 }
 
 func geminiInteractionsPayloadConfigSource(ctx context.Context, cfg *config.Config, model string, payload []byte, opts cliproxyexecutor.Options, stream, isCompat bool) ([]byte, error) {
-	return translateGeminiInteractionsRequestBody(ctx, cfg, model, geminiInteractionsPayloadConfigInput(opts, payload), opts, stream, isCompat)
+	return helps.TranslateGeminiInteractionsRequestBody(ctx, cfg, model, geminiInteractionsPayloadConfigInput(opts, payload), opts, stream, isCompat)
 }
 
 func geminiInteractionsPayloadConfigInput(opts cliproxyexecutor.Options, payload []byte) []byte {
@@ -965,11 +924,7 @@ func isNativeInteractionsAuth(auth *cliproxyauth.Auth) bool {
 }
 
 func applyGeminiInteractionsThinking(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) ([]byte, error) {
-	fromFormat := opts.SourceFormat.String()
-	if strings.TrimSpace(fromFormat) == "" {
-		fromFormat = sdktranslator.FormatInteractions.String()
-	}
-	return helps.ApplyRequestThinking(body, req, opts, fromFormat, sdktranslator.FormatInteractions.String(), "gemini")
+	return helps.ApplyGeminiInteractionsThinking(body, req, opts)
 }
 
 func normalizeGemini31FlashLiteThinking(body []byte, model string) []byte {
@@ -1001,74 +956,19 @@ func normalizeGemini31FlashLiteInteractionsThinking(body []byte, model string) [
 }
 
 func applyGeminiInteractionsRevisionHeader(req *http.Request) {
-	if req == nil {
-		return
-	}
-	if req.Header.Get("Api-Revision") == "" {
-		req.Header.Set("Api-Revision", geminiInteractionsAPIRevision)
-	}
+	helps.ApplyGeminiInteractionsRevisionHeader(req)
 }
 
 func applyGeminiInteractionsRequestHeaders(req *http.Request, headers http.Header) {
-	if req == nil || headers == nil || req.Header.Get("Api-Revision") != "" {
-		return
-	}
-	if revision := headers.Get("Api-Revision"); revision != "" {
-		req.Header.Set("Api-Revision", revision)
-	}
+	helps.ApplyGeminiInteractionsRequestHeaders(req, headers)
 }
 
 func geminiInteractionsSSEPayload(frame []byte) []byte {
-	trimmed := bytes.TrimSpace(frame)
-	if len(trimmed) == 0 {
-		return nil
-	}
-	if bytes.HasPrefix(trimmed, []byte("{")) {
-		return trimmed
-	}
-	lines := bytes.Split(frame, []byte{'\n'})
-	var payload []byte
-	for _, line := range lines {
-		line = bytes.TrimRight(line, "\r")
-		if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("data:")) {
-			continue
-		}
-		data := bytes.TrimSpace(line[bytes.Index(line, []byte("data:"))+len("data:"):])
-		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
-			continue
-		}
-		if len(payload) > 0 {
-			payload = append(payload, '\n')
-		}
-		payload = append(payload, data...)
-	}
-	if len(payload) == 0 {
-		return nil
-	}
-	return payload
+	return helps.GeminiInteractionsSSEPayload(frame)
 }
 
 func geminiInteractionsSSEDone(frame []byte) bool {
-	trimmed := bytes.TrimSpace(frame)
-	if bytes.Equal(trimmed, []byte("[DONE]")) {
-		return true
-	}
-	lines := bytes.Split(frame, []byte{'\n'})
-	sawDoneEvent := false
-	for _, line := range lines {
-		line = bytes.TrimSpace(bytes.TrimRight(line, "\r"))
-		if bytes.EqualFold(line, []byte("event: done")) {
-			sawDoneEvent = true
-			continue
-		}
-		if bytes.HasPrefix(line, []byte("data:")) {
-			data := bytes.TrimSpace(line[len("data:"):])
-			if bytes.Equal(data, []byte("[DONE]")) {
-				return true
-			}
-		}
-	}
-	return sawDoneEvent
+	return helps.GeminiInteractionsSSEDone(frame)
 }
 
 func geminiAuthLogFields(auth *cliproxyauth.Auth) (string, string, string, string) {

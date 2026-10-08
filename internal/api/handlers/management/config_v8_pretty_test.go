@@ -54,8 +54,8 @@ func TestConfigV8JSONWritesSaveBlockStyleYAML(t *testing.T) {
 			t.Fatalf("saved config missing %q:\n%s", want, text)
 		}
 	}
-	if !strings.Contains(text, "codex: [a, b]") {
-		t.Fatalf("hand-written flow sequence was rewritten:\n%s", text)
+	if strings.Contains(text, "codex: [a, b]") || !strings.Contains(text, "- a\n") {
+		t.Fatalf("flow sequence was not normalized to block style:\n%s", text)
 	}
 	loaded, err := config.LoadConfig(path)
 	if err != nil {
