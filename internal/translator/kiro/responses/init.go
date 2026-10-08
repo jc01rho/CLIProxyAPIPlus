@@ -11,7 +11,9 @@ func init() {
 	translator.Register(
 		OpenaiResponse,
 		Kiro,
-		ConvertOpenAIResponsesRequestToKiro,
+		func(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+			return ConvertOpenAIResponsesRequestToKiro(modelName, inputRawJSON, stream), nil
+		},
 		interfaces.TranslateResponse{
 			Stream:    ConvertKiroStreamToOpenAIResponses,
 			NonStream: ConvertKiroNonStreamToOpenAIResponses,

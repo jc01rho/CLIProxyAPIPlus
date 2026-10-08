@@ -29,6 +29,11 @@ server:
   # Server port
   port: 8317
 
+  # Global token for GitHub requests (for example, release and asset downloads).
+  # A non-empty config token takes precedence over the GITHUB_TOKEN environment variable.
+  # Leave empty to use GITHUB_TOKEN, or unauthenticated requests if neither is set.
+  github-token: ""
+
   # IP addresses or CIDRs of proxies allowed to supply forwarded client IP headers.
   # An empty list (the default) does not trust forwarded headers. Restart after changing this setting.
   trusted-proxies: []

@@ -10,7 +10,9 @@ func init() {
 	translator.Register(
 		OpenAI,
 		Cursor,
-		ConvertOpenAIRequestToCursor,
+		func(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+			return ConvertOpenAIRequestToCursor(modelName, inputRawJSON, stream), nil
+		},
 		interfaces.TranslateResponse{
 			Stream:    ConvertCursorResponseToOpenAI,
 			NonStream: ConvertCursorResponseToOpenAINonStream,

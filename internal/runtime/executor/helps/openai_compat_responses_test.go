@@ -25,7 +25,7 @@ func TestCompatResponsesSameUpstreamAliases(t *testing.T) {
 
 func TestCompatResponsesPreservesClaudeParallelRestriction(t *testing.T) {
 	input := []byte(`{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"read","input_schema":{"type":"object"}}],"tool_choice":{"type":"auto","disable_parallel_tool_use":true}}`)
-	_, output, _ := TranslateCompatResponsesRequest(context.Background(), nil, &config.Config{}, sdktranslator.FormatClaude, "m", input, input, false, false)
+	_, output, _, _ := TranslateCompatResponsesRequest(context.Background(), nil, &config.Config{}, sdktranslator.FormatClaude, "m", input, input, false, false)
 	parallel := gjson.GetBytes(output, "parallel_tool_calls")
 	if !parallel.Exists() || parallel.Bool() {
 		t.Fatalf("parallel tool prohibition lost: %s", output)
@@ -34,7 +34,7 @@ func TestCompatResponsesPreservesClaudeParallelRestriction(t *testing.T) {
 
 func TestCompatResponsesOmitsUnrequestedCodexDefaults(t *testing.T) {
 	input := []byte(`{"messages":[{"role":"user","content":"hi"}],"max_tokens":41,"temperature":0.2}`)
-	_, output, _ := TranslateCompatResponsesRequest(context.Background(), nil, &config.Config{}, sdktranslator.FormatOpenAI, "m", input, input, false, false)
+	_, output, _, _ := TranslateCompatResponsesRequest(context.Background(), nil, &config.Config{}, sdktranslator.FormatOpenAI, "m", input, input, false, false)
 	for _, key := range []string{"reasoning.effort", "store", "include", "parallel_tool_calls"} {
 		if gjson.GetBytes(output, key).Exists() {
 			t.Errorf("unrequested Codex default %s: %s", key, output)

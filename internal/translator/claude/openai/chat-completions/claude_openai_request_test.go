@@ -19,7 +19,7 @@ func TestConvertOpenAIRequestToClaude_ThinkingSummaryVisibility(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			out := ConvertOpenAIRequestToClaude("claude-opus-5-5", []byte(test.input), false)
+			out, _ := ConvertOpenAIRequestToClaude("claude-opus-5-5", []byte(test.input), false)
 			if got := gjson.GetBytes(out, "thinking.display").String(); got != test.wanted {
 				t.Fatalf("thinking.display = %q, want %q; body=%s", got, test.wanted, out)
 			}
@@ -41,7 +41,7 @@ func TestConvertOpenAIRequestToClaudeWithCompat_GroupsAssistantThinkingTextAndTo
 			}
 		]
 	}`)
-	out := ConvertOpenAIRequestToClaudeWithCompat("claude-test", inputJSON, false)
+	out, _ := ConvertOpenAIRequestToClaudeWithCompat("claude-test", inputJSON, false)
 	messages := gjson.GetBytes(out, "messages").Array()
 	if len(messages) != 1 {
 		t.Fatalf("message count = %d, want 1. Output: %s", len(messages), string(out))
@@ -66,7 +66,7 @@ func TestConvertOpenAIRequestToClaude_MergesToolResultWithAdjacentUserContent(t 
 			{"role":"user","content":"continue"}
 		]
 	}`)
-	out := ConvertOpenAIRequestToClaude("claude-test", inputJSON, false)
+	out, _ := ConvertOpenAIRequestToClaude("claude-test", inputJSON, false)
 	messages := gjson.GetBytes(out, "messages").Array()
 	if len(messages) != 2 {
 		t.Fatalf("message count = %d, want 2. Output: %s", len(messages), string(out))
@@ -91,7 +91,7 @@ func TestConvertOpenAIRequestToClaude_SystemDoesNotBreakUserTurnAndCacheBoundary
 			{"role":"user","content":"second"}
 		]
 	}`)
-	out := ConvertOpenAIRequestToClaude("claude-test", inputJSON, false)
+	out, _ := ConvertOpenAIRequestToClaude("claude-test", inputJSON, false)
 	messages := gjson.GetBytes(out, "messages").Array()
 	if len(messages) != 1 {
 		t.Fatalf("message count = %d, want 1. Output: %s", len(messages), string(out))
@@ -139,7 +139,7 @@ func TestConvertOpenAIRequestToClaude_SanitizesToolCallIDsForClaude(t *testing.T
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 	toolUseID := resultJSON.Get("messages.0.content.0.id").String()
 	toolResultID := resultJSON.Get("messages.1.content.0.tool_use_id").String()
@@ -176,7 +176,7 @@ func TestConvertOpenAIRequestToClaude_GroupsConsecutiveParallelToolResults(t *te
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 	messages := resultJSON.Get("messages").Array()
 
@@ -226,7 +226,7 @@ func TestConvertOpenAIRequestToClaude_DropsTemperature(t *testing.T) {
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	if resultJSON.Get("temperature").Exists() {
@@ -271,7 +271,7 @@ func TestConvertOpenAIRequestToClaude_ToolResultTextAndBase64Image(t *testing.T)
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 	messages := resultJSON.Get("messages").Array()
 
@@ -344,7 +344,7 @@ func TestConvertOpenAIRequestToClaude_ToolResultURLImageOnly(t *testing.T) {
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 	messages := resultJSON.Get("messages").Array()
 
@@ -376,7 +376,7 @@ func TestConvertOpenAIRequestToClaude_SystemRoleBecomesTopLevelSystem(t *testing
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	system := resultJSON.Get("system")
@@ -415,7 +415,7 @@ func TestConvertOpenAIRequestToClaude_MultipleSystemMessagesMergedIntoTopLevelSy
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	system := resultJSON.Get("system").Array()
@@ -449,7 +449,7 @@ func TestConvertOpenAIRequestToClaude_SystemOnlyInputKeepsFallbackUserMessage(t 
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	system := resultJSON.Get("system").Array()
@@ -489,7 +489,7 @@ func TestConvertOpenAIRequestToClaude_PreservesContentPartCacheControl(t *testin
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	if got := resultJSON.Get("messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
@@ -515,7 +515,7 @@ func TestConvertOpenAIRequestToClaude_PreservesMessageLevelCacheControl(t *testi
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	if got := resultJSON.Get("messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
@@ -543,7 +543,7 @@ func TestConvertOpenAIRequestToClaude_PreservesToolCacheControl(t *testing.T) {
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	if got := resultJSON.Get("tools.0.cache_control.type").String(); got != "ephemeral" {
@@ -585,7 +585,7 @@ func TestConvertOpenAIRequestToClaude_NormalizesRootToolSchemaUnions(t *testing.
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	root := gjson.ParseBytes(result)
 
 	for _, toolName := range []string{"without_type", "constraint_union"} {
@@ -619,7 +619,7 @@ func TestConvertOpenAIRequestToClaude_PartCacheControlWinsOverMessageLevel(t *te
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	if got := resultJSON.Get("messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
@@ -640,7 +640,7 @@ func TestConvertOpenAIRequestToClaude_LeadingDeveloperBecomesTopLevelSystem(t *t
 		]
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	root := gjson.ParseBytes(result)
 	if got := root.Get("system.#").Int(); got != 2 {
 		t.Fatalf("system block count = %d, want 2; output=%s", got, result)
@@ -664,7 +664,7 @@ func TestConvertOpenAIRequestToClaude_LeadingDeveloperBecomesTopLevelSystem(t *t
 
 func TestConvertOpenAIRequestToClaude_LaterDeveloperPreservedAsUserInPlace(t *testing.T) {
 	inputJSON := `{"messages":[{"role":"user","content":"question"},{"role":"developer","content":"late"},{"role":"assistant","content":"answer"}]}`
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	root := gjson.ParseBytes(result)
 
 	if root.Get("system").Exists() {
@@ -686,7 +686,7 @@ func TestConvertOpenAIRequestToClaude_LaterDeveloperPreservedAsUserInPlace(t *te
 
 func TestConvertOpenAIRequestToClaude_LeadingNonTextDeveloperIsNotSilentlyDropped(t *testing.T) {
 	inputJSON := `{"messages":[{"role":"developer","content":[{"type":"text","text":"inspect"},{"type":"image_url","image_url":{"url":"https://example.com/rule.png"}}]},{"role":"user","content":"question"}]}`
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	root := gjson.ParseBytes(result)
 
 	if root.Get("system").Exists() {
@@ -708,7 +708,7 @@ func TestConvertOpenAIRequestToClaude_LeadingNonTextDeveloperIsNotSilentlyDroppe
 
 func TestConvertOpenAIRequestToClaude_UnsupportedSystemPartIsNotSilentlyDropped(t *testing.T) {
 	inputJSON := `{"messages":[{"role":"system","content":[{"type":"text","text":"inspect"},{"type":"file","file":{"file_data":"data:application/pdf;base64,cGRm"}}]},{"role":"user","content":"question"}]}`
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
 	root := gjson.ParseBytes(result)
 
 	if root.Get("system").Exists() {
@@ -741,7 +741,7 @@ func TestConvertOpenAIRequestToClaude_DeduplicatesToolResults(t *testing.T) {
 			{"role":"tool","tool_call_id":"","content":"empty id output"}
 		]
 	}`)
-	out := ConvertOpenAIRequestToClaude("claude-test", inputJSON, false)
+	out, _ := ConvertOpenAIRequestToClaude("claude-test", inputJSON, false)
 	root := gjson.ParseBytes(out)
 
 	messages := root.Get("messages").Array()
@@ -819,7 +819,7 @@ func TestConvertOpenAIRequestToClaude_MaxTokensAndMaxCompletionTokens(t *testing
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			out := ConvertOpenAIRequestToClaude("claude-3-7-sonnet-20250219", []byte(tc.rawJSON), false)
+			out, _ := ConvertOpenAIRequestToClaude("claude-3-7-sonnet-20250219", []byte(tc.rawJSON), false)
 			got := gjson.GetBytes(out, "max_tokens").Int()
 			if got != tc.wantLimit {
 				t.Fatalf("max_tokens = %d, want %d. Output: %s", got, tc.wantLimit, string(out))
@@ -853,7 +853,7 @@ func TestConvertOpenAIRequestToClaude_PreservesCallerSuppliedMetadataUserID(t *t
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := ConvertOpenAIRequestToClaude("claude-test", []byte(tc.rawJSON), false)
+			out, _ := ConvertOpenAIRequestToClaude("claude-test", []byte(tc.rawJSON), false)
 			if !gjson.ValidBytes(out) {
 				t.Fatalf("output is invalid json: %s", string(out))
 			}
@@ -867,7 +867,7 @@ func TestConvertOpenAIRequestToClaude_PreservesCallerSuppliedMetadataUserID(t *t
 
 func TestConvertOpenAIRequestToClaude_PreservesOpenAIUserField(t *testing.T) {
 	raw := []byte(`{"model":"claude-test","user":"openai-user-456","messages":[{"role":"user","content":"hello"}]}`)
-	out := ConvertOpenAIRequestToClaude("claude-test", raw, false)
+	out, _ := ConvertOpenAIRequestToClaude("claude-test", raw, false)
 	if !gjson.ValidBytes(out) {
 		t.Fatalf("output is invalid json: %s", string(out))
 	}
@@ -880,8 +880,8 @@ func TestConvertOpenAIRequestToClaude_PreservesOpenAIUserField(t *testing.T) {
 func TestConvertOpenAIRequestToClaude_DifferentSessionsProduceDifferentUserIDs(t *testing.T) {
 	a := []byte(`{"model":"claude-test","prompt_cache_key":"session-a","messages":[{"role":"user","content":"hello"}]}`)
 	b := []byte(`{"model":"claude-test","prompt_cache_key":"session-b","messages":[{"role":"user","content":"hello"}]}`)
-	outA := ConvertOpenAIRequestToClaude("claude-test", a, false)
-	outB := ConvertOpenAIRequestToClaude("claude-test", b, false)
+	outA, _ := ConvertOpenAIRequestToClaude("claude-test", a, false)
+	outB, _ := ConvertOpenAIRequestToClaude("claude-test", b, false)
 	idA := gjson.GetBytes(outA, "metadata.user_id").String()
 	idB := gjson.GetBytes(outB, "metadata.user_id").String()
 	if idA == idB {
@@ -892,8 +892,8 @@ func TestConvertOpenAIRequestToClaude_DifferentSessionsProduceDifferentUserIDs(t
 func TestConvertOpenAIRequestToClaude_DeterministicWithoutSessionKey(t *testing.T) {
 	first := []byte(`{"model":"claude-test","messages":[{"role":"user","content":"stable first message"}]}`)
 	second := []byte(`{"model":"claude-test","messages":[{"role":"user","content":"stable first message"},{"role":"assistant","content":"hi"},{"role":"user","content":"second message"}]}`)
-	outFirst := ConvertOpenAIRequestToClaude("claude-test", first, false)
-	outSecond := ConvertOpenAIRequestToClaude("claude-test", second, false)
+	outFirst, _ := ConvertOpenAIRequestToClaude("claude-test", first, false)
+	outSecond, _ := ConvertOpenAIRequestToClaude("claude-test", second, false)
 	idFirst := gjson.GetBytes(outFirst, "metadata.user_id").String()
 	idSecond := gjson.GetBytes(outSecond, "metadata.user_id").String()
 	if idFirst == "" || idFirst == "unknown" {
@@ -927,7 +927,7 @@ func TestConvertOpenAIRequestToClaude_ResponseFormatJSONSchema(t *testing.T) {
 		}
 	}`)
 
-	out := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", inputJSON, false)
+	out, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", inputJSON, false)
 	system := gjson.GetBytes(out, "system")
 	if !system.Exists() || !system.IsArray() || len(system.Array()) == 0 {
 		t.Fatalf("system blocks missing or empty. Output: %s", string(out))
@@ -955,7 +955,7 @@ func TestConvertOpenAIRequestToClaude_ResponseFormatJSONObject(t *testing.T) {
 		}
 	}`)
 
-	out := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", inputJSON, false)
+	out, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", inputJSON, false)
 	system := gjson.GetBytes(out, "system")
 	if !system.Exists() || !system.IsArray() || len(system.Array()) == 0 {
 		t.Fatalf("system blocks missing or empty. Output: %s", string(out))
@@ -986,7 +986,7 @@ func TestConvertOpenAIRequestToClaude_ResponseFormatPreservesExistingSystem(t *t
 		}
 	}`)
 
-	out := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", inputJSON, false)
+	out, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", inputJSON, false)
 	system := gjson.GetBytes(out, "system")
 	if !system.Exists() || !system.IsArray() || len(system.Array()) < 2 {
 		t.Fatalf("expected at least 2 system blocks (original + response_format). Output: %s", string(out))
@@ -1025,7 +1025,7 @@ func TestConvertOpenAIRequestToClaude_ResponseFormatAbsentOrTextNoOp(t *testing.
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(tt.body), false)
+			out, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(tt.body), false)
 			if gjson.GetBytes(out, "system").Exists() {
 				t.Fatalf("system blocks should not be created when response_format is absent or text. Output: %s", string(out))
 			}
@@ -1045,7 +1045,7 @@ func TestConvertOpenAIRequestToClaude_ToolResultPartCacheControlHoisted(t *testi
 		],
 		"tools":[{"type":"function","function":{"name":"calc","description":"calc","parameters":{"type":"object","properties":{"expr":{"type":"string"}},"required":["expr"]}}}]
 	}`)
-	out := ConvertOpenAIRequestToClaude("claude-test", inputJSON, false)
+	out, _ := ConvertOpenAIRequestToClaude("claude-test", inputJSON, false)
 
 	messages := gjson.GetBytes(out, "messages").Array()
 	if len(messages) != 3 {
@@ -1087,7 +1087,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_b", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		gotType := gjson.GetBytes(result, "tool_choice.type").String()
 		if gotType != "none" {
 			t.Fatalf("expected tool_choice.type to be 'none', got %q. Output: %s", gotType, result)
@@ -1103,7 +1103,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_a", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		gotType := gjson.GetBytes(result, "tool_choice.type").String()
 		if gotType != "none" {
 			t.Fatalf("expected tool_choice.type to be 'none', got %q. Output: %s", gotType, result)
@@ -1126,7 +1126,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_b", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		gotType := gjson.GetBytes(result, "tool_choice.type").String()
 		tools := gjson.GetBytes(result, "tools").Array()
 		if gotType != "auto" {
@@ -1157,7 +1157,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_c", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		gotType := gjson.GetBytes(result, "tool_choice.type").String()
 		tools := gjson.GetBytes(result, "tools").Array()
 		if gotType != "any" {
@@ -1178,7 +1178,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_a", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		gotType := gjson.GetBytes(result, "tool_choice.type").String()
 		gotDisable := gjson.GetBytes(result, "tool_choice.disable_parallel_tool_use").Bool()
 		if gotType != "any" || !gotDisable {
@@ -1196,7 +1196,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_a", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		gotDisable := gjson.GetBytes(result, "tool_choice.disable_parallel_tool_use")
 		if gotDisable.Exists() && gotDisable.Bool() {
 			t.Fatalf("expected disable_parallel_tool_use to not be true for parallel_tool_calls=null. Output: %s", result)
@@ -1213,7 +1213,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_a", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		gotDisable := gjson.GetBytes(result, "tool_choice.disable_parallel_tool_use")
 		if gotDisable.Exists() && gotDisable.Bool() {
 			t.Fatalf("expected disable_parallel_tool_use to not be true for parallel_tool_calls=true. Output: %s", result)
@@ -1229,7 +1229,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_a", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		gotType := gjson.GetBytes(result, "tool_choice.type").String()
 		gotDisable := gjson.GetBytes(result, "tool_choice.disable_parallel_tool_use").Bool()
 		if gotType != "auto" || !gotDisable {
@@ -1251,7 +1251,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_a", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		gotType := gjson.GetBytes(result, "tool_choice.type").String()
 		if gotType != "none" {
 			t.Fatalf("expected tool_choice type='none', got %q. Output: %s", gotType, result)
@@ -1267,7 +1267,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_a", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		gotType := gjson.GetBytes(result, "tool_choice.type").String()
 		if gotType != "none" {
 			t.Fatalf("expected tool_choice type='none', got %q. Output: %s", gotType, result)
@@ -1283,7 +1283,7 @@ func TestConvertOpenAIRequestToClaude_ToolChoice(t *testing.T) {
 				{"type": "function", "function": {"name": "tool_a", "parameters": {"type": "object", "properties": {}}}}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		if gjson.GetBytes(result, "tool_choice").Exists() {
 			t.Fatalf("expected tool_choice not to be set when tool_choice is null, got: %s", result)
 		}
@@ -1307,7 +1307,7 @@ func TestConvertOpenAIRequestToClaude_ToolStrict(t *testing.T) {
 				}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		toolStrict := gjson.GetBytes(result, "tools.0.strict")
 		if !toolStrict.Exists() {
 			t.Fatalf("expected tools.0.strict to exist in Claude output: %s", result)
@@ -1333,7 +1333,7 @@ func TestConvertOpenAIRequestToClaude_ToolStrict(t *testing.T) {
 				}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		toolStrict := gjson.GetBytes(result, "tools.0.strict")
 		if !toolStrict.Exists() || !toolStrict.Bool() {
 			t.Fatalf("expected tools.0.strict to be true, got %s", result)
@@ -1356,7 +1356,7 @@ func TestConvertOpenAIRequestToClaude_ToolStrict(t *testing.T) {
 				}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		toolStrict := gjson.GetBytes(result, "tools.0.strict")
 		if !toolStrict.Exists() {
 			t.Fatalf("expected tools.0.strict to exist in Claude output: %s", result)
@@ -1381,7 +1381,7 @@ func TestConvertOpenAIRequestToClaude_ToolStrict(t *testing.T) {
 				}
 			]
 		}`
-		result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+		result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 		if gjson.GetBytes(result, "tools.0.strict").Exists() {
 			t.Fatalf("expected tools.0.strict to be omitted when not provided, got %s", result)
 		}
@@ -1440,7 +1440,7 @@ func TestConvertOpenAIRequestToClaude_SanitizesToolNamesAndProvidesFallbackSchem
 		}
 	}`
 
-	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
+	result, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", []byte(inputJSON), false)
 
 	// 1. Tool name in declarations must be sanitized
 	tool0Name := gjson.GetBytes(result, "tools.0.name").String()

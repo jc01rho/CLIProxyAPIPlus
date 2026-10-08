@@ -64,8 +64,10 @@ func (e *OpenAICompatExecutor) openNativeResponses(ctx context.Context, auth *cl
 	if len(original) == 0 {
 		original = req.Payload
 	}
-	baseline, body, changed := helps.TranslateCompatResponsesRequest(ctx, opts.Headers, cfg, opts.SourceFormat, baseModel, original, req.Payload, stream, helps.APIKeyModelIsCompat(req))
-	var err error
+	baseline, body, changed, err := helps.TranslateCompatResponsesRequest(ctx, opts.Headers, cfg, opts.SourceFormat, baseModel, original, req.Payload, stream, helps.APIKeyModelIsCompat(req))
+	if err != nil {
+		return nil, nil, err
+	}
 	if opts.SourceFormat != sdktranslator.FormatOpenAIResponse || thinking.ParseSuffix(req.Model).HasSuffix || changed {
 		body, err = helps.ApplyRequestThinkingWithContext(ctx, body, req, opts, opts.SourceFormat.String(), "openai-response", e.Identifier(), changed)
 		if err != nil {

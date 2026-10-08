@@ -620,7 +620,7 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	if overrideEndpoint, ok := resolveEndpointOverride(modelName, openAIResponsesEndpoint); ok && overrideEndpoint == openAIChatEndpoint {
-		chatJSON := responsesconverter.ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName, rawJSON, stream)
+		chatJSON, _ := responsesconverter.ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName, rawJSON, stream)
 		stream = gjson.GetBytes(chatJSON, "stream").Bool()
 		if stream {
 			h.handleStreamingResponseViaChat(c, rawJSON, chatJSON)

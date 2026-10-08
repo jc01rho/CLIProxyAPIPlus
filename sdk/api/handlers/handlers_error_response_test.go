@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -964,6 +965,17 @@ func TestStatusFromErrorMapsContextStatuses(t *testing.T) {
 	}
 	if got := statusFromError(errors.New("boom")); got != 0 {
 		t.Fatalf("statusFromError(plain) = %d, want 0", got)
+	}
+}
+
+func TestExecutionErrorMessage_UnsupportedPartKeepsNameAnd400(t *testing.T) {
+	err := &translatorcommon.UnsupportedPartError{Type: "container_upload"}
+	msg := ExecutionErrorMessage(err)
+	if msg == nil || msg.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %v", msg)
+	}
+	if msg.Error == nil || !strings.Contains(msg.Error.Error(), "container_upload") {
+		t.Fatalf("part name lost: %v", msg.Error)
 	}
 }
 

@@ -72,17 +72,20 @@ func CompatModelResponsesOnly(compat *config.OpenAICompatibility, model, request
 // TranslateCompatResponsesRequest preserves native Responses payloads verbatim
 // through the same-format pipeline. Other clients reuse existing Responses-wire
 // converters, restoring public API parameters omitted by Codex-specific defaults.
-func TranslateCompatResponsesRequest(ctx context.Context, headers http.Header, cfg *config.Config, from sdktranslator.Format, model string, original, payload []byte, stream, isCompat bool) ([]byte, []byte, bool) {
+func TranslateCompatResponsesRequest(ctx context.Context, headers http.Header, cfg *config.Config, from sdktranslator.Format, model string, original, payload []byte, stream, isCompat bool) ([]byte, []byte, bool, error) {
 	to := sdktranslator.FormatOpenAIResponse
 	if from != to && !sdktranslator.HasRequestTransformer(from, to) {
 		to = sdktranslator.FormatCodex
 	}
-	baseline, working, changed := TranslateRequestPairWithAPIKeyModelCompatibilityAndUpdateIntent(ctx, headers, cfg, from, to, model, original, payload, stream, isCompat)
+	baseline, working, changed, err := TranslateRequestPairWithAPIKeyModelCompatibilityAndUpdateIntent(ctx, headers, cfg, from, to, model, original, payload, stream, isCompat)
+	if err != nil {
+		return nil, nil, false, err
+	}
 	if to == sdktranslator.FormatCodex {
 		baseline = restoreCompatResponsesParameters(baseline, original, from)
 		working = restoreCompatResponsesParameters(working, payload, from)
 	}
-	return baseline, working, changed
+	return baseline, working, changed, nil
 }
 
 func restoreCompatResponsesParameters(translated, source []byte, from sdktranslator.Format) []byte {

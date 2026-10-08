@@ -21,12 +21,12 @@ import (
 //     The first message defaults to "user", then alternates user/model when needed.
 //
 // It keeps the payload otherwise unchanged.
-func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte {
+func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) ([]byte, error) {
 	rawJSON := inputRawJSON
 	// Fast path: if no contents field, only attach safety settings
 	contents := util.GetGJSONBytesNoCopy(rawJSON, "contents")
 	if !contents.Exists() {
-		return common.AttachDefaultSafetySettings(rawJSON, "safetySettings")
+		return common.AttachDefaultSafetySettings(rawJSON, "safetySettings"), nil
 	}
 
 	toolsResult := gjson.GetBytes(rawJSON, "tools")
@@ -145,13 +145,13 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 		if &out[0] != &origOut[0] {
 			// Already allocated above; attach safety settings to the new slice.
 			out = common.AttachDefaultSafetySettings(out, "safetySettings")
-			return out
+			return out, nil
 		}
 		// No allocation: reuse the input slice for safety settings if needed.
 		if !util.GetGJSONBytesNoCopy(rawJSON, "safetySettings").Exists() {
 			out, _ = sjson.SetBytes(out, "safetySettings", common.DefaultSafetySettings())
 		}
-		return out
+		return out, nil
 	}
 
 	if util.GetGJSONBytesNoCopy(rawJSON, "generationConfig.responseSchema").Exists() {
@@ -164,7 +164,7 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 	out = backfillEmptyFunctionResponseNames(out)
 
 	out = common.AttachDefaultSafetySettings(out, "safetySettings")
-	return out
+	return out, nil
 }
 
 // alignFunctionResponsePartCounts walks the contents array and for each model
