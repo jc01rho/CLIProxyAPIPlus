@@ -321,7 +321,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 }
 
 func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, endpointPath string) (resp cliproxyexecutor.Response, err error) {
-	body, contentType, model, errPrepare := codexPrepareDirectOpenAIImageBody(req, opts, false)
+	body, contentType, model, errPrepare := e.prepareDirectOpenAIImageBody(auth, req, opts, false)
 	if errPrepare != nil {
 		return resp, errPrepare
 	}
@@ -388,7 +388,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 }
 
 func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, endpointPath string) (_ *cliproxyexecutor.StreamResult, err error) {
-	body, contentType, model, errPrepare := codexPrepareDirectOpenAIImageBody(req, opts, true)
+	body, contentType, model, errPrepare := e.prepareDirectOpenAIImageBody(auth, req, opts, true)
 	if errPrepare != nil {
 		return nil, errPrepare
 	}
@@ -490,7 +490,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 }
 
 func codexDirectOpenAIImageEndpoint(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
-	if codexDirectOpenAIImageModel(req) == "" {
+	if codexDirectOpenAIImageRouteModel(req, opts) == "" {
 		return ""
 	}
 	path := helps.PayloadRequestPath(opts)
@@ -503,8 +503,8 @@ func codexDirectOpenAIImageEndpoint(req cliproxyexecutor.Request, opts cliproxye
 	return ""
 }
 
-func codexPrepareDirectOpenAIImageBody(req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) ([]byte, string, string, error) {
-	model := codexDirectOpenAIImageModel(req)
+func (e *CodexExecutor) prepareDirectOpenAIImageBody(auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) ([]byte, string, string, error) {
+	model := e.directOpenAIImageModel(auth, req, opts)
 	if model == "" {
 		return nil, "", "", fmt.Errorf("unsupported direct OpenAI image model %q", req.Model)
 	}
@@ -656,14 +656,49 @@ func codexOpenAIImageEditFormJSONPath(key string) string {
 	}
 }
 
-func codexDirectOpenAIImageModel(req cliproxyexecutor.Request) string {
-	for _, model := range []string{gjson.GetBytes(req.Payload, "model").String(), req.Model} {
+func codexDirectOpenAIImageRouteModel(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
+	// Multipart handlers supply the requested model separately from the raw form.
+	requestedModel := helps.PayloadRequestedModel(opts, "")
+	payloadModel := ""
+	if json.Valid(req.Payload) {
+		payloadModel = gjson.GetBytes(req.Payload, "model").String()
+	}
+	for _, model := range []string{requestedModel, payloadModel, req.Model} {
 		baseModel := codexOpenAIImageBaseModel(model)
 		if codexIsDirectOpenAIImageModel(baseModel) {
 			return baseModel
 		}
 	}
 	return ""
+}
+
+func (e *CodexExecutor) directOpenAIImageModel(auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
+	routeModel := codexDirectOpenAIImageRouteModel(req, opts)
+	if routeModel == "" {
+		return ""
+	}
+	model := strings.TrimSpace(thinking.ParseSuffix(req.Model).ModelName)
+	if model == "" {
+		return routeModel
+	}
+
+	// Explicit upstream names are not routing prefixes, even when their base is builtin.
+	if entry := e.resolveCodexConfig(auth); entry != nil {
+		for _, configured := range entry.Models {
+			name := strings.TrimSpace(configured.Name)
+			if name == "" {
+				name = strings.TrimSpace(configured.Alias)
+			}
+			if strings.EqualFold(strings.TrimSpace(thinking.ParseSuffix(name).ModelName), model) {
+				return model
+			}
+		}
+	}
+	// Preserve legacy builtin route normalization only without an explicit upstream.
+	if baseModel := codexOpenAIImageBaseModel(model); codexIsDirectOpenAIImageModel(baseModel) {
+		return baseModel
+	}
+	return model
 }
 
 func codexOpenAIImageBaseModel(model string) string {

@@ -94,7 +94,7 @@ func sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx context.Context, body 
 		logClaudeSignatureSanitizeReport(ctx, baseModel, report)
 	}
 	sanitized = helps.NormalizeClaudeToolUseInputs(sanitized)
-	return sanitizeClaudeWebSearchDomains(sanitized)
+	return helps.NormalizeClaudeToolCallIDs(sanitizeClaudeWebSearchDomains(sanitized))
 }
 
 // sanitizeClaudeWebSearchDomains removes empty allowed_domains/blocked_domains

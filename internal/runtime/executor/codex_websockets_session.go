@@ -74,6 +74,9 @@ type codexWebsocketSession struct {
 	terminalConn *websocket.Conn
 	terminalErr  error
 
+	responseStateConn   *websocket.Conn
+	terminalResponseIDs map[string]struct{}
+
 	readerConn *websocket.Conn
 
 	upstreamDisconnectOnce    sync.Once
@@ -141,6 +144,10 @@ func (s *codexWebsocketSession) resetTerminalError(conn *websocket.Conn) {
 	s.activeMu.Lock()
 	s.terminalConn = conn
 	s.terminalErr = nil
+	if s.responseStateConn != conn {
+		s.responseStateConn = conn
+		s.terminalResponseIDs = make(map[string]struct{})
+	}
 	s.activeMu.Unlock()
 }
 
@@ -757,6 +764,16 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 			eventType := gjson.GetBytes(payload, "type").String()
 			if eventType != "" {
 				sess.setLastEventType(conn, eventType)
+			}
+			// Record terminal IDs before delivery: downstream may still be
+			// processing this turn after its active read channel is cleared.
+			responseID := gjson.GetBytes(payload, "response.id")
+			if isTerminalEvent(eventType) && eventType != "error" && responseID.Type == gjson.String && responseID.String() != "" {
+				sess.activeMu.Lock()
+				if sess.responseStateConn == conn {
+					sess.terminalResponseIDs[responseID.String()] = struct{}{}
+				}
+				sess.activeMu.Unlock()
 			}
 		}
 
