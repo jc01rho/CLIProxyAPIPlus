@@ -19,8 +19,11 @@ import (
 func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	retryCtx, retryReq := ctx, req
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
-	if opts.Alt == "responses/compact" {
-		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
+	if errExpand := expandClaudeResponsesCompaction(&req, &opts); errExpand != nil {
+		return resp, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
+	}
+	if claudeResponsesCompactionRequested(req, opts) {
+		return e.executeClaudeCompaction(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	upstreamModel := e.upstreamModel(baseModel)
@@ -251,6 +254,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 	}
 	bodyForUpstream = stripDefaultKimiClaudeCodeAttribution(auth, url, fp.ProfileClaudeCodeCLI, bodyForUpstream)
+	if claudeCompactionSummaryFromContext(ctx) {
+		bodyForUpstream = finalizeClaudeCompactionSummaryBody(bodyForUpstream)
+	}
 	// User rules match the fully prepared business body and are applied only once.
 	var touchedPayloadPaths map[string]bool
 	bodyForUpstream, touchedPayloadPaths = helps.ApplyPayloadConfigWithTrackedPaths(

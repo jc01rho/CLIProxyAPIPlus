@@ -22,8 +22,11 @@ import (
 func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	retryCtx, retryReq := ctx, req
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
-	if opts.Alt == "responses/compact" {
-		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
+	if errExpand := expandClaudeResponsesCompaction(&req, &opts); errExpand != nil {
+		return nil, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
+	}
+	if claudeResponsesCompactionRequested(req, opts) {
+		return e.executeClaudeCompactionStream(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	upstreamModel := e.upstreamModel(baseModel)

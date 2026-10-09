@@ -100,6 +100,46 @@ func TestConvertOpenAIResponsesRequestToClaude_FableMaxTokens(t *testing.T) {
 	})
 }
 
+func TestConvertOpenAIResponsesRequestToClaude_OmittedMaxOutputTokensUsesRegistryLimit(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     string
+		raw       string
+		wantLimit int64
+	}{
+		{
+			name:      "opus 5.5 omitted field uses 128k registry limit",
+			model:     "claude-opus-5-5",
+			raw:       `{"model":"claude-opus-5-5","input":"hello"}`,
+			wantLimit: 128000,
+		},
+		{
+			name:      "opus 5.5 null field uses 128k registry limit",
+			model:     "claude-opus-5-5",
+			raw:       `{"model":"claude-opus-5-5","max_output_tokens":null,"input":"hello"}`,
+			wantLimit: 128000,
+		},
+		{
+			name:      "sonnet 4.6 omitted field uses 64k registry limit",
+			model:     "claude-sonnet-4-6",
+			raw:       `{"model":"claude-sonnet-4-6","input":"hello"}`,
+			wantLimit: 64000,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, errConvert := ConvertOpenAIResponsesRequestToClaude(tc.model, []byte(tc.raw), false)
+			if errConvert != nil {
+				t.Fatalf("convert: %v", errConvert)
+			}
+			if got := gjson.GetBytes(out, "max_tokens").Int(); got != tc.wantLimit {
+				t.Fatalf("max_tokens = %d, want %d; output=%s", got, tc.wantLimit, out)
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToClaude_ReasoningItemToThinkingBlock(t *testing.T) {
 	rawSignature, expectedSignature := testClaudeResponsesThinkingSignature(t)
 	raw := []byte(`{

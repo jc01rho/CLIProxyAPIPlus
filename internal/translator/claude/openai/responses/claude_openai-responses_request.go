@@ -652,14 +652,22 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 }
 
 func defaultClaudeResponsesMaxTokensForModel(modelName string) int {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
 	maxTokens := defaultClaudeResponsesMaxTokens
-	if strings.Contains(strings.ToLower(strings.TrimSpace(modelName)), "fable") {
+	if strings.Contains(normalized, "fable") {
 		maxTokens = defaultFableResponsesMaxTokens
 	}
-	if info := registry.LookupModelInfo(modelName, "claude"); info != nil && info.MaxCompletionTokens > 0 && info.MaxCompletionTokens < maxTokens {
-		return info.MaxCompletionTokens
+	info := registry.LookupModelInfo(modelName, "claude")
+	if info == nil || info.MaxCompletionTokens <= 0 {
+		return maxTokens
 	}
-	return maxTokens
+	// Fable keeps its conservative omitted-field ceiling. Every other registered
+	// model uses its output limit, including when that limit is above the
+	// historical 32000 default.
+	if strings.Contains(normalized, "fable") && info.MaxCompletionTokens >= maxTokens {
+		return maxTokens
+	}
+	return info.MaxCompletionTokens
 }
 
 // isResponsesSystemLevelRole reports whether an input item carries system-level
