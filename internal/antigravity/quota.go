@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 )
 
 const (
@@ -389,7 +391,11 @@ func FetchAvailableModels(ctx context.Context, client *http.Client, accessToken,
 	if len(endpoints) == 0 {
 		endpoints = FetchAvailableModelsEndpointFallbacks
 	}
-	ua := GetRandomizedHeaders(HeaderStyleAntigravity, "").UserAgent
+	// Cloud Code only returns the "Gemini Models" quota group and the newest
+	// model ids (gemini-3.8-flash-*, gemini-4-argon-*) to clients reporting at
+	// least 2.23.0; the legacy agy CLI harness identity (1.1.6) is served the
+	// Claude/GPT group only. Use the same runtime identity as the executors.
+	ua := misc.AntigravityRequestUserAgent("")
 	errs := []string{}
 	for _, endpoint := range endpoints {
 		endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
@@ -492,7 +498,7 @@ func FetchUserQuotaSummary(ctx context.Context, client *http.Client, accessToken
 	if len(endpoints) == 0 {
 		endpoints = FetchAvailableModelsEndpointFallbacks
 	}
-	userAgent := GetRandomizedHeaders(HeaderStyleAntigravity, "").UserAgent
+	userAgent := misc.AntigravityRequestUserAgent("")
 	errs := []string{}
 	for _, endpoint := range endpoints {
 		endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")

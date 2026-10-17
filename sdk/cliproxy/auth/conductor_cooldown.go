@@ -2055,8 +2055,15 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 		return nil
 	}
 
+	// Order is the handoff sequence, but equal orders are possible on legacy state.
+	// Break ties by ID so the chain advances deterministically instead of following
+	// Go's randomized map iteration order.
 	sort.Slice(allAntigravity, func(i, j int) bool {
-		return allAntigravity[i].PrimaryInfo.Order < allAntigravity[j].PrimaryInfo.Order
+		oi, oj := allAntigravity[i].PrimaryInfo.Order, allAntigravity[j].PrimaryInfo.Order
+		if oi != oj {
+			return oi < oj
+		}
+		return allAntigravity[i].ID < allAntigravity[j].ID
 	})
 
 	currentIdx := -1
