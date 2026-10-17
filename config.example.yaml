@@ -1197,7 +1197,13 @@ oauth:
 
     # Antigravity provider behavior.
     antigravity:
-      # Prefer the first registered Antigravity credential for primary routing.
+      # Antigravity credentials run primary/standby: exactly one credential is enabled and
+      # serves traffic, the others are disabled standbys. Enabling a credential in the
+      # management UI demotes the previous primary; this holds even when primary-handoff is false.
+      # primary-handoff controls only the automatic switch: when true, a 401/403/429/502/503/504
+      # on the primary demotes it and promotes the next standby by Order (wrapping around to the
+      # lowest Order). A credential demoted by such a failure is skipped for a while (its retry
+      # deadline, or 5 minutes), and if no usable standby remains the primary is left enabled.
       primary-handoff: false
       # sensitive-words:              # optional: words to obfuscate with zero-width characters in system instructions
       #   - "API"

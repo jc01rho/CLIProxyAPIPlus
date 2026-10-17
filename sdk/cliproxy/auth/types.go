@@ -125,6 +125,14 @@ type Auth struct {
 	// cooldowns can still be cleared by any success.
 	cooldownRecordedSeq uint64 `json:"-"`
 
+	// handoffBlockedUntil is set when this credential was demoted by an Antigravity
+	// primary handoff after a 401/403/429/5xx. Until it passes, the credential is
+	// not a handoff candidate, so a standby that just failed is not promoted again.
+	// Demotion clears the credential's quota/cooldown state, so this is the only
+	// record of why it was demoted. Runtime only: zero after restart or reload,
+	// which makes the credential eligible again (fail-open).
+	handoffBlockedUntil time.Time `json:"-"`
+
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
 }

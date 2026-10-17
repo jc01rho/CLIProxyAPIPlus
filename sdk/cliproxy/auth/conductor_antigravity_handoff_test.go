@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,5 +157,125 @@ func TestAntigravityHandoffIgnoresOtherStatusCodes(t *testing.T) {
 			Error:           &Error{HTTPStatus: status, Message: "upstream error"},
 		})
 		assertAntigravityHandoff(t, m, false)
+	}
+}
+
+// newAntigravityHandoffChain registers len(orders) managed credentials ag-chain-<order>;
+// the one whose Order equals primaryOrder is the enabled primary, the rest are standbys.
+func newAntigravityHandoffChain(t *testing.T, primaryOrder int, orders ...int) *Manager {
+	t.Helper()
+	ctx := WithSkipPersist(context.Background())
+	m := NewManager(nil, &RoundRobinSelector{}, nil)
+	m.SetConfig(&internalconfig.Config{AntigravityPrimaryHandoff: true})
+	for _, order := range orders {
+		isPrimary := order == primaryOrder
+		auth := &Auth{
+			ID:          chainAuthID(order),
+			Provider:    "antigravity",
+			Status:      StatusDisabled,
+			Disabled:    true,
+			PrimaryInfo: &PrimaryInfo{IsPrimary: false, Order: order},
+		}
+		if isPrimary {
+			auth.Status = StatusActive
+			auth.Disabled = false
+			auth.PrimaryInfo.IsPrimary = true
+		}
+		if _, errRegister := m.Register(ctx, auth); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+		}
+	}
+	return m
+}
+
+func chainAuthID(order int) string { return "ag-chain-" + string(rune('0'+order)) }
+
+func failChainPrimary(t *testing.T, m *Manager, order int, status int) {
+	t.Helper()
+	markResultBounded(t, m, Result{
+		AuthID:          chainAuthID(order),
+		Provider:        "antigravity",
+		Model:           "gemini-3-flash",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: status, Message: antigravityGeminiQuota429Body},
+	})
+}
+
+func assertChainPrimary(t *testing.T, m *Manager, wantOrder int) {
+	t.Helper()
+	var primaries []string
+	for _, auth := range m.List() {
+		if auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary && !auth.Disabled {
+			primaries = append(primaries, auth.ID)
+		}
+	}
+	if len(primaries) != 1 || primaries[0] != chainAuthID(wantOrder) {
+		t.Fatalf("enabled primaries = %v, want only %s", primaries, chainAuthID(wantOrder))
+	}
+}
+
+// The last credential in the chain used to be a dead end: there was no "next", so a
+// 403/429 on it disabled nothing and every request kept failing on it.
+func TestAntigravityHandoffWrapsAroundFromLastOrder(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		m := newAntigravityHandoffChain(t, 3, 1, 2, 3)
+		failChainPrimary(t, m, 3, status)
+		assertChainPrimary(t, m, 1)
+		old, _ := m.GetByID(chainAuthID(3))
+		if !old.Disabled || old.PrimaryInfo.IsPrimary {
+			t.Fatalf("status %d: former primary not demoted: %+v", status, old)
+		}
+	}
+}
+
+// A credential that was just demoted by a failure must not be handed the traffic back
+// by the next failure; with no usable standby the failing primary stays enabled.
+func TestAntigravityHandoffDoesNotPingPongBetweenFailedCredentials(t *testing.T) {
+	m := newAntigravityHandoffChain(t, 1, 1, 2)
+	failChainPrimary(t, m, 1, http.StatusTooManyRequests)
+	assertChainPrimary(t, m, 2)
+	failChainPrimary(t, m, 2, http.StatusTooManyRequests)
+	assertChainPrimary(t, m, 2)
+	first, _ := m.GetByID(chainAuthID(1))
+	if !first.Disabled || first.PrimaryInfo.IsPrimary {
+		t.Fatalf("credential demoted a moment ago was promoted again: %+v", first)
+	}
+}
+
+func TestAntigravityHandoffSkipsBlockedStandbyAndUsesNextOne(t *testing.T) {
+	m := newAntigravityHandoffChain(t, 1, 1, 2, 3)
+	failChainPrimary(t, m, 1, http.StatusTooManyRequests) // 1 -> 2, 1 blocked
+	assertChainPrimary(t, m, 2)
+	failChainPrimary(t, m, 2, http.StatusForbidden) // 2 -> 3, not back to 1
+	assertChainPrimary(t, m, 3)
+	failChainPrimary(t, m, 3, http.StatusTooManyRequests) // 3 -> wrap, 1 and 2 blocked
+	assertChainPrimary(t, m, 3)
+}
+
+func TestAntigravityHandoffBlockExpires(t *testing.T) {
+	m := newAntigravityHandoffChain(t, 1, 1, 2)
+	failChainPrimary(t, m, 1, http.StatusTooManyRequests)
+	assertChainPrimary(t, m, 2)
+
+	m.mu.Lock()
+	m.auths[chainAuthID(1)].handoffBlockedUntil = time.Now().Add(-time.Second)
+	m.mu.Unlock()
+
+	failChainPrimary(t, m, 2, http.StatusTooManyRequests)
+	assertChainPrimary(t, m, 1)
+}
+
+// A restart (or an auth-file reload) drops the in-memory block, so the credential is
+// eligible again instead of staying parked forever.
+func TestAntigravityHandoffBlockIsRuntimeOnly(t *testing.T) {
+	m := newAntigravityHandoffChain(t, 1, 1, 2)
+	failChainPrimary(t, m, 1, http.StatusTooManyRequests)
+	demoted, _ := m.GetByID(chainAuthID(1))
+	if !demoted.handoffBlockedUntil.After(time.Now()) {
+		t.Fatalf("demoted credential has no block deadline: %+v", demoted.handoffBlockedUntil)
+	}
+	if encoded, err := json.Marshal(demoted); err != nil || strings.Contains(string(encoded), "handoff") {
+		t.Fatalf("block leaked into serialized auth: %s (err=%v)", encoded, err)
 	}
 }

@@ -2041,8 +2041,15 @@ func isAntigravityHandoffError(statusCode int) bool {
 	}
 }
 
+// antigravityHandoffDefaultBlock is how long a demoted credential stays out of the
+// handoff rotation when its failure carries no retry deadline (401/403/5xx).
+const antigravityHandoffDefaultBlock = 5 * time.Minute
+
 // promoteNextAntigravityPrimary disables the current primary Antigravity credential
-// and promotes the next standby in ascending order.
+// and promotes the next usable standby: ascending Order after the current one, then
+// wrapping around to the lowest Order. A standby that was itself demoted by a handoff
+// failure and is still inside its block window is skipped. When no standby is usable
+// the current primary is left enabled instead of being disabled with no replacement.
 // Must be called with m.mu held.
 func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuthID string) []*Auth {
 	var allAntigravity []*Auth
@@ -2070,9 +2077,15 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 		return nil
 	}
 
+	now := time.Now()
 	nextIdx := -1
-	for i := currentIdx + 1; i < len(allAntigravity); i++ {
-		if allAntigravity[i] == nil || allAntigravity[i].PrimaryInfo == nil {
+	for step := 1; step < len(allAntigravity); step++ {
+		i := (currentIdx + step) % len(allAntigravity)
+		candidate := allAntigravity[i]
+		if candidate == nil || candidate.PrimaryInfo == nil {
+			continue
+		}
+		if candidate.handoffBlockedUntil.After(now) {
 			continue
 		}
 		nextIdx = i
@@ -2083,7 +2096,13 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 	}
 
 	current := allAntigravity[currentIdx]
-	now := time.Now()
+	// Demotion below wipes the quota/cooldown state, so remember how long this
+	// credential should sit out of the rotation. Prefer the failure's own retry
+	// deadline; fall back to a short default for errors that carry none.
+	current.handoffBlockedUntil = now.Add(antigravityHandoffDefaultBlock)
+	if current.NextRetryAfter.After(now) {
+		current.handoffBlockedUntil = current.NextRetryAfter
+	}
 	current.Disabled = true
 	current.Status = StatusDisabled
 	current.PrimaryInfo.IsPrimary = false
@@ -2092,6 +2111,7 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 	_ = m.persistLocked(ctx, current)
 
 	next := allAntigravity[nextIdx]
+	next.handoffBlockedUntil = time.Time{}
 	next.Disabled = false
 	next.Status = StatusActive
 	next.StatusMessage = ""
