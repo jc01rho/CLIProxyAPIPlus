@@ -1199,6 +1199,17 @@ oauth:
     antigravity:
       # Prefer the first registered Antigravity credential for primary routing.
       primary-handoff: false
+      # Proxy-side limiter, applied per credential before a request is sent to Google. It is a token
+      # bucket: a request costs one token, the bucket holds max-tokens and refills at
+      # regeneration-rate-per-minute. Omitted or zero values keep the defaults (50 / 6 per minute / 50).
+      # Only one Antigravity credential serves traffic at a time, so this rate is the whole
+      # sustained throughput. A refused request returns 429 with Retry-After and does not put the
+      # credential on cooldown or trigger a handoff.
+      # local-rate-limit:
+      #   enabled: true                       # false turns the limiter off
+      #   max-tokens: 50                      # burst size
+      #   regeneration-rate-per-minute: 20    # sustained requests per minute
+      #   initial-tokens: 50                  # starting balance of a credential not used yet
       # sensitive-words:              # optional: words to obfuscate with zero-width characters in system instructions
       #   - "API"
       #   - "proxy"

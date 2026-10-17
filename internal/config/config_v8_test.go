@@ -1264,3 +1264,36 @@ func TestV8SecretHashResolvesReferences(t *testing.T) {
 		})
 	}
 }
+
+func TestV8AntigravityLocalRateLimitIsReadFromProviderSection(t *testing.T) {
+	v8 := []byte(`config-version: 8
+oauth:
+  providers:
+    antigravity:
+      primary-handoff: false
+      local-rate-limit:
+        enabled: true
+        max-tokens: 80
+        regeneration-rate-per-minute: 20
+`)
+	cfg, err := ParseConfigBytes(v8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := cfg.Antigravity.LocalRateLimit
+	if limit.Enabled == nil || !*limit.Enabled || limit.MaxTokens != 80 || limit.RegenerationRatePerMinute != 20 || limit.InitialTokens != 0 {
+		t.Fatalf("local-rate-limit = %+v, want enabled, 80 burst, 20/min", limit)
+	}
+	if err = ValidateV8Config(v8); err != nil {
+		t.Fatalf("v8 layout rejected: %v", err)
+	}
+
+	off := []byte("config-version: 8\noauth:\n  providers:\n    antigravity:\n      local-rate-limit:\n        enabled: false\n")
+	cfg, err = ParseConfigBytes(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Antigravity.LocalRateLimit.Enabled == nil || *cfg.Antigravity.LocalRateLimit.Enabled {
+		t.Fatalf("enabled: false was not read: %+v", cfg.Antigravity.LocalRateLimit)
+	}
+}
