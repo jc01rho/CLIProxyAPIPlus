@@ -86,7 +86,7 @@ func assertAntigravityHandoff(t *testing.T, m *Manager, wantPromoted bool) {
 	}
 }
 
-func TestAntigravityHandoffPromotesStandbyOnQuotaExhaustion(t *testing.T) {
+func TestAntigravityHandoffIgnoresQuotaExhaustion(t *testing.T) {
 	bodies := []struct {
 		name string
 		body string
@@ -106,15 +106,45 @@ func TestAntigravityHandoffPromotesStandbyOnQuotaExhaustion(t *testing.T) {
 					CredentialScope: true,
 					Error:           &Error{HTTPStatus: http.StatusTooManyRequests, Message: tc.body},
 				})
-				assertAntigravityHandoff(t, m, true)
+				assertAntigravityHandoff(t, m, false)
 			})
+		}
+	}
+}
+
+func TestAntigravityHandoffPromotesStandbyOnGatewayFailure(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	markResultBounded(t, m, Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "gemini-3-pro",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "service unavailable"},
+	})
+	assertAntigravityHandoff(t, m, true)
+}
+
+func TestAntigravityHandoffSkipsGPTAndClaudeRoutes(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable} {
+		for _, model := range []string{"claude-sonnet-4-5", "gpt-oss-120b-medium"} {
+			m := newAntigravityHandoffManager(t, true)
+			markResultBounded(t, m, Result{
+				AuthID:          "ag-handoff-primary",
+				Provider:        "antigravity",
+				Model:           model,
+				Success:         false,
+				CredentialScope: true,
+				Error:           &Error{HTTPStatus: status, Message: "upstream error"},
+			})
+			assertAntigravityHandoff(t, m, false)
 		}
 	}
 }
 
 func TestAntigravityHandoffAppliesExecutorStatusError(t *testing.T) {
 	m := newAntigravityHandoffManager(t, true)
-	execErr := antigravityUpstreamStatusError{code: http.StatusTooManyRequests, body: antigravityGeminiQuota429Body}
+	execErr := antigravityUpstreamStatusError{code: http.StatusServiceUnavailable, body: "service unavailable"}
 	result := Result{
 		AuthID:          "ag-handoff-primary",
 		Provider:        "antigravity",
@@ -123,8 +153,8 @@ func TestAntigravityHandoffAppliesExecutorStatusError(t *testing.T) {
 		CredentialScope: true,
 		Error:           resultErrorFromError(execErr),
 	}
-	if result.Error == nil || result.Error.HTTPStatus != http.StatusTooManyRequests {
-		t.Fatalf("converted error = %+v, want HTTP 429", result.Error)
+	if result.Error == nil || result.Error.HTTPStatus != http.StatusServiceUnavailable {
+		t.Fatalf("converted error = %+v, want HTTP 503", result.Error)
 	}
 	markResultBounded(t, m, result)
 	assertAntigravityHandoff(t, m, true)
