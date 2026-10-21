@@ -5,11 +5,78 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
+
+const (
+	// bodySourceDirPrefix is the temp directory prefix used for log part sources.
+	bodySourceDirPrefix = "request-log-parts-"
+	// staleBodySourceMaxAge is how old an orphaned part directory must be before
+	// startup cleanup removes it. It stays well above any realistic request
+	// duration so a concurrently running process never loses an in-flight body.
+	staleBodySourceMaxAge = 6 * time.Hour
+)
+
+// sweptBodySourceDirs records log directories already swept in this process.
+var sweptBodySourceDirs sync.Map
+
+// cleanupStaleBodySources removes log part directories older than maxAge.
+// Part directories are created per request and removed when the request ends, so
+// any directory left behind belongs to a process that was killed mid-request.
+// Directories newer than maxAge are kept because another process may still own them.
+func cleanupStaleBodySources(baseDir string, maxAge time.Duration) error {
+	entries, errRead := os.ReadDir(baseDir)
+	if errRead != nil {
+		if os.IsNotExist(errRead) {
+			return nil
+		}
+		return errRead
+	}
+	cutoff := time.Now().Add(-maxAge)
+	var firstErr error
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), bodySourceDirPrefix) {
+			continue
+		}
+		info, errInfo := entry.Info()
+		if errInfo != nil {
+			if os.IsNotExist(errInfo) {
+				continue
+			}
+			if firstErr == nil {
+				firstErr = errInfo
+			}
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		if errRemove := os.RemoveAll(filepath.Join(baseDir, entry.Name())); errRemove != nil && firstErr == nil {
+			firstErr = errRemove
+		}
+	}
+	return firstErr
+}
+
+// sweepStaleBodySourcesOnce removes orphaned part directories at most once per
+// log directory in this process.
+func sweepStaleBodySourcesOnce(baseDir string) {
+	baseDir = strings.TrimSpace(baseDir)
+	if baseDir == "" {
+		return
+	}
+	if _, loaded := sweptBodySourceDirs.LoadOrStore(baseDir, struct{}{}); loaded {
+		return
+	}
+	if errSweep := cleanupStaleBodySources(baseDir, staleBodySourceMaxAge); errSweep != nil {
+		log.WithError(errSweep).Warn("failed to remove stale request log part directories")
+	}
+}
 
 // FileBodySource stores large log sections as ordered temp-file parts.
 type FileBodySource struct {
@@ -29,7 +96,7 @@ func NewFileBodySourceInDir(baseDir string, prefix string) (*FileBodySource, err
 	if errMkdir := os.MkdirAll(baseDir, 0755); errMkdir != nil {
 		return nil, errMkdir
 	}
-	dir, errCreate := os.MkdirTemp(baseDir, "request-log-parts-"+prefix+"-*")
+	dir, errCreate := os.MkdirTemp(baseDir, bodySourceDirPrefix+prefix+"-*")
 	if errCreate != nil {
 		return nil, errCreate
 	}

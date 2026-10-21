@@ -1250,7 +1250,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.Status = StatusError
 					updateAggregatedAvailability(auth, now)
 
-					if isAntigravityHandoffError(statusCode) &&
+					if isAntigravityHandoffError(statusCode, result) &&
 						strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") &&
 						auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
 						cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
@@ -2304,15 +2304,24 @@ func statusCodeFromResult(err *Error) int {
 	return err.StatusCode()
 }
 
-// isAntigravityHandoffError returns true if the error status code should trigger
-// a primary credential handoff for Antigravity provider.
-func isAntigravityHandoffError(statusCode int) bool {
+// isAntigravityHandoffError returns true if the error should trigger a primary
+// credential handoff for the Antigravity provider. Quota (429) never hands off,
+// and gpt/claude model routes never hand off on any status.
+func isAntigravityHandoffError(statusCode int, result Result) bool {
+	if isAntigravityGPTOrClaudeRoute(result.Model) || isAntigravityGPTOrClaudeRoute(result.RouteModel) {
+		return false
+	}
 	switch statusCode {
-	case 401, 403, 429, 502, 503, 504:
+	case 401, 403, 502, 503, 504:
 		return true
 	default:
 		return false
 	}
+}
+
+func isAntigravityGPTOrClaudeRoute(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "gpt") || strings.Contains(lower, "claude")
 }
 
 // promoteNextAntigravityPrimary disables the current primary Antigravity credential

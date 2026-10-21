@@ -714,3 +714,44 @@ func TestRequestLoggingMiddleware_StreamingPreservesFullUUIDForLogger(t *testing
 		t.Fatalf("streaming request ID version = %d, want 7", parsed.Version())
 	}
 }
+
+func TestRequestLoggingMiddlewareRemovesDeferredBodyPartsWhenHandlerPanics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	logsDir := t.TempDir()
+	logger := logging.NewFileRequestLogger(false, logsDir, "", 10)
+	// Bodies above the in-memory capture limit are spooled to disk instead.
+	payload := bytes.Repeat([]byte("x"), int(maxErrorOnlyCapturedRequestBodyBytes)+1024)
+
+	router := gin.New()
+	// The server registers gin's recovery before this middleware, so mirror that
+	// position to make the panic unwind through RequestLoggingMiddleware.
+	router.Use(func(c *gin.Context) {
+		defer func() {
+			_ = recover()
+		}()
+		c.Next()
+	})
+	router.Use(RequestLoggingMiddleware(logger))
+	router.POST("/v1/responses", func(c *gin.Context) {
+		if _, errRead := io.ReadAll(c.Request.Body); errRead != nil {
+			t.Errorf("read request body: %v", errRead)
+		}
+		panic("handler exploded")
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	entries, errRead := os.ReadDir(logsDir)
+	if errRead != nil {
+		t.Fatalf("read logs dir: %v", errRead)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "request-log-parts-") {
+			t.Fatalf("leftover temp part dir after panic: %s", entry.Name())
+		}
+	}
+}

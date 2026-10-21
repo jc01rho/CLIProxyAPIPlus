@@ -75,6 +75,14 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		attachRequestLogSources(c, logger, loggerEnabled)
 		attachDeferredRequestBodyCapture(c.Request, logger, requestInfo, loggerEnabled, captureBody)
 
+		// Remove spooled request body files even when a handler panics: gin's recovery
+		// middleware sits outside this one, so a panic would skip Finalize below.
+		defer func() {
+			if requestInfo != nil && requestInfo.deferredBodyCapture != nil {
+				requestInfo.deferredBodyCapture.Cleanup()
+			}
+		}()
+
 		// Process the request
 		c.Next()
 

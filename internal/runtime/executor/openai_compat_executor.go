@@ -372,7 +372,8 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 
 // executeSystemOne forwards a native TypeSafe SystemOne decision payload to
 // POST <baseURL>/v1/systemone without chat translation and returns the raw
-// upstream JSON (answers + usage) verbatim. Usage is published through the
+// upstream JSON (answers + usage) verbatim. Only the model is rewritten to the
+// configured upstream name. Usage is published through the
 // shared reporter so keeper accounting matches other compat endpoints.
 func (e *OpenAICompatExecutor) executeSystemOne(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
@@ -387,6 +388,11 @@ func (e *OpenAICompatExecutor) executeSystemOne(ctx context.Context, auth *clipr
 	}
 
 	payload := append([]byte(nil), req.Payload...)
+	if gjson.GetBytes(payload, "model").String() != baseModel {
+		if next, errSet := sjson.SetBytes(payload, "model", baseModel); errSet == nil {
+			payload = next
+		}
+	}
 
 	url := openAICompatSystemOneURL(baseURL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))

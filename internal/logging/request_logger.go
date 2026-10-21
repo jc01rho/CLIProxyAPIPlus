@@ -165,12 +165,15 @@ func NewFileRequestLogger(enabled bool, logsDir string, configDir string, errorL
 			logsDir = filepath.Join(configDir, logsDir)
 		}
 	}
-	return &FileRequestLogger{
+	logger := &FileRequestLogger{
 		enabled:           enabled,
 		logsDir:           logsDir,
 		errorLogsMaxFiles: errorLogsMaxFiles,
 		homeEnabled:       false,
 	}
+	// Remove log part directories orphaned by processes killed mid-request.
+	sweepStaleBodySourcesOnce(logsDir)
+	return logger
 }
 
 // IsEnabled returns whether request logging is currently enabled.

@@ -157,7 +157,44 @@ func fallbackModelAllowed(patterns []string, fallbackModel string) bool {
 	return false
 }
 
-func (m *Manager) resolveFallbackModels(ctx context.Context, originalModel string) []string {
+// systemOneExecutionAlt is the executor Alt the /v1/systemone handler sets.
+// System One requests carry a native decision payload that only System One
+// models (TypeSafe jev and the jev-compatible clef) can serve.
+const systemOneExecutionAlt = "systemone"
+
+// isSystemOneModelName reports whether a model name belongs to a System One
+// family (jev*, clef*), ignoring any provider path prefix such as
+// "typesafe-ai/jev".
+func isSystemOneModelName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	return strings.HasPrefix(name, "jev") || strings.HasPrefix(name, "clef")
+}
+
+// isSystemOneModel reports whether a route model is a System One model,
+// directly or through the upstream model its registry alias resolves to.
+func isSystemOneModel(model string) bool {
+	if isSystemOneModelName(model) {
+		return true
+	}
+	actual := resolvePolicyModelActual(model)
+	return actual != "" && isSystemOneModelName(actual)
+}
+
+// systemOneFallbackRequest reports whether a request must stay within System
+// One models when falling back.
+func systemOneFallbackRequest(model, alt string) bool {
+	return alt == systemOneExecutionAlt || isSystemOneModel(model)
+}
+
+// resolveFallbackModels returns the fallback models to try after originalModel
+// failed. System One and ordinary requests never cross: a System One request
+// (jev/clef) only falls back to other System One models - configured entries
+// first, then every other registered System One model - and an ordinary
+// request never falls back to a System One model, which cannot serve it.
+func (m *Manager) resolveFallbackModels(ctx context.Context, originalModel string, systemOne bool) []string {
 	if util.IsAudioTranscriptionOnlyModel(originalModel) || m.fallbackDeniedForModel(originalModel) {
 		return nil
 	}
@@ -172,6 +209,13 @@ func (m *Manager) resolveFallbackModels(ctx context.Context, originalModel strin
 			return
 		}
 		seen[model] = struct{}{}
+		if isSystemOneModel(model) != systemOne {
+			logEntryWithRequestID(ctx).WithFields(log.Fields{
+				"requested_model": strings.TrimSpace(originalModel),
+				"fallback_model":  strings.TrimSpace(model),
+			}).Debug("fallback candidate skipped: System One and other models do not fall back to each other")
+			return
+		}
 		if !fallbackModelAllowed(patterns, model) {
 			logEntryWithRequestID(ctx).WithFields(log.Fields{
 				"requested_model": strings.TrimSpace(originalModel),
@@ -187,6 +231,13 @@ func (m *Manager) resolveFallbackModels(ctx context.Context, originalModel strin
 	for _, chainModel := range m.getFallbackChain() {
 		appendCandidate(chainModel)
 	}
+	if systemOne {
+		for _, info := range registry.GetGlobalRegistry().GetAvailableModelInfos() {
+			if info != nil && isSystemOneModel(info.ID) {
+				appendCandidate(strings.TrimSpace(info.ID))
+			}
+		}
+	}
 	if maxDepth := m.getFallbackMaxDepth(); len(candidates) > maxDepth {
 		candidates = candidates[:maxDepth]
 	}
@@ -198,7 +249,7 @@ func (m *Manager) ResolveProvidersForFallback(ctx context.Context, originalModel
 	if m == nil {
 		return nil, ""
 	}
-	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel) {
+	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel, isSystemOneModel(originalModel)) {
 		providers := m.ProvidersForRouteModel(fallbackModel)
 		if len(providers) > 0 {
 			return providers, fallbackModel
@@ -487,7 +538,7 @@ func (m *Manager) executeWithRouteFallback(
 		return cliproxyexecutor.Response{}, lastErr
 	}
 	triggerModel := originalModel
-	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel) {
+	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel, systemOneFallbackRequest(originalModel, opts.Alt)) {
 		if _, duplicate := attempted[fallbackModel]; duplicate {
 			continue
 		}
@@ -547,7 +598,7 @@ func (m *Manager) executeStreamWithRouteFallback(
 		return nil, lastErr
 	}
 	triggerModel := originalModel
-	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel) {
+	for _, fallbackModel := range m.resolveFallbackModels(ctx, originalModel, systemOneFallbackRequest(originalModel, opts.Alt)) {
 		if _, duplicate := attempted[fallbackModel]; duplicate {
 			continue
 		}
