@@ -214,6 +214,10 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if !explicitCacheMode {
 		body = normalizeCacheControlTTL(body)
 	}
+	// The Messages API streams only when the body says so; a caller that omits
+	// the flag would otherwise get a JSON body on the SSE path (mirrors the
+	// transport default set on the non-stream path).
+	body = helps.SetBoolIfDifferent(body, "stream", true)
 
 	// Extract betas from body and convert to header
 	var extraBetas []string
