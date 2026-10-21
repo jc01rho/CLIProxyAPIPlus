@@ -43,9 +43,21 @@ func TestResolveAntigravityRequestBaseURL(t *testing.T) {
 	})
 }
 
-func TestAntigravityLoadCodeAssistBaseURLRemainsProdByDefault(t *testing.T) {
-	if got := antigravityLoadCodeAssistBaseURL(&cliproxyauth.Auth{}); got != antigravityBaseURLProd {
-		t.Fatalf("loadCodeAssist base URL = %q, want %q", got, antigravityBaseURLProd)
+func TestAntigravityLoadCodeAssistBaseURL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		auth *cliproxyauth.Auth
+		want string
+	}{
+		{"default daily", &cliproxyauth.Auth{}, antigravityBaseURLDaily},
+		{"custom attribute", &cliproxyauth.Auth{Attributes: map[string]string{"base_url": antigravityBaseURLProd + "/"}}, antigravityBaseURLProd},
+		{"custom metadata", &cliproxyauth.Auth{Metadata: map[string]any{"base_url": "https://enterprise.example.com/"}}, "https://enterprise.example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := antigravityLoadCodeAssistBaseURL(tc.auth); got != tc.want {
+				t.Fatalf("loadCodeAssist base URL = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

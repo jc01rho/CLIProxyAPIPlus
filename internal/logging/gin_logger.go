@@ -245,6 +245,11 @@ func GinLogrusLogger(configs ...*config.Config) gin.HandlerFunc {
 		start := time.Now()
 		path := c.Request.URL.Path
 		raw := util.MaskSensitiveQuery(c.Request.URL.RawQuery)
+		// OAuth state is a callback capability; authorization codes and issued
+		// client IDs must not be included in management access logs either.
+		if strings.HasPrefix(path, "/v8/management/oauth/") {
+			raw = ""
+		}
 
 		var requestBody []byte
 		if isAIAPIPath(path) && c.Request.Body != nil {
@@ -352,7 +357,7 @@ func GinLogrusLogger(configs ...*config.Config) gin.HandlerFunc {
 			requestID = "--------"
 		}
 
-		logLine := fmt.Sprintf("%3d | %13v | %15s | %-7s \"%s\"", statusCode, latency, clientIP, method, path)
+		logLine := fmt.Sprintf("%3d | %13v | %15s | %-7s %q", statusCode, latency, clientIP, method, path)
 
 		if isAIAPIPath(path) && (modelName != "" || providerInfo != "" || authKeyName != "") {
 			displayModelName := modelName

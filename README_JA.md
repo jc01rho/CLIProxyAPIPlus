@@ -265,6 +265,10 @@ React と Tailwind CSS で構築された、CLIProxyAPI 向けのモダンでレ
 
 Cloudflare ベースの LLM ゲートウェイ兼プロキシサーバー。CLIProxyAPI を Cloudflare Workers + Containers にワンクリックでデプロイします。ログインと設定は R2 に永続化され、ダッシュボードはパスワードで保護され、クライアント API キーを作成するまで API リクエストはすべて拒否されます。
 
+### [Hermes CLIProxyAPI Provider](https://github.com/duu261/hermes-cliproxyapi-provider)
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) 向けのモデルプロバイダープラグイン。CLIProxyAPI のプロバイダーごとに Hermes プロバイダーを 1 つ登録し、それぞれの executor が受け付けるプロトコル（Anthropic Messages、Responses、Chat Completions）を使います。コンテキストウィンドウと推論レベルは CLIProxyAPI から取得します。正確なプロバイダーグループ分けのための読み取り専用 Management API 照会はオプションです。[Hermes プラグインカタログ](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)に掲載されています：`hermes plugins install cliproxyapi-provider`。
+
 > [!NOTE]
 > CLIProxyAPIをベースにプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。
 

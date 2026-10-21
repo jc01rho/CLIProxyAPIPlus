@@ -43,7 +43,7 @@ func (u *adaptiveOnlyUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-adaptive-retry-probe","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
 }
 
 func (u *adaptiveOnlyUpstream) sent() [][]byte {
@@ -54,8 +54,8 @@ func (u *adaptiveOnlyUpstream) sent() [][]byte {
 
 func newAdaptiveRetryTestExecutor(t *testing.T, upstream *adaptiveOnlyUpstream) (*ClaudeExecutor, *cliproxyauth.Auth) {
 	t.Helper()
-	claudeAdaptiveThinkingOnlyModels.Delete("claude-opus-5-5")
-	t.Cleanup(func() { claudeAdaptiveThinkingOnlyModels.Delete("claude-opus-5-5") })
+	claudeAdaptiveThinkingOnlyModels.Delete("claude-adaptive-retry-probe")
+	t.Cleanup(func() { claudeAdaptiveThinkingOnlyModels.Delete("claude-adaptive-retry-probe") })
 	server := httptest.NewServer(upstream)
 	t.Cleanup(server.Close)
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
@@ -66,11 +66,13 @@ func newAdaptiveRetryTestExecutor(t *testing.T, upstream *adaptiveOnlyUpstream) 
 }
 
 func adaptiveRetryTestRequest(payload string) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
-	return cliproxyexecutor.Request{Model: "claude-opus-5-5", Payload: []byte(payload)},
+	return cliproxyexecutor.Request{Model: "claude-adaptive-retry-probe", Payload: []byte(payload)},
 		cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude}
 }
 
-const disabledThinkingPayload = `{"model":"claude-opus-5-5","max_tokens":1024,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"hello"}]}`
+// The probe model has no registry thinking metadata, so the upfront adaptive-only
+// conversion cannot apply and the reactive 400 -> adaptive retry is what is exercised.
+const disabledThinkingPayload = `{"model":"claude-adaptive-retry-probe","max_tokens":1024,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"hello"}]}`
 
 func assertAdaptiveLowEffort(t *testing.T, body []byte) {
 	t.Helper()
@@ -155,7 +157,7 @@ func TestClaudeExecutorDoesNotRetryUnrelatedBadRequest(t *testing.T) {
 		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: must be greater than 0"}}`))
 	}))
 	defer server.Close()
-	claudeAdaptiveThinkingOnlyModels.Delete("claude-opus-5-5")
+	claudeAdaptiveThinkingOnlyModels.Delete("claude-adaptive-retry-probe")
 	executor := NewClaudeExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-adaptive-retry-test", "base_url": server.URL}}
 	req, opts := adaptiveRetryTestRequest(disabledThinkingPayload)
@@ -166,16 +168,16 @@ func TestClaudeExecutorDoesNotRetryUnrelatedBadRequest(t *testing.T) {
 	if requests != 1 {
 		t.Fatalf("upstream requests = %d, want 1 (unrelated 400 must not retry)", requests)
 	}
-	if _, remembered := claudeAdaptiveThinkingOnlyModels.Load("claude-opus-5-5"); remembered {
+	if _, remembered := claudeAdaptiveThinkingOnlyModels.Load("claude-adaptive-retry-probe"); remembered {
 		t.Fatal("unrelated 400 must not mark the model adaptive-only")
 	}
 }
 
 func TestForceAdaptiveThinkingForAdaptiveOnlyModel(t *testing.T) {
-	claudeAdaptiveThinkingOnlyModels.Store("claude-opus-5-5", struct{}{})
-	t.Cleanup(func() { claudeAdaptiveThinkingOnlyModels.Delete("claude-opus-5-5") })
+	claudeAdaptiveThinkingOnlyModels.Store("claude-adaptive-retry-probe", struct{}{})
+	t.Cleanup(func() { claudeAdaptiveThinkingOnlyModels.Delete("claude-adaptive-retry-probe") })
 
-	manual := forceAdaptiveThinkingForAdaptiveOnlyModel([]byte(`{"model":"claude-opus-5-5","thinking":{"type":"enabled","budget_tokens":4096}}`))
+	manual := forceAdaptiveThinkingForAdaptiveOnlyModel([]byte(`{"model":"claude-adaptive-retry-probe","thinking":{"type":"enabled","budget_tokens":4096}}`))
 	if got := gjson.GetBytes(manual, "thinking.type").String(); got != "adaptive" {
 		t.Fatalf("manual thinking.type = %q, want adaptive", got)
 	}
@@ -183,7 +185,7 @@ func TestForceAdaptiveThinkingForAdaptiveOnlyModel(t *testing.T) {
 		t.Fatalf("manual budget must be dropped without inventing an effort: %s", manual)
 	}
 
-	keepEffort := forceAdaptiveThinkingForAdaptiveOnlyModel([]byte(`{"model":"claude-opus-5-5","thinking":{"type":"disabled"},"output_config":{"effort":"high"}}`))
+	keepEffort := forceAdaptiveThinkingForAdaptiveOnlyModel([]byte(`{"model":"claude-adaptive-retry-probe","thinking":{"type":"disabled"},"output_config":{"effort":"high"}}`))
 	if got := gjson.GetBytes(keepEffort, "output_config.effort").String(); got != "high" {
 		t.Fatalf("caller effort = %q, want high preserved", got)
 	}

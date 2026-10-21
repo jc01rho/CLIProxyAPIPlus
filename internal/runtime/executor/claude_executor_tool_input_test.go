@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -36,7 +37,8 @@ func newClaudeToolInputServer(t *testing.T, capture *claudeToolInputCapture) *ht
 		capture.mu.Lock()
 		capture.bodies = append(capture.bodies, body)
 		capture.mu.Unlock()
-		if gjson.GetBytes(body, "stream").Bool() {
+		// The stream path negotiates SSE via Accept; the payload itself carries no stream flag.
+		if gjson.GetBytes(body, "stream").Bool() || strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"+
 				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")

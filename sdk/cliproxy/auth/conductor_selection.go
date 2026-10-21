@@ -45,25 +45,31 @@ func (m *Manager) hasPluginScheduler() bool {
 	return true
 }
 
-func (m *Manager) pluginSchedulerWantsAcrossPrioritiesLocked() bool {
-	if m == nil || m.pluginScheduler == nil {
+func pluginSchedulerWantsAcrossPriorities(scheduler PluginScheduler) bool {
+	if scheduler == nil {
 		return false
 	}
-	if opt, ok := m.pluginScheduler.(PluginSchedulerAcrossPriorities); ok && opt != nil {
+	if opt, ok := scheduler.(PluginSchedulerAcrossPriorities); ok && opt != nil {
 		return opt.SchedulerWantsAcrossPriorities()
 	}
 	return false
 }
 
+func (m *Manager) snapshotPluginScheduler() (PluginScheduler, bool) {
+	if m == nil {
+		return nil, false
+	}
+	m.mu.RLock()
+	scheduler := m.pluginScheduler
+	m.mu.RUnlock()
+	return scheduler, pluginSchedulerWantsAcrossPriorities(scheduler)
+}
+
 // PluginSchedulerWantsAcrossPriorities reports whether the configured plugin scheduler
 // opted into receiving candidates across all priority tiers.
 func (m *Manager) PluginSchedulerWantsAcrossPriorities() bool {
-	if m == nil {
-		return false
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.pluginSchedulerWantsAcrossPrioritiesLocked()
+	_, wants := m.snapshotPluginScheduler()
+	return wants
 }
 
 func isBuiltInSelector(selector Selector) bool {
@@ -312,7 +318,11 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 					// Drop state for models that disappeared from the current registry
 					// snapshot and are not reachable via any alias route.
 					delete(candidateAuth.ModelStates, modelKey)
-					candidateChanged = true
+					// Fork: clean entries (including seedModelStateKey seeds) carry no
+					// runtime state, so dropping them must not trigger persistence.
+					if !modelStateIsClean(state) {
+						candidateChanged = true
+					}
 					continue
 				}
 				if state == nil {
@@ -662,9 +672,8 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 // the plugin scheduler, plus the candidates handed to the configured selector. Both are equal
 // unless session affinity or an across-priorities scheduler is active, in which case the selector
 // or scheduler additionally receives lower priority tiers.
-func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
+func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time, schedulerAcross bool) (priorityAuths, selectorAuths []*Auth, err error) {
 	_, sessionAffinity := selector.(*SessionAffinitySelector)
-	schedulerAcross := m.pluginSchedulerWantsAcrossPrioritiesLocked()
 
 	if !sessionAffinity && !schedulerAcross {
 		priorityAuths, err = m.availableAuthsForRouteModel(auths, provider, routeModel, now)
@@ -2121,11 +2130,11 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	pluginScheduler, schedulerAcross := m.snapshotPluginScheduler()
 
 	m.mu.RLock()
 	selector := m.selector
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
-	pluginScheduler := m.pluginScheduler
 	isWeightedRobin := isWeightedRobinSelector(selector)
 	executor, okExecutor := m.executorLocked(provider)
 	if !okExecutor && !isWeightedRobin {
@@ -2205,7 +2214,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	} else {
 		// Upstream: availableAuthsForSelector returns priorityAuths (scheduler)
 		// and selectorAuths (session-affinity-aware across-priority set).
-		available, selectorAuths, errAvailable = m.availableAuthsForSelector(selector, candidates, provider, model, now)
+		available, selectorAuths, errAvailable = m.availableAuthsForSelector(selector, candidates, provider, model, now, schedulerAcross)
 	}
 	if errAvailable != nil {
 		m.mu.RUnlock()
@@ -2538,12 +2547,12 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	if len(providerSet) == 0 {
 		return nil, nil, "", &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	pluginScheduler, schedulerAcross := m.snapshotPluginScheduler()
 	weightedRobin := isWeightedRobinSelector(m.selector)
 
 	m.mu.RLock()
 	selector := m.selector
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
-	pluginScheduler := m.pluginScheduler
 	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
 	// Always use base model name (without thinking suffix) for auth matching.
@@ -2616,7 +2625,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		available, errAvailable = m.availableAuthsForRouteModelAcrossPriorities(candidates, "mixed", model, now)
 		selectorAuths = cloneAuthSlice(available)
 	} else {
-		available, selectorAuths, errAvailable = m.availableAuthsForSelector(selector, candidates, "mixed", model, now)
+		available, selectorAuths, errAvailable = m.availableAuthsForSelector(selector, candidates, "mixed", model, now, schedulerAcross)
 	}
 	if errAvailable != nil {
 		m.mu.RUnlock()

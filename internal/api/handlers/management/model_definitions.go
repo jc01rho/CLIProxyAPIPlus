@@ -2,9 +2,11 @@ package management
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
@@ -22,11 +24,16 @@ func (h *Handler) GetStaticModelDefinitions(c *gin.Context) {
 	}
 
 	normalizedChannel := strings.ToLower(strings.TrimSpace(channel))
-	models := registry.GetGlobalRegistry().GetAvailableModelsByProvider(normalizedChannel)
+	// Plugin-declared static models win for plugin channels; otherwise the fork
+	// prefers runtime registry models over the static catalog.
+	models := h.pluginStaticModelDefinitionsByChannel(normalizedChannel)
+	if len(models) == 0 {
+		models = sortedRegistryModelDefinitions(normalizedChannel)
+	}
 	if len(models) == 0 {
 		models = registry.GetStaticModelDefinitionsByChannel(normalizedChannel)
 	}
-	if models == nil {
+	if len(models) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown channel", "channel": channel})
 		return
 	}
@@ -35,4 +42,33 @@ func (h *Handler) GetStaticModelDefinitions(c *gin.Context) {
 		"channel": normalizedChannel,
 		"models":  models,
 	})
+}
+
+func (h *Handler) pluginStaticModelDefinitionsByChannel(channel string) []*registry.ModelInfo {
+	var host *pluginhost.Host
+	if h != nil {
+		h.mu.Lock()
+		host = h.pluginHost
+		h.mu.Unlock()
+	}
+	if host == nil {
+		return nil
+	}
+	return host.ModelsForProvider(channel)
+}
+
+func sortedRegistryModelDefinitions(channel string) []*registry.ModelInfo {
+	models := registry.GetGlobalRegistry().GetAvailableModelsByProvider(channel)
+	if len(models) > 1 {
+		sort.Slice(models, func(i, j int) bool {
+			if models[i] == nil {
+				return models[j] != nil
+			}
+			if models[j] == nil {
+				return false
+			}
+			return models[i].ID < models[j].ID
+		})
+	}
+	return models
 }

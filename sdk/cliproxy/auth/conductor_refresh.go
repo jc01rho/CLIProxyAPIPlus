@@ -132,6 +132,9 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 	if evaluator, ok := a.Runtime.(RefreshEvaluator); ok && evaluator != nil {
 		return evaluator.ShouldRefresh(now, a)
 	}
+	if next, due := devinQuotaRevalidateAt(a, now); due {
+		return !next.After(now)
+	}
 
 	if _, hasSIWC, needSIWC := CodexSIWCNeedsRefresh(a, now); hasSIWC {
 		if needSIWC {
@@ -179,7 +182,7 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 		return false
 	}
 	if hasExpiry && !expiry.IsZero() {
-		return time.Until(expiry) <= *lead
+		return expiry.Sub(now) <= *lead
 	}
 	if !lastRefresh.IsZero() {
 		return now.Sub(lastRefresh) >= *lead
@@ -502,9 +505,248 @@ func authSIWCTokenField(auth *Auth, key string) string {
 	return strings.TrimSpace(val)
 }
 
+func effectiveRejectedSIWCToken(a *Auth) string {
+	if a == nil {
+		return ""
+	}
+	siwcTok := authSIWCTokenField(a, "access_token")
+	if siwcTok == "" {
+		return ""
+	}
+	if a.RejectedSIWCAccessToken != "" && a.RejectedSIWCAccessToken == siwcTok {
+		return siwcTok
+	}
+	if a.RejectedAccessToken != "" && a.RejectedAccessToken == siwcTok {
+		return siwcTok
+	}
+	return ""
+}
+
+func shouldPreserveRejectedSIWCAccessToken(existing, updated *Auth) (string, bool) {
+	rejectedSIWC := effectiveRejectedSIWCToken(existing)
+	if rejectedSIWC == "" || updated == nil {
+		return "", false
+	}
+	if authSIWCTokenField(updated, "access_token") == rejectedSIWC {
+		return rejectedSIWC, true
+	}
+	return "", false
+}
+
+func applyPreservedRejectedTokens(existing, updated *Auth, isRefresh bool) {
+	if updated == nil {
+		return
+	}
+	if rejectedSIWC, ok := shouldPreserveRejectedSIWCAccessToken(existing, updated); ok {
+		updated.RejectedSIWCAccessToken = rejectedSIWC
+	} else {
+		updated.RejectedSIWCAccessToken = ""
+	}
+	if shouldPreserveRejectedAccessToken(existing, updated, isRefresh) {
+		updated.RejectedAccessToken = existing.RejectedAccessToken
+	} else if IsCodexUseSIWC(updated) && updated.RejectedSIWCAccessToken != "" {
+		updated.RejectedAccessToken = updated.RejectedSIWCAccessToken
+	} else {
+		updated.RejectedAccessToken = ""
+	}
+}
+
+func recordRejectedTokenOnAuth(auth *Auth, failedToken string) bool {
+	if auth == nil {
+		return false
+	}
+	failedToken = strings.TrimSpace(failedToken)
+	if failedToken == "" {
+		return false
+	}
+	changed := false
+	if siwcTok := authSIWCTokenField(auth, "access_token"); siwcTok != "" && siwcTok == failedToken {
+		if auth.RejectedSIWCAccessToken != failedToken {
+			auth.RejectedSIWCAccessToken = failedToken
+			changed = true
+		}
+	}
+	if authAccessToken(auth) == failedToken && auth.RejectedAccessToken != failedToken {
+		auth.RejectedAccessToken = failedToken
+		changed = true
+	}
+	return changed
+}
+
+func shouldPreserveRejectedAccessToken(existing, updated *Auth, isRefresh bool) bool {
+	if existing == nil || updated == nil {
+		return false
+	}
+	rejected := strings.TrimSpace(existing.RejectedAccessToken)
+	if rejected == "" {
+		return false
+	}
+	existingSIWC := authSIWCTokenField(existing, "access_token")
+	if existingSIWC != "" && existingSIWC == rejected {
+		return authSIWCTokenField(updated, "access_token") == rejected
+	}
+	existingOuter := authOuterAccessToken(existing)
+	if existingOuter != "" && existingOuter == rejected {
+		if authOuterAccessToken(updated) != rejected {
+			return false
+		}
+		if !isRefresh {
+			return true
+		}
+		if updated.CodexRefreshPatch != nil {
+			return !updated.CodexRefreshPatch.RefreshedOuter()
+		}
+		return false
+	}
+	return false
+}
+
 // ClearUnauthorizedModelStates resets model states whose last error was an unauthorized failure.
 func ClearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
 	return clearUnauthorizedModelStates(auth, now)
+}
+
+// devinQuotaRevalidateInterval bounds how often a quota-exhausted Devin
+// credential re-queries upstream status for early restoration (issue #6690).
+const devinQuotaRevalidateInterval = time.Hour
+
+// devinQuotaRevalidateAt returns the next quota revalidation instant for a
+// Devin auth under an active credential quota. Devin session tokens never
+// expire, so without this the auto-refresh loop would never re-observe quota
+// and early restoration could never be detected. It is scoped strictly to
+// the exhausted state; healthy credentials are unaffected.
+func devinQuotaRevalidateAt(a *Auth, now time.Time) (time.Time, bool) {
+	if a == nil || !strings.EqualFold(strings.TrimSpace(a.Provider), "devin") {
+		return time.Time{}, false
+	}
+	if !a.Quota.Exceeded || a.Quota.Reason != "credential_quota" || !a.Quota.NextRecoverAt.After(now) {
+		return time.Time{}, false
+	}
+	since := a.LastRefreshedAt
+	if since.IsZero() {
+		since = a.Quota.ObservedAt
+	}
+	if since.IsZero() {
+		return now, true
+	}
+	next := since.Add(devinQuotaRevalidateInterval)
+	if next.After(a.Quota.NextRecoverAt) {
+		next = a.Quota.NextRecoverAt
+	}
+	return next, true
+}
+
+// devinQuotaObservationRestored reports whether the refreshed auth carries a
+// newer Devin quota observation confirming daily and weekly quota are
+// available again while existing is under an active credential quota. The
+// observation must be strictly newer than both the stored snapshot and the
+// moment the exhausted state was last written, so a stale or replayed
+// refresh can never resurrect an exhausted credential.
+func devinQuotaObservationRestored(auth, existing *Auth, now time.Time) bool {
+	if auth == nil || existing == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(existing.Provider), "devin") {
+		return false
+	}
+	if !existing.Quota.Exceeded || existing.Quota.Reason != "credential_quota" || !existing.Quota.NextRecoverAt.After(now) {
+		return false
+	}
+	observedAt := auth.Quota.ObservedAt
+	if observedAt.IsZero() || observedAt.After(now) {
+		return false
+	}
+	if !observedAt.After(existing.Quota.ObservedAt) || !existing.UpdatedAt.IsZero() && observedAt.Before(existing.UpdatedAt) {
+		return false
+	}
+	daily, okDaily := devinRemainingPercent(auth.Quota.Signals["daily_quota_remaining_percent"])
+	weekly, okWeekly := devinRemainingPercent(auth.Quota.Signals["weekly_quota_remaining_percent"])
+	return okDaily && okWeekly && daily > 0 && weekly > 0
+}
+
+// applyDevinQuotaRestoration releases a Devin credential-wide quota cooldown
+// early when the refreshed auth carries an authoritative, newer observation
+// showing both usage quotas available again (issue #6690). It never touches
+// unauthorized failures, non-quota failure states, or model states whose
+// block is not the auth-level credential quota propagation; unrelated
+// cooldowns survive via aggregated availability recomputation.
+func applyDevinQuotaRestoration(auth, existing *Auth, now time.Time) bool {
+	if !devinQuotaObservationRestored(auth, existing, now) {
+		return false
+	}
+	if hasUnauthorizedAuthFailure(existing) {
+		return false
+	}
+
+	applyCooldownFields(&auth.Quota, QuotaState{})
+	for _, state := range auth.ModelStates {
+		if state == nil {
+			continue
+		}
+		reason := strings.TrimSpace(state.Quota.Reason)
+		wrapped := state.credentialQuotaPropagated || reason == "credential_quota"
+		if !state.Quota.Exceeded || (reason != "quota" && !wrapped) {
+			continue
+		}
+		// A wrapped sibling carries its independent layer in the shadow.
+		// Reinstate that exact block (if still live) instead of erasing it;
+		// the reporting model ("quota" unwrapped) and pure propagation
+		// targets (no shadow) fully release. Deadline or status heuristics
+		// cannot recover this provenance reliably.
+		if shadow := state.credentialQuotaShadow; shadow != nil && isModelStateActiveCooldown(shadow, now) {
+			*state = *shadow.cloneShallow()
+			state.UpdatedAt = now
+			continue
+		}
+		resetModelState(state, now)
+	}
+	auth.Status = StatusActive
+	auth.StatusMessage = ""
+	auth.LastError = nil
+	auth.Unavailable = false
+	auth.NextRetryAfter = time.Time{}
+	if len(auth.ModelStates) > 0 {
+		updateAggregatedAvailability(auth, now)
+	}
+	return true
+}
+
+// isDevinQuotaExhaustionMessage reports whether text is Devin's explicit
+// daily/weekly usage-quota exhaustion message. It mirrors the executor's
+// narrow classifier and is used only to tell credential-derived legacy
+// "quota" states apart from genuine model-scoped rate limits.
+func isDevinQuotaExhaustionMessage(text string) bool {
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, "quota") || !strings.Contains(lower, "exhausted") {
+		return false
+	}
+	return strings.Contains(lower, "weekly") || strings.Contains(lower, "daily")
+}
+
+func devinRecordErrorText(record CooldownStateRecord) string {
+	if record.LastError != nil && strings.TrimSpace(record.LastError.Message) != "" {
+		return record.LastError.Message
+	}
+	return ""
+}
+
+func devinStateErrorText(state *ModelState) string {
+	if state == nil {
+		return ""
+	}
+	if state.LastError != nil && strings.TrimSpace(state.LastError.Message) != "" {
+		return state.LastError.Message
+	}
+	return state.StatusMessage
+}
+
+// devinRemainingPercent parses a Devin quota signal such as "55%".
+func devinRemainingPercent(raw string) (int64, bool) {
+	value, errParse := strconv.ParseInt(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(raw), "%")), 10, 64)
+	if errParse != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 func clearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
@@ -570,24 +812,28 @@ func (m *Manager) RefreshHomeSelectionAfterUnauthorized(_ context.Context, selec
 // tryRefreshAfterUnauthorized refreshes local OAuth credentials once after a
 // 401 so the current auth can be retried before fallback/suspend.
 func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool) {
-	if m == nil || auth == nil || alreadyTried || execErr == nil {
+	if m == nil || auth == nil || execErr == nil {
 		return auth, false
 	}
 	// Request-scoped failures describe this request, not stale credentials.
 	// Refreshing would turn a direct error response into an implicit retry.
-	if isRequestScopedError(execErr) {
+	if isRequestScopedError(execErr) || !isUnauthorizedError(execErr) {
 		return auth, false
 	}
-	if !isUnauthorizedError(execErr) || !authHasRefreshCredential(auth) {
-		return auth, false
+	failedToken := authAccessToken(auth)
+	if failedToken != "" {
+		m.markRejectedAccessToken(auth.ID, failedToken)
 	}
-	if hasUnauthorizedAuthFailure(auth) {
+	if alreadyTried || !authHasRefreshCredential(auth) || hasUnauthorizedAuthFailure(auth) {
 		return auth, false
 	}
 	log.Debugf("unauthorized response for %s (%s), refreshing credentials before fallback", auth.Provider, auth.ID)
-	refreshed, errRefresh := m.refreshAuthForRequest(ctx, auth.ID, authAccessToken(auth))
+	refreshed, errRefresh := m.refreshAuthForRequest(ctx, auth.ID, failedToken)
 	if errRefresh != nil || refreshed == nil {
 		log.Debugf("credential refresh before fallback failed for %s (%s): %v", auth.Provider, auth.ID, errRefresh)
+		return auth, false
+	}
+	if failedToken != "" && authAccessToken(refreshed) == failedToken && refreshed.RejectedAccessToken == failedToken {
 		return auth, false
 	}
 	return refreshed, true
@@ -653,15 +899,12 @@ func (m *Manager) markRejectedAccessToken(id, failedAccessToken string) {
 	releaseMutation := m.lockAuthMutation(id)
 	defer releaseMutation()
 	m.mu.Lock()
-	if current := m.auths[id]; current != nil && authAccessToken(current) == failedAccessToken {
-		if _, hasExp := current.AccessTokenExpirationTime(); !hasExp {
-			current.Generation++
-			current.UpdatedAt = time.Now()
-			current.RejectedAccessToken = failedAccessToken
-			m.auths[id] = current
-			if m.scheduler != nil {
-				m.scheduler.upsertAuth(current.Clone())
-			}
+	if current := m.auths[id]; current != nil && recordRejectedTokenOnAuth(current, failedAccessToken) {
+		current.Generation++
+		current.UpdatedAt = time.Now()
+		m.auths[id] = current
+		if m.scheduler != nil {
+			m.scheduler.upsertAuth(current.Clone())
 		}
 	}
 	m.mu.Unlock()
@@ -881,16 +1124,18 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	}
 	updated.LastRefreshedAt = now
 	updated.NextRefreshAfter = time.Time{}
-	updated.LastError = nil
-	updated.StatusMessage = ""
-	updated.Unavailable = false
-	updated.RefreshFailures = 0
-	updated.RejectedAccessToken = ""
-	if updated.Status == StatusError || updated.Status == "" {
-		updated.Status = StatusActive
+	applyPreservedRejectedTokens(auth, updated, true)
+	if updated.RejectedAccessToken == "" || authAccessToken(updated) != updated.RejectedAccessToken {
+		updated.LastError = nil
+		updated.StatusMessage = ""
+		updated.Unavailable = false
+		updated.RefreshFailures = 0
+		if updated.Status == StatusError || updated.Status == "" {
+			updated.Status = StatusActive
+		}
+		_ = clearUnauthorizedModelStates(updated, now)
 	}
 	updated.UpdatedAt = now
-	_ = clearUnauthorizedModelStates(updated, now)
 	if m.shouldRefresh(updated, now) {
 		updated.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
 	}

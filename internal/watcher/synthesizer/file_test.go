@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -285,42 +288,6 @@ func TestFileSynthesizer_Synthesize_KimiDomainExplicitOverrides(t *testing.T) {
 	}
 	if a2.Attributes["base_url"] != "https://api.kimi.com/coding" {
 		t.Errorf("a2 base_url = %q, want https://api.kimi.com/coding", a2.Attributes["base_url"])
-	}
-}
-
-func TestFileSynthesizer_Synthesize_GeminiProviderMapping(t *testing.T) {
-
-	tempDir := t.TempDir()
-
-	// Gemini type should be mapped to gemini-cli
-	authData := map[string]any{
-		"type":  "gemini",
-		"email": "gemini@example.com",
-	}
-	data, _ := json.Marshal(authData)
-	err := os.WriteFile(filepath.Join(tempDir, "gemini-auth.json"), data, 0644)
-	if err != nil {
-		t.Fatalf("failed to write auth file: %v", err)
-	}
-
-	synth := NewFileSynthesizer()
-	ctx := &SynthesisContext{
-		Config:      &config.Config{},
-		AuthDir:     tempDir,
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-
-	if auths[0].Provider != "gemini-cli" {
-		t.Errorf("gemini should be mapped to gemini-cli, got %s", auths[0].Provider)
 	}
 }
 
@@ -744,50 +711,6 @@ func TestFileSynthesizer_Synthesize_PriorityParsing(t *testing.T) {
 	}
 }
 
-func TestFileSynthesizer_Synthesize_BillingClassParsing(t *testing.T) {
-	tests := []struct {
-		name     string
-		value    any
-		want     string
-		hasValue bool
-	}{
-		{name: "metered", value: "metered", want: "metered", hasValue: true},
-		{name: "per_request alias", value: "per_request", want: "per-request", hasValue: true},
-		{name: "invalid", value: "foo", hasValue: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tempDir := t.TempDir()
-			authData := map[string]any{"type": "claude", "billing_class": tt.value}
-			data, _ := json.Marshal(authData)
-			if err := os.WriteFile(filepath.Join(tempDir, "auth.json"), data, 0644); err != nil {
-				t.Fatalf("failed to write auth file: %v", err)
-			}
-			synth := NewFileSynthesizer()
-			ctx := &SynthesisContext{Config: &config.Config{}, AuthDir: tempDir, Now: time.Now(), IDGenerator: NewStableIDGenerator()}
-			auths, err := synth.Synthesize(ctx)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(auths) != 1 {
-				t.Fatalf("expected 1 auth, got %d", len(auths))
-			}
-			value, ok := auths[0].Attributes["billing_class"]
-			if tt.hasValue {
-				if !ok {
-					t.Fatal("expected billing_class attribute to be set")
-				}
-				if value != tt.want {
-					t.Fatalf("expected billing_class %q, got %q", tt.want, value)
-				}
-			} else if ok {
-				t.Fatalf("expected billing_class attribute to be absent, got %q", value)
-			}
-		})
-	}
-}
-
 func TestFileSynthesizer_Synthesize_WeightParsing(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -845,6 +768,473 @@ func TestFileSynthesizer_Synthesize_WeightParsing(t *testing.T) {
 	}
 }
 
+func TestFileSynthesizer_Synthesize_OAuthExcludedModelsCredentialPriority(t *testing.T) {
+	tempDir := t.TempDir()
+	authData := map[string]any{
+		"type":            "claude",
+		"excluded_models": []string{"custom-model", "MODEL-B"},
+	}
+	data, _ := json.Marshal(authData)
+	errWriteFile := os.WriteFile(filepath.Join(tempDir, "auth.json"), data, 0644)
+	if errWriteFile != nil {
+		t.Fatalf("failed to write auth file: %v", errWriteFile)
+	}
+
+	synth := NewFileSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OAuthExcludedModels: map[string][]string{
+				"claude": {"shared", "model-b"},
+			},
+		},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, errSynthesize := synth.Synthesize(ctx)
+	if errSynthesize != nil {
+		t.Fatalf("unexpected error: %v", errSynthesize)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+
+	got := auths[0].Attributes["excluded_models"]
+	want := "custom-model,model-b"
+	if got != want {
+		t.Fatalf("expected excluded_models %q, got %q", want, got)
+	}
+}
+
+func TestFileSynthesizer_Synthesize_MetaOAuthExcludedModelsCredentialPriority(t *testing.T) {
+	tempDir := t.TempDir()
+	authData := map[string]any{
+		"type":            "meta",
+		"auth_kind":       "oauth",
+		"api_key":         "LLM|minted",
+		"excluded_models": []string{"muse-spark-1.2"},
+	}
+	data, _ := json.Marshal(authData)
+	errWriteFile := os.WriteFile(filepath.Join(tempDir, "meta.json"), data, 0644)
+	if errWriteFile != nil {
+		t.Fatalf("failed to write auth file: %v", errWriteFile)
+	}
+
+	synth := NewFileSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OAuthExcludedModels: map[string][]string{
+				"meta": {"muse-spark-1.1"},
+			},
+		},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, errSynthesize := synth.Synthesize(ctx)
+	if errSynthesize != nil {
+		t.Fatalf("unexpected error: %v", errSynthesize)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	if gotKind := auths[0].Attributes["auth_kind"]; gotKind != "oauth" {
+		t.Fatalf("expected auth_kind=oauth, got %q", gotKind)
+	}
+
+	got := auths[0].Attributes["excluded_models"]
+	want := "muse-spark-1.2"
+	if got != want {
+		t.Fatalf("expected excluded_models %q, got %q", want, got)
+	}
+}
+
+func TestFileSynthesizer_Synthesize_OAuthModelAliases(t *testing.T) {
+	tempDir := t.TempDir()
+	authData := map[string]any{
+		"type":  "codex",
+		"email": "codex@example.com",
+		"model_aliases": []map[string]any{
+			{"name": " gpt-5.3-codex-spark ", "alias": " gpt-5.5 "},
+			{"name": "gpt-5.3-codex-spark", "alias": "gpt-5.4", "fork": true},
+			{"name": "gpt-5.3-codex-spark", "alias": "gpt-5.5"},
+			{"name": "", "alias": "ignored"},
+		},
+	}
+	data, _ := json.Marshal(authData)
+	errWriteFile := os.WriteFile(filepath.Join(tempDir, "codex-auth.json"), data, 0644)
+	if errWriteFile != nil {
+		t.Fatalf("failed to write auth file: %v", errWriteFile)
+	}
+
+	synth := NewFileSynthesizer()
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, errSynthesize := synth.Synthesize(ctx)
+	if errSynthesize != nil {
+		t.Fatalf("unexpected error: %v", errSynthesize)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+
+	// Duplicate aliases within a channel are preserved as configured
+	// (see SanitizeOAuthModelAlias); runtime resolution is first-entry-wins.
+	// Entries are trimmed, and rows with an empty name are dropped.
+	got := auths[0].Attributes["model_aliases"]
+	want := `[{"name":"gpt-5.3-codex-spark","alias":"gpt-5.5"},{"name":"gpt-5.3-codex-spark","alias":"gpt-5.4","fork":true},{"name":"gpt-5.3-codex-spark","alias":"gpt-5.5"}]`
+	if got != want {
+		t.Fatalf("expected model_aliases %q, got %q", want, got)
+	}
+}
+
+func TestFileSynthesizer_Synthesize_NoteParsing(t *testing.T) {
+	tests := []struct {
+		name     string
+		note     any
+		want     string
+		hasValue bool
+	}{
+		{
+			name:     "valid string note",
+			note:     "hello world",
+			want:     "hello world",
+			hasValue: true,
+		},
+		{
+			name:     "string note with whitespace",
+			note:     "  trimmed note  ",
+			want:     "trimmed note",
+			hasValue: true,
+		},
+		{
+			name:     "empty string note",
+			note:     "",
+			hasValue: false,
+		},
+		{
+			name:     "whitespace only note",
+			note:     "   ",
+			hasValue: false,
+		},
+		{
+			name:     "non-string note ignored",
+			note:     12345,
+			hasValue: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			authData := map[string]any{
+				"type": "claude",
+				"note": tt.note,
+			}
+			data, _ := json.Marshal(authData)
+			errWriteFile := os.WriteFile(filepath.Join(tempDir, "auth.json"), data, 0644)
+			if errWriteFile != nil {
+				t.Fatalf("failed to write auth file: %v", errWriteFile)
+			}
+
+			synth := NewFileSynthesizer()
+			ctx := &SynthesisContext{
+				Config:      &config.Config{},
+				AuthDir:     tempDir,
+				Now:         time.Now(),
+				IDGenerator: NewStableIDGenerator(),
+			}
+
+			auths, errSynthesize := synth.Synthesize(ctx)
+			if errSynthesize != nil {
+				t.Fatalf("unexpected error: %v", errSynthesize)
+			}
+			if len(auths) != 1 {
+				t.Fatalf("expected 1 auth, got %d", len(auths))
+			}
+
+			value, ok := auths[0].Attributes["note"]
+			if tt.hasValue {
+				if !ok {
+					t.Fatal("expected note attribute to be set")
+				}
+				if value != tt.want {
+					t.Fatalf("expected note %q, got %q", tt.want, value)
+				}
+				return
+			}
+			if ok {
+				t.Fatalf("expected note attribute to be absent, got %q", value)
+			}
+		})
+	}
+}
+
+func makeTestCodexJWT(planType string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	authInfo := map[string]any{
+		"chatgpt_account_id": "acc-123",
+	}
+	if planType != "" {
+		authInfo["chatgpt_plan_type"] = planType
+	}
+	claimsMap := map[string]any{
+		"email":                       "user@example.com",
+		"https://api.openai.com/auth": authInfo,
+	}
+	payloadBytes, _ := json.Marshal(claimsMap)
+	claims := base64.RawURLEncoding.EncodeToString(payloadBytes)
+	return header + "." + claims + "."
+}
+
+func TestSynthesizeAuthFile_CodexPlanType(t *testing.T) {
+	tests := []struct {
+		name     string
+		fileJSON map[string]any
+		wantPlan string
+	}{
+		{
+			name: "explicit plan_type in metadata",
+			fileJSON: map[string]any{
+				"type":      "codex",
+				"plan_type": "pro",
+			},
+			wantPlan: "pro",
+		},
+		{
+			name: "id_token with plan_type",
+			fileJSON: map[string]any{
+				"type":     "codex",
+				"id_token": makeTestCodexJWT("team"),
+			},
+			wantPlan: "team",
+		},
+		{
+			name: "id_token without plan_type defaults to free",
+			fileJSON: map[string]any{
+				"type":     "codex",
+				"id_token": makeTestCodexJWT(""),
+			},
+			wantPlan: "free",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			filePath := filepath.Join(tempDir, "codex.json")
+			data, errMarshal := json.Marshal(tt.fileJSON)
+			if errMarshal != nil {
+				t.Fatalf("marshal error: %v", errMarshal)
+			}
+			if errWrite := os.WriteFile(filePath, data, 0600); errWrite != nil {
+				t.Fatalf("write error: %v", errWrite)
+			}
+
+			auths, errSynthesize := SynthesizeAuthFile(&SynthesisContext{
+				Config:      &config.Config{},
+				AuthDir:     tempDir,
+				Now:         time.Now(),
+				IDGenerator: NewStableIDGenerator(),
+			}, filePath, data)
+
+			if errSynthesize != nil {
+				t.Fatalf("SynthesizeAuthFile error: %v", errSynthesize)
+			}
+			if len(auths) != 1 {
+				t.Fatalf("expected 1 auth, got %d", len(auths))
+			}
+			if got := auths[0].Attributes["plan_type"]; got != tt.wantPlan {
+				t.Fatalf("plan_type attribute = %q, want %q", got, tt.wantPlan)
+			}
+		})
+	}
+}
+
+func TestFileSynthesizerRecordsIncompleteFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	emptyPath := filepath.Join(tempDir, "empty.json")
+	partialPath := filepath.Join(tempDir, "partial.json")
+	validZeroPath := filepath.Join(tempDir, "valid_zero.json")
+	validAuthPath := filepath.Join(tempDir, "valid_auth.json")
+
+	if errWrite := os.WriteFile(emptyPath, nil, 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errWrite := os.WriteFile(partialPath, []byte(`{"type":"codex"`), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errWrite := os.WriteFile(validZeroPath, []byte(`{}`), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errWrite := os.WriteFile(validAuthPath, []byte(`{"type":"codex"}`), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+	auths, errSynthesize := NewFileSynthesizer().Synthesize(ctx)
+	if errSynthesize != nil {
+		t.Fatalf("Synthesize() error = %v", errSynthesize)
+	}
+	if len(auths) != 1 || auths[0].ID != "valid_auth.json" {
+		t.Fatalf("Synthesize() auths = %#v, want only valid_auth.json", auths)
+	}
+	if _, ok := ctx.IncompleteFiles[emptyPath]; !ok {
+		t.Fatalf("expected empty file %s in IncompleteFiles, got %#v", emptyPath, ctx.IncompleteFiles)
+	}
+	if _, ok := ctx.IncompleteFiles[partialPath]; !ok {
+		t.Fatalf("expected partial file %s in IncompleteFiles, got %#v", partialPath, ctx.IncompleteFiles)
+	}
+	if _, ok := ctx.IncompleteFiles[validZeroPath]; ok {
+		t.Fatalf("did not expect valid zero-auth file %s in IncompleteFiles", validZeroPath)
+	}
+	if _, ok := ctx.IncompleteFiles[validAuthPath]; ok {
+		t.Fatalf("did not expect valid auth file %s in IncompleteFiles", validAuthPath)
+	}
+
+	t.Run("dangling_symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		danglingPath := filepath.Join(dir, "dangling.json")
+		if errSymlink := os.Symlink(filepath.Join(dir, "missing.json"), danglingPath); errSymlink != nil {
+			if runtime.GOOS == "windows" {
+				t.Skipf("symlink unavailable: %v", errSymlink)
+			}
+			t.Fatal(errSymlink)
+		}
+		if _, errRead := os.ReadFile(danglingPath); !errors.Is(errRead, fs.ErrNotExist) {
+			t.Fatalf("ReadFile() error = %v, want fs.ErrNotExist", errRead)
+		}
+		ctx := &SynthesisContext{Config: &config.Config{}, AuthDir: dir}
+		if _, errSynthesize := NewFileSynthesizer().Synthesize(ctx); errSynthesize != nil {
+			t.Fatal(errSynthesize)
+		}
+		if _, ok := ctx.IncompleteFiles[danglingPath]; ok {
+			t.Fatal("dangling symlink must not be recorded in IncompleteFiles")
+		}
+	})
+
+	t.Run("unreadable_file", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("requires Unix file permissions and a non-root user")
+		}
+		dir := t.TempDir()
+		unreadablePath := filepath.Join(dir, "unreadable.json")
+		if errWrite := os.WriteFile(unreadablePath, []byte(`{"type":"codex"}`), 0o600); errWrite != nil {
+			t.Fatal(errWrite)
+		}
+		t.Cleanup(func() {
+			if errChmod := os.Chmod(unreadablePath, 0o600); errChmod != nil {
+				t.Error(errChmod)
+			}
+		})
+		if errChmod := os.Chmod(unreadablePath, 0); errChmod != nil {
+			t.Fatal(errChmod)
+		}
+		if _, errRead := os.ReadFile(unreadablePath); !errors.Is(errRead, fs.ErrPermission) {
+			t.Fatalf("ReadFile() error = %v, want fs.ErrPermission", errRead)
+		}
+		ctx := &SynthesisContext{Config: &config.Config{}, AuthDir: dir}
+		if _, errSynthesize := NewFileSynthesizer().Synthesize(ctx); errSynthesize != nil {
+			t.Fatal(errSynthesize)
+		}
+		if _, ok := ctx.IncompleteFiles[unreadablePath]; !ok {
+			t.Fatal("unreadable auth file must be recorded in IncompleteFiles")
+		}
+	})
+}
+
+func TestFileSynthesizer_Synthesize_GeminiProviderMapping(t *testing.T) {
+
+	tempDir := t.TempDir()
+
+	// Gemini type should be mapped to gemini-cli
+	authData := map[string]any{
+		"type":  "gemini",
+		"email": "gemini@example.com",
+	}
+	data, _ := json.Marshal(authData)
+	err := os.WriteFile(filepath.Join(tempDir, "gemini-auth.json"), data, 0644)
+	if err != nil {
+		t.Fatalf("failed to write auth file: %v", err)
+	}
+
+	synth := NewFileSynthesizer()
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+
+	if auths[0].Provider != "gemini-cli" {
+		t.Errorf("gemini should be mapped to gemini-cli, got %s", auths[0].Provider)
+	}
+}
+
+func TestFileSynthesizer_Synthesize_BillingClassParsing(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    any
+		want     string
+		hasValue bool
+	}{
+		{name: "metered", value: "metered", want: "metered", hasValue: true},
+		{name: "per_request alias", value: "per_request", want: "per-request", hasValue: true},
+		{name: "invalid", value: "foo", hasValue: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			authData := map[string]any{"type": "claude", "billing_class": tt.value}
+			data, _ := json.Marshal(authData)
+			if err := os.WriteFile(filepath.Join(tempDir, "auth.json"), data, 0644); err != nil {
+				t.Fatalf("failed to write auth file: %v", err)
+			}
+			synth := NewFileSynthesizer()
+			ctx := &SynthesisContext{Config: &config.Config{}, AuthDir: tempDir, Now: time.Now(), IDGenerator: NewStableIDGenerator()}
+			auths, err := synth.Synthesize(ctx)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(auths) != 1 {
+				t.Fatalf("expected 1 auth, got %d", len(auths))
+			}
+			value, ok := auths[0].Attributes["billing_class"]
+			if tt.hasValue {
+				if !ok {
+					t.Fatal("expected billing_class attribute to be set")
+				}
+				if value != tt.want {
+					t.Fatalf("expected billing_class %q, got %q", tt.want, value)
+				}
+			} else if ok {
+				t.Fatalf("expected billing_class attribute to be absent, got %q", value)
+			}
+		})
+	}
+}
+
 func TestFileSynthesizer_Synthesize_AntigravityPrimaryInfo(t *testing.T) {
 	tempDir := t.TempDir()
 	authData := map[string]any{
@@ -880,45 +1270,6 @@ func TestFileSynthesizer_Synthesize_AntigravityPrimaryInfo(t *testing.T) {
 	}
 	if !auths[0].Disabled {
 		t.Fatal("expected disabled standby auth to remain disabled")
-	}
-}
-
-func TestFileSynthesizer_Synthesize_OAuthExcludedModelsMerged(t *testing.T) {
-	tempDir := t.TempDir()
-	authData := map[string]any{
-		"type":            "claude",
-		"excluded_models": []string{"custom-model", "MODEL-B"},
-	}
-	data, _ := json.Marshal(authData)
-	errWriteFile := os.WriteFile(filepath.Join(tempDir, "auth.json"), data, 0644)
-	if errWriteFile != nil {
-		t.Fatalf("failed to write auth file: %v", errWriteFile)
-	}
-
-	synth := NewFileSynthesizer()
-	ctx := &SynthesisContext{
-		Config: &config.Config{
-			OAuthExcludedModels: map[string][]string{
-				"claude": {"shared", "model-b"},
-			},
-		},
-		AuthDir:     tempDir,
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, errSynthesize := synth.Synthesize(ctx)
-	if errSynthesize != nil {
-		t.Fatalf("unexpected error: %v", errSynthesize)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-
-	got := auths[0].Attributes["excluded_models"]
-	want := "custom-model,model-b,shared"
-	if got != want {
-		t.Fatalf("expected excluded_models %q, got %q", want, got)
 	}
 }
 
@@ -1154,50 +1505,6 @@ func TestSplitGeminiProjectIDs(t *testing.T) {
 	}
 }
 
-func TestFileSynthesizer_Synthesize_OAuthModelAliases(t *testing.T) {
-	tempDir := t.TempDir()
-	authData := map[string]any{
-		"type":  "codex",
-		"email": "codex@example.com",
-		"model_aliases": []map[string]any{
-			{"name": " gpt-5.3-codex-spark ", "alias": " gpt-5.5 "},
-			{"name": "gpt-5.3-codex-spark", "alias": "gpt-5.4", "fork": true},
-			{"name": "gpt-5.3-codex-spark", "alias": "gpt-5.5"},
-			{"name": "", "alias": "ignored"},
-		},
-	}
-	data, _ := json.Marshal(authData)
-	errWriteFile := os.WriteFile(filepath.Join(tempDir, "codex-auth.json"), data, 0644)
-	if errWriteFile != nil {
-		t.Fatalf("failed to write auth file: %v", errWriteFile)
-	}
-
-	synth := NewFileSynthesizer()
-	ctx := &SynthesisContext{
-		Config:      &config.Config{},
-		AuthDir:     tempDir,
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, errSynthesize := synth.Synthesize(ctx)
-	if errSynthesize != nil {
-		t.Fatalf("unexpected error: %v", errSynthesize)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-
-	// Duplicate aliases within a channel are preserved as configured
-	// (see SanitizeOAuthModelAlias); runtime resolution is first-entry-wins.
-	// Entries are trimmed, and rows with an empty name are dropped.
-	got := auths[0].Attributes["model_aliases"]
-	want := `[{"name":"gpt-5.3-codex-spark","alias":"gpt-5.5"},{"name":"gpt-5.3-codex-spark","alias":"gpt-5.4","fork":true},{"name":"gpt-5.3-codex-spark","alias":"gpt-5.5"}]`
-	if got != want {
-		t.Fatalf("expected model_aliases %q, got %q", want, got)
-	}
-}
-
 func TestFileSynthesizer_Synthesize_MultiProjectGemini(t *testing.T) {
 	tempDir := t.TempDir()
 
@@ -1396,88 +1703,6 @@ func TestSynthesizeGeminiVirtualAuths_NoteAbsentWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestFileSynthesizer_Synthesize_NoteParsing(t *testing.T) {
-	tests := []struct {
-		name     string
-		note     any
-		want     string
-		hasValue bool
-	}{
-		{
-			name:     "valid string note",
-			note:     "hello world",
-			want:     "hello world",
-			hasValue: true,
-		},
-		{
-			name:     "string note with whitespace",
-			note:     "  trimmed note  ",
-			want:     "trimmed note",
-			hasValue: true,
-		},
-		{
-			name:     "empty string note",
-			note:     "",
-			hasValue: false,
-		},
-		{
-			name:     "whitespace only note",
-			note:     "   ",
-			hasValue: false,
-		},
-		{
-			name:     "non-string note ignored",
-			note:     12345,
-			hasValue: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tempDir := t.TempDir()
-			authData := map[string]any{
-				"type": "claude",
-				"note": tt.note,
-			}
-			data, _ := json.Marshal(authData)
-			errWriteFile := os.WriteFile(filepath.Join(tempDir, "auth.json"), data, 0644)
-			if errWriteFile != nil {
-				t.Fatalf("failed to write auth file: %v", errWriteFile)
-			}
-
-			synth := NewFileSynthesizer()
-			ctx := &SynthesisContext{
-				Config:      &config.Config{},
-				AuthDir:     tempDir,
-				Now:         time.Now(),
-				IDGenerator: NewStableIDGenerator(),
-			}
-
-			auths, errSynthesize := synth.Synthesize(ctx)
-			if errSynthesize != nil {
-				t.Fatalf("unexpected error: %v", errSynthesize)
-			}
-			if len(auths) != 1 {
-				t.Fatalf("expected 1 auth, got %d", len(auths))
-			}
-
-			value, ok := auths[0].Attributes["note"]
-			if tt.hasValue {
-				if !ok {
-					t.Fatal("expected note attribute to be set")
-				}
-				if value != tt.want {
-					t.Fatalf("expected note %q, got %q", tt.want, value)
-				}
-				return
-			}
-			if ok {
-				t.Fatalf("expected note attribute to be absent, got %q", value)
-			}
-		})
-	}
-}
-
 func TestFileSynthesizer_Synthesize_MultiProjectGeminiWithNote(t *testing.T) {
 	tempDir := t.TempDir()
 
@@ -1568,130 +1793,5 @@ func TestFileSynthesizer_Synthesize_DevinAuthFile(t *testing.T) {
 	}
 	if a.Attributes["devin_api_url"] != "https://api.devin.ai" {
 		t.Errorf("expected devin_api_url https://api.devin.ai, got %s", a.Attributes["devin_api_url"])
-	}
-}
-
-func TestFileSynthesizer_Synthesize_MetaOAuthExcludedModelsMerged(t *testing.T) {
-	tempDir := t.TempDir()
-	authData := map[string]any{
-		"type":            "meta",
-		"auth_kind":       "oauth",
-		"api_key":         "LLM|minted",
-		"excluded_models": []string{"muse-spark-1.2"},
-	}
-	data, _ := json.Marshal(authData)
-	errWriteFile := os.WriteFile(filepath.Join(tempDir, "meta.json"), data, 0644)
-	if errWriteFile != nil {
-		t.Fatalf("failed to write auth file: %v", errWriteFile)
-	}
-
-	synth := NewFileSynthesizer()
-	ctx := &SynthesisContext{
-		Config: &config.Config{
-			OAuthExcludedModels: map[string][]string{
-				"meta": {"muse-spark-1.1"},
-			},
-		},
-		AuthDir:     tempDir,
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, errSynthesize := synth.Synthesize(ctx)
-	if errSynthesize != nil {
-		t.Fatalf("unexpected error: %v", errSynthesize)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-	if gotKind := auths[0].Attributes["auth_kind"]; gotKind != "oauth" {
-		t.Fatalf("expected auth_kind=oauth, got %q", gotKind)
-	}
-
-	got := auths[0].Attributes["excluded_models"]
-	want := "muse-spark-1.1,muse-spark-1.2"
-	if got != want {
-		t.Fatalf("expected excluded_models %q, got %q", want, got)
-	}
-}
-
-func makeTestCodexJWT(planType string) string {
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	authInfo := map[string]any{
-		"chatgpt_account_id": "acc-123",
-	}
-	if planType != "" {
-		authInfo["chatgpt_plan_type"] = planType
-	}
-	claimsMap := map[string]any{
-		"email":                       "user@example.com",
-		"https://api.openai.com/auth": authInfo,
-	}
-	payloadBytes, _ := json.Marshal(claimsMap)
-	claims := base64.RawURLEncoding.EncodeToString(payloadBytes)
-	return header + "." + claims + "."
-}
-
-func TestSynthesizeAuthFile_CodexPlanType(t *testing.T) {
-	tests := []struct {
-		name     string
-		fileJSON map[string]any
-		wantPlan string
-	}{
-		{
-			name: "explicit plan_type in metadata",
-			fileJSON: map[string]any{
-				"type":      "codex",
-				"plan_type": "pro",
-			},
-			wantPlan: "pro",
-		},
-		{
-			name: "id_token with plan_type",
-			fileJSON: map[string]any{
-				"type":     "codex",
-				"id_token": makeTestCodexJWT("team"),
-			},
-			wantPlan: "team",
-		},
-		{
-			name: "id_token without plan_type defaults to free",
-			fileJSON: map[string]any{
-				"type":     "codex",
-				"id_token": makeTestCodexJWT(""),
-			},
-			wantPlan: "free",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tempDir := t.TempDir()
-			filePath := filepath.Join(tempDir, "codex.json")
-			data, errMarshal := json.Marshal(tt.fileJSON)
-			if errMarshal != nil {
-				t.Fatalf("marshal error: %v", errMarshal)
-			}
-			if errWrite := os.WriteFile(filePath, data, 0600); errWrite != nil {
-				t.Fatalf("write error: %v", errWrite)
-			}
-
-			auths, errSynthesize := SynthesizeAuthFile(&SynthesisContext{
-				Config:      &config.Config{},
-				AuthDir:     tempDir,
-				Now:         time.Now(),
-				IDGenerator: NewStableIDGenerator(),
-			}, filePath, data)
-
-			if errSynthesize != nil {
-				t.Fatalf("SynthesizeAuthFile error: %v", errSynthesize)
-			}
-			if len(auths) != 1 {
-				t.Fatalf("expected 1 auth, got %d", len(auths))
-			}
-			if got := auths[0].Attributes["plan_type"]; got != tt.wantPlan {
-				t.Fatalf("plan_type attribute = %q, want %q", got, tt.wantPlan)
-			}
-		})
 	}
 }
