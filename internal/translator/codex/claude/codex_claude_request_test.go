@@ -792,6 +792,10 @@ func TestConvertClaudeRequestToCodex_AssistantRoutedMetaSignatureToReasoningItem
 }
 
 func TestConvertClaudeRequestToCodex_ResolvesReplayTargetModelOncePerRequest(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("allocation budgets are not meaningful with race detector instrumentation")
+	}
+
 	const thinkingBlocks = 64
 	var body strings.Builder
 	body.WriteString(`{"messages":[{"role":"assistant","content":[`)
@@ -1001,7 +1005,6 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 	t.Run("output_config with effort only", func(t *testing.T) {
 		payload := []byte(`{
 			"model": "gpt-5.4",
-			"thinking": {"type": "adaptive"},
 			"output_config": {"effort": "high"},
 			"messages": [
 				{"role": "user", "content": "hello"}

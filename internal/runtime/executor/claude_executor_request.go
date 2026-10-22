@@ -1710,7 +1710,7 @@ func applyClaudeHeadersWithNativeProfile(
 	// Unconfirmed clients always receive the CLI baseline.
 	// An explicit cloak_mode=never keeps the caller's own headers.
 	if wirePolicy.ExplicitNever && confirmedClaudeCode {
-		helps.ApplyClaudeLegacyDeviceHeaders(r, incomingHeaders, nil, true)
+		helps.ApplyClaudeLegacyDeviceHeaders(r, incomingHeaders, cfg, true, true)
 	} else if stabilizeDeviceProfile {
 		if confirmedClaudeCode && !helps.ShouldCloakNativeSubclientFingerprint(incomingHeaders) {
 			var errDeviceProfile error

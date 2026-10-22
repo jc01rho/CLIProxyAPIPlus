@@ -312,6 +312,11 @@ func applyThinking(ctx context.Context, body, sourceBody []byte, model string, f
 		}
 		return body, nil
 	}
+	if fromFormat == "claude" && providerFormat == "claude" && !suffixResult.HasSuffix && !gjson.GetBytes(body, "thinking").Exists() {
+		// Native Claude effort is independent of thinking activation. Preserve the
+		// model's thinking default unless a suffix or explicit summary changes it.
+		return applySummaryConfigForProvider(body, providerFormat, baseModel, providerKey, modelInfo, summaryConfig), nil
+	}
 	if IsUserDefinedModel(modelInfo) || strings.HasPrefix(providerKey, "openai-compatible-") {
 		return applyUserDefinedModel(body, modelInfo, fromFormat, providerFormat, providerKey, suffixResult, sourceConfig, nativeResponses, summaryConfig)
 	}
@@ -769,8 +774,8 @@ func extractClaudeConfig(body []byte) ThinkingConfig {
 	if thinkingType == "disabled" {
 		return ThinkingConfig{Mode: ModeNone, Budget: 0}
 	}
-	if thinkingType == "adaptive" || thinkingType == "auto" {
-		// Claude adaptive thinking uses output_config.effort (low/medium/high/max).
+	if !gjson.GetBytes(body, "thinking").Exists() || thinkingType == "adaptive" || thinkingType == "auto" {
+		// Claude output_config.effort also applies when thinking is omitted.
 		// We only treat it as a thinking config when effort is explicitly present;
 		// otherwise we passthrough and let upstream defaults apply.
 		if effort := gjson.GetBytes(body, "output_config.effort"); effort.Exists() && effort.Type == gjson.String {

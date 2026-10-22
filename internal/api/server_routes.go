@@ -59,6 +59,7 @@ func (s *Server) setupRoutes() {
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
+	openaiResponsesHandlers.AccessManager = s.accessManager
 	s.codexLiveHandler = codexlive.NewHandler(s.handlers.AuthManager, s.cfg)
 	geminiLiveHandler := geminilive.NewHandler(s.handlers.AuthManager, s.getConfig)
 
