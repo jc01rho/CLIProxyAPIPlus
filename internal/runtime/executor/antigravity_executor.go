@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -1039,16 +1040,87 @@ func antigravityEstimateRequestTokenCost(_ []byte) float64 {
 	// exceeding the MaxTokens=50 bucket and causing permanent exhaustion.
 	return 1
 }
-func antigravityEnsureRequestTokens(auth *cliproxyauth.Auth, payload []byte) error {
+
+// antigravityLocalRateLimitError is a request refused by the proxy's own limiter. It never
+// reached Google, so it says nothing about the credential: it is flagged request-scoped so the
+// conductor neither cools the credential down nor treats it as a handoff trigger, and it keeps
+// the 429 status and a Retry-After hint for the client.
+type antigravityLocalRateLimitError struct {
+	retryAfter time.Duration
+}
+
+func (e antigravityLocalRateLimitError) Error() string {
+	return "antigravity local rate limit exceeded"
+}
+func (e antigravityLocalRateLimitError) StatusCode() int       { return http.StatusTooManyRequests }
+func (e antigravityLocalRateLimitError) IsRequestScoped() bool { return true }
+func (e antigravityLocalRateLimitError) RetryAfter() *time.Duration {
+	d := e.retryAfter
+	return &d
+}
+
+// antigravityLimiterConfiguredFromYAML records that the global tracker's parameters were set from
+// the config file, so removing the section later restores the defaults.
+var antigravityLimiterConfiguredFromYAML atomic.Bool
+
+// antigravityLocalRateLimitTracker returns the global tracker with cfg's local-rate-limit section
+// applied, or nil when the limiter is disabled. A section with no values leaves the tracker as it
+// is, so a tracker configured programmatically (InitTokenTracker) is not reset to the defaults.
+func antigravityLocalRateLimitTracker(cfg *config.Config) *antigravity.TokenBucketTracker {
 	tracker := antigravity.GetTokenTracker()
+	if cfg == nil {
+		return tracker
+	}
+	limit := cfg.Antigravity.LocalRateLimit
+	if limit.Enabled != nil && !*limit.Enabled {
+		return nil
+	}
+	if limit.MaxTokens <= 0 && limit.RegenerationRatePerMinute <= 0 && limit.InitialTokens <= 0 {
+		if antigravityLimiterConfiguredFromYAML.CompareAndSwap(true, false) {
+			tracker.SetConfig(antigravity.TokenBucketConfig{})
+		}
+		return tracker
+	}
+	want := antigravity.TokenBucketConfig{
+		MaxTokens:                 limit.MaxTokens,
+		RegenerationRatePerMinute: limit.RegenerationRatePerMinute,
+		InitialTokens:             limit.InitialTokens,
+	}
+	defaults := antigravity.DefaultTokenBucketConfig()
+	if want.MaxTokens <= 0 {
+		want.MaxTokens = defaults.MaxTokens
+	}
+	if want.RegenerationRatePerMinute <= 0 {
+		want.RegenerationRatePerMinute = defaults.RegenerationRatePerMinute
+	}
+	if want.InitialTokens <= 0 {
+		want.InitialTokens = defaults.InitialTokens
+	}
+	if tracker.Config() != want {
+		tracker.SetConfig(want)
+	}
+	antigravityLimiterConfiguredFromYAML.Store(true)
+	return tracker
+}
+
+func antigravityEnsureRequestTokens(cfg *config.Config, auth *cliproxyauth.Auth, payload []byte) error {
+	tracker := antigravityLocalRateLimitTracker(cfg)
+	if tracker == nil {
+		return nil
+	}
 	cost := antigravityEstimateRequestTokenCost(payload)
-	if !tracker.HasTokens(antigravityTrackerAccountIndex(auth), cost) {
-		return statusErr{code: http.StatusTooManyRequests, msg: "antigravity local token bucket exhausted"}
+	index := antigravityTrackerAccountIndex(auth)
+	if !tracker.HasTokens(index, cost) {
+		return antigravityLocalRateLimitError{retryAfter: tracker.TimeUntilTokens(index, cost)}
 	}
 	return nil
 }
-func antigravityConsumeRequestTokens(auth *cliproxyauth.Auth, payload []byte) {
-	antigravity.GetTokenTracker().Consume(antigravityTrackerAccountIndex(auth), antigravityEstimateRequestTokenCost(payload))
+func antigravityConsumeRequestTokens(cfg *config.Config, auth *cliproxyauth.Auth, payload []byte) {
+	tracker := antigravityLocalRateLimitTracker(cfg)
+	if tracker == nil {
+		return
+	}
+	tracker.Consume(antigravityTrackerAccountIndex(auth), antigravityEstimateRequestTokenCost(payload))
 }
 func antigravityRecordRequestOutcome(auth *cliproxyauth.Auth, statusCode int, body []byte, err error) {
 	tracker := antigravity.GetHealthTracker()

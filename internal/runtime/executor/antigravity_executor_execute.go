@@ -130,9 +130,9 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
-	if errTokens := antigravityEnsureRequestTokens(auth, requestPayload); errTokens != nil {
+	if errTokens := antigravityEnsureRequestTokens(e.cfg, auth, requestPayload); errTokens != nil {
 		err = errTokens
-		antigravityRecordRequestOutcome(auth, http.StatusTooManyRequests, nil, errTokens)
+		// A local refusal never reached Google: it must not count against the credential's health.
 		return resp, err
 	}
 
@@ -201,7 +201,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	// Success. Upstream is SSE; a non-stream client still gets one JSON body.
 	bodyBytes = e.convertStreamToNonStream(bodyBytes)
 	antigravityRecordRequestOutcome(auth, httpResp.StatusCode, bodyBytes, nil)
-	antigravityConsumeRequestTokens(auth, requestPayload)
+	antigravityConsumeRequestTokens(e.cfg, auth, requestPayload)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
@@ -359,9 +359,9 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
-	if errTokens := antigravityEnsureRequestTokens(auth, requestPayload); errTokens != nil {
+	if errTokens := antigravityEnsureRequestTokens(e.cfg, auth, requestPayload); errTokens != nil {
 		err = errTokens
-		antigravityRecordRequestOutcome(auth, http.StatusTooManyRequests, nil, errTokens)
+		// A local refusal never reached Google: it must not count against the credential's health.
 		return resp, err
 	}
 	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
@@ -434,7 +434,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 
 	// Stream success
 	antigravityRecordRequestOutcome(auth, httpResp.StatusCode, nil, nil)
-	antigravityConsumeRequestTokens(auth, requestPayload)
+	antigravityConsumeRequestTokens(e.cfg, auth, requestPayload)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}

@@ -64,6 +64,50 @@ func NewTokenBucketTracker(config TokenBucketConfig) *TokenBucketTracker {
 	return &TokenBucketTracker{buckets: map[int]tokenBucketState{}, config: cfg}
 }
 
+// SetConfig changes the bucket parameters in place; zero fields fall back to the defaults.
+// Existing balances are kept, so a reload does not refill or empty anyone's bucket.
+func (t *TokenBucketTracker) SetConfig(config TokenBucketConfig) {
+	if t == nil {
+		return
+	}
+	cfg := DefaultTokenBucketConfig()
+	if config.MaxTokens > 0 {
+		cfg.MaxTokens = config.MaxTokens
+	}
+	if config.RegenerationRatePerMinute > 0 {
+		cfg.RegenerationRatePerMinute = config.RegenerationRatePerMinute
+	}
+	if config.InitialTokens > 0 {
+		cfg.InitialTokens = config.InitialTokens
+	}
+	t.mu.Lock()
+	t.config = cfg
+	t.mu.Unlock()
+}
+
+// Config returns the effective bucket parameters.
+func (t *TokenBucketTracker) Config() TokenBucketConfig {
+	if t == nil {
+		return DefaultTokenBucketConfig()
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.config
+}
+
+// TimeUntilTokens reports how long until the account holds at least cost tokens.
+func (t *TokenBucketTracker) TimeUntilTokens(accountIndex int, cost float64) time.Duration {
+	if t == nil {
+		return 0
+	}
+	missing := cost - t.GetTokens(accountIndex)
+	rate := t.Config().RegenerationRatePerMinute
+	if missing <= 0 || rate <= 0 {
+		return 0
+	}
+	return time.Duration(missing / rate * float64(time.Minute))
+}
+
 // GetTokens returns current tokens after minutesSinceUpdate*regenerationRatePerMinute recovery.
 func (t *TokenBucketTracker) GetTokens(accountIndex int) float64 {
 	if t == nil {
