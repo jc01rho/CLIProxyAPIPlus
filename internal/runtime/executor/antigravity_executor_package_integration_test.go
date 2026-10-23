@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -335,4 +336,87 @@ func requestRawBody(t *testing.T, req *http.Request) string {
 		t.Fatalf("read request body error: %v", err)
 	}
 	return string(raw)
+}
+
+func antigravityEmptyStreamTestAuth(baseURL string) *cliproxyauth.Auth {
+	return &cliproxyauth.Auth{
+		ID:         "empty-stream-auth",
+		Attributes: map[string]string{"base_url": baseURL},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"project_id":   "project-1",
+			"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+}
+
+func drainAntigravityStream(t *testing.T, result *cliproxyexecutor.StreamResult) (payloads []string, streamErr error) {
+	t.Helper()
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			continue
+		}
+		payloads = append(payloads, string(chunk.Payload))
+	}
+	return payloads, streamErr
+}
+
+// Google sometimes closes the SSE stream cleanly with no content and no finishReason. The executor
+// must retry that upstream call itself, and the client must only see the attempt that worked.
+func TestAntigravityExecuteStream_RetriesEmptyStreamThenSucceeds(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls.Add(1) <= 2 {
+			return
+		}
+		_, _ = io.WriteString(w, `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"PONG"}]},"finishReason":"STOP"}]}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	result, err := NewAntigravityExecutor(&config.Config{}).ExecuteStream(context.Background(), antigravityEmptyStreamTestAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "gemini-2.5-pro",
+		Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	payloads, streamErr := drainAntigravityStream(t, result)
+	if streamErr != nil {
+		t.Fatalf("stream error = %v, want none after a successful retry", streamErr)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("upstream calls = %d, want 3 (two empty streams then one good)", got)
+	}
+	if !strings.Contains(strings.Join(payloads, ""), "PONG") {
+		t.Fatalf("payloads = %q, want the successful attempt's content", payloads)
+	}
+}
+
+func TestAntigravityExecuteStream_GivesUpAfterRepeatedEmptyStreams(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer server.Close()
+
+	result, err := NewAntigravityExecutor(&config.Config{}).ExecuteStream(context.Background(), antigravityEmptyStreamTestAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "gemini-2.5-pro",
+		Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	payloads, streamErr := drainAntigravityStream(t, result)
+	if streamErr == nil || !strings.Contains(streamErr.Error(), "without a terminal candidate") {
+		t.Fatalf("stream error = %v, want the empty-stream error once retries are spent", streamErr)
+	}
+	if len(payloads) != 0 {
+		t.Fatalf("payloads = %q, want nothing delivered before the error", payloads)
+	}
+	if got := calls.Load(); got != int32(1+antigravityEmptyStreamRetries) {
+		t.Fatalf("upstream calls = %d, want %d", got, 1+antigravityEmptyStreamRetries)
+	}
 }
