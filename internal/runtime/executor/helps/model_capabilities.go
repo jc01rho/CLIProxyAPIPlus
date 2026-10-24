@@ -3,6 +3,7 @@ package helps
 import (
 	"context"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -18,12 +19,25 @@ func APIKeyModelIsCompat(req cliproxyexecutor.Request) bool {
 // ApplyRequestThinking preserves the registry lookup path unless the auth
 // manager bound authoritative model capabilities to this execution attempt.
 func ApplyRequestThinking(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, fromFormat, toFormat, provider string, normalizedUpdatesChanged ...bool) ([]byte, error) {
-	return ApplyRequestThinkingWithContext(context.Background(), body, req, opts, fromFormat, toFormat, provider, normalizedUpdatesChanged...)
+	return ApplyRequestThinkingWithModelInfoContext(context.Background(), body, req, opts, fromFormat, toFormat, provider, nil, normalizedUpdatesChanged...)
 }
 
 // ApplyRequestThinkingWithContext preserves request metadata for thinking
 // validation warnings emitted during provider execution.
 func ApplyRequestThinkingWithContext(ctx context.Context, body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, fromFormat, toFormat, provider string, normalizedUpdatesChanged ...bool) ([]byte, error) {
+	return ApplyRequestThinkingWithModelInfoContext(ctx, body, req, opts, fromFormat, toFormat, provider, nil, normalizedUpdatesChanged...)
+}
+
+// ApplyRequestThinkingWithModelInfo applies request thinking and falls back to
+// fallbackModelInfo when neither request metadata nor the global registry
+// resolves a model definition.
+func ApplyRequestThinkingWithModelInfo(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, fromFormat, toFormat, provider string, fallbackModelInfo *registry.ModelInfo, normalizedUpdatesChanged ...bool) ([]byte, error) {
+	return ApplyRequestThinkingWithModelInfoContext(context.Background(), body, req, opts, fromFormat, toFormat, provider, fallbackModelInfo, normalizedUpdatesChanged...)
+}
+
+// ApplyRequestThinkingWithModelInfoContext combines request-log metadata with
+// the fallback model definition used by plugin executors.
+func ApplyRequestThinkingWithModelInfoContext(ctx context.Context, body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, fromFormat, toFormat, provider string, fallbackModelInfo *registry.ModelInfo, normalizedUpdatesChanged ...bool) ([]byte, error) {
 	ctx = thinking.WithRequestLogMetadata(
 		ctx,
 		internallogging.GetRequestID(ctx),
@@ -41,5 +55,5 @@ func ApplyRequestThinkingWithContext(ctx context.Context, body []byte, req clipr
 	if modelInfo, ok := cliproxyauth.ResolvedModelInfo(req); ok {
 		return thinking.ApplyThinkingWithModelInfoAndSummaryContext(ctx, body, source, req.Model, fromFormat, toFormat, provider, modelInfo, summaryConfig, normalizedUpdatesChanged...)
 	}
-	return thinking.ApplyThinkingWithSourceAndSummaryContext(ctx, body, source, req.Model, fromFormat, toFormat, provider, summaryConfig, normalizedUpdatesChanged...)
+	return thinking.ApplyThinkingWithFallbackModelInfoAndSummaryContext(ctx, body, source, req.Model, fromFormat, toFormat, provider, fallbackModelInfo, summaryConfig, normalizedUpdatesChanged...)
 }

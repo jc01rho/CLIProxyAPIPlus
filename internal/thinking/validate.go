@@ -93,7 +93,7 @@ func ValidateConfigWithContext(ctx context.Context, config ThinkingConfig, model
 	modelFamilyMismatch := false
 	if modelInfo != nil {
 		modelType := strings.ToLower(strings.TrimSpace(modelInfo.Type))
-		if modelType != "" {
+		if isKnownProviderFamily(modelType) {
 			if (fromFormat != "" && !isSameProviderFamily(fromFormat, modelType)) ||
 				(toFormat != "" && !isSameProviderFamily(toFormat, modelType)) {
 				modelFamilyMismatch = true
@@ -481,6 +481,15 @@ func isGeminiFamily(provider string) bool {
 func isOpenAIFamily(provider string) bool {
 	switch provider {
 	case "openai", "openai-response", "codex", "github-copilot":
+		return true
+	default:
+		return false
+	}
+}
+
+func isKnownProviderFamily(provider string) bool {
+	switch provider {
+	case "gemini", "antigravity", "claude", "openai", "openai-response", "codex", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "xai", "interactions", "devin":
 		return true
 	default:
 		return false
