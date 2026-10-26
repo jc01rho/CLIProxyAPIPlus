@@ -117,6 +117,9 @@ type Config struct {
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
+	// TeamShare pools Claude Team seat credentials and allots usage to API keys by percentage.
+	TeamShare TeamShareConfig `yaml:"team-share,omitempty" json:"team-share,omitempty"`
+
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 

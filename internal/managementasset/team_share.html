@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team share</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#1c1c1e;--muted:#6e6e73;--line:#d2d2d7;--head:#f5f5f7;--ok:#1a7f37;--warn:#b25e00;--bad:#cf222e;--bar:#0a84ff}
+@media (prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#f5f5f7;--muted:#98989d;--line:#3a3a3c;--head:#2c2c2e;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--bar:#64d2ff}}
+*{box-sizing:border-box}
+body{margin:0;padding:24px;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--muted);margin-bottom:16px}
+form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+input{padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);min-width:260px}
+button{padding:8px 14px;border:0;border-radius:8px;background:var(--bar);color:#001018;font-weight:600;cursor:pointer}
+.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;margin-bottom:20px}
+table{border-collapse:collapse;width:100%;min-width:760px}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+thead th,tr.sec th{background:var(--head);font-weight:600}
+tr.sec th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;border:1px solid currentColor}
+.active{color:var(--ok)}.reauth_required,.missing{color:var(--bad)}.disabled{color:var(--warn)}
+.meter{display:inline-block;width:64px;height:6px;border-radius:3px;background:var(--line);vertical-align:middle;margin-right:6px;overflow:hidden}
+.meter>i{display:block;height:100%;background:var(--bar)}
+#msg{color:var(--bad);margin-bottom:12px}
+</style>
+</head>
+<body>
+<h1>Team share</h1>
+<div class="sub" id="meta">관리 키를 입력하면 풀별 총량, 계정 사용률, 멤버 몫을 보여 줍니다.</div>
+<form id="f"><input id="k" type="password" autocomplete="off" placeholder="Management key"><button type="submit">Load</button></form>
+<div id="msg"></div>
+<div id="out"></div>
+<script>
+const $=id=>document.getElementById(id);
+const usd=v=>'$'+(Number(v)||0).toFixed(2);
+const pct=v=>v==null?'-':Number(v).toFixed(1)+'%';
+const when=v=>{if(!v)return '-';const d=new Date(v);return isNaN(d)?'-':d.toLocaleString()};
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function meter(p){const w=Math.max(0,Math.min(100,Number(p)||0));return '<span class="meter"><i style="width:'+w+'%"></i></span>'+pct(p)}
+function win(w){return meter(w.percent)+' <span style="color:var(--muted)">'+usd(w.estimated_limit_usd)+' ('+esc(w.limit_source)+')</span>'}
+function pool(p){
+  let h='<div class="wrap"><table><thead><tr><th colspan="8">'+esc(p.name)+' &middot; 5h '+usd(p.five_hour.total_usd)+' (reset '+esc(when(p.five_hour.reset_at))+') &middot; weekly '+usd(p.weekly.total_usd)+' (reset '+esc(when(p.weekly.reset_at))+') &middot; '+esc(p.enforcement)+'</th></tr></thead><tbody>';
+  h+='<tr class="sec"><th>Account</th><th>Tier</th><th>Status</th><th>5h usage / limit</th><th>Weekly usage / limit</th><th>Requests</th><th>API-equivalent</th><th>Reset (5h)</th></tr>';
+  for(const a of p.accounts){
+    h+='<tr><td>'+esc(a.email||a.ref)+'</td><td>'+esc(a.tier)+'</td><td><span class="pill '+esc(a.status)+'">'+esc(a.status)+(a.reauth_reason?' ('+esc(a.reauth_reason)+')':'')+'</span></td><td>'+win(a.five_hour)+'</td><td>'+win(a.weekly)+'</td><td class="num">'+a.requests+'</td><td class="num">'+usd(a.total_cost_usd)+'</td><td>'+esc(when(a.five_hour.reset_at))+'</td></tr>';
+  }
+  h+='<tr class="sec"><th>Member</th><th>Share</th><th>Key</th><th>5h used / allocated</th><th>5h remaining</th><th>Weekly used / allocated</th><th>Weekly remaining</th><th>Requests</th></tr>';
+  for(const m of p.members){
+    h+='<tr><td>'+esc(m.name||'-')+'</td><td class="num">'+pct(m.percent)+'</td><td>'+esc(m.key_id)+'</td><td class="num">'+usd(m.five_hour.used_usd)+' / '+usd(m.five_hour.allocated_usd)+'</td><td>'+meter(m.five_hour.remaining_percent)+' '+usd(m.five_hour.remaining_usd)+'</td><td class="num">'+usd(m.weekly.used_usd)+' / '+usd(m.weekly.allocated_usd)+'</td><td>'+meter(m.weekly.remaining_percent)+' '+usd(m.weekly.remaining_usd)+'</td><td class="num">'+m.requests+'</td></tr>';
+  }
+  h+='<tr><td colspan="8" style="color:var(--muted)">Unassigned share '+pct(p.unassigned_percent)+' &middot; used by other keys: 5h '+usd(p.five_hour.unassigned_used_usd)+', weekly '+usd(p.weekly.unassigned_used_usd)+'</td></tr>';
+  return h+'</tbody></table></div>';
+}
+async function load(){
+  const key=$('k').value||sessionStorage.getItem('ts-key')||'';
+  $('msg').textContent='';
+  try{
+    const r=await fetch('/v0/management/team-share',{headers:{'X-Management-Key':key}});
+    if(!r.ok)throw new Error(r.status===401?'Invalid management key':'HTTP '+r.status);
+    sessionStorage.setItem('ts-key',key);
+    const d=await r.json();
+    $('meta').textContent=(d.enabled?'Enabled':'Disabled')+' \u00b7 '+when(d.generated_at);
+    $('out').innerHTML=d.pools.length?d.pools.map(pool).join(''):'<div class="sub">No pools configured.</div>';
+  }catch(e){$('msg').textContent=e.message}
+}
+$('f').addEventListener('submit',e=>{e.preventDefault();load()});
+if(sessionStorage.getItem('ts-key'))load();
+</script>
+</body>
+</html>

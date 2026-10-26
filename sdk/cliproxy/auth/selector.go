@@ -1495,7 +1495,7 @@ func UnwrapWeightedRobin(selector Selector) (*WeightedRobinSelector, bool) {
 	case *WeightedRobinSelector:
 		return s, true
 	case *SessionAffinitySelector:
-		wr, ok := s.fallback.(*WeightedRobinSelector)
+		wr, ok := unwrapTeamShare(s.fallback).(*WeightedRobinSelector)
 		return wr, ok
 	default:
 		return nil, false
@@ -1850,7 +1850,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 	now := time.Now()
 	availabilityCandidates := auths
-	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
+	if _, weighted := unwrapTeamShare(s.fallback).(*WeightedRoundRobinSelector); weighted {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
 	// Preserve the legacy weighted-robin prefilter; otherwise trust the manager's
@@ -2027,7 +2027,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	}
 
 	availabilityCandidates := auths
-	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
+	if _, weighted := unwrapTeamShare(s.fallback).(*WeightedRoundRobinSelector); weighted {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
 	now := time.Now()

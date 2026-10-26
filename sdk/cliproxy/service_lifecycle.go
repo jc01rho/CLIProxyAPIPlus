@@ -84,6 +84,7 @@ func (s *Service) Run(ctx context.Context) error {
 	s.configureCooldownStateStore(cfg)
 	s.usageExportRuntime.SetSnapshotSource(s.keeperExportSnapshot)
 	usage.RegisterNamedPlugin("keeper-export", &s.usageExportRuntime)
+	s.startTeamShare(cfg)
 	if errUsageExport := s.usageExportRuntime.Apply(ctx, cfg.UsageExport); errUsageExport != nil {
 		log.WithError(errUsageExport).Error("usage export outbox unavailable; proxy will continue without durable export append")
 	}
@@ -269,6 +270,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if ctx == nil {
 			ctx = context.Background()
 		}
+		s.stopTeamShare()
 
 		s.homeMu.Lock()
 		runCancel := s.runCancel

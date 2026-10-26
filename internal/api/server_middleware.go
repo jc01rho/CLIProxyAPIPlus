@@ -220,6 +220,10 @@ func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.Ha
 				reqCtx = coreusage.WithAccessProvider(reqCtx, result.Provider)
 				reqCtx = coreusage.WithIsNativeKey(reqCtx, coreusage.IsNativeAccessProvider(result.Provider))
 				c.Request = c.Request.WithContext(reqCtx)
+				teamShareGuard(c, result.Principal)
+				if c.IsAborted() {
+					return
+				}
 			}
 			c.Next()
 			return

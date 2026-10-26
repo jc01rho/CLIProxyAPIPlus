@@ -741,7 +741,7 @@ func (m *Manager) transientlyUnavailableSessionAffinityAuthIDs(selector Selector
 	if !ok || affinity == nil || !affinity.rebindOnQuotaOnly || len(affinityCandidates) == 0 {
 		return nil
 	}
-	if _, weighted := affinity.fallback.(*WeightedRoundRobinSelector); weighted {
+	if _, weighted := unwrapTeamShare(affinity.fallback).(*WeightedRoundRobinSelector); weighted {
 		affinityCandidates = positiveWeightAuths(affinityCandidates)
 	}
 	var authIDs map[string]struct{}

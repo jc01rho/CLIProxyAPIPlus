@@ -95,6 +95,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/api-keys", s.mgmt.PatchAPIKeys)
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
+		mgmt.GET("/team-share", s.mgmt.GetTeamShare)
+		mgmt.POST("/team-share/ack-reauth", s.mgmt.PostTeamShareAckReauth)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 		mgmt.GET("/weight-robin-queue", s.mgmt.GetWeightRobinQueue)
 		mgmt.GET("/api-key-ip-blacklist", s.mgmt.GetAPIKeyIPBlacklist)

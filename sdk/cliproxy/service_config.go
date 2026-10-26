@@ -60,6 +60,7 @@ type routingRuntimeState struct {
 	sessionAffinityTTL       time.Duration
 	sessionAffinitySubagents bool
 	sessionAffinityRebindOn  string
+	teamShare                bool
 }
 
 func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
@@ -81,6 +82,7 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	case "weight-robin", "weightrobin", "wr":
 		state.strategy = "weight-robin"
 	}
+	state.teamShare = cfg.TeamShare.Enabled
 	state.sessionAffinity = cfg.Routing.SessionAffinity
 	if ttl := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttl != "" {
 		if parsed, errParse := time.ParseDuration(ttl); errParse == nil && parsed > 0 {
@@ -110,6 +112,9 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 		selector = &coreauth.FillFirstSelector{}
 	default:
 		selector = &coreauth.RoundRobinSelector{}
+	}
+	if state.teamShare && state.strategy != "weight-robin" {
+		selector = coreauth.NewTeamShareSelector(selector, teamShareRemaining)
 	}
 	if state.sessionAffinity {
 		subagents := state.sessionAffinitySubagents
@@ -267,6 +272,7 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 		return false
 	}
 	routingState := normalizedRoutingRuntimeState(commit.cfg)
+	s.applyTeamShare(commit.cfg)
 	if s.appliedRoutingState == nil || *s.appliedRoutingState != routingState {
 		s.coreManager.SetSelector(newRoutingSelector(routingState))
 		s.appliedRoutingState = &routingState

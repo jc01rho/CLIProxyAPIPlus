@@ -255,6 +255,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
 		return nil, errValidate
 	}
+	if errValidate := cfg.TeamShare.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
 	if errValidate := cfg.normalizeUsageExport(configFile); errValidate != nil {
 		return nil, errValidate
 	}
