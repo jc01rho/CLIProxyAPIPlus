@@ -1428,3 +1428,22 @@ plugins:
 #     upstream-url: "https://amp.example.com"
 #     upstream-api-key: "replace-with-amp-key"
 #     model-mappings: [{from: "client-model", to: "upstream-model"}]
+
+# Claude Team seat pool with per-API-key percentage shares.
+# team-share:
+#   enabled: true
+#   # Default per-seat limit estimates in API-equivalent USD; replaced by measured calibration.
+#   tiers:
+#     standard: {five-hour-usd: 6, weekly-usd: 120}
+#     premium: {five-hour-usd: 30, weekly-usd: 600}
+#   # Optional price overrides per million tokens; the key is a model-name substring.
+#   pricing:
+#     sonnet: {input: 3, output: 15}
+#   pools:
+#     - name: team
+#       accounts:
+#         - one@example.com
+#         - {auth: two@example.com, tier: premium}
+#       members:
+#         - {name: alice, api-key: sk-alice, percent: 60}
+#         - {name: bob, key-id: 0123456789ab, percent: 40}

@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -82,6 +81,11 @@ type Orchestrator struct {
 	Now     func() time.Time
 }
 
+const (
+	settleTimeout  = 10 * time.Second
+	settleInterval = 200 * time.Millisecond
+)
+
 var namePattern = regexp.MustCompile("^[a-z0-9][a-z0-9-]{1,30}$")
 
 func (o *Orchestrator) now() time.Time {
@@ -106,6 +110,29 @@ func newAPIKey(name string) (string, error) {
 	return "sk-team-" + name + "-" + hex.EncodeToString(raw[:]), nil
 }
 
+// settle polls the pool state until cond holds; the proxy applies a saved config asynchronously.
+func (o *Orchestrator) settle(ctx context.Context, cond func(teamshare.PoolView) bool) (teamshare.PoolView, error) {
+	deadline := time.Now().Add(settleTimeout)
+	for {
+		snap, err := o.Proxy.Snapshot(ctx)
+		if err != nil {
+			return teamshare.PoolView{}, err
+		}
+		p, ok := poolView(snap, o.Pool)
+		if ok && cond(p) {
+			return p, nil
+		}
+		if time.Now().After(deadline) {
+			return p, fmt.Errorf("pool state did not settle within %s", settleTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return p, ctx.Err()
+		case <-time.After(settleInterval):
+		}
+	}
+}
+
 func poolView(snap teamshare.Snapshot, pool string) (teamshare.PoolView, bool) {
 	for _, p := range snap.Pools {
 		if strings.EqualFold(p.Name, pool) {
@@ -113,6 +140,24 @@ func poolView(snap teamshare.Snapshot, pool string) (teamshare.PoolView, bool) {
 		}
 	}
 	return teamshare.PoolView{}, false
+}
+
+func hasAccount(p teamshare.PoolView, email string) bool {
+	for _, a := range p.Accounts {
+		if strings.EqualFold(a.Ref, email) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMember(p teamshare.PoolView, name string) bool {
+	for _, m := range p.Members {
+		if strings.EqualFold(m.Name, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func assignedPercent(p teamshare.PoolView) float64 {
@@ -198,13 +243,11 @@ func (o *Orchestrator) Join(ctx context.Context, name, tier string, share float6
 			return o.Proxy.PutMember(ctx, o.Pool, name, apiKey, share)
 		},
 		func() error {
-			after, err := o.Proxy.Snapshot(ctx)
+			p, err := o.settle(ctx, func(p teamshare.PoolView) bool {
+				return hasAccount(p, email) && hasMember(p, name)
+			})
 			if err != nil {
 				return err
-			}
-			p, ok := poolView(after, o.Pool)
-			if !ok {
-				return errors.New("pool missing after join")
 			}
 			rep.PoolAfter = p.FiveHour.TotalUSD
 			return nil
@@ -298,13 +341,13 @@ func (o *Orchestrator) Leave(ctx context.Context, name string) (Report, error) {
 		func() error { return o.Proxy.RemovePoolAccount(ctx, o.Pool, email) },
 		func() error { return o.Seats.Remove(ctx, email) },
 		func() error {
-			after, err := o.Proxy.Snapshot(ctx)
+			p, err := o.settle(ctx, func(p teamshare.PoolView) bool {
+				return !hasAccount(p, email) && !hasMember(p, name)
+			})
 			if err != nil {
 				return err
 			}
-			if p, ok := poolView(after, o.Pool); ok {
-				rep.PoolAfter = p.FiveHour.TotalUSD
-			}
+			rep.PoolAfter = p.FiveHour.TotalUSD
 			return nil
 		},
 	}

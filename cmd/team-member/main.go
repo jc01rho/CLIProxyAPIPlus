@@ -19,6 +19,7 @@ import (
 const usage = `usage:
   team-member join <name> --tier standard|premium --share <percent> [--confirm]
   team-member leave <name> [--confirm]
+  team-member check <name>
 
 Without --confirm both commands only print what would change.
 
@@ -43,7 +44,7 @@ func envOr(key, fallback string) string {
 }
 
 func run(args []string) int {
-	if len(args) < 2 || (args[0] != "join" && args[0] != "leave") {
+	if len(args) < 2 || (args[0] != "join" && args[0] != "leave" && args[0] != "check") {
 		fmt.Fprint(os.Stderr, usage)
 		return 2
 	}
@@ -97,6 +98,18 @@ func run(args []string) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if command == "check" {
+		email, _ := o.Email.Ensure(ctx, name)
+		report, err := lifecycle.Check(ctx, proxy, *pool, email)
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(report)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		return 0
+	}
 	var (
 		report lifecycle.Report
 		err    error

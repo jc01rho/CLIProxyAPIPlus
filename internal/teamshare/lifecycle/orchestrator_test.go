@@ -232,3 +232,39 @@ func TestLeaveKeepsTheSeatWhenAnEarlierStepFails(t *testing.T) {
 		t.Fatalf("audit = %+v", got)
 	}
 }
+
+type lagProxy struct {
+	*world
+	calls int
+	stale teamshare.Snapshot
+}
+
+func (l *lagProxy) Snapshot(ctx context.Context) (teamshare.Snapshot, error) {
+	l.calls++
+	fresh, err := l.world.Snapshot(ctx)
+	if l.calls == 1 {
+		l.stale = fresh
+	}
+	if l.calls > 1 && l.calls <= 3 {
+		return l.stale, err
+	}
+	return fresh, err
+}
+
+func TestLeaveVerifyWaitsForTheProxyToApplyTheSavedConfig(t *testing.T) {
+	w := &world{
+		members: []teamshare.MemberView{{Name: "alice", KeyID: "k-alice", Percent: 60}, {Name: "bob", KeyID: "k-bob", Percent: 40}},
+		account: []teamshare.AccountView{{Ref: "bob@junghap.top", Tier: "standard"}, {Ref: "alice@junghap.top", Tier: "standard"}},
+		total:   12,
+	}
+	lag := &lagProxy{world: w}
+	o := newOrchestrator(w, true)
+	o.Proxy = lag
+	rep, err := o.Leave(context.Background(), "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.PoolAfter != 6 || lag.calls < 4 {
+		t.Fatalf("PoolAfter=%v after %d snapshots: verify must wait for the applied state", rep.PoolAfter, lag.calls)
+	}
+}

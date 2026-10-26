@@ -97,3 +97,26 @@ func TestHTTPSeatManagerErrorsDoNotLeakTheCookie(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestCheckReportsRefreshOutcomeAndPoolStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = io.WriteString(w, `{"files":[{"name":"dana.json","email":"dana@junghap.top"}]}`)
+		case r.URL.Path == "/v0/management/auth-files/refresh" && r.Method == http.MethodPost:
+			_, _ = io.WriteString(w, `{"ok":true,"results":[{"id":"dana.json","success":true}]}`)
+		case r.URL.Path == "/v0/management/team-share":
+			_, _ = io.WriteString(w, `{"pools":[{"name":"team","accounts":[{"ref":"dana@junghap.top","email":"dana@junghap.top","tier":"premium","status":"active","included_in_total":true}]}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	rep, err := Check(context.Background(), &HTTPProxy{BaseURL: srv.URL, ManagementKey: "k"}, "team", "dana@junghap.top")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.RefreshOK || rep.AuthFile != "dana.json" || rep.Account == nil || rep.Account.Tier != "premium" || rep.Account.Status != "active" {
+		t.Fatalf("report = %+v", rep)
+	}
+}
