@@ -2163,7 +2163,10 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if candidate == nil || candidate.Disabled {
 			continue
 		}
-		if !isWeightedRobin && canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey {
+		// Kind-pinned selection (SelectAuthByKind, e.g. Codex realtime) names one
+		// provider explicitly; weight-robin's cross-provider cycle must not hand
+		// it another provider's token.
+		if (!isWeightedRobin || eligibility.requiredKind != "") && canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey {
 			continue
 		}
 		if soleAntigravityPrimaryExcludedAmong(provider, m.auths, candidate) {
