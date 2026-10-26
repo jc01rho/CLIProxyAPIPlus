@@ -118,7 +118,16 @@ func (m *Manager) reconcileSoleAntigravityPrimaryLocked(preferredID string) []*A
 				auth.Disabled = false
 				auth.Status = StatusActive
 				auth.StatusMessage = ""
-				auth.PrimaryInfo = &PrimaryInfo{IsPrimary: true, Order: 1}
+				// Keep the credential's own position in the handoff chain. Resetting a
+				// promoted credential to Order 1 collapses every credential onto the same
+				// order, after which promoteNextAntigravityPrimary can only pick a sibling
+				// by map iteration order and happily re-promotes an already exhausted
+				// account (2026-10-16: indoyoon93 Order 3 -> 1, then ultra re-promoted).
+				order := 1
+				if auth.PrimaryInfo != nil && auth.PrimaryInfo.Order > 0 {
+					order = auth.PrimaryInfo.Order
+				}
+				auth.PrimaryInfo = &PrimaryInfo{IsPrimary: true, Order: order}
 				SyncPrimaryInfoMetadata(auth)
 				changed = append(changed, auth)
 			}
