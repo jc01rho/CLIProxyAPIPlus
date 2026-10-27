@@ -29,6 +29,7 @@ import (
 type UsageReporter struct {
 	requestID            string
 	traceID              string
+	selectionID          string
 	provider             string
 	baseURL              string
 	executorType         string
@@ -127,6 +128,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	reporter := &UsageReporter{
 		requestID:       uuid.NewString(),
 		traceID:         traceID,
+		selectionID:     usage.SelectionIDFromContext(ctx),
 		provider:        provider,
 		baseURL:         baseURL,
 		model:           model,
@@ -652,6 +654,14 @@ func (r *UsageReporter) TraceID() string {
 	return r.traceID
 }
 
+// SelectionID returns the scheduler selection ID for this reporter.
+func (r *UsageReporter) SelectionID() string {
+	if r == nil {
+		return ""
+	}
+	return r.selectionID
+}
+
 // IsNativeKey reports whether the client API key was authenticated by CPA's native config provider.
 func (r *UsageReporter) IsNativeKey() bool {
 	if r == nil {
@@ -692,6 +702,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	return usage.Record{
 		RequestID:            r.requestID,
 		TraceID:              r.traceID,
+		SelectionID:          r.selectionID,
 		Provider:             r.provider,
 		BaseURL:              r.baseURL,
 		ExecutorType:         r.executorType,
@@ -738,10 +749,14 @@ func failFromErrors(errs ...error) usage.Failure {
 				body = string(responseBody)
 			}
 		}
-		return usage.Failure{
+		fail := usage.Failure{
 			Body:       body,
 			StatusCode: clienterror.HTTPStatusFromError(err),
 		}
+		if truncatedErr, ok := errors.AsType[cliproxyexecutor.StreamTruncatedError](err); ok && truncatedErr != nil && truncatedErr.IsStreamTruncated() {
+			fail.Code = usage.FailureStreamTruncatedCode
+		}
+		return fail
 	}
 	return usage.Failure{}
 }

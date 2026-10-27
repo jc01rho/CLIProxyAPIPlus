@@ -462,6 +462,7 @@ func (w *Watcher) computePerPathUpdatesLocked(oldByID, newByID map[string]*corea
 	}
 	updates := make([]AuthUpdate, 0, len(oldByID)+len(newByID))
 	for id, newAuth := range newByID {
+		delete(w.persistedAuthRevisions, id)
 		existing, ok := w.currentAuths[id]
 		if !ok {
 			w.currentAuths[id] = newAuth.Clone()
@@ -477,6 +478,7 @@ func (w *Watcher) computePerPathUpdatesLocked(oldByID, newByID map[string]*corea
 		if _, stillExists := newByID[id]; stillExists {
 			continue
 		}
+		delete(w.persistedAuthRevisions, id)
 		delete(w.currentAuths, id)
 		if w.pendingProviderReloadAuths != nil {
 			delete(w.pendingProviderReloadAuths, id)

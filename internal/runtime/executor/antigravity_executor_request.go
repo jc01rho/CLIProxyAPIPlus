@@ -64,12 +64,23 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 			break
 		}
 	}
+	toolConfigBefore := gjson.GetBytes(payload, "request.toolConfig")
+	toolConfigSnakeBefore := gjson.GetBytes(payload, "request.tool_config")
 	var errTransform error
 	payload, errTransform = antigravityApplyPackagePayloadTransforms(modelName, payload)
 	if errTransform != nil {
 		return nil, errTransform
 	}
 	payload = antigravityNormalizeFunctionDeclarationsForExecutor(payload, preserveNativeDeclarations)
+	// The Claude 5.5 structured-output fallback runs on the transformed payload, but with
+	// the client's original tool config: ApplyClaudeTransforms forces camelCase VALIDATED
+	// mode, which would override NONE/AUTO and duplicate a snake_case tool_config.
+	structuredCandidate := restoreAntigravityRequestRaw(payload, "request.toolConfig", toolConfigBefore)
+	structuredCandidate = restoreAntigravityRequestRaw(structuredCandidate, "request.tool_config", toolConfigSnakeBefore)
+	structuredCandidate, promptStructuredOutput := helps.PrepareAntigravityClaudeStructuredOutput(modelName, structuredCandidate)
+	if promptStructuredOutput {
+		payload = structuredCandidate
+	}
 
 	// Cap maxOutputTokens to model's max_completion_tokens from registry
 	if maxOut := gjson.GetBytes(payload, "request.generationConfig.maxOutputTokens"); maxOut.Exists() && maxOut.Type == gjson.Number {
@@ -89,9 +100,11 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if antigravityRequestNeedsSchemaSanitization(payload) {
 		payloadStr := sanitizeAntigravityRequestSchemasForModel(string(payload), useAntigravitySchema, isClaudeModel)
 
-		if strings.Contains(modelName, "claude") {
-			updated, _ := sjson.SetBytes([]byte(payloadStr), "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
-			payloadStr = string(updated)
+		if isClaudeModel {
+			if !promptStructuredOutput {
+				updated, _ := sjson.SetBytes([]byte(payloadStr), "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+				payloadStr = string(updated)
+			}
 		} else {
 			payloadStr, _ = sjson.Delete(payloadStr, "request.generationConfig.maxOutputTokens")
 		}
@@ -99,8 +112,10 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		payloadStrBytes := applyAntigravityNativeSignatureReplayIfNeeded(modelName, []byte(payloadStr))
 		payload = helps.FinalizePayload(ctx, payloadStrBytes)
 	} else {
-		if strings.Contains(modelName, "claude") {
-			payload, _ = sjson.SetBytes(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+		if isClaudeModel {
+			if !promptStructuredOutput {
+				payload, _ = sjson.SetBytes(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+			}
 		} else {
 			payload, _ = sjson.DeleteBytes(payload, "request.generationConfig.maxOutputTokens")
 		}
@@ -734,4 +749,21 @@ func generateStableSessionID(payload []byte) string {
 		}
 	}
 	return antigravity.Fnv1a64Signed("")
+}
+
+// restoreAntigravityRequestRaw resets path to the value captured before a transform,
+// deleting it when it did not exist.
+func restoreAntigravityRequestRaw(payload []byte, path string, before gjson.Result) []byte {
+	if before.Exists() {
+		updated, errSet := sjson.SetRawBytes(payload, path, []byte(before.Raw))
+		if errSet != nil {
+			return payload
+		}
+		return updated
+	}
+	updated, errDelete := sjson.DeleteBytes(payload, path)
+	if errDelete != nil {
+		return payload
+	}
+	return updated
 }

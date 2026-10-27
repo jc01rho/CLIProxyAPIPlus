@@ -36,6 +36,8 @@ const (
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// EstimatedInputTokensMetadataKey stores a preflight estimated input token count.
 	EstimatedInputTokensMetadataKey = "estimated_input_tokens"
+	// SelectionIDMetadataKey stores the per-selection ID generated for a plugin scheduler pick.
+	SelectionIDMetadataKey = "selection_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.
 	SelectedAuthMetadataKey = "selected_auth_id"
 	// SelectedAuthCallbackMetadataKey carries an optional callback invoked with the selected auth ID.
@@ -287,4 +289,13 @@ type StatusError interface {
 type RequestScopedError interface {
 	error
 	IsRequestScoped() bool
+}
+
+// StreamTruncatedError identifies a locally synthesized failure for an
+// accepted upstream stream that ended without its terminal frame. The
+// upstream generation was already submitted, so auth managers must not cool
+// the credential or replay the request on another credential because of it.
+type StreamTruncatedError interface {
+	error
+	IsStreamTruncated() bool
 }

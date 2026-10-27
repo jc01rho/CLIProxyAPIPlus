@@ -671,7 +671,7 @@ func (m *Manager) executeWithRetry(
 			return resp, nil
 		}
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
-			return cliproxyexecutor.Response{}, unwrapRequestStopError(errExec)
+			return cliproxyexecutor.Response{}, errExec
 		}
 		lastErr = errExec
 		if !fallbackAllowed {
@@ -726,7 +726,7 @@ func (m *Manager) executeStreamWithRetry(
 			// follow it, regardless of home-retry, request-retry, or
 			// credential-retry configuration.
 			if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
-				return nil, unwrapRequestStopError(errStream)
+				return nil, errStream
 			}
 			return nil, errStream
 		}
@@ -745,7 +745,7 @@ func (m *Manager) executeStreamWithRetry(
 		retryRoundPending = false
 		retryRoundWaited = false
 		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
-			return nil, unwrapRequestStopError(errStream)
+			return nil, errStream
 		}
 		lastErr = errStream
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errStream, attempt, providers, retryModel, maxWait, homeRetryLimit, defaultRequestRetry, roundAttempted)
