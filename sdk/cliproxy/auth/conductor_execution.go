@@ -221,7 +221,12 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 		requestStopped := isRequestTerminatedError(lastErr) || isRequestStopError(lastErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
-		if !requestStopped && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if requestStopped {
+			// A stop rule ends the request with its error, even when upstream now
+			// wraps the stopped bootstrap error with its stream headers.
+			return nil, lastErr
+		}
+		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits
 			} else if ok {
