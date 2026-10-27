@@ -1573,7 +1573,7 @@ func (e *GeminiVertexExecutor) executeInteractions(ctx context.Context, auth *cl
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	fromProtocol := opts.SourceFormat.String()
-	body = helps.SanitizeGeminiInteractionsUnsupportedInputIDs(body)
+	body = helps.SanitizeGeminiInteractionsUnsupportedInputIDs(body, true)
 
 	apiKey, baseURL := vertexAPICreds(auth)
 	var projectID string
@@ -1702,7 +1702,7 @@ func (e *GeminiVertexExecutor) executeInteractionsStream(ctx context.Context, au
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	fromProtocol := opts.SourceFormat.String()
-	body = helps.SanitizeGeminiInteractionsUnsupportedInputIDs(body)
+	body = helps.SanitizeGeminiInteractionsUnsupportedInputIDs(body, true)
 	body = helps.SetBoolIfDifferent(body, "stream", true)
 
 	apiKey, baseURL := vertexAPICreds(auth)
