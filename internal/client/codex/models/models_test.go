@@ -529,14 +529,10 @@ func TestApplyCodexClientModelMetadataPreservesMultiAgentVersionWhenDisabled(t *
 
 func TestCodexClientModelsResponseAppliesMaxContextLengthOverride(t *testing.T) {
 	const wantOverride = 1048576
-	// Non-template models inherit context windows from the catalog's
-	// default template (currently the gpt-5.5 entry).
-	_, defaultTemplate, errLoadTemplates := loadCodexClientModelTemplates()
-	if errLoadTemplates != nil || defaultTemplate == nil {
-		t.Fatalf("load codex client model templates: %v", errLoadTemplates)
-	}
-	wantDefaultContext := intModelValue(defaultTemplate, "context_window")
-	wantDefaultMaxContext := intModelValue(defaultTemplate, "max_context_window")
+	// deepseek-v4-pro has no per-request override here, so it resolves from
+	// the Devin static catalog (context_length 1048576) instead of the
+	// catalog default template.
+	const wantDevinCatalogContext = 1048576
 
 	resp := BuildResponse([]map[string]any{
 		{"id": "deepseek-v4-flash", "max_context_length": wantOverride},
@@ -559,7 +555,7 @@ func TestCodexClientModelsResponseAppliesMaxContextLengthOverride(t *testing.T) 
 		wantMaxContext int
 	}{
 		{slug: "deepseek-v4-flash", wantContext: wantOverride, wantMaxContext: wantOverride},
-		{slug: "deepseek-v4-pro", wantContext: wantDefaultContext, wantMaxContext: wantDefaultMaxContext},
+		{slug: "deepseek-v4-pro", wantContext: wantDevinCatalogContext, wantMaxContext: wantDevinCatalogContext},
 		{slug: "gpt-5.5", wantContext: wantOverride, wantMaxContext: wantOverride},
 	} {
 		entry := bySlug[testCase.slug]
