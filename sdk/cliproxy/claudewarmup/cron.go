@@ -13,7 +13,8 @@ import (
 // minute hour day-of-month month day-of-week.
 // Each field accepts "*", numbers, ranges "a-b", lists "a,b" and steps "*/n" or "a-b/n".
 // Day-of-week uses 0-7 where both 0 and 7 mean Sunday. When both day fields are
-// restricted, a time matches if either matches (standard cron semantics).
+// restricted, a time matches if either matches (standard cron semantics); a day
+// field that starts with "*" (including "*/n") counts as unrestricted.
 type Schedule struct {
 	minute, hour, dom, month, dow uint64
 	domAny, dowAny                bool
@@ -52,7 +53,7 @@ func ParseSchedule(expr string) (*Schedule, error) {
 }
 
 func parseField(field string, lo, hi int) (bits uint64, wildcard bool, err error) {
-	wildcard = field == "*"
+	wildcard = strings.HasPrefix(field, "*")
 	for _, part := range strings.Split(field, ",") {
 		if part == "" {
 			return 0, false, fmt.Errorf("empty list item in %q", field)

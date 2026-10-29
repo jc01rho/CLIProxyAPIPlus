@@ -15,7 +15,10 @@ import (
 // per-account results. It works whether or not the schedule is enabled.
 // Query "jitter=false" skips the random delay between accounts.
 func (h *Handler) PostClaudeWarmupRun(c *gin.Context) {
-	if h.authManager == nil {
+	h.mu.Lock()
+	manager := h.authManager
+	h.mu.Unlock()
+	if manager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
 	}
@@ -26,11 +29,14 @@ func (h *Handler) PostClaudeWarmupRun(c *gin.Context) {
 	warmupCfg = warmupCfg.WithDefaults()
 	opts := claudewarmup.Options{}
 	if raw := strings.TrimSpace(c.Query("jitter")); raw != "" {
-		if enabled, errParse := strconv.ParseBool(raw); errParse == nil {
-			opts.NoJitter = !enabled
+		enabled, errParse := strconv.ParseBool(raw)
+		if errParse != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "jitter must be a boolean"})
+			return
 		}
+		opts.NoJitter = !enabled
 	}
-	results, errRun := claudewarmup.Run(c.Request.Context(), h.authManager, warmupCfg, opts)
+	results, errRun := claudewarmup.Run(c.Request.Context(), manager, warmupCfg, opts)
 	if errors.Is(errRun, claudewarmup.ErrAlreadyRunning) {
 		c.JSON(http.StatusConflict, gin.H{"error": errRun.Error()})
 		return

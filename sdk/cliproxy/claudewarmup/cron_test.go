@@ -73,6 +73,8 @@ func TestScheduleFieldSyntax(t *testing.T) {
 		{"0 0 * * 7", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC)},
 		// Both day fields restricted: either matches (1st of month or Sunday).
 		{"0 0 1 * 0", time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC)},
+		// A stepped wildcard day field stays unrestricted: odd days AND Monday (2026-01-05).
+		{"0 0 */2 * 1", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)},
 		{"30 6 * 3 *", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 3, 1, 6, 30, 0, 0, time.UTC)},
 	}
 	for _, tc := range cases {

@@ -3,6 +3,7 @@ package claudewarmup
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -26,6 +27,7 @@ type Scheduler struct {
 
 	lastCheck   time.Time
 	lastInvalid string
+	lastBadZone string
 }
 
 // NewScheduler builds a scheduler that runs warmups through mgr using the live config.
@@ -44,7 +46,7 @@ func NewScheduler(mgr Manager, cfg func() config.ClaudeWarmupConfig) *Scheduler 
 // Start runs the scheduler loop until ctx is cancelled. Fires that elapsed
 // before Start (for example while the server was down) are skipped.
 func (s *Scheduler) Start(ctx context.Context) {
-	s.lastCheck = s.now()
+	s.reset()
 	go func() {
 		ticker := time.NewTicker(checkInterval)
 		defer ticker.Stop()
@@ -57,6 +59,11 @@ func (s *Scheduler) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// reset marks the current time as already checked so earlier fires are skipped.
+func (s *Scheduler) reset() {
+	s.lastCheck = s.now()
 }
 
 // tick fires at most one run when a scheduled minute fell in (lastCheck, now].
@@ -79,6 +86,13 @@ func (s *Scheduler) tick(ctx context.Context) bool {
 		return false
 	}
 	s.lastInvalid = ""
+	if zone := strings.TrimSpace(cfg.Timezone); zone != s.lastBadZone {
+		s.lastBadZone = ""
+		if _, errZone := time.LoadLocation(zone); errZone != nil {
+			s.lastBadZone = zone
+			log.Warnf("claude warmup: invalid timezone %q, using %s: %v", zone, cfg.Location(), errZone)
+		}
+	}
 	fire := schedule.Next(prev.In(cfg.Location()))
 	if fire.IsZero() || fire.After(now) {
 		return false

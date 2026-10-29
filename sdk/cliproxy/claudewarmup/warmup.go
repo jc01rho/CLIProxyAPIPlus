@@ -100,8 +100,10 @@ func Eligible(auths []*coreauth.Auth, now time.Time) []*coreauth.Auth {
 func blockedByWeeklyLimit(auth *coreauth.Auth, now time.Time) bool {
 	signals := auth.Quota.Signals
 	if strings.EqualFold(strings.TrimSpace(signals["Anthropic-Ratelimit-Unified-7d-Status"]), "rejected") {
+		// Without a reset time the lockout cannot be bounded; let the account be
+		// tried so a fresh response refreshes the signals (a 429 is not retried).
 		reset := unixSeconds(signals["Anthropic-Ratelimit-Unified-7d-Reset"])
-		if reset.IsZero() || reset.After(now) {
+		if !reset.IsZero() && reset.After(now) {
 			return true
 		}
 	}

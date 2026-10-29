@@ -52,17 +52,19 @@ func TestEligibleFiltersClaudeOAuthAccounts(t *testing.T) {
 		"Anthropic-Ratelimit-Unified-7d-Status": "rejected",
 		"Anthropic-Ratelimit-Unified-7d-Reset":  strconv.FormatInt(now.Add(-time.Hour).Unix(), 10),
 	}
+	weeklyNoReset := claudeOAuth("g2-weekly-no-reset", "")
+	weeklyNoReset.Quota.Signals = map[string]string{"Anthropic-Ratelimit-Unified-7d-Status": "rejected"}
 	weeklyCooldown := claudeOAuth("h-weekly-cooldown", "")
 	weeklyCooldown.Quota = coreauth.QuotaState{Exceeded: true, NextRecoverAt: now.Add(3 * 24 * time.Hour)}
 	fiveHourCooldown := claudeOAuth("i-5h-cooldown", "")
 	fiveHourCooldown.Quota = coreauth.QuotaState{Exceeded: true, NextRecoverAt: now.Add(2 * time.Hour)}
 
-	got := Eligible([]*coreauth.Auth{fiveHourCooldown, weeklyCooldown, weeklyExpired, weeklySignal, codex, apiKey, statusDisabled, disabled, ok, nil}, now)
+	got := Eligible([]*coreauth.Auth{fiveHourCooldown, weeklyNoReset, weeklyCooldown, weeklyExpired, weeklySignal, codex, apiKey, statusDisabled, disabled, ok, nil}, now)
 	var ids []string
 	for _, a := range got {
 		ids = append(ids, a.ID)
 	}
-	want := []string{"a-ok", "g-weekly-expired", "i-5h-cooldown"}
+	want := []string{"a-ok", "g-weekly-expired", "g2-weekly-no-reset", "i-5h-cooldown"}
 	if len(ids) != len(want) {
 		t.Fatalf("eligible = %v, want %v", ids, want)
 	}

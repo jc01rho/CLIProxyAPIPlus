@@ -28,7 +28,7 @@ func TestSchedulerFiresOnceWhenScheduledMinutePasses(t *testing.T) {
 	cfg := config.ClaudeWarmupConfig{Enabled: true}
 	var runs []time.Time
 	s := newTestScheduler(clock, &cfg, &runs)
-	s.lastCheck = clock.now
+	s.reset()
 
 	clock.now = clock.now.Add(checkInterval) // 07:49:55
 	if s.tick(context.Background()) {
@@ -54,7 +54,7 @@ func TestSchedulerSkipsFireMissedBeforeStart(t *testing.T) {
 	cfg := config.ClaudeWarmupConfig{Enabled: true}
 	var runs []time.Time
 	s := newTestScheduler(clock, &cfg, &runs)
-	s.lastCheck = clock.now
+	s.reset()
 	for i := 0; i < 10; i++ {
 		clock.now = clock.now.Add(checkInterval)
 		s.tick(context.Background())
@@ -70,7 +70,7 @@ func TestSchedulerSkipsFireDetectedTooLate(t *testing.T) {
 	cfg := config.ClaudeWarmupConfig{Enabled: true}
 	var runs []time.Time
 	s := newTestScheduler(clock, &cfg, &runs)
-	s.lastCheck = clock.now
+	s.reset()
 	// Host suspended across the fire; next check happens at 09:00.
 	clock.now = time.Date(2026, 10, 29, 9, 0, 0, 0, seoul)
 	if s.tick(context.Background()) || len(runs) != 0 {
@@ -85,7 +85,7 @@ func TestSchedulerHonorsWeekdayFilterAndHotReload(t *testing.T) {
 	cfg := config.ClaudeWarmupConfig{Enabled: true}
 	var runs []time.Time
 	s := newTestScheduler(clock, &cfg, &runs)
-	s.lastCheck = clock.now
+	s.reset()
 	clock.now = clock.now.Add(checkInterval)
 	if s.tick(context.Background()) {
 		t.Fatal("default weekday schedule fired on Saturday")
@@ -115,17 +115,24 @@ func TestSchedulerUsesConfiguredTimezone(t *testing.T) {
 	cfg := config.ClaudeWarmupConfig{Enabled: true, Timezone: "UTC"}
 	var runs []time.Time
 	s := newTestScheduler(clock, &cfg, &runs)
-	s.lastCheck = clock.now
+	s.reset()
 	clock.now = clock.now.Add(checkInterval)
 	if !s.tick(context.Background()) {
 		t.Fatal("UTC schedule did not fire at 07:50 UTC")
 	}
 	cfg.Timezone = "" // default Asia/Seoul
 	clock.now = time.Date(2026, 10, 30, 7, 49, 50, 0, time.UTC)
-	s.lastCheck = clock.now
+	s.reset()
 	clock.now = clock.now.Add(checkInterval)
 	if s.tick(context.Background()) {
 		t.Fatal("Seoul schedule fired at 07:50 UTC")
+	}
+	// 22:50 UTC on Oct 29 is Friday 07:50 in Seoul: the default zone fires there.
+	clock.now = time.Date(2026, 10, 29, 22, 49, 50, 0, time.UTC)
+	s.reset()
+	clock.now = clock.now.Add(checkInterval)
+	if !s.tick(context.Background()) {
+		t.Fatal("default Asia/Seoul schedule did not fire at 07:50 KST")
 	}
 }
 
@@ -134,7 +141,7 @@ func TestSchedulerInvalidScheduleDoesNotFire(t *testing.T) {
 	cfg := config.ClaudeWarmupConfig{Enabled: true, Schedule: "bogus"}
 	var runs []time.Time
 	s := newTestScheduler(clock, &cfg, &runs)
-	s.lastCheck = clock.now
+	s.reset()
 	clock.now = clock.now.Add(time.Hour)
 	if s.tick(context.Background()) {
 		t.Fatal("invalid schedule fired")

@@ -1456,7 +1456,7 @@ plugins:
 # Scheduled Claude OAuth warmup: one minimal request per Claude OAuth credential so
 # each account's 5-hour usage window starts at the scheduled time. Hot-reloadable.
 # Missed fires (server down) are skipped. Trigger manually with
-# POST /v0/management/claude-warmup/run.
+# POST /v8/management/claude-warmup/run (?jitter=false skips the delay between accounts).
 # claude-warmup:
 #   enabled: false
 #   schedule: "50 7 * * 1-5"   # minute hour day-of-month month day-of-week

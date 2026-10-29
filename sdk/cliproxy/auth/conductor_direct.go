@@ -30,6 +30,7 @@ func (m *Manager) ExecuteWithAuth(ctx context.Context, authID string, req clipro
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	execCtx := SetProviderAuthInContext(ctx, provider, auth.ID, auth.Label)
 	if rt := m.roundTripperFor(auth); rt != nil {
 		execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
@@ -43,6 +44,10 @@ func (m *Manager) ExecuteWithAuth(ctx context.Context, authID string, req clipro
 
 	prepared, errPrepare := m.prepareRequestAuth(execCtx, executor, auth)
 	if errPrepare != nil {
+		// A cancelled caller is not an account failure; keep cooldown state untouched.
+		if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errPrepare); errCancel != nil {
+			return cliproxyexecutor.Response{}, errCancel
+		}
 		m.MarkResult(execCtx, Result{AuthID: auth.ID, Provider: provider, Model: modelKey, RouteModel: req.Model, Success: false, Error: resultErrorFromError(errPrepare), Options: opts, AccessToken: authAccessTokenForRequest(execCtx, auth, opts.Headers), CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch})
 		return cliproxyexecutor.Response{}, errPrepare
 	}
@@ -63,6 +68,11 @@ func (m *Manager) ExecuteWithAuth(ctx context.Context, authID string, req clipro
 		}
 	}
 
+	if errExec != nil {
+		if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
+			return cliproxyexecutor.Response{}, errCancel
+		}
+	}
 	result := Result{AuthID: auth.ID, Provider: provider, Model: modelKey, RouteModel: req.Model, Success: errExec == nil, Options: opts, AccessToken: authAccessTokenForRequest(execCtx, auth, opts.Headers), CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
 	if errExec != nil {
 		result.Error = resultErrorFromError(errExec)
