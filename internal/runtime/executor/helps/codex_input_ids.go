@@ -18,10 +18,13 @@ const (
 	codexFunctionCallItemIDPrefix         = "fc"
 	codexCustomToolCallItemIDPrefix       = "ctc"
 	codexCustomToolCallOutputItemIDPrefix = "ctco"
+	codexToolSearchCallItemIDPrefix       = "tsc"
 	codexFallbackInputItemName            = "unknown"
 
 	codexInputItemIDOccupied  uint8 = 1 << 0
 	codexInputItemIDPreserved uint8 = 1 << 1
+	codexInputItemIDSeen      uint8 = 1 << 2
+	codexInputItemIDDuplicate uint8 = 1 << 3
 )
 
 // ChatGPT Codex backend rejects these public Responses item fields as unknown_parameter.
@@ -50,15 +53,17 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 		originalID := itemID.String()
 		id := normalizeCodexInputItemID(item, originalID)
 		state := idStates[id]
+		if state&codexInputItemIDSeen != 0 {
+			state |= codexInputItemIDDuplicate
+		}
+		state |= codexInputItemIDSeen
 		if id == originalID {
 			state |= codexInputItemIDPreserved
 		}
 		if len([]rune(id)) <= codexInputItemIDLimit {
 			state |= codexInputItemIDOccupied
 		}
-		if state != 0 {
-			idStates[id] = state
-		}
+		idStates[id] = state
 	}
 
 	var mapped map[string]string
@@ -91,9 +96,18 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 		if itemID.Type == gjson.String {
 			originalID := itemID.String()
 			id := normalizeCodexInputItemID(item, originalID)
-			if id != originalID && idStates[id]&codexInputItemIDPreserved != 0 {
-				collisionID, ok := collisionMapped[id]
-				if !ok {
+			if id != originalID && idStates[id]&(codexInputItemIDPreserved|codexInputItemIDDuplicate) != 0 {
+				collisionKey := id + "\x00" + originalID
+				if collisionID, ok := collisionMapped[collisionKey]; ok {
+					id = collisionID
+				} else if idStates[id]&codexInputItemIDPreserved == 0 {
+					if collisionMapped == nil {
+						collisionMapped = make(map[string]string)
+					}
+					collisionMapped[collisionKey] = id
+					idStates[id] |= codexInputItemIDPreserved
+				} else {
+					var collisionID string
 					for attempt := 0; ; attempt++ {
 						collisionID = codexInputItemIDWithHashSuffix(id, attempt)
 						if idStates[collisionID]&codexInputItemIDOccupied != 0 {
@@ -102,12 +116,12 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 						if collisionMapped == nil {
 							collisionMapped = make(map[string]string)
 						}
-						collisionMapped[id] = collisionID
-						idStates[collisionID] |= codexInputItemIDOccupied
+						collisionMapped[collisionKey] = collisionID
+						idStates[collisionID] |= codexInputItemIDOccupied | codexInputItemIDPreserved
 						break
 					}
+					id = collisionID
 				}
-				id = collisionID
 			}
 			if len([]rune(id)) > codexInputItemIDLimit {
 				shortened, ok := mapped[id]
@@ -178,6 +192,11 @@ func normalizeCodexInputItemID(item gjson.Result, id string) string {
 		prefix = codexCustomToolCallItemIDPrefix
 	case "custom_tool_call_output":
 		prefix = codexCustomToolCallOutputItemIDPrefix
+	case "tool_search_call":
+		if after, ok := strings.CutPrefix(id, "ts_"); ok && after != "" {
+			return codexToolSearchCallItemIDPrefix + "_" + after
+		}
+		prefix = codexToolSearchCallItemIDPrefix
 	default:
 		return id
 	}
