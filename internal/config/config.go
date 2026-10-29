@@ -126,6 +126,9 @@ type Config struct {
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
+	// ClaudeWarmup sends one scheduled minimal request per Claude OAuth credential.
+	ClaudeWarmup ClaudeWarmupConfig `yaml:"claude-warmup,omitempty" json:"claude-warmup,omitempty"`
+
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 

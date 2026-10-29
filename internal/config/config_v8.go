@@ -618,7 +618,7 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 	}
 	root = expandConfigAliases(root)
 	sections := v8AllowedRoots()
-	for _, shared := range []string{"api-keys", "plugins", "quota-exceeded", "routing", "client"} {
+	for _, shared := range []string{"api-keys", "plugins", "quota-exceeded", "routing", "client", "claude-warmup"} {
 		delete(sections, shared)
 	}
 	for i := 0; i < len(root.Content); i += 2 {
@@ -648,7 +648,8 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 }
 
 func v8AllowedRoots() map[string]bool {
-	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true}
+	// claude-warmup is a fork-only root kept at the same path in both layouts.
+	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true, "claude-warmup": true}
 	for _, path := range v8Paths {
 		section, _, _ := strings.Cut(path.current, ".")
 		allowed[section] = true

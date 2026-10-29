@@ -197,6 +197,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}
+	if !reflect.DeepEqual(oldCfg.ClaudeWarmup, newCfg.ClaudeWarmup) {
+		changes = append(changes, fmt.Sprintf("claude-warmup: enabled=%t schedule=%q timezone=%q", newCfg.ClaudeWarmup.Enabled, newCfg.ClaudeWarmup.Schedule, newCfg.ClaudeWarmup.Timezone))
+	}
 	if !reflect.DeepEqual(oldCfg.Routing.TokenThresholdRules, newCfg.Routing.TokenThresholdRules) {
 		changes = append(changes, fmt.Sprintf("routing.token-threshold-rules: %d -> %d entries", len(oldCfg.Routing.TokenThresholdRules), len(newCfg.Routing.TokenThresholdRules)))
 	}
