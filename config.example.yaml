@@ -1452,3 +1452,16 @@ plugins:
 #     upstream-url: "https://amp.example.com"
 #     upstream-api-key: "replace-with-amp-key"
 #     model-mappings: [{from: "client-model", to: "upstream-model"}]
+
+# Scheduled Claude OAuth warmup: one minimal request per Claude OAuth credential so
+# each account's 5-hour usage window starts at the scheduled time. Hot-reloadable.
+# Missed fires (server down) are skipped. Trigger manually with
+# POST /v8/management/claude-warmup/run (?jitter=false skips the delay between accounts).
+# claude-warmup:
+#   enabled: false
+#   schedule: "50 7 * * 1-5"   # minute hour day-of-month month day-of-week
+#   timezone: "Asia/Seoul"
+#   model: "claude-haiku-4-5-20251001"
+#   max-tokens: 25
+#   jitter: "60s"              # max random delay between accounts
+
