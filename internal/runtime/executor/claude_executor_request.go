@@ -1445,6 +1445,7 @@ func applyClaudeHeadersWithNativeProfile(
 			attrs = auth.Attributes
 		}
 		util.ApplyCustomHeadersFromAttrs(r, attrs, incomingHeaders)
+		r.Header.Del("Content-Encoding")
 		// Scope the custom-header escape hatch exactly like the CLI path below, which
 		// claws overrides back on api.anthropic.com (an operator Anthropic-Beta reaches
 		// a first-party API that rejects unknown values) and on any streaming request
@@ -1628,6 +1629,9 @@ func applyClaudeHeadersWithNativeProfile(
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs, incomingHeaders)
+	// The body is identity until the send boundary decides on gzip, so no
+	// custom header may declare a content encoding for it.
+	r.Header.Del("Content-Encoding")
 	// Custom credential headers are a configuration escape hatch for third-party
 	// gateways, so they keep the last word there. On api.anthropic.com they must
 	// not rewrite the reconstructed identity: an overridden Anthropic-Beta yields a
@@ -1671,6 +1675,93 @@ func doClaudeUpstreamRequest(client *http.Client, req *http.Request) (*http.Resp
 	applyClaudeWireHeaderCasing(req)
 	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
 	return client.Do(req)
+}
+
+// claudeGzipRejectionReadLimit is how much of a rejected response Claude Code
+// reads to look for a JSON parse error.
+const claudeGzipRejectionReadLimit = 8192
+
+// doClaudeUpstreamRequestWithBody sends the final signed body, gzipped when
+// upstream.claude.request-gzip is on and Claude Code 2.1.302 would gzip it.
+// Compression is transport framing only: body stays the logged, retried and
+// signed identity body, and only the bytes on the wire change (cch reset to
+// 00000 plus whitespace padding). A rejected gzipped body is resent
+// uncompressed once with the same headers, and gzip stays off for the rest of
+// the process.
+func doClaudeUpstreamRequestWithBody(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, oauth bool, client *http.Client, req *http.Request, body []byte) (*http.Response, error) {
+	if !oauth {
+		return doClaudeUpstreamRequest(client, req)
+	}
+	gzipBody, _ := helps.DecideClaudeRequestGzip(helps.ClaudeRequestGzipEnabled(cfg), req.URL, body, helps.ClaudeRequestUsesProxy(ctx, cfg, auth, req))
+	if !gzipBody {
+		return doClaudeUpstreamRequest(client, req)
+	}
+	unsigned := body
+	if offset, found := claudeBillingCCHDigitsOffset(body); found {
+		unsigned = bytes.Clone(body)
+		copy(unsigned[offset:offset+claudeCCHLength], claudeCCHZero)
+	}
+	compressed, errEncode := helps.EncodeClaudeRequestGzip(unsigned, nil)
+	if errEncode != nil {
+		helps.LogWithRequestID(ctx).Warnf("claude request gzip encode failed, sending uncompressed: %v", errEncode)
+		return doClaudeUpstreamRequest(client, req)
+	}
+	gzipReq := req.Clone(req.Context())
+	gzipReq.Body = io.NopCloser(bytes.NewReader(compressed))
+	gzipReq.ContentLength = int64(len(compressed))
+	gzipReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(compressed)), nil }
+	gzipReq.Header.Set("Content-Encoding", "gzip")
+	helps.LogWithRequestID(ctx).Debugf("claude request body gzipped: %d -> %d bytes", len(body), len(compressed))
+	resp, errDo := doClaudeUpstreamRequest(client, gzipReq)
+	if errDo != nil {
+		return resp, errDo
+	}
+	kind, errClassify := classifyClaudeGzipResponse(resp)
+	if errClassify != nil {
+		return resp, errClassify
+	}
+	if kind == "" {
+		return resp, nil
+	}
+	helps.LatchClaudeRequestGzipOff()
+	helps.LogWithRequestID(ctx).Warnf("claude gzipped request body rejected (%s, status %d); resending uncompressed and disabling request gzip for this process", kind, resp.StatusCode)
+	if errClose := resp.Body.Close(); errClose != nil {
+		log.Debugf("close rejected gzip response: %v", errClose)
+	}
+	resend := req.Clone(req.Context())
+	resend.Body = io.NopCloser(bytes.NewReader(body))
+	resend.ContentLength = int64(len(body))
+	resend.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	resend.Header.Del("Content-Encoding")
+	return doClaudeUpstreamRequest(client, resend)
+}
+
+// classifyClaudeGzipResponse applies helps.ClassifyClaudeGzipRejection to a
+// response. When it has to read the body it reads at most
+// claudeGzipRejectionReadLimit bytes and restores them, so the caller still
+// sees the whole response.
+func classifyClaudeGzipResponse(resp *http.Response) (string, error) {
+	if resp == nil {
+		return "", nil
+	}
+	if kind := helps.ClassifyClaudeGzipRejection(resp.StatusCode, resp.Header, nil); kind != "" || resp.StatusCode != http.StatusBadRequest {
+		return kind, nil
+	}
+	head, errRead := io.ReadAll(io.LimitReader(resp.Body, claudeGzipRejectionReadLimit))
+	if errRead != nil {
+		return "", errRead
+	}
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
+	decoded := head
+	if reader, errDecode := helps.DecodeResponseBody(io.NopCloser(bytes.NewReader(head)), resp.Header); errDecode == nil {
+		if text, errText := io.ReadAll(reader); errText == nil || len(text) > 0 {
+			decoded = text
+		}
+	}
+	return helps.ClassifyClaudeGzipRejection(resp.StatusCode, resp.Header, decoded), nil
 }
 
 // claudeWireHeaderCasing maps Go's canonical header name to the exact casing

@@ -126,6 +126,10 @@ type ClaudeConfig struct {
 	// switches. A nil value (unset) defaults to 7 days; an explicit 0 keeps
 	// the continuity-scoped pin (1h lifetime).
 	SessionDatePinDays *int `yaml:"session-date-pin-days" json:"session-date-pin-days"`
+	// RequestGzip gzips OAuth request bodies of at least 4096 characters sent
+	// straight to api.anthropic.com without a proxy, as Claude Code 2.1.302 does.
+	// Default false keeps uncompressed bodies.
+	RequestGzip bool `yaml:"request-gzip,omitempty" json:"request-gzip,omitempty"`
 }
 
 // DefaultClaudeSessionDatePinDays is the session date pin retention applied

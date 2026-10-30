@@ -213,8 +213,8 @@ func TestClaudeExecutorHasSingleUpstreamSendBoundary(t *testing.T) {
 		if strings.Contains(text, "httpClient.Do(") {
 			t.Errorf("%s bypasses the send boundary with a direct httpClient.Do", name)
 		}
-		if !strings.Contains(text, "doClaudeUpstreamRequest(") {
-			t.Errorf("%s does not route through doClaudeUpstreamRequest", name)
+		if !strings.Contains(text, "doClaudeUpstreamRequestWithBody(") {
+			t.Errorf("%s does not route through doClaudeUpstreamRequestWithBody", name)
 		}
 	}
 }

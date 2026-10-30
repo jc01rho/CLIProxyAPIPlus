@@ -322,7 +322,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	httpClient := e.httpClient(ctx, auth, apiKey)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := doClaudeUpstreamRequest(httpClient, httpReq)
+	httpResp, err := doClaudeUpstreamRequestWithBody(ctx, e.cfg, auth, claudeCredentialUsesOAuth(auth, apiKey), httpClient, httpReq, bodyForUpstream)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, wrapClaudeFastRequestError(fastRequest, 0, err)
