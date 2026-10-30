@@ -4916,6 +4916,15 @@ func (h *webSearchHandler) setMcpHeaders(req *http.Request) {
 	// 2. Kiro CLI generation headers.
 	applyDynamicFingerprint(req, h.auth)
 
+	// 2b. MCP call identity. Ported from kiro-lb src/web_search.rs (807c8ab):
+	// a web search is an explicit opt-in to sending the query upstream, so the
+	// opt-out flag that generation requests set to "true" is "false" here, and
+	// the call announces the profile ARN the credential belongs to.
+	req.Header.Set("x-amzn-codewhisperer-optout", "false")
+	if arn := kiroRequestProfileArn(h.auth); arn != "" {
+		req.Header.Set("x-amzn-kiro-profile-arn", arn)
+	}
+
 	// 3. AWS SDK identifiers
 	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
@@ -4929,6 +4938,15 @@ func (h *webSearchHandler) setMcpHeaders(req *http.Request) {
 
 // mcpMaxRetries is the maximum number of retries for MCP API calls.
 const mcpMaxRetries = 2
+
+// kiroRequestProfileArn resolves the profile ARN a Kiro request announces.
+// Ported from kiro-lb src/auth.rs (807c8ab) request_profile_arn: the
+// credential's own ARN wins, and an AWS SSO OIDC (Builder ID) credential falls
+// back to the shared Builder ID ARN. Other credential kinds send none.
+func kiroRequestProfileArn(auth *cliproxyauth.Auth) string {
+	_, profileArn := kiroCredentials(auth)
+	return getEffectiveProfileArnWithWarning(auth, profileArn)
+}
 
 // callMcpAPI calls the Kiro MCP API with the given request.
 // Includes retry logic with exponential backoff for retryable errors.
