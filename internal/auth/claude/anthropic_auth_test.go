@@ -114,6 +114,30 @@ func TestClaudeAuthBlankExplicitOverrideFallsBackToDefaultEndpoints(t *testing.T
 	}
 }
 
+func TestNewAnthropicHttpClientRefusesRedirects(t *testing.T) {
+	var followed atomic.Int32
+	client := NewAnthropicHttpClient(nil)
+	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "platform.claude.com" {
+			followed.Add(1)
+		}
+		return &http.Response{
+			StatusCode: http.StatusTemporaryRedirect,
+			Header:     http.Header{"Location": {"https://attacker.example.com/steal"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	})
+	req, _ := http.NewRequest(http.MethodPost, TokenURL, strings.NewReader(`{"refresh_token":"rt"}`))
+	_, err := client.Do(req)
+	if !errors.Is(err, ErrOAuthRedirectRefused) {
+		t.Fatalf("Do() error = %v, want ErrOAuthRedirectRefused", err)
+	}
+	if got := followed.Load(); got != 0 {
+		t.Fatalf("redirect followed %d times, want 0", got)
+	}
+}
+
 func TestNewAnthropicHttpClientDoesNotSetRequestTimeout(t *testing.T) {
 	client := NewAnthropicHttpClient(nil)
 	if got := client.Timeout; got != 0 {

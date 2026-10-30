@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"net/http"
 	"strings"
 	"time"
@@ -44,7 +45,9 @@ type ClaudeExecutor struct {
 
 func (e *ClaudeExecutor) httpClient(ctx context.Context, auth *cliproxyauth.Auth, apiKey string) *http.Client {
 	if claudeCredentialUsesOAuth(auth, apiKey) {
-		return helps.NewStandardHTTPClient(ctx, e.cfg, auth)
+		client := helps.NewStandardHTTPClient(ctx, e.cfg, auth)
+		client.CheckRedirect = claudeauth.RefuseOAuthRedirect
+		return client
 	}
 	return helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 }

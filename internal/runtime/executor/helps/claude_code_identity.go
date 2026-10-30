@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"net/http"
 	"strings"
 	"sync"
@@ -147,7 +148,7 @@ func fetchClaudeCodeAccountUUID(ctx context.Context, accessToken, model string) 
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("user-agent", "claude-code/"+DefaultClaudeCodeVersion)
 
-	client := &http.Client{Timeout: claudeCodeBootstrapTimeout}
+	client := &http.Client{Timeout: claudeCodeBootstrapTimeout, CheckRedirect: claudeauth.RefuseOAuthRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ""
