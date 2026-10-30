@@ -29,6 +29,8 @@ var (
 	kiroEffortSuffixPattern     = regexp.MustCompile(`-(?:low|medium|high|xhigh|max)$`)
 	kiroClaudeFamilyFirst       = regexp.MustCompile(`^claude-(opus|sonnet|haiku)-(\d+)-(\d+)$`)
 	kiroClaudeVersionFirst      = regexp.MustCompile(`^claude-(\d+)-(\d+)-(opus|sonnet|haiku)$`)
+	kiroClaudeInvertedVersion   = regexp.MustCompile(`^claude-(\d+)\.(\d+)-(opus|sonnet|haiku)(?:-\d{8})?$`)
+	kiroContextSuffixPattern    = regexp.MustCompile(`(?i)\[\d+[mk]\]$`)
 	kiroVersionedModelComponent = regexp.MustCompile(`^(gpt-\d+|minimax-m\d+)-(\d+)(-.+)?$`)
 	kiroInvalidIdentifier       = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 )
@@ -51,6 +53,10 @@ func NormalizeKiroModelID(modelID string) string {
 	if idx := strings.Index(id, KiroUnsupportedContext1MSuffix); idx >= 0 {
 		id = id[:idx]
 	}
+	// Ported from kiro-lb src/model_resolver.rs (807c8ab): a trailing context
+	// marker such as "[200k]" or "[1m]" is a client-side window request, not
+	// part of the Kiro model ID.
+	id = kiroContextSuffixPattern.ReplaceAllString(id, "")
 	id = strings.TrimPrefix(id, "kiro/")
 	id = strings.TrimPrefix(id, "kiro-")
 	id = strings.TrimPrefix(id, "amazonq-")
@@ -77,6 +83,11 @@ func NormalizeKiroModelID(modelID string) string {
 	}
 	if matches := kiroClaudeFamilyFirst.FindStringSubmatch(id); len(matches) == 4 {
 		return fmt.Sprintf("claude-%s-%s.%s", matches[1], matches[2], matches[3])
+	}
+	// Ported from kiro-lb src/model_resolver.rs (807c8ab): the "inverted"
+	// spelling claude-<major>.<minor>-<family> names the same Kiro model.
+	if matches := kiroClaudeInvertedVersion.FindStringSubmatch(id); len(matches) == 4 {
+		return fmt.Sprintf("claude-%s-%s.%s", matches[3], matches[1], matches[2])
 	}
 	if matches := kiroVersionedModelComponent.FindStringSubmatch(id); len(matches) == 4 {
 		return matches[1] + "." + matches[2] + matches[3]
