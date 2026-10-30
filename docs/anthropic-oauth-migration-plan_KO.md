@@ -1,6 +1,6 @@
 # Anthropic OAuth 송수신 로직 비교 및 마이그레이션 계획
 
-작성일: 2026-10-30. 이 문서는 계획 문서이며, 코드 동작은 바꾸지 않는다.
+작성일: 2026-10-30. 처음에는 계획 문서였고, 8절의 결정에 따라 같은 날 이식을 진행했다(8절, 9절).
 
 ## 0. 기준 커밋
 
@@ -166,18 +166,45 @@
 - 토큰 목적지 제한을 cortexkit처럼 api.anthropic.com 고정으로 하면, 사용자 지정 base_url(`ClaudeTokenStorage.base_url`)로 OAuth 토큰을 보내는 포크 사용 사례가 깨진다. 리다이렉트 차단만 가져온다.
 - claude-lb-cpa(로컬 origin)는 이 저장소와 갈라져 있어서, 같은 이식을 두 저장소에 하면 충돌 해소가 두 번 필요하다.
 
-## 6. 결정 필요 항목
+## 6. 결정 항목 (확정, 2026-10-30)
 
-1. 이식 대상 저장소: CLIProxyAPIPlus만 할지, claude-lb-cpa에도 할지(또는 claude-lb-cpa만 할지).
-2. 2.1.302 실측 캡처를 먼저 확보할지(권장), cortexkit 재구성 벡터를 기준으로 바로 진행할지.
-3. 요청 본문 gzip: 가져오지 않음 / 설정으로 기본 꺼짐(권장) / 기본 켜짐.
-4. 같은 계정 401 처리: 현재 유지 / 갱신 전 저장소 재읽기만 추가(권장).
+1. 이식 대상: CLIProxyAPIPlus와 claude-lb-cpa 두 저장소 모두. 각 저장소 main에서 따로 작업하고 각각 PR로 머지한다.
+2. 기준값: 실측 캡처(단계 0) 없이 cortexkit b9a8bd928 값(2.1.302, stainless 0.128.0, beta 표, per-turn/effort 모델 표, 신규 헤더, metadata.user_id 필드 순서)으로 바로 진행한다. 단계 1 와이어 벡터는 cortexkit vectors.json을 그대로 넣는다.
+3. 요청 본문 gzip: 설정 키(`upstream.claude.request-gzip`)로 넣고 기본 꺼짐.
+4. 같은 계정 401: 갱신 전에 저장소의 더 새 토큰을 다시 읽는 단계만 추가한다. OAuth 토큰 요청은 리다이렉트를 따르지 않는다(커스텀 base_url은 유지).
+5. '유지'로 판정한 항목(SSE 검증, quota 파싱, 오류 분류, 포크 기능)은 건드리지 않는다.
 
-## 7. 검증 방법 (이 문서 PR)
+## 7. 검증 방법
 
-이 PR은 문서만 추가하므로 동작 변화가 없다. 확인 명령:
+확인 명령:
 
 ```bash
 GOTOOLCHAIN=auto go build ./...
 GOTOOLCHAIN=auto go test ./internal/auth/claude/ ./internal/runtime/executor/... ./sdk/auth/
 ```
+
+## 8. 이식 결과 (2026-10-30)
+
+| 표 번호 | 바뀐 동작 | 위치 |
+|---------|-----------|------|
+| 8, 9, 14 | UA `claude-cli/2.1.302 (external, cli)`, stainless `0.128.0`, billing `cc_version=2.1.302.*`, bootstrap UA `claude-code/2.1.302` | `helps/claude_device_profile.go`, `helps/claude_code_identity.go` |
+| 8 (판별) | 네이티브 Claude Code 판별 하한은 실측 2.1.280 / 0.112.1로 유지(`nativeClaudeDetectionProfile`). 2.1.280 이상 네이티브 클라이언트는 계속 passthrough | `helps/claude_device_profile.go`, `helps/claude_client_detection.go` |
+| 10 | `x-claude-code-request-class`(main/auxiliary)와 `x-claude-code-prompt-id`(billing `cc_prompt_id`와 같은 값) 송신. 확인된 네이티브 클라이언트는 자기 값 유지 | `claude_executor_request.go` |
+| 14 | billing에 `cc_prompt_index`/`cc_turn_index` 추가(사용자 프롬프트 수, tool_result만 있는 메시지 제외) | `claude_executor_cloaking.go` |
+| 11, 12, 23 | 프록시가 조립하는 beta는 2.1.302 요청 종류별 목록(main/title/quota). per-turn-control은 Fable 5.1·Opus 5.5·Sonnet 5.5·Haiku 5.5, Haiku 5.5는 claude-code를 prompt-caching-scope 뒤로. 호출자가 보낸 목록에는 기존 2.1.280 제거 규칙을 그대로 적용 | `claude_executor_request.go:claudeCodeCLIBetas` |
+| 16 | `metadata.user_id` 필드 순서 `device_id, account_uuid, session_id` | `helps/claude_code_identity.go` |
+| 17, 22 | `upstream.claude.request-gzip`(기본 false). 켜면 api.anthropic.com HTTPS 직결, 프록시 없음, 4096자 이상 OAuth 본문만 gzip(level 6, cch=00000 + 공백 패딩, OS 바이트 255). 로그·재시도·서명 본문은 비압축 그대로이고 전송 직전 바이트만 바뀐다. 거절(400/403/415 비 Anthropic, 또는 invalid JSON 400) 시 같은 헤더로 비압축 1회 재전송, 그 뒤 프로세스 동안 gzip 끔. 사용자 지정 `Content-Encoding` 헤더는 제거 | `helps/claude_request_gzip.go`, `claude_executor_request.go:doClaudeUpstreamRequestWithBody` |
+| 6 | 401이면 갱신 전에 credential 파일을 다시 읽어, 거절된 토큰과 다른 access token이 있으면 그 토큰으로 재시도(refresh token 소모 없음). 파일이 같은 토큰이면 기존 갱신 그대로 | `sdk/cliproxy/auth/conductor_refresh.go:reloadNewerStoredClaudeToken` |
+| 7 | OAuth 토큰을 싣는 HTTP 클라이언트(토큰 발급/갱신, bootstrap, OAuth 추론 요청)는 리다이렉트를 따르지 않음(`ErrOAuthRedirectRefused`). 목적지 base_url은 그대로 허용 | `internal/auth/claude/utls_transport.go`, `claude_executor.go` |
+| 24 | cortexkit vectors.json(sha256 `47072a18...`) 벡터 테스트: 지문 접미사, billing, user_id 순서, cch 해시, 헤더·beta | `claude_oauth_wire_vectors_test.go` |
+
+### 의도적으로 남긴 차이
+- server-side fallback beta: 우리는 배열 `fallbacks` 본문과 `server-side-fallback-2026-06-01`(실측)을 유지한다. 벡터는 `fallbacks:"default"`와 `-2026-07-01`.
+- cch 해시 범위: 우리는 `fallbacks`를 해시에서 제외한다(2.1.220 실측). fallbacks가 있는 벡터 3개는 cch가 다르고, 테스트가 그 차이를 명시적으로 고정한다.
+- fast mode beta: 프록시 요청에는 계속 붙이지 않는다.
+- 구형 Haiku(4.5)와 thinking disabled 요청에서는 effort/thinking-display-updates beta를 계속 빼는다(2.1.302 벡터에 해당 사례 없음).
+- 본문 필드 순서(표 18), 토큰 목적지 api.anthropic.com 고정, 갱신 재시도 정책은 바꾸지 않았다.
+
+### 남은 위험
+- 2.1.302 값은 cortexkit 재구성 벡터 기준이며 실측 캡처로 검증하지 않았다.
+- metadata.user_id 순서와 billing 필드 추가로 배포 직후 프롬프트 캐시 적중률이 일시적으로 떨어질 수 있다.
