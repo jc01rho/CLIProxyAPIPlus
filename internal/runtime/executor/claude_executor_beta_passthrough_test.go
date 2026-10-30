@@ -39,8 +39,8 @@ func TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas(t *testing.T) {
 	if !strings.Contains(betas, "message-threads-2026-08-12") {
 		t.Fatalf("Anthropic-Beta = %q, want unmanaged caller beta forwarded", betas)
 	}
-	if !strings.Contains(betas, "mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24") {
-		t.Fatalf("Anthropic-Beta = %q, want fable-5-1 per-turn-control between mid-conversation-system and tool-changes", betas)
+	if !strings.Contains(betas, "prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01") {
+		t.Fatalf("Anthropic-Beta = %q, want fable-5-1 per-turn-control right after prompt-caching-scope", betas)
 	}
 }
 
@@ -73,7 +73,7 @@ func TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly(t *testing.T) {
 	}{
 		{name: "confirmed main", requestClass: "main", confirmed: true},
 		{name: "confirmed auxiliary", requestClass: "auxiliary", confirmed: true},
-		{name: "unconfirmed caller", requestClass: "main"},
+		{name: "unconfirmed caller", requestClass: "auxiliary"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
@@ -96,6 +96,13 @@ func TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly(t *testing.T) {
 				got := req.Header.Get(key)
 				if tt.confirmed && got != values[0] {
 					t.Errorf("%s = %q, want %q", key, got, values[0])
+				}
+				if !tt.confirmed && strings.EqualFold(key, "x-claude-code-request-class") {
+					// The cloaked profile derives its own class from the body.
+					if got != "main" {
+						t.Errorf("unconfirmed caller %s = %q, want derived main", key, got)
+					}
+					continue
 				}
 				if !tt.confirmed && got != "" {
 					t.Errorf("unconfirmed caller forwarded %s = %q", key, got)
@@ -137,7 +144,10 @@ func TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas_OAuth(t *testing.T) {
 	if !strings.Contains(betas, "message-threads-2026-08-12") {
 		t.Fatalf("Anthropic-Beta = %q, want unmanaged caller beta forwarded on OAuth", betas)
 	}
-	if !strings.Contains(betas, "mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01") {
+	if !strings.Contains(betas, "prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01") {
 		t.Fatalf("Anthropic-Beta = %q, want fable-5-1 per-turn-control assembled", betas)
+	}
+	if strings.Contains(betas, "mid-conversation-system-2026-04-07") {
+		t.Fatalf("Anthropic-Beta = %q, obsolete managed caller beta forwarded to Anthropic", betas)
 	}
 }

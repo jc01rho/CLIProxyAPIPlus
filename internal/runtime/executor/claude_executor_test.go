@@ -817,7 +817,7 @@ func TestClaudeExecutor_NonClaudeRequestUsesPinnedVersionWithMessageFingerprint(
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 
-	assertClaudeFingerprint(t, seenHeaders, "claude-cli/2.1.280 (external, cli)", "0.112.1", "v26.3.0", "MacOS", "arm64")
+	assertClaudeFingerprint(t, seenHeaders, "claude-cli/2.1.302 (external, cli)", "0.128.0", "v26.3.0", "MacOS", "arm64")
 	if got := seenHeaders.Get("X-App"); got != "cli" {
 		t.Fatalf("X-App = %q, want cli", got)
 	}
@@ -830,7 +830,7 @@ func TestClaudeExecutor_NonClaudeRequestUsesPinnedVersionWithMessageFingerprint(
 		t.Fatalf("system block count = %d, want 2: %s", len(system), seenBody)
 	}
 	// Independent SHA-256 vector: "x" samples "000" at indices 4, 7, 20.
-	if got := system[0].Get("text").String(); got != "x-anthropic-billing-header: cc_version=2.1.280.d7b; cc_entrypoint=cli;" {
+	if got := system[0].Get("text").String(); got != "x-anthropic-billing-header: cc_version=2.1.302.ea8; cc_entrypoint=cli;" {
 		t.Fatalf("billing header = %q, want pinned version with message fingerprint d7b", got)
 	}
 	if got := system[1].Get("text").String(); got != claudeCodeCLIIdentity {
@@ -906,7 +906,7 @@ func TestClaudeExecutor_ConfirmedNewerPatchClaudeCodeRequestPreservesInteractive
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 
-	assertClaudeFingerprint(t, seenHeaders, "claude-cli/2.1.281 (external, cli)", "0.112.1", "v26.3.0", "MacOS", "arm64")
+	assertClaudeFingerprint(t, seenHeaders, "claude-cli/2.1.281 (external, cli)", "0.128.0", "v26.3.0", "MacOS", "arm64")
 	if got := gjson.GetBytes(seenBody, "system.0.text").String(); got != "interactive-system" {
 		t.Fatalf("system.0.text = %q, want confirmed client system preserved", got)
 	}
@@ -1097,7 +1097,7 @@ func TestClaudeExecutor_ConfirmedVSCodeAgentSDKRequestCloaksFingerprintPreservin
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 
-	assertClaudeFingerprint(t, seenHeaders, "claude-cli/2.1.280 (external, cli)", "0.112.1", "v26.3.0", "MacOS", "arm64")
+	assertClaudeFingerprint(t, seenHeaders, "claude-cli/2.1.302 (external, cli)", "0.128.0", "v26.3.0", "MacOS", "arm64")
 	if got := seenHeaders.Get("Anthropic-Dangerous-Direct-Browser-Access"); got != "true" {
 		t.Fatalf("Anthropic-Dangerous-Direct-Browser-Access = %q, want preserved true", got)
 	}
@@ -1171,7 +1171,7 @@ func TestClaudeExecutor_ConfirmedVSCodeAgentSDKRequestPreservesIdentity(t *testi
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 
-	assertClaudeFingerprint(t, seenHeaders, "claude-cli/2.1.280 (external, cli)", "0.112.1", "v26.3.0", "MacOS", "arm64")
+	assertClaudeFingerprint(t, seenHeaders, "claude-cli/2.1.302 (external, cli)", "0.128.0", "v26.3.0", "MacOS", "arm64")
 	if got := seenHeaders.Get("Anthropic-Dangerous-Direct-Browser-Access"); got != "true" {
 		t.Fatalf("Anthropic-Dangerous-Direct-Browser-Access = %q, want preserved true", got)
 	}
@@ -1232,7 +1232,7 @@ func TestClaudeExecutor_CopiedVSCodeAgentSDKHeadersWithoutMetadataAreCloaked(t *
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 
-	if got := seenHeaders.Get("User-Agent"); got != "claude-cli/2.1.280 (external, cli)" {
+	if got := seenHeaders.Get("User-Agent"); got != "claude-cli/2.1.302 (external, cli)" {
 		t.Fatalf("User-Agent = %q, want CLI cloak", got)
 	}
 	if got := gjson.GetBytes(seenBody, "system.#").Int(); got != 3 {
@@ -1286,7 +1286,7 @@ func TestClaudeExecutor_AgentSDKEntrypointWithStrongSignalsUsesCLICloak(t *testi
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 
-	if got := seenHeaders.Get("User-Agent"); got != "claude-cli/2.1.280 (external, cli)" {
+	if got := seenHeaders.Get("User-Agent"); got != "claude-cli/2.1.302 (external, cli)" {
 		t.Fatalf("User-Agent = %q, want CLI cloak", got)
 	}
 	if got := gjson.GetBytes(seenBody, "system.0.text").String(); !strings.Contains(got, "cc_entrypoint=cli;") {
@@ -4719,8 +4719,8 @@ func TestCheckSystemInstructionsWithMode_UsesOpus55CompatibleVersion(t *testing.
 	out := checkSystemInstructionsWithMode(payload, false)
 
 	billing := gjson.GetBytes(out, "system.0.text").String()
-	if !strings.Contains(billing, "cc_version=2.1.280.") {
-		t.Fatalf("billing header = %q, want Claude Code 2.1.280", billing)
+	if !strings.Contains(billing, "cc_version=2.1.302.") {
+		t.Fatalf("billing header = %q, want Claude Code 2.1.302", billing)
 	}
 }
 
@@ -6064,17 +6064,24 @@ func TestClaudeExecutor_CloakedOpus55PairsFallbackAndBetas(t *testing.T) {
 		claudeMidConvSystemClearAtBeta,
 		claudeThinkingBindingBeta,
 		claudeServerSideFallbackBeta,
-		claudeFallbackCreditBeta,
 	} {
 		if !strings.Contains(seenHeaders.Get("Anthropic-Beta"), beta) {
 			t.Errorf("missing %s beta", beta)
 		}
 	}
+	// Claude Code 2.1.302 sends no fallback-credit beta without a credit token.
+	if strings.Contains(seenHeaders.Get("Anthropic-Beta"), claudeFallbackCreditBeta) {
+		t.Errorf("unexpected %s beta without fallback_credit_token", claudeFallbackCreditBeta)
+	}
 	if text := gjson.GetBytes(seenBody, "system.0.text").String(); !strings.Contains(text, "cc_turn_origin=human;") {
 		t.Error("cloaked request is missing human turn origin")
 	}
-	if got := seenHeaders.Get("X-Claude-Code-Request-Class"); got != "" {
-		t.Errorf("cloaked request invented native request class %q", got)
+	if got := seenHeaders.Get("X-Claude-Code-Request-Class"); got != "main" {
+		t.Errorf("cloaked request class = %q, want main", got)
+	}
+	_, promptID := helps.ExtractClaudeBillingTags(seenBody)
+	if got := seenHeaders.Get("X-Claude-Code-Prompt-Id"); promptID == "" || got != promptID {
+		t.Errorf("X-Claude-Code-Prompt-Id = %q, want billing cc_prompt_id %q", got, promptID)
 	}
 }
 
@@ -8955,7 +8962,7 @@ func TestClaudeExecutor_ExecuteOAuthCustomToolMCPAliasRoundTrip(t *testing.T) {
 	if _, ok := claudeBillingCCHDigitsOffset(upstreamBody); !ok {
 		t.Fatalf("Claude OAuth custom BaseURL body is missing CCH: %s", upstreamBody)
 	}
-	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.280 (external, cli)" {
+	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.302 (external, cli)" {
 		t.Fatalf("Messages User-Agent = %q, want CLI identity", got)
 	}
 	wantBetas := claudeCodeCLIBetas(payload, nil, true)
@@ -9035,7 +9042,7 @@ func TestClaudeExecutor_ExecuteStreamOAuthCustomToolMCPAliasRoundTrip(t *testing
 	if _, ok := claudeBillingCCHDigitsOffset(upstreamBody); !ok {
 		t.Fatalf("streaming Claude OAuth custom BaseURL body is missing CCH: %s", upstreamBody)
 	}
-	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.280 (external, cli)" {
+	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.302 (external, cli)" {
 		t.Fatalf("streaming User-Agent = %q, want CLI identity", got)
 	}
 	wantBetas := claudeCodeCLIBetas(payload, nil, true)
@@ -9175,9 +9182,17 @@ func TestInsertClaudeMidConversationSystemMessages_IsIdempotent(t *testing.T) {
 
 // TestClaudeCodeCLIBetas_MatchesObservedClientMatrix pins the Anthropic-Beta
 // baseline to Claude Code 2.1.220 behavior captured against api.anthropic.com.
-// The OAuth profile was reverified on 2026-08-03 with two distinct accounts.
+// TestClaudeCodeCLIBetas_MatchesObservedClientMatrix pins the Anthropic-Beta
+// baseline to the Claude Code 2.1.302 request-class lists in
+// cortexkit/anthropic-auth b9a8bd928 (model-capabilities.ts). Those lists are
+// reconstructed, not captured; testdata/claude_oauth_wire holds the vectors.
 func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
-	const constants = "claude-code-20250219,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
+	const head = "claude-code-20250219"
+	const core = "interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
+	const tail = "mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18"
+	main := head + "," + core + "," + tail
+	oauthMain := head + ",oauth-2025-04-20," + core + "," + tail + ",extended-cache-ttl-2025-04-11"
+	oauthPerTurn := head + ",oauth-2025-04-20," + core + ",per-turn-control-2026-07-01," + tail + ",extended-cache-ttl-2025-04-11"
 
 	tests := []struct {
 		name      string
@@ -9186,348 +9201,60 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 		oauth     bool
 		want      string
 	}{
+		{name: "api key main turn", body: `{"model":"claude-opus-4-6"}`, want: main},
+		{name: "oauth main turn", body: `{"model":"claude-opus-5"}`, oauth: true, want: oauthMain},
+		{name: "fable 5.1 adds per-turn-control after prompt-caching-scope", body: `{"model":"claude-fable-5-1"}`, oauth: true, want: oauthPerTurn},
+		{name: "opus 5.5 adds per-turn-control", body: `{"model":"claude-opus-5-5"}`, oauth: true, want: oauthPerTurn},
+		{name: "sonnet 5.5 adds per-turn-control", body: `{"model":"claude-sonnet-5-5-20261001"}`, oauth: true, want: oauthPerTurn},
+		{name: "opus 4.8 has no per-turn-control", body: `{"model":"claude-opus-4-8"}`, oauth: true, want: oauthMain},
 		{
-			name: "legacy model without tools omits both conditional betas",
-			body: `{"model":"claude-opus-4-6"}`,
-			want: constants + ",effort-2025-11-24",
+			name:  "haiku 5.5 moves claude-code after prompt-caching-scope",
+			body:  `{"model":"claude-haiku-5-5"}`,
+			oauth: true,
+			want:  "oauth-2025-04-20," + core + ",claude-code-20250219,per-turn-control-2026-07-01," + tail + ",extended-cache-ttl-2025-04-11",
 		},
 		{
-			name:      "context 1m sits right after claude-code, not at the end",
-			body:      `{"model":"claude-opus-4-6"}`,
+			name:      "context 1m follows oauth",
+			body:      `{"model":"claude-opus-5"}`,
+			oauth:     true,
 			requested: map[string]bool{claudeContext1MBeta: true},
-			want: "claude-code-20250219,context-1m-2025-08-07," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,effort-2025-11-24",
+			want:      head + ",oauth-2025-04-20,context-1m-2025-08-07," + core + "," + tail + ",extended-cache-ttl-2025-04-11",
 		},
 		{
-			name: "opus-5 1m variant reproduces the full observed order",
-			body: `{"model":"claude-opus-5","tools":[{"name":"Read","defer_loading":true}]}`,
-			requested: map[string]bool{
-				claudeContext1MBeta:          true,
-				claudeServerSideFallbackBeta: true,
-				claudeFallbackCreditBeta:     true,
-			},
-			want: "claude-code-20250219,context-1m-2025-08-07," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01," +
-				"advanced-tool-use-2025-11-20,effort-2025-11-24," +
-				"server-side-fallback-2026-06-01,fallback-credit-2026-06-01",
-		},
-		{
-			name:      "structured outputs trails effort",
-			body:      `{"model":"claude-opus-4-6"}`,
-			requested: map[string]bool{claudeStructuredOutputsBeta: true},
-			want:      constants + ",effort-2025-11-24,structured-outputs-2025-12-15",
-		},
-		{
-			name:      "unknown caller beta is not smuggled into the baseline",
-			body:      `{"model":"claude-opus-4-6"}`,
-			requested: map[string]bool{"totally-made-up-2030-01-01": true},
-			want:      constants + ",effort-2025-11-24",
-		},
-		{
-			name: "claude-sonnet-5 accepts role=system",
-			body: `{"model":"claude-sonnet-5"}`,
-			want: constants + ",mid-conversation-system-2026-04-07,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24",
-		},
-		{
-			name: "claude-sonnet-5-5 carries tool changes beta unlike sonnet-5",
-			body: `{"model":"claude-sonnet-5-5"}`,
-			want: constants + ",mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24",
-		},
-		{
-			name: "claude-opus-4-8 accepts role=system",
-			body: `{"model":"claude-opus-4-8"}`,
-			want: constants + ",mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
-		},
-		{
-			name: "claude-fable-5 accepts role=system",
-			body: `{"model":"claude-fable-5"}`,
-			want: constants + ",mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
-		},
-		{
-			name: "opus-5-5 carries capability betas without optional body fields",
-			body: `{"model":"claude-opus-5-5","thinking":{"type":"adaptive"}}`,
-			want: constants + ",mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01",
-		},
-		{
-			name: "opus-5-5 without thinking still carries clear-at capability",
-			body: `{"model":"claude-opus-5-5"}`,
-			want: constants + ",mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24",
-		},
-		{
-			name: "fable-5-1 carries per-turn-control but not timing unless the body asks",
-			body: `{"model":"claude-fable-5-1"}`,
-			want: constants + ",mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24",
-		},
-		{
-			name: "opus-5-5 timing and the other 2.1.280 gated betas keep wire order",
-			body: `{"model":"claude-opus-5-5","safeguards":[{}],"thinking":{"type":"adaptive","block_binding":{"prefix_mismatch_behavior":"omit"}},"messages":[{"role":"system","clear_at":"next_user_message","content":[{"type":"tool_addition","tool":{"definition":{"name":"bash"}}}]},{"role":"user","content":"x","output_config":{"timing":{"now":"2026-09-23T00:00:00Z"}}}],"cache_control":{"type":"ephemeral","evict_on_complete":true}}`,
-			requested: map[string]bool{
-				claudeThinkingResumptionBeta: true,
-			},
-			want: constants + ",mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,timing-2026-09-09," +
-				"mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15," +
-				"mid-conversation-system-clear-at-2026-08-21,dangerous-tool-use-2026-09-03,effort-2025-11-24," +
-				"thinking-binding-controls-2026-08-01,thinking-resumption-2026-07-17,prompt-caching-evict-2026-05-12",
-		},
-		{
-			name: "claude-opus-4-7 stays on the reminder path",
-			body: `{"model":"claude-opus-4-7"}`,
-			want: constants + ",effort-2025-11-24",
-		},
-		{
-			name:  "oauth uses tool search and the current cache TTL trailer",
-			body:  `{"model":"claude-opus-4-6","tools":[{"name":"Read","defer_loading":true}]}`,
+			name:  "structured output sits before cache-diagnosis, fast mode trails",
+			body:  `{"model":"claude-opus-4-8","speed":"fast","diagnostics":{"previous_message_id":null},"output_config":{"format":{"type":"json_schema","schema":{}}}}`,
 			oauth: true,
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20," +
-				"effort-2025-11-24,extended-cache-ttl-2025-04-11",
+			want:  oauthMain + ",structured-outputs-2025-12-15,cache-diagnosis-2026-04-07,fast-mode-2026-02-01",
 		},
+		{name: "cache-diagnosis needs a diagnostics body", body: `{"model":"claude-opus-5","diagnostics":{}}`, oauth: true, want: oauthMain + ",cache-diagnosis-2026-04-07"},
+		{name: "fallbacks add server-side-fallback only", body: `{"model":"claude-fable-5-1","fallbacks":[{"model":"claude-opus-5"}]}`, oauth: true, want: oauthPerTurn + ",server-side-fallback-2026-06-01"},
+		{name: "fallback credit token adds fallback-credit", body: `{"model":"claude-opus-5","fallback_credit_token":"fct_1"}`, oauth: true, want: oauthMain + ",fallback-credit-2026-06-01"},
 		{
-			name:  "oauth precedes context-1m",
-			body:  `{"model":"claude-opus-5","tools":[{"name":"Read","defer_loading":true}]}`,
+			name:  "subagent omits extended-cache-ttl",
+			body:  `{"model":"claude-sonnet-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.302.0ab; cc_is_subagent=true;"}]}`,
 			oauth: true,
-			requested: map[string]bool{
-				claudeContext1MBeta:          true,
-				claudeServerSideFallbackBeta: true,
-				claudeFallbackCreditBeta:     true,
-			},
-			want: "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01," +
-				"advanced-tool-use-2025-11-20,effort-2025-11-24," +
-				"server-side-fallback-2026-06-01,fallback-credit-2026-06-01," +
-				"extended-cache-ttl-2025-04-11",
+			want:  head + ",oauth-2025-04-20," + core + "," + tail,
 		},
 		{
-			name: "api key path sends neither oauth beta",
-			body: `{"model":"claude-opus-4-6"}`,
-			want: constants + ",effort-2025-11-24",
+			name:  "quota probe uses the quota list",
+			body:  `{"model":"claude-sonnet-5","max_tokens":1,"messages":[{"role":"user","content":"quota"}]}`,
+			oauth: true,
+			want:  "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05",
 		},
 		{
-			name: "claude-haiku-4-5-20251001 stays on the reminder path and omits effort",
-			body: `{"model":"claude-haiku-4-5-20251001"}`,
-			want: constants,
-		},
-		{
-			name: "legacy model with inline tools no longer adds advanced tool use",
-			body: `{"model":"claude-sonnet-4-6","tools":[{"name":"Read"}]}`,
-			want: constants + ",effort-2025-11-24",
-		},
-		{
-			name: "deferred tool adds advanced tool use",
-			body: `{"model":"claude-sonnet-4-6","tools":[{"name":"Read","defer_loading":true}]}`,
-			want: constants + ",advanced-tool-use-2025-11-20,effort-2025-11-24",
-		},
-		{
-			name: "tool search server tool adds advanced tool use",
-			body: `{"model":"claude-sonnet-4-6","tools":[{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"},{"name":"Read"}]}`,
-			want: constants + ",advanced-tool-use-2025-11-20,effort-2025-11-24",
-		},
-		{
-			name: "tool use examples add advanced tool use",
-			body: `{"model":"claude-sonnet-4-6","tools":[{"name":"Read","input_examples":[{"path":"a.go"}]}]}`,
-			want: constants + ",advanced-tool-use-2025-11-20,effort-2025-11-24",
-		},
-		{
-			name: "programmatic tool calling adds advanced tool use",
-			body: `{"model":"claude-sonnet-4-6","tools":[{"name":"Read","allowed_callers":["code_execution_20250825"]}]}`,
-			want: constants + ",advanced-tool-use-2025-11-20,effort-2025-11-24",
-		},
-		{
-			name:      "requested advanced tool use is honored for inline tools",
-			body:      `{"model":"claude-sonnet-4-6","tools":[{"name":"Read"}]}`,
-			requested: map[string]bool{claudeAdvancedToolUseBeta: true},
-			want:      constants + ",advanced-tool-use-2025-11-20,effort-2025-11-24",
-		},
-		{
-			name: "role=system model without tools adds mid conversation system only",
-			body: `{"model":"claude-opus-5"}`,
-			want: constants + ",mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
-		},
-		{
-			name: "role=system model with tool search adds both in wire order",
-			body: `{"model":"claude-opus-5","tools":[{"name":"Read","defer_loading":true}]}`,
-			want: constants + ",mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,effort-2025-11-24",
-		},
-		{
-			name: "empty tools array does not add advanced tool use",
-			body: `{"model":"claude-opus-4-6","tools":[]}`,
-			want: constants + ",effort-2025-11-24",
-		},
-		{
-			name: "unknown future model keeps the optimistic role=system default",
-			body: `{"model":"claude-future-9"}`,
-			want: constants + ",mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
-		},
-		{
-			name: "thinking display summarized drops redact-thinking",
-			body: `{"model":"claude-opus-5","thinking":{"type":"adaptive","display":"summarized"}}`,
-			want: "claude-code-20250219,interleaved-thinking-2025-05-14," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01," +
-				"effort-2025-11-24",
-		},
-		{
-			name: "thinking display omitted drops redact-thinking as well",
-			body: `{"model":"claude-opus-4-6","thinking":{"type":"enabled","budget_tokens":2048,"display":"omitted"}}`,
-			want: "claude-code-20250219,interleaved-thinking-2025-05-14," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,effort-2025-11-24",
-		},
-		{
-			name: "thinking without display keeps redact-thinking",
-			body: `{"model":"claude-opus-4-6","thinking":{"type":"adaptive"}}`,
-			want: constants + ",effort-2025-11-24",
-		},
-		{
-			name: "blank display value keeps redact-thinking",
-			body: `{"model":"claude-opus-4-6","thinking":{"type":"adaptive","display":"  "}}`,
-			want: constants + ",effort-2025-11-24",
-		},
-		{
-			name:      "advisor tool beta requested placed before advanced-tool-use",
-			body:      `{"model":"claude-opus-5","tools":[{"name":"Read","defer_loading":true}]}`,
-			requested: map[string]bool{"advisor-tool-2026-03-01": true},
-			want:      constants + ",mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24",
-		},
-		{
-			name: "body with advisor server tool automatically adds advisor-tool beta",
+			name: "advisor tool precedes advanced-tool-use",
 			body: `{"model":"claude-opus-5","tools":[{"type":"advisor_20260301","name":"advisor"}]}`,
-			want: constants + ",mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,advisor-tool-2026-03-01,effort-2025-11-24",
+			want: head + "," + core + ",mid-conversation-tool-changes-2026-07-01,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18",
 		},
 		{
-			// Captured 2026-09-02 from Claude Code 2.1.258 (cli entrypoint, OAuth,
-			// auto mode on): 158 inline tools without tool search, advisor beta
-			// enabled for the account, thinking adaptive without display.
-			name:  "2.1.258 main thread capture with inline tools and afk-mode",
-			body:  `{"model":"claude-fable-5-1","tools":[{"name":"Read"}],"thinking":{"type":"adaptive"}}`,
-			oauth: true,
-			requested: map[string]bool{
-				claudeAdvisorToolBeta: true,
-				claudeAFKModeBeta:     true,
-			},
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01," +
-				"advisor-tool-2026-03-01,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01," +
-				"afk-mode-2026-01-31,extended-cache-ttl-2025-04-11",
+			name:      "on-demand betas keep wire order",
+			body:      `{"model":"claude-opus-5-5","safeguards":[{}],"messages":[{"role":"system","clear_at":"next_user_message","content":[{"type":"tool_addition","tool":{"definition":{"name":"bash"}}}]},{"role":"user","content":"x","output_config":{"timing":{"now":"2026-09-23T00:00:00Z"}}}],"cache_control":{"type":"ephemeral","evict_on_complete":true}}`,
+			requested: map[string]bool{claudeThinkingResumptionBeta: true, claudeAFKModeBeta: true},
+			want: head + "," + core + ",per-turn-control-2026-07-01,timing-2026-09-09,mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15," +
+				"advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,dangerous-tool-use-2026-09-03,effort-2025-11-24," +
+				"thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,thinking-resumption-2026-07-17,afk-mode-2026-01-31,prompt-caching-evict-2026-05-12",
 		},
-		{
-			name:      "afk-mode sits between fast-mode and extended-cache-ttl",
-			body:      `{"model":"claude-opus-5","speed":"fast"}`,
-			oauth:     true,
-			requested: map[string]bool{claudeAFKModeBeta: true},
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01," +
-				"effort-2025-11-24,fast-mode-2026-02-01," +
-				"afk-mode-2026-01-31,extended-cache-ttl-2025-04-11",
-		},
-		{
-			name:  "afk-mode is not added unless the caller sent it",
-			body:  `{"model":"claude-opus-5"}`,
-			oauth: true,
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01," +
-				"effort-2025-11-24,extended-cache-ttl-2025-04-11",
-		},
-		{
-			name: "thinking display updates emits thinking-display-updates beta and drops redact-thinking",
-			body: `{"model":"claude-fable-5-1","thinking":{"type":"adaptive","display":"updates"}}`,
-			want: "claude-code-20250219,interleaved-thinking-2025-05-14," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01," +
-				"mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18",
-		},
-		{
-			name: "body with fallbacks automatically adds server-side-fallback beta",
-			body: `{"model":"claude-fable-5-1","fallbacks":[{"model":"claude-opus-5"}]}`,
-			want: constants + ",mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,server-side-fallback-2026-06-01",
-		},
-		{
-			name:  "subagent request omits extended-cache-ttl beta",
-			body:  `{"model":"claude-sonnet-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.258.0ab; cc_is_subagent=true;"}]}`,
-			oauth: true,
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-system-clear-at-2026-08-21," +
-				"effort-2025-11-24",
-		},
-		{
-			name:  "probe request max_tokens=1 omits effort and extended-cache-ttl betas",
-			body:  `{"model":"claude-sonnet-5","max_tokens":1}`,
-			oauth: true,
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-system-clear-at-2026-08-21",
-		},
-		{
-			name:      "haiku model omits effort beta even if requested",
-			body:      `{"model":"claude-haiku-4-5-20251001"}`,
-			requested: map[string]bool{"effort-2025-11-24": true},
-			oauth:     true,
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05," +
-				"extended-cache-ttl-2025-04-11",
-		},
-		{
-			name:      "disabled thinking omits effort beta even if requested",
-			body:      `{"model":"claude-sonnet-5","thinking":{"type":"disabled"}}`,
-			requested: map[string]bool{"effort-2025-11-24": true},
-			oauth:     true,
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-system-clear-at-2026-08-21," +
-				"extended-cache-ttl-2025-04-11",
-		},
-		{
-			name:  "body with fallback_credit_token automatically adds fallback-credit beta",
-			body:  `{"model":"claude-sonnet-5","fallback_credit_token":"fct_12345"}`,
-			oauth: true,
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-system-clear-at-2026-08-21," +
-				"effort-2025-11-24,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11",
-		},
-		{
-			name:  "oauth body with fallbacks automatically adds fallback-credit beta",
-			body:  `{"model":"claude-fable-5-1","fallbacks":[{"model":"claude-opus-5"}]}`,
-			oauth: true,
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01," +
-				"mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,server-side-fallback-2026-06-01,fallback-credit-2026-06-01," +
-				"extended-cache-ttl-2025-04-11",
-		},
-		{
-			name:      "requested fallback-credit beta is honored",
-			body:      `{"model":"claude-sonnet-5"}`,
-			requested: map[string]bool{claudeFallbackCreditBeta: true},
-			oauth:     true,
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-system-clear-at-2026-08-21," +
-				"effort-2025-11-24,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11",
-		},
+		{name: "unknown caller beta is not smuggled into the baseline", body: `{"model":"claude-opus-4-6"}`, requested: map[string]bool{"totally-made-up-2030-01-01": true}, want: main},
 	}
 
 	for _, tt := range tests {
@@ -9539,13 +9266,6 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 	}
 }
 
-// TestApplyClaudeHeaders_StreamTransportNegotiation pins the observed 2.1.220
-// behaviour: a streaming request to api.anthropic.com negotiates exactly like a
-// non-streaming one, because Anthropic selects SSE from the body. Other
-// Anthropic-compatible upstreams keep the conservative SSE contract.
-
-// TestWithClaudeAdvisorToolBeta_InsertsBeforeTrailingBetas pins the advisor
-// insertion point against every beta that follows it on the 2.1.258 wire,
 // including a caller-supplied afk-mode-2026-01-31.
 func TestWithClaudeAdvisorToolBeta_InsertsBeforeTrailingBetas(t *testing.T) {
 	const head = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07"

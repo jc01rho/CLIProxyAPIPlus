@@ -490,6 +490,13 @@ upstream:
     # Default false keeps the translation and catalog behavior that predate tool_search support.
     tool-search: false
 
+    # When true, gzip Claude OAuth request bodies of 4096 characters or more that go straight to
+    # api.anthropic.com without a proxy, the way Claude Code 2.1.302 sends them (cch reset to
+    # 00000, whitespace padding). Request logs keep the uncompressed body. A rejected gzip body
+    # is resent uncompressed once and gzip stays off for the rest of the process.
+    # Default false keeps uncompressed bodies.
+    request-gzip: false
+
     # Days to retain the cloaked currentDate pin per session, so an idle gap or a credential
     # switch cannot re-anchor the date and invalidate earlier thinking signatures and the
     # prompt cache. Default 7; an explicit 0 keeps the continuity-scoped pin (1h lifetime).

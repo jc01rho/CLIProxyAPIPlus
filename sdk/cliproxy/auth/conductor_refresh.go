@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -846,6 +847,10 @@ func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, e
 	if alreadyTried || !authHasRefreshCredential(auth) || hasUnauthorizedAuthFailure(auth) {
 		return auth, false
 	}
+	if reloaded, ok := m.reloadNewerStoredClaudeToken(ctx, auth, failedToken); ok {
+		log.Debugf("unauthorized response for %s (%s), retrying with a newer stored access token", auth.Provider, auth.ID)
+		return reloaded, true
+	}
 	log.Debugf("unauthorized response for %s (%s), refreshing credentials before fallback", auth.Provider, auth.ID)
 	refreshed, errRefresh := m.refreshAuthForRequest(ctx, auth.ID, failedToken)
 	if errRefresh != nil || refreshed == nil {
@@ -856,6 +861,59 @@ func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, e
 		return auth, false
 	}
 	return refreshed, true
+}
+
+// claudeStoredTokenFields are the credential fields copied from the backing
+// file when it holds a newer Claude access token.
+var claudeStoredTokenFields = []string{"access_token", "refresh_token", "expired", "last_refresh", "id_token"}
+
+// reloadNewerStoredClaudeToken re-reads a file-backed Claude credential after
+// a 401 and, when the file already holds a different access token (another
+// process or session refreshed it), adopts that token instead of spending the
+// refresh token again. It changes nothing when the file is missing, unreadable
+// or still holds the rejected token.
+func (m *Manager) reloadNewerStoredClaudeToken(ctx context.Context, auth *Auth, failedToken string) (*Auth, bool) {
+	if m == nil || auth == nil || failedToken == "" || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
+		return nil, false
+	}
+	path := auth.FileSnapshotPath()
+	if path == "" {
+		return nil, false
+	}
+	data, errRead := os.ReadFile(path)
+	if errRead != nil {
+		return nil, false
+	}
+	stored := make(map[string]any)
+	if errUnmarshal := json.Unmarshal(data, &stored); errUnmarshal != nil {
+		return nil, false
+	}
+	storedToken := authOuterAccessToken(&Auth{Metadata: stored})
+	if storedToken == "" || storedToken == failedToken {
+		return nil, false
+	}
+	updated, ok, errModify := m.Modify(WithSkipPersist(ctx), auth.ID, 0, func(current *Auth) error {
+		if authOuterAccessToken(current) != failedToken {
+			return nil
+		}
+		if current.Metadata == nil {
+			current.Metadata = make(map[string]any)
+		}
+		for _, key := range claudeStoredTokenFields {
+			if value, exists := stored[key]; exists {
+				current.Metadata[key] = value
+			}
+		}
+		return nil
+	})
+	if errModify != nil || !ok || updated == nil {
+		return nil, false
+	}
+	token := authOuterAccessToken(updated)
+	if token == "" || token == failedToken || updated.RejectedAccessToken == token {
+		return nil, false
+	}
+	return updated, true
 }
 
 func invalidGrantBackoffDuration(failures int) time.Duration {

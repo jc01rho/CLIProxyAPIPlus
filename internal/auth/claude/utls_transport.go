@@ -4,6 +4,7 @@ package claude
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -232,5 +233,17 @@ func NewAnthropicHttpClient(cfg *config.SDKConfig) *http.Client {
 			transport = configured
 		}
 	}
-	return &http.Client{Transport: transport}
+	return &http.Client{Transport: transport, CheckRedirect: RefuseOAuthRedirect}
+}
+
+// ErrOAuthRedirectRefused is returned when an upstream answers a request that
+// carries a Claude OAuth token with a redirect.
+var ErrOAuthRedirectRefused = errors.New("claude oauth: redirect refused; an OAuth token is never forwarded to another location")
+
+// RefuseOAuthRedirect is an http.Client CheckRedirect that never follows a
+// redirect, so a configured destination cannot forward an OAuth bearer token
+// or refresh token elsewhere. The destination itself (including a custom
+// base_url) is still whatever the configuration chose.
+func RefuseOAuthRedirect(*http.Request, []*http.Request) error {
+	return ErrOAuthRedirectRefused
 }

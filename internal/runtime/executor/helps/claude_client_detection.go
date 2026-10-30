@@ -229,7 +229,7 @@ func matchesMeasuredClaudeCodeHaiku55HelperProfile(
 }
 
 func measuredClaudeCodeHaiku55HelperHeadersMatch(headers http.Header, cfg *config.Config) bool {
-	profile := defaultClaudeDeviceProfile(cfg)
+	profile := nativeClaudeDetectionProfile(cfg)
 	expected := map[string]string{
 		"Accept":                  "application/json",
 		"Content-Type":            "application/json",
@@ -413,7 +413,7 @@ func plausibleClaudeCodeHelperRuntimeVersion(version string) bool {
 }
 
 func measuredClaudeCodeHelperHeadersMatch(headers http.Header, cfg *config.Config, shape claudeCodeHelperShape) bool {
-	profile := defaultClaudeDeviceProfile(cfg)
+	profile := nativeClaudeDetectionProfile(cfg)
 	expected := map[string]string{
 		"Accept":                  "application/json",
 		"Content-Type":            "application/json",
@@ -680,7 +680,7 @@ func plausibleClaudeCodeUserAgent(userAgent string, cfg *config.Config) bool {
 		return false
 	}
 	candidate, okCandidate := parseClaudeCLIVersion(userAgent)
-	baseline, okBaseline := parseClaudeCLIVersion(defaultClaudeDeviceProfile(cfg).UserAgent)
+	baseline, okBaseline := parseClaudeCLIVersion(nativeClaudeDetectionProfile(cfg).UserAgent)
 	// Patch releases (>= baseline.patch) within the release line preserve native passthrough.
 	return okCandidate && okBaseline && plausibleClaudeCLIVersion(candidate, baseline)
 }
