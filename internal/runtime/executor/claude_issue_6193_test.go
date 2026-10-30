@@ -43,9 +43,11 @@ func TestIssue6193_Sonnet55ToolChangeBeta(t *testing.T) {
 		"claude-sonnet-5[1m]",
 	}
 	for _, model := range sonnet5Variants {
+		// Claude Code 2.1.302 sends one main-turn list for every model row
+		// without its own adjustments, Sonnet 5 included.
 		betas := claudeCodeCLIBetas([]byte(`{"model":"`+model+`"}`), nil, false)
-		if strings.Contains(betas, "mid-conversation-tool-changes-2026-07-01") {
-			t.Fatalf("claudeCodeCLIBetas for %s unexpectedly includes mid-conversation-tool-changes-2026-07-01, got: %s", model, betas)
+		if !strings.Contains(betas, "mid-conversation-tool-changes-2026-07-01") {
+			t.Fatalf("claudeCodeCLIBetas for %s missing mid-conversation-tool-changes-2026-07-01, got: %s", model, betas)
 		}
 		if !isClaudeSonnet5Model(model) {
 			t.Fatalf("isClaudeSonnet5Model(%q) = false, want true", model)

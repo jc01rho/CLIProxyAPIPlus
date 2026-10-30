@@ -159,11 +159,11 @@ func TestClaudeExecutor_ContextManagementNeverLeaksToOtherUpstreams(t *testing.T
 	if got := gjson.GetBytes(upstreamBody, "context_management"); got.Exists() {
 		t.Fatalf("non-Anthropic upstream received context_management = %s", got.Raw)
 	}
-	if upstreamUserAgent != "claude-cli/2.1.280 (external, cli)" {
-		t.Fatalf("upstream User-Agent = %q, want Claude Code 2.1.280", upstreamUserAgent)
+	if upstreamUserAgent != "claude-cli/2.1.302 (external, cli)" {
+		t.Fatalf("upstream User-Agent = %q, want Claude Code 2.1.302", upstreamUserAgent)
 	}
-	if billing := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.Contains(billing, "cc_version=2.1.280.") {
-		t.Fatalf("upstream billing header = %q, want Claude Code 2.1.280", billing)
+	if billing := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.Contains(billing, "cc_version=2.1.302.") {
+		t.Fatalf("upstream billing header = %q, want Claude Code 2.1.302", billing)
 	}
 }
 

@@ -117,7 +117,7 @@ func mustClaudeDeviceProfileJSON(t *testing.T, value claudeDeviceProfileKVValue)
 func claudeDeviceHeaders(userAgent string) http.Header {
 	return http.Header{
 		"User-Agent":                  {userAgent},
-		"X-Stainless-Package-Version": {defaultClaudeFingerprintPackageVersion},
+		"X-Stainless-Package-Version": {nativeClaudeCodeFloorPackageVersion},
 		"X-Stainless-Runtime-Version": {defaultClaudeFingerprintRuntimeVersion},
 		"X-Stainless-Os":              {"Windows"},
 		"X-Stainless-Arch":            {"x64"},

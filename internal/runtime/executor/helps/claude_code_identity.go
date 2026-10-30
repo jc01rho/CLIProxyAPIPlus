@@ -145,7 +145,7 @@ func fetchClaudeCodeAccountUUID(ctx context.Context, accessToken, model string) 
 	req.Header.Set("authorization", "Bearer "+accessToken)
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	req.Header.Set("user-agent", "claude-code/2.1.177")
+	req.Header.Set("user-agent", "claude-code/"+DefaultClaudeCodeVersion)
 
 	client := &http.Client{Timeout: claudeCodeBootstrapTimeout}
 	resp, err := client.Do(req)
@@ -193,11 +193,13 @@ func BuildClaudeCodeMetadataUserID(identity *ClaudeCodeIdentity) string {
 	if identity == nil || identity.AccountUUID == "" {
 		return ""
 	}
-	data := map[string]string{
-		"device_id":    identity.DeviceID,
-		"account_uuid": identity.AccountUUID,
-		"session_id":   identity.SessionID,
-	}
+	// Claude Code serializes device_id, account_uuid, session_id in this
+	// order; a map would sort the keys alphabetically.
+	data := struct {
+		DeviceID    string `json:"device_id"`
+		AccountUUID string `json:"account_uuid"`
+		SessionID   string `json:"session_id"`
+	}{identity.DeviceID, identity.AccountUUID, identity.SessionID}
 	b, _ := json.Marshal(data)
 	return string(b)
 }

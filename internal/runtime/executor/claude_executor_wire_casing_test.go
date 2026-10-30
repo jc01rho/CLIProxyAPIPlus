@@ -24,6 +24,7 @@ var claudeCode2_1_220WireHeaderOrder = []string{
 	"Accept",
 	"Authorization",
 	"Content-Type",
+	"X-Claude-Code-Request-Class",
 	"X-Claude-Code-Session-Id",
 	"X-Stainless-Arch",
 	"X-Stainless-Lang",

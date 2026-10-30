@@ -146,7 +146,7 @@ func TestClaudeExecutorMinimalNativeHelperCloaksMarkerlessWire(t *testing.T) {
 		t.Fatalf("system block count = %d, want masqueraded 2: %s", got, upstreamBody)
 	}
 	// Independent SHA-256 vector: "helper probe" samples "ep0" at indices 4, 7, 20.
-	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header: cc_version=2.1.280.b9a; cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000") {
+	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header: cc_version=2.1.302.0b3; cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000") {
 		t.Fatalf("billing header not re-signed at current baseline: %q", got)
 	}
 	if got := gjson.GetBytes(upstreamBody, "system.1.text").String(); got != "You are Claude Code, Anthropic's official CLI for Claude." {
@@ -256,8 +256,8 @@ func assertClaudeNativeHelperHeaders(t *testing.T, got, incoming http.Header, wa
 		}
 	}
 	// An outdated caller SDK profile is replaced with the current CLI baseline.
-	if got := claudeNativeHelperHeaderValue(got, "X-Stainless-Package-Version"); got != "0.112.1" {
-		t.Fatalf("X-Stainless-Package-Version = %q, want fingerprint baseline 0.112.1", got)
+	if got := claudeNativeHelperHeaderValue(got, "X-Stainless-Package-Version"); got != "0.128.0" {
+		t.Fatalf("X-Stainless-Package-Version = %q, want fingerprint baseline 0.128.0", got)
 	}
 	if got := claudeNativeHelperHeaderValue(got, "X-Stainless-Runtime-Version"); got != "v26.3.0" {
 		t.Fatalf("X-Stainless-Runtime-Version = %q, want fingerprint baseline v26.3.0", got)
@@ -271,7 +271,7 @@ func assertClaudeNativeHelperHeaders(t *testing.T, got, incoming http.Header, wa
 	if got := claudeNativeHelperHeaderValue(got, "X-Claude-Code-Session-Id"); !uuidRe.MatchString(got) {
 		t.Fatalf("X-Claude-Code-Session-Id = %q, want re-derived fingerprint UUID", got)
 	}
-	if got := claudeNativeHelperHeaderValue(got, "User-Agent"); got != "claude-cli/2.1.280 (external, cli)" {
+	if got := claudeNativeHelperHeaderValue(got, "User-Agent"); got != "claude-cli/2.1.302 (external, cli)" {
 		t.Fatalf("User-Agent = %q, want pinned fingerprint baseline", got)
 	}
 	if got := claudeNativeHelperHeaderValue(got, "Accept"); got != wantAccept {

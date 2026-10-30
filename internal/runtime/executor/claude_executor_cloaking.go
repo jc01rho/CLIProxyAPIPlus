@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -149,7 +150,7 @@ func computeFingerprint(messageText, version string) string {
 
 // generateBillingHeader creates the x-anthropic-billing-header text block that
 // Claude Code prepends to its system prompt. cch is present only on signed paths.
-func generateBillingHeader(cchSigning bool, version, messageText, entrypoint, workload string, isSubagent bool, prevReq, promptID string, turnOrigin ...string) string {
+func generateBillingHeader(cchSigning bool, version, messageText, entrypoint, workload string, isSubagent bool, prevReq, promptID string, promptIndex int, turnOrigin ...string) string {
 	if entrypoint == "" {
 		entrypoint = "cli"
 	}
@@ -187,6 +188,11 @@ func generateBillingHeader(cchSigning bool, version, messageText, entrypoint, wo
 		}
 		if len(turnOrigin) > 0 && turnOrigin[0] == "human" {
 			b.WriteString(" cc_turn_origin=human;")
+			// Claude Code 2.1.302 follows cc_prompt_id with the prompt position.
+			if promptID != "" && promptIndex > 0 {
+				index := strconv.Itoa(promptIndex)
+				b.WriteString(" cc_prompt_index=" + index + "; cc_turn_index=" + index + ";")
+			}
 		}
 	}
 	return b.String()
@@ -301,7 +307,37 @@ func claudeCCHFallbackBillingHeader(ctx context.Context, cfg *config.Config, pay
 		isSubagent,
 		prevReq,
 		promptID,
+		claudeCountUserPrompts(payload),
 	)
+}
+
+// claudeCountUserPrompts counts user messages that carry anything besides tool
+// results. A tool-result message continues the prompt before it, so its
+// request keeps that prompt's position, as Claude Code's cc_prompt_index does.
+func claudeCountUserPrompts(payload []byte) int {
+	count := 0
+	gjson.GetBytes(payload, "messages").ForEach(func(_, message gjson.Result) bool {
+		if message.Get("role").String() != "user" {
+			return true
+		}
+		content := message.Get("content")
+		if content.IsArray() {
+			blocks := content.Array()
+			onlyToolResults := len(blocks) > 0
+			for _, block := range blocks {
+				if block.Get("type").String() != "tool_result" {
+					onlyToolResults = false
+					break
+				}
+			}
+			if onlyToolResults {
+				return true
+			}
+		}
+		count++
+		return true
+	})
+	return count
 }
 
 const claudeCodeCLIIdentity = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -414,7 +450,7 @@ func checkSystemInstructionsWithSigningModeAt(
 	system := gjson.GetBytes(payload, "system")
 	messageText := claudeBillingFingerprintMessageText(payload)
 
-	billingText := generateBillingHeader(cchSigning, version, messageText, entrypoint, workload, isSubagent, prevReq, promptID, turnOrigin...)
+	billingText := generateBillingHeader(cchSigning, version, messageText, entrypoint, workload, isSubagent, prevReq, promptID, claudeCountUserPrompts(payload), turnOrigin...)
 	billingBlock := buildTextBlock(billingText, nil)
 
 	isExplicit := (len(turnOrigin) > 1 && turnOrigin[1] == "explicit_cache_mode") || isExplicitPromptCacheMode(payload)
