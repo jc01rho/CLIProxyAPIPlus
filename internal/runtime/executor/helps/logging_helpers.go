@@ -74,6 +74,10 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 	if cfg == nil || cfg.CommercialMode {
 		return
 	}
+	// Check the immutable policy before accessing the pooled request context.
+	if !cfg.RequestLog && logging.DeferredAPIRequestCaptureDisabled(ctx) {
+		return
+	}
 	if !cfg.RequestLog {
 		deferAPIRequest(ginCtx, info)
 		return

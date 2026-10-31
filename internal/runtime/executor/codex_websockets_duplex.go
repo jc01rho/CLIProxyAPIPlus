@@ -474,7 +474,13 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					steerReq := req
 					steerReq.Payload = payload
 					steerOpts := opts
+					steerOpts.OriginalRequest = payload
 					steerOpts.Headers = steerHeaders
+					if errExpand := helps.ExpandRecognizedResponsesCompactionCapsules(&steerReq, &steerOpts); errExpand != nil {
+						fail(statusErr{code: http.StatusBadRequest, msg: errExpand.Error()})
+						return
+					}
+					payload = steerReq.Payload
 					if codexUseSIWCForRequest(ctx, auth, steerHeaders) {
 						payload = thinking.StripConfigurationUpdates(payload)
 					}
@@ -869,13 +875,14 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				if eventType != "response.incomplete" {
 					cacheCodexReasoningReplayFromCompleted(current.replayScope, payload)
 				}
-				if detail, ok := helps.ParseCodexUsage(payload); ok {
+				if detail, ok := helps.ParseCodexUsageWithOutputItems(payload, outputItems, outputFallback); ok {
 					reporter.Publish(ctx, detail)
 				} else {
 					reporter.EnsurePublished(ctx)
 				}
+				publishCodexImageToolUsageWithOutputItems(ctx, reporter, current.clientBody, payload, outputItems, outputFallback)
 			}
-			if !send(cliproxyexecutor.StreamChunk{Payload: helps.EnsureResponsesUsageDetails(payload)}) {
+			if !send(cliproxyexecutor.StreamChunk{Payload: helps.EnsureResponsesUsageDetails(payload), Incomplete: eventType == "response.incomplete"}) {
 				return
 			}
 			if establishing {
