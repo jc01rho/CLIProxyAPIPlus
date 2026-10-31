@@ -7,6 +7,7 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/tiktoken-go/tokenizer"
+	"unicode/utf8"
 )
 
 // tokenizerCache stores tokenizer instances to avoid repeated creation.
@@ -81,6 +82,33 @@ func tokenizerForModel(sanitized string) (tokenizer.Codec, error) {
 	}
 }
 
+// maxTokenizedBytes caps how much text reaches the BPE encoder: encoder cost grows
+// quadratically with input length, so a 256KB prompt would otherwise take ~26s.
+// Longer text is counted from a leading sample and scaled to the full length.
+const maxTokenizedBytes = 16 << 10
+
+func countTokensBounded(enc tokenizer.Codec, text string) (int, error) {
+	if len(text) <= maxTokenizedBytes {
+		return enc.Count(text)
+	}
+	sample := text[:maxTokenizedBytes]
+	for len(sample) > 0 && !utf8.RuneStart(sample[len(sample)-1]) {
+		sample = sample[:len(sample)-1]
+	}
+	if sample == "" {
+		return enc.Count(text)
+	}
+	count, err := enc.Count(sample)
+	if err != nil {
+		return 0, err
+	}
+	scaled := int(int64(count) * int64(len(text)) / int64(len(sample)))
+	if scaled <= 0 {
+		scaled = count
+	}
+	return scaled, nil
+}
+
 // CountOpenAIChatTokens approximates prompt tokens for OpenAI chat completions payloads.
 func CountOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 	if enc == nil {
@@ -106,7 +134,7 @@ func CountOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 		return 0, nil
 	}
 
-	count, err := enc.Count(joined)
+	count, err := countTokensBounded(enc, joined)
 	if err != nil {
 		return 0, err
 	}
@@ -134,7 +162,7 @@ func CountClaudeChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 	if joined == "" {
 		return int64(imageTokens), nil
 	}
-	count, err := enc.Count(joined)
+	count, err := countTokensBounded(enc, joined)
 	if err != nil {
 		return 0, err
 	}

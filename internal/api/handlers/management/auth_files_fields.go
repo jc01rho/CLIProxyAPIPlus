@@ -1255,6 +1255,14 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 		if errHook := h.postAuthPersistHook(ctx, persistedRecord); errHook != nil {
 			return savedPath, fmt.Errorf("post-auth persist hook failed: %w", errHook)
 		}
+	} else if h.authManager != nil && strings.TrimSpace(savedPath) != "" {
+		if _, errStat := os.Stat(savedPath); errStat == nil {
+			if errReg := h.registerAuthFromFile(ctx, savedPath, nil); errReg != nil {
+				return savedPath, fmt.Errorf("register persisted auth failed: %w", errReg)
+			}
+		} else if errUpsert := h.upsertAuthRecord(ctx, record); errUpsert != nil {
+			return savedPath, fmt.Errorf("register persisted auth failed: %w", errUpsert)
+		}
 	}
 	return savedPath, nil
 }
