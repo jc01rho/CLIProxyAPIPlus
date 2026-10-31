@@ -26,6 +26,7 @@ func testPluginLibraryExtension() string {
 }
 
 func TestShadowPluginDirIsProcessScoped(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	dir, errDir := shadowPluginDir()
 	if errDir != nil {
 		t.Fatalf("shadowPluginDir() error = %v", errDir)
