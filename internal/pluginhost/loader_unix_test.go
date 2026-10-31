@@ -43,6 +43,7 @@ func buildReloadTestPlugin(t *testing.T, version int, outPath string) {
 }
 
 func TestUnixPluginReloadAfterShutdownUsesReplacedFile(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	dir := t.TempDir()
 	ext := ".so"
 	if runtime.GOOS == "darwin" {
@@ -165,6 +166,7 @@ func testShutdownCallCount(t *testing.T, client pluginClient) int {
 }
 
 func TestUnixPluginOpenFailureKeepsImageUsableOnRetry(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	dir := t.TempDir()
 	pluginPath := filepath.Join(dir, "failing"+testPluginLibraryExtension())
 	buildReloadTestPlugin(t, 3, pluginPath)
