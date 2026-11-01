@@ -49,9 +49,15 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) ([]byte
 				declarations.ForEach(func(_, declarationResult gjson.Result) bool {
 					declaration := []byte(declarationResult.Raw)
 					if parameters := declarationResult.Get("parameters"); parameters.Exists() {
-						declaration, _ = sjson.SetRawBytes(declaration, "parametersJsonSchema", []byte(parameters.Raw))
+						normalizedParams := util.NormalizeJSONSchemaNumericConstraints(parameters.Raw)
+						declaration, _ = sjson.SetRawBytes(declaration, "parametersJsonSchema", []byte(normalizedParams))
 						declaration, _ = sjson.DeleteBytes(declaration, "parameters")
 						declarationsChanged = true
+					} else if parametersJSONSchema := declarationResult.Get("parametersJsonSchema"); parametersJSONSchema.Exists() {
+						if normalizedParams := util.NormalizeJSONSchemaNumericConstraints(parametersJSONSchema.Raw); normalizedParams != parametersJSONSchema.Raw {
+							declaration, _ = sjson.SetRawBytes(declaration, "parametersJsonSchema", []byte(normalizedParams))
+							declarationsChanged = true
+						}
 					}
 					declarationItems = append(declarationItems, declaration)
 					return true
@@ -135,10 +141,15 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) ([]byte
 	// The reuse benchmark requires the same backing pointer and low allocs.
 	if !contentChanged && !rolesChanged {
 		origOut := out
-		// If generationConfig.responseSchema needs renaming, we must allocate.
-		if util.GetGJSONBytesNoCopy(rawJSON, "generationConfig.responseSchema").Exists() {
-			strJson, _ := util.RenameKey(string(out), "generationConfig.responseSchema", "generationConfig.responseJsonSchema")
-			out = []byte(strJson)
+		// Schema renaming normalizes numeric constraints, so it always allocates.
+		if responseSchema := gjson.GetBytes(out, "generationConfig.responseSchema"); responseSchema.Exists() {
+			normalizedSchema := util.NormalizeJSONSchemaNumericConstraints(responseSchema.Raw)
+			out, _ = sjson.SetRawBytes(out, "generationConfig.responseJsonSchema", []byte(normalizedSchema))
+			out, _ = sjson.DeleteBytes(out, "generationConfig.responseSchema")
+		} else if responseJSONSchema := gjson.GetBytes(out, "generationConfig.responseJsonSchema"); responseJSONSchema.Exists() {
+			if normalizedSchema := util.NormalizeJSONSchemaNumericConstraints(responseJSONSchema.Raw); normalizedSchema != responseJSONSchema.Raw {
+				out, _ = sjson.SetRawBytes(out, "generationConfig.responseJsonSchema", []byte(normalizedSchema))
+			}
 		}
 		// Backfill is required for correctness; only run when there are functionCalls.
 		out = backfillEmptyFunctionResponseNames(out)
@@ -157,6 +168,15 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) ([]byte
 	if util.GetGJSONBytesNoCopy(rawJSON, "generationConfig.responseSchema").Exists() {
 		strJson, _ := util.RenameKey(string(out), "generationConfig.responseSchema", "generationConfig.responseJsonSchema")
 		out = []byte(strJson)
+	if responseSchema := gjson.GetBytes(out, "generationConfig.responseSchema"); responseSchema.Exists() {
+		normalizedSchema := util.NormalizeJSONSchemaNumericConstraints(responseSchema.Raw)
+		out, _ = sjson.SetRawBytes(out, "generationConfig.responseJsonSchema", []byte(normalizedSchema))
+		out, _ = sjson.DeleteBytes(out, "generationConfig.responseSchema")
+	} else if responseJSONSchema := gjson.GetBytes(out, "generationConfig.responseJsonSchema"); responseJSONSchema.Exists() {
+		if normalizedSchema := util.NormalizeJSONSchemaNumericConstraints(responseJSONSchema.Raw); normalizedSchema != responseJSONSchema.Raw {
+			out, _ = sjson.SetRawBytes(out, "generationConfig.responseJsonSchema", []byte(normalizedSchema))
+		}
+	}
 	}
 
 	// Backfill empty functionResponse.name from the preceding functionCall.name.

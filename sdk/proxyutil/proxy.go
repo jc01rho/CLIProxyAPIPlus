@@ -107,6 +107,14 @@ func NewDirectTransport() *http.Transport {
 	return clone
 }
 
+// socksForwardDialer dials the SOCKS5 proxy itself. It mirrors net/http's
+// DefaultTransport dialer so the resulting upstream socket gets TCP keepalive:
+// proxy.Direct would leave keepalive at the OS default of hours, which lets a
+// silently dead peer pin an otherwise reusable connection.
+func socksForwardDialer() *net.Dialer {
+	return &net.Dialer{KeepAlive: 30 * time.Second}
+}
+
 // BuildHTTPTransport constructs an HTTP transport for the provided proxy setting.
 func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 	setting, errParse := Parse(raw)
@@ -348,7 +356,7 @@ func (d contextDirectDialer) Dial(network, addr string) (net.Conn, error) {
 	if d.ctx == nil {
 		d.ctx = context.Background()
 	}
-	conn, errDial := (&net.Dialer{}).DialContext(d.ctx, network, addr)
+	conn, errDial := socksForwardDialer().DialContext(d.ctx, network, addr)
 	if errDial != nil {
 		return nil, errDial
 	}

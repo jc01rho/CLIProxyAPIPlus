@@ -40,6 +40,10 @@ type VertexCompatKey struct {
 
 	// BillingClass classifies this credential for threshold-based routing policies.
 	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+	// ConnectionPool configures upstream connection reuse for this credential.
+	// Omitted disables pooling (preserving the fresh-transport-per-request default);
+	// pools stay per credential, so opting in never shares connections with another key.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
 
 	// Headers optionally adds extra HTTP headers for requests sent with this key.
 	// Commonly used for cookies, user-agent, and other authentication headers.

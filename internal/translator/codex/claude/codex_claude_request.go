@@ -7,10 +7,12 @@ package claude
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -42,17 +44,25 @@ import (
 // Returns:
 //   - []byte: The transformed request data in internal client format
 func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
-	return convertClaudeRequestToCodex(modelName, inputRawJSON, stream, false)
+	return ConvertClaudeRequestToCodexContext(context.Background(), modelName, inputRawJSON, stream)
 
 }
 
 // ConvertClaudeRequestToCodexWithCompat preserves assistant thinking blocks with
 // empty or unknown-format signatures for configured compatibility endpoints.
 func ConvertClaudeRequestToCodexWithCompat(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
-	return convertClaudeRequestToCodex(modelName, inputRawJSON, stream, true)
+	return ConvertClaudeRequestToCodexWithCompatContext(context.Background(), modelName, inputRawJSON, stream)
 }
 
-func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, preserveEmptyThinkingBlocks bool) ([]byte, error) {
+func ConvertClaudeRequestToCodexContext(ctx context.Context, modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	return convertClaudeRequestToCodex(modelName, inputRawJSON, stream, false, translatorcommon.VisibleCodexCommentary(ctx))
+}
+
+func ConvertClaudeRequestToCodexWithCompatContext(ctx context.Context, modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	return convertClaudeRequestToCodex(modelName, inputRawJSON, stream, true, translatorcommon.VisibleCodexCommentary(ctx))
+}
+
+func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, preserveEmptyThinkingBlocks, visibleCommentary bool) ([]byte, error) {
 	rawJSON := inputRawJSON
 	var drops translatorcommon.UserTurnDrops
 
@@ -109,10 +119,14 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 		messageResults := messagesResult.Array()
 		var pendingToolUseIDs []string
 		var pendingSystemReminders [][]byte
+		var pendingCommentaryMirror string
 
 		for i := 0; i < len(messageResults); i++ {
 			messageResult := messageResults[i]
 			messageRole := messageResult.Get("role").String()
+			if messageRole != "assistant" {
+				pendingCommentaryMirror = ""
+			}
 			if messageRole == "system" {
 				systemContent := messageResult.Get("content")
 				if reminderText, ok := translatorcommon.ClaudeMessageSystemReminderText(systemContent); ok {
@@ -159,6 +173,13 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 			}
 
 			appendTextContent := func(text string) {
+				if messageRole == "assistant" && pendingCommentaryMirror != "" {
+					expected := pendingCommentaryMirror
+					pendingCommentaryMirror = ""
+					if text == expected {
+						return
+					}
+				}
 				partType := "input_text"
 				if messageRole == "assistant" {
 					partType = "output_text"
@@ -173,11 +194,13 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 			}
 
 			appendImageContent := func(content []byte) {
+				pendingCommentaryMirror = ""
 				contentItems = append(contentItems, content)
 				bufferedSendable++
 			}
 
 			appendDocumentContent := func(dataURL string) {
+				pendingCommentaryMirror = ""
 				content := []byte(`{"type":"input_file","file_data":"","filename":"document.pdf"}`)
 				content, _ = sjson.SetBytes(content, "file_data", dataURL)
 				contentItems = append(contentItems, content)
@@ -209,9 +232,13 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 					return
 				}
 
+				pendingCommentaryMirror = ""
 				rawSignature := part.Get("signature").String()
 				if sigcompat.IsCodexCommentarySignatureMarker(rawSignature) {
 					appendCommentaryContent(part)
+					if visibleCommentary {
+						pendingCommentaryMirror = part.Get("thinking").String()
+					}
 					return
 				}
 				signature, ok := translatorcommon.CodexReplaySignatureForTarget(signatureTargetModel, rawSignature)
@@ -239,6 +266,9 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 				for j := 0; j < len(messageContentResults); j++ {
 					messageContentResult := messageContentResults[j]
 					contentType := messageContentResult.Get("type").String()
+					if contentType != "text" && contentType != "thinking" {
+						pendingCommentaryMirror = ""
+					}
 
 					switch contentType {
 					case "text":
@@ -270,6 +300,7 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 							drops.Drop(contentType)
 						}
 					case "tool_use":
+						pendingCommentaryMirror = ""
 						flushMessage()
 						if id := messageContentResult.Get("id").String(); id != "" {
 							pendingToolUseIDs = append(pendingToolUseIDs, id)
@@ -579,6 +610,11 @@ func convertClaudeWebSearchToolToCodex(tool gjson.Result) []byte {
 	return out
 }
 
+// gatewayToolNamePattern matches gateway tool ids of the form
+// `[mcp_]<server words>-<hex id...>_<tool>`, e.g.
+// `mcp_github-12345678-9abc-def0-1234-56789abcdef0-12345678_add-issue-comment`.
+var gatewayToolNamePattern = regexp.MustCompile(`^(?:mcp_)?([a-z][a-z0-9-]*?)-[0-9a-f]{6,}(?:-[0-9a-f]+)*_(.+)$`)
+
 // shortenNameIfNeeded applies a simple shortening rule for a single name.
 func shortenNameIfNeeded(name string) string {
 	const limit = 64
@@ -588,11 +624,20 @@ func shortenNameIfNeeded(name string) string {
 	if strings.HasPrefix(name, "mcp__") {
 		idx := strings.LastIndex(name, "__")
 		if idx > 0 {
-			cand := "mcp__" + name[idx+2:]
-			if len(cand) > limit {
-				return cand[:limit]
+			rest := name[idx+2:]
+			cand := "mcp__" + rest
+			if len(cand) <= limit {
+				return cand
 			}
-			return cand
+			// Plain truncation keeps only the shared server prefix, so every tool of a
+			// long-named server collapses to the same 64 characters and the model cannot
+			// tell them apart. Keep the server's words and the tool's own name instead.
+			if m := gatewayToolNamePattern.FindStringSubmatch(rest); m != nil {
+				if readable := "mcp__" + m[1] + "_" + m[2]; len(readable) <= limit {
+					return readable
+				}
+			}
+			return cand[:limit]
 		}
 	}
 	return name[:limit]
@@ -604,22 +649,7 @@ func buildShortNameMap(names []string) map[string]string {
 	used := map[string]struct{}{}
 	m := map[string]string{}
 
-	baseCandidate := func(n string) string {
-		if len(n) <= limit {
-			return n
-		}
-		if strings.HasPrefix(n, "mcp__") {
-			idx := strings.LastIndex(n, "__")
-			if idx > 0 {
-				cand := "mcp__" + n[idx+2:]
-				if len(cand) > limit {
-					cand = cand[:limit]
-				}
-				return cand
-			}
-		}
-		return n[:limit]
-	}
+	baseCandidate := shortenNameIfNeeded
 
 	makeUnique := func(cand string) string {
 		if _, ok := used[cand]; !ok {

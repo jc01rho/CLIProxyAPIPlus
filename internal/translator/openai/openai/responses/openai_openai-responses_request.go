@@ -252,9 +252,9 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			case "message", "":
 				// Handle regular message conversion
 				role := item.Get("role").String()
-				// Preserve the developer role: leading developer messages are
-				// folded into the system prompt by NormalizeLeadingOpenAIInstructions
-				// below, and later ones must survive translation as-is.
+				// Chat Completions supports developer messages. Preserve their role and
+				// position so mid-session instructions retain their original authority.
+				// Only real user turns participate in unsupported-content refusal.
 				isUserTurn := role == "user"
 				mergeableAssistantIndex = -1
 				if role != "assistant" {
