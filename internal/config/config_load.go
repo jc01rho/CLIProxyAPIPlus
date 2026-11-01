@@ -335,7 +335,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize Claude key headers
 	cfg.SanitizeClaudeKeys()
 	cfg.SanitizeCommandCodeKeys()
-	cfg.SanitizeFreebuffKeys()
 	cfg.SanitizeOpenCodeKeys()
 	cfg.SanitizeMistralKeys()
 	if errSanitize := cfg.SanitizeMimocodeKeys(); errSanitize != nil {

@@ -71,19 +71,15 @@ func TestBuildAPIKeyClientsCounts(t *testing.T) {
 		OpenAICompatibility: []config.OpenAICompatibility{
 			{APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "o1"}, {APIKey: "o2"}}},
 		},
-		FreebuffKey: []config.FreebuffKey{
-			{APIKey: "f1"},
-			{APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "f2"}, {APIKey: "f3"}}},
-		},
 		OpenCodeKey: []config.OpenCodeKey{
 			{APIKey: "public"},
 			{APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "oc1"}, {APIKey: "oc2"}}},
 		},
 	}
 
-	gemini, vertex, claude, codex, xai, meta, compat, commandCode, freebuff, mistral, openCode, mimocode := BuildAPIKeyClients(cfg)
-	if gemini != 3 || vertex != 1 || claude != 1 || codex != 2 || xai != 1 || meta != 1 || compat != 2 || commandCode != 0 || freebuff != 3 || mistral != 0 || openCode != 3 || mimocode != 0 {
-		t.Fatalf("unexpected counts: %d %d %d %d %d %d %d %d %d %d %d %d", gemini, vertex, claude, codex, xai, meta, compat, commandCode, freebuff, mistral, openCode, mimocode)
+	gemini, vertex, claude, codex, xai, meta, compat, commandCode, mistral, openCode, mimocode := BuildAPIKeyClients(cfg)
+	if gemini != 3 || vertex != 1 || claude != 1 || codex != 2 || xai != 1 || meta != 1 || compat != 2 || commandCode != 0 || mistral != 0 || openCode != 3 || mimocode != 0 {
+		t.Fatalf("unexpected counts: %d %d %d %d %d %d %d %d %d %d %d", gemini, vertex, claude, codex, xai, meta, compat, commandCode, mistral, openCode, mimocode)
 	}
 }
 

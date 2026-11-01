@@ -78,9 +78,6 @@ type APIKeyClientResult struct {
 	// CommandCodeKeyCount is the number of CommandCode API keys loaded
 	CommandCodeKeyCount int
 
-	// FreebuffKeyCount is the number of Freebuff API keys loaded
-	FreebuffKeyCount int
-
 	// MistralKeyCount is the number of Mistral API keys loaded
 	MistralKeyCount int
 

@@ -133,7 +133,6 @@ func ParseConfigBytesForFile(data []byte, configFile string) (*Config, error) {
 	cfg.SanitizeClaudeHeaderDefaults()
 	cfg.SanitizeClaudeKeys()
 	cfg.SanitizeCommandCodeKeys()
-	cfg.SanitizeFreebuffKeys()
 	cfg.SanitizeOpenCodeKeys()
 	cfg.SanitizeMistralKeys()
 	if errSanitize := cfg.SanitizeMimocodeKeys(); errSanitize != nil {

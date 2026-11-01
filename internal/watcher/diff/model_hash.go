@@ -81,29 +81,6 @@ func ComputeMistralModelsHash(models []config.MistralModel) string {
 	return hashJoined(keys)
 }
 
-func ComputeFreebuffModelsHash(models []config.FreebuffModel) string {
-	keys := normalizeModelPairs(func(out func(key string)) {
-		for _, model := range models {
-			name := strings.TrimSpace(model.Name)
-			alias := strings.TrimSpace(model.Alias)
-			agentID := strings.TrimSpace(model.AgentID)
-			displayName := strings.TrimSpace(model.DisplayName)
-			if name == "" && alias == "" && agentID == "" && displayName == "" {
-				continue
-			}
-			out(strings.Join([]string{
-				strings.ToLower(name),
-				strings.ToLower(alias),
-				strings.ToLower(agentID),
-				strings.ToLower(displayName),
-				strconv.Itoa(model.MaxContextLength),
-				strconv.FormatBool(model.ForceMapping),
-			}, "|"))
-		}
-	})
-	return hashJoined(keys)
-}
-
 func ComputeCodexModelsHash(models []config.CodexModel) string {
 	return modelconfig.ComputeCodexModelsHash(models)
 }
