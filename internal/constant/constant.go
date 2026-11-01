@@ -42,9 +42,6 @@ const (
 	// CommandCode represents the Command Code provider identifier.
 	CommandCode = "commandcode"
 
-	// Freebuff represents the Freebuff provider identifier.
-	Freebuff = "freebuff"
-
 	// OpenCode represents the OpenCode Zen / OpenCode Go provider identifier.
 	OpenCode = "opencode"
 
