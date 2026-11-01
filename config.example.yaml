@@ -1025,11 +1025,6 @@ upstream:
 #       models: [{name: "command-model", alias: "command-latest"}]
 #       keys: [{api-key: "replace-with-commandcode-key", weight: 5}]
 #       # weight: 0 explicitly excludes this key under weighted-round-robin.
-#   freebuff:
-#     - name: freebuff-1
-#       base-url: "https://www.codebuff.com"
-#       models: [{name: "deepseek/deepseek-v4-flash", alias: "deepseek-v4-flash", agent-id: "base2-free-deepseek-flash"}]
-#       keys: [{api-key: "replace-with-freebuff-token"}]
 #   devin:
 #     - name: devin-1
 #       base-url: "https://devin.example.com"

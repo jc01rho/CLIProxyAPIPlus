@@ -836,8 +836,6 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetMistralModels()
 	case "commandcode", "command-code":
 		return GetCommandCodeModels()
-	case "freebuff":
-		return GetFreebuffModels()
 	case "opencode":
 		return GetOpenCodeModels()
 	case "mimocode", "mimo-code":

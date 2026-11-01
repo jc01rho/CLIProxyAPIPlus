@@ -272,18 +272,6 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 		}
 		models = applyExcludedModels(models, excluded)
-	case constant.Freebuff:
-		entry := s.resolveConfigFreebuffKey(a)
-		if entry != nil && len(entry.Models) > 0 {
-			models = buildFreebuffConfigModels(entry)
-			excluded = entry.ExcludedModels
-		} else {
-			models = registry.GetFreebuffModels()
-			if entry != nil {
-				excluded = entry.ExcludedModels
-			}
-		}
-		models = applyExcludedModels(models, excluded)
 	case constant.OpenCode:
 		entry := s.resolveConfigOpenCodeKey(a)
 		switch {
