@@ -1623,7 +1623,19 @@ type SessionAffinitySelector struct {
 	matcher           *cliproxysession.MerklePrefixMatcher
 	subagentAffinity  bool
 	rebindOnQuotaOnly bool
+
+	// removalMu orders binds against InvalidateAuth: binds hold the read lock
+	// while checking removedAt, InvalidateAuth holds the write lock while it
+	// records the removal and clears the bindings.
+	removalMu  sync.RWMutex
+	removalSeq uint64
+	// removedAt maps an auth ID to the removalSeq of its latest InvalidateAuth.
+	removedAt map[string]uint64
 }
+
+// sessionAffinityRemovalMarkMetadataKey carries the removal mark taken by Pick
+// so OnResult can tell whether the auth was removed while the request ran.
+const sessionAffinityRemovalMarkMetadataKey = "session_affinity_removal_mark"
 
 const (
 	// SessionAffinityRebindOnAny rebinds the session on any credential-attributed failure (default).
@@ -1812,6 +1824,9 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
+	// Take the removal mark before any availability snapshot.
+	removalMark := s.authRemovalMark()
+	opts.Metadata[sessionAffinityRemovalMarkMetadataKey] = removalMark
 
 	// Explicit harness identities are absolute authority. The LCP matcher is only
 	// consulted when no header, body, or execution-session identity is present.
@@ -1887,7 +1902,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if fallbackID != "" && fallbackID != primaryID {
 		fallbackKey = provider + "::" + fallbackID + "::" + modelKey
 	}
-	bind := func(authID string, recordSelection bool) {
+	bindSession := func(authID string, recordSelection bool) {
 		keys := []string{cacheKey}
 		if fallbackKey != "" && !isSubagent && !isFork {
 			keys = append(keys, fallbackKey)
@@ -1906,6 +1921,9 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			}
 		}
 		s.cache.setSessionAliases(authID, bindingProvider, primaryID, keys...)
+	}
+	bind := func(authID string, recordSelection bool) {
+		s.bindIfAuthPresent(authID, removalMark, func() { bindSession(authID, recordSelection) })
 	}
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
@@ -2011,6 +2029,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	if namespace == "" {
 		return nil, false, nil
 	}
+	removalMark, _ := opts.Metadata[sessionAffinityRemovalMarkMetadataKey].(uint64)
 	turns := cliproxysession.ExtractCanonicalTurns(opts.SourceFormat, opts.OriginalRequest)
 	if len(turns) == 0 {
 		return nil, false, nil
@@ -2109,8 +2128,10 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 			}
 			return nil
 		}
-		bindRes = s.matcher.BindUnmatchedFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID, func(boundAuthID string) bool {
-			return availableByID(boundAuthID) != nil
+		s.bindIfAuthPresent(bindAuthID, removalMark, func() {
+			bindRes = s.matcher.BindUnmatchedFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID, func(boundAuthID string) bool {
+				return availableByID(boundAuthID) != nil && s.removedAt[boundAuthID] <= removalMark
+			})
 		})
 		if bindRes.AuthID != "" && bindRes.AuthID != auth.ID {
 			if adopted := availableByID(bindRes.AuthID); adopted != nil {
@@ -2118,7 +2139,9 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 			}
 		}
 	} else {
-		bindRes = s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID)
+		s.bindIfAuthPresent(bindAuthID, removalMark, func() {
+			bindRes = s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID)
+		})
 	}
 	if bindRes.SessionID != "" {
 		opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
@@ -2285,12 +2308,41 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 	if s == nil {
 		return
 	}
+	s.removalMu.Lock()
+	defer s.removalMu.Unlock()
+	s.removalSeq++
+	if s.removedAt == nil {
+		s.removedAt = make(map[string]uint64)
+	}
+	s.removedAt[authID] = s.removalSeq
 	if s.cache != nil {
 		s.cache.InvalidateAuth(authID)
 	}
 	if s.matcher != nil {
 		s.matcher.InvalidateAuth(authID)
 	}
+}
+
+// authRemovalMark returns the current removal sequence. A request takes it
+// before its availability snapshot so a later bind can detect that the chosen
+// auth was removed in between.
+func (s *SessionAffinitySelector) authRemovalMark() uint64 {
+	s.removalMu.RLock()
+	defer s.removalMu.RUnlock()
+	return s.removalSeq
+}
+
+// bindIfAuthPresent runs bind unless authID was invalidated after mark. The
+// read lock keeps InvalidateAuth from running between the check and the bind,
+// so a binding to a removed auth is never re-created.
+func (s *SessionAffinitySelector) bindIfAuthPresent(authID string, mark uint64, bind func()) bool {
+	s.removalMu.RLock()
+	defer s.removalMu.RUnlock()
+	if s.removedAt[authID] > mark {
+		return false
+	}
+	bind()
+	return true
 }
 
 // LookupAffinity observes the current session affinity binding without side effects.
@@ -2440,7 +2492,13 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 			}
 			if len(fingerprints) > 0 && minPrefixLength > 0 && minPrefixLength <= len(fingerprints) {
 				if res.Success {
-					s.matcher.TouchFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, res.AuthID)
+					removalMark, ok := res.Options.Metadata[sessionAffinityRemovalMarkMetadataKey].(uint64)
+					if !ok {
+						removalMark = s.authRemovalMark()
+					}
+					s.bindIfAuthPresent(res.AuthID, removalMark, func() {
+						s.matcher.TouchFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, res.AuthID)
+					})
 				} else {
 					var generation uint64
 					if res.Options.Metadata != nil {

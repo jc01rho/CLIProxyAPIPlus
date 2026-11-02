@@ -1786,3 +1786,63 @@ func TestSessionAffinitySelectorLCPDelayedSuccessDoesNotOverrideFailover(t *test
 		t.Fatalf("after failover to auth-b the next turn routed to %q; LookupAffinity = (%q, %q)", got.ID, authID, state)
 	}
 }
+
+func TestSessionAffinitySelectorBindAfterInvalidateAuthDoesNotResurrectBinding(t *testing.T) {
+	auths := []*Auth{{ID: "auth-a"}, {ID: "auth-b"}}
+	fallback := &scriptedPickSelector{picks: []string{"auth-a"}}
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: fallback, TTL: time.Hour})
+	defer selector.Stop()
+	// Manager.Remove invalidates the auth after Pick took its availability snapshot.
+	fallback.hooks = []func(){func() { selector.InvalidateAuth("auth-a") }}
+	opts := cliproxyexecutor.Options{
+		Headers:  http.Header{"X-Session-Id": []string{"session-removed-auth"}},
+		Metadata: map[string]any{},
+	}
+	if _, errPick := selector.Pick(context.Background(), "openai", "model", opts, auths); errPick != nil {
+		t.Fatalf("Pick() error = %v", errPick)
+	}
+	session, _ := opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string)
+	if authID, state := selector.LookupAffinity("openai", "model", session); state != "unbound" {
+		t.Fatalf("binding to the removed auth survives: LookupAffinity = (%q, %q)", authID, state)
+	}
+}
+
+func TestSessionAffinitySelectorLCPBindAfterInvalidateAuthDoesNotResurrectBinding(t *testing.T) {
+	auths := []*Auth{{ID: "auth-a"}, {ID: "auth-b"}}
+	fallback := &scriptedPickSelector{picks: []string{"auth-a"}}
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: fallback, TTL: time.Hour})
+	defer selector.Stop()
+	fallback.hooks = []func(){func() { selector.InvalidateAuth("auth-a") }}
+	opts := lcpConversationOptions(lcpConversationTwoTurns)
+	if _, errPick := selector.Pick(context.Background(), "openai", "model", opts, auths); errPick != nil {
+		t.Fatalf("Pick() error = %v", errPick)
+	}
+	session, _ := opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey].(string)
+	if authIDs, _, ok := selector.matcher.LookupSession(session); ok {
+		t.Fatalf("LCP binding to the removed auth survives: session bound to %v", authIDs)
+	}
+}
+
+func TestSessionAffinitySelectorLCPSuccessAfterInvalidateAuthDoesNotResurrectBinding(t *testing.T) {
+	auths := []*Auth{{ID: "auth-a"}, {ID: "auth-b"}}
+	fallback := &scriptedPickSelector{picks: []string{"auth-a"}}
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: fallback, TTL: time.Hour})
+	defer selector.Stop()
+	ctx := context.Background()
+
+	first := lcpConversationOptions(lcpConversationTwoTurns)
+	if got, _ := selector.Pick(ctx, "openai", "model", first, auths); got.ID != "auth-a" {
+		t.Fatalf("first Pick() = %q, want auth-a", got.ID)
+	}
+	inflight := lcpConversationOptions(lcpConversationFourTurns)
+	if got, _ := selector.Pick(ctx, "openai", "model", inflight, auths); got.ID != "auth-a" {
+		t.Fatalf("in-flight Pick() = %q, want auth-a", got.ID)
+	}
+	selector.InvalidateAuth("auth-a")
+	selector.OnResult(Result{AuthID: "auth-a", Provider: "openai", Model: "model", Success: true, Options: inflight})
+
+	session, _ := inflight.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey].(string)
+	if authIDs, _, ok := selector.matcher.LookupSession(session); ok {
+		t.Fatalf("late success re-created an LCP binding to the removed auth: session bound to %v", authIDs)
+	}
+}
