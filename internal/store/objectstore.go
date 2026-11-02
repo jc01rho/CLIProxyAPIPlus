@@ -381,7 +381,7 @@ func (s *ObjectTokenStore) syncConfigFromBucket(ctx context.Context, example str
 		if errRead != nil {
 			return fmt.Errorf("object store: read config: %w", errRead)
 		}
-		if errWrite := os.WriteFile(s.configPath, normalizeLineEndingsBytes(data), 0o600); errWrite != nil {
+		if errWrite := config.WriteConfigFile(s.configPath, normalizeLineEndingsBytes(data), 0o600); errWrite != nil {
 			return fmt.Errorf("object store: write config: %w", errWrite)
 		}
 	case isObjectNotFound(err):
@@ -394,7 +394,7 @@ func (s *ObjectTokenStore) syncConfigFromBucket(ctx context.Context, example str
 				if errCreate := os.MkdirAll(filepath.Dir(s.configPath), 0o700); errCreate != nil {
 					return fmt.Errorf("object store: prepare config directory: %w", errCreate)
 				}
-				if errWrite := os.WriteFile(s.configPath, []byte{}, 0o600); errWrite != nil {
+				if errWrite := config.WriteConfigFile(s.configPath, []byte{}, 0o600); errWrite != nil {
 					return fmt.Errorf("object store: create empty config: %w", errWrite)
 				}
 			}

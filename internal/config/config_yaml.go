@@ -18,6 +18,8 @@ import (
 func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...bool) error {
 	persistCfg := cfg
 	migrating := len(migrateV8) > 0 && migrateV8[0]
+	unlock := lockConfigFile()
+	defer unlock()
 	// Load original YAML as a node tree to preserve comments and ordering.
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -115,7 +117,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 			return fmt.Errorf("decode migrated config: %w", err)
 		}
 	}
-	if err = os.WriteFile(configFile, data, 0600); err != nil {
+	if err = writeConfigFileLocked(configFile, data, 0600); err != nil {
 		return err
 	}
 	if migrated != nil {
@@ -128,15 +130,9 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 // SaveConfigPreserveCommentsUpdateNestedScalar updates a nested scalar key path like ["a","b"]
 // while preserving comments and positions.
 func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []string, value string) error {
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		return err
-	}
-	data, err = updateNestedScalarYAML(data, path, value)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configFile, data, 0600)
+	return rewriteConfigFile(configFile, func(current []byte) ([]byte, error) {
+		return updateNestedScalarYAML(current, path, value)
+	})
 }
 
 // updateNestedScalarYAML returns data with the nested scalar key path like ["a","b"] set to
