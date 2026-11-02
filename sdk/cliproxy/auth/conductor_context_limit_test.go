@@ -148,6 +148,41 @@ func TestExecuteRoutingContextLimitExhaustedReportsEstimate(t *testing.T) {
 	}
 }
 
+// One provider pooling two upstream models under the same alias: the auth stays
+// eligible through the big member, and execution must not rotate a large
+// request onto the small one.
+func TestExecuteRoutingContextLimitFiltersAliasPoolMembers(t *testing.T) {
+	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
+	m := newOpenAICompatPoolTestManager(t, "aa", []internalconfig.OpenAICompatibilityModel{
+		{Name: "ds-small", Alias: "aa", RoutingMaxContextLength: 300000},
+		{Name: "ds-big", Alias: "aa"},
+	}, executor)
+
+	for i := 0; i < 4; i++ {
+		if _, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: "aa"}, routingContextOpts(350000)); err != nil {
+			t.Fatalf("execute over the small member's limit: %v", err)
+		}
+	}
+	for _, model := range executor.ExecuteModels() {
+		if model != "ds-big" {
+			t.Fatalf("large requests reached %q, want only ds-big; calls %v", model, executor.ExecuteModels())
+		}
+	}
+
+	for i := 0; i < 4; i++ {
+		if _, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: "aa"}, routingContextOpts(1000)); err != nil {
+			t.Fatalf("execute under the limit: %v", err)
+		}
+	}
+	seen := map[string]bool{}
+	for _, model := range executor.ExecuteModels()[4:] {
+		seen[model] = true
+	}
+	if !seen["ds-small"] || !seen["ds-big"] {
+		t.Fatalf("small requests must keep rotating through the whole pool, got %v", executor.ExecuteModels()[4:])
+	}
+}
+
 func TestPickNextMixedFastPathHonorsRoutingContextLimit(t *testing.T) {
 	const model = "deepseek-v4.1-flash"
 	manager := NewManager(nil, nil, nil)

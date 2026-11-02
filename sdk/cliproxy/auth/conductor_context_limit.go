@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
@@ -74,19 +75,19 @@ func routingContextLimitForModels(requestedModel string, models []modelAliasEntr
 	return 0
 }
 
-// routingContextLimitForAuth returns the routing-max-context-length configured
-// on the OpenAI-compatible model entry auth serves routeModel through; 0 means
-// unlimited. Callers must hold at least m.mu.RLock while auth comes from m.auths.
-func (m *Manager) routingContextLimitForAuth(auth *Auth, routeModel string) int {
+// routingContextEntriesForAuth returns the model routeModel resolves to for
+// auth and the model entries of auth's OpenAI-compatible provider, or no
+// entries when auth is not a config-backed OpenAI-compatible credential.
+func (m *Manager) routingContextEntriesForAuth(auth *Auth, routeModel string) (string, []modelAliasEntry) {
 	if m == nil || auth == nil || !isConfiguredOpenAICompatAuth(auth) {
-		return 0
+		return "", nil
 	}
 	requestedModel := strings.TrimSpace(rewriteModelForAuth(routeModel, auth))
 	if requestedModel == "" {
 		requestedModel = strings.TrimSpace(routeModel)
 	}
 	if requestedModel == "" {
-		return 0
+		return "", nil
 	}
 	providerKey := ""
 	compatName := ""
@@ -96,9 +97,60 @@ func (m *Manager) routingContextLimitForAuth(auth *Auth, routeModel string) int 
 	}
 	entry := resolveOpenAICompatConfigForAuth(m.loadAPIKeyModelRouting().config, auth, providerKey, compatName)
 	if entry == nil {
-		return 0
+		return "", nil
 	}
-	return routingContextLimitForModels(requestedModel, asModelAliasEntries(entry.Models))
+	return requestedModel, asModelAliasEntries(entry.Models)
+}
+
+// routingContextLimitForAuth returns the routing-max-context-length configured
+// on the OpenAI-compatible model entry auth serves routeModel through; 0 means
+// unlimited. Callers must hold at least m.mu.RLock while auth comes from m.auths.
+func (m *Manager) routingContextLimitForAuth(auth *Auth, routeModel string) int {
+	requestedModel, entries := m.routingContextEntriesForAuth(auth, routeModel)
+	return routingContextLimitForModels(requestedModel, entries)
+}
+
+// filterExecutionModelsByRoutingContext drops upstream models whose own
+// routing-max-context-length is below the request's estimated input tokens.
+// Selection keeps an auth while any member of its alias pool can hold the
+// request; this keeps the pool rotation from sending the request to a smaller
+// member. An emptied list makes the caller move on to the next auth.
+func (m *Manager) filterExecutionModelsByRoutingContext(auth *Auth, routeModel string, models []string, opts cliproxyexecutor.Options) []string {
+	tokens, ok := estimatedInputTokensFromMetadata(opts.Metadata)
+	if !ok || len(models) == 0 {
+		return models
+	}
+	requestedModel, entries := m.routingContextEntriesForAuth(auth, routeModel)
+	if len(entries) == 0 {
+		return models
+	}
+	_, candidates := modelAliasLookupCandidates(requestedModel)
+	limits := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.GetName())
+		if name == "" {
+			continue
+		}
+		alias := strings.TrimSpace(entry.GetAlias())
+		for _, candidate := range candidates {
+			if candidate != "" && (strings.EqualFold(alias, candidate) || strings.EqualFold(name, candidate)) {
+				limits[strings.ToLower(name)] = routingContextLimitOf(entry)
+				break
+			}
+		}
+	}
+	out := make([]string, 0, len(models))
+	for _, model := range models {
+		base := strings.TrimSpace(thinking.ParseSuffix(model).ModelName)
+		if base == "" {
+			base = strings.TrimSpace(model)
+		}
+		if limit := limits[strings.ToLower(base)]; limit > 0 && tokens > limit {
+			continue
+		}
+		out = append(out, model)
+	}
+	return out
 }
 
 // authExceedsRoutingContextLimit reports whether the request's estimated input
