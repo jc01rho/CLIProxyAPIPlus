@@ -72,6 +72,7 @@ func Enqueue(payload []byte) {
 	if global.publishToSubscribers(payload) {
 		return
 	}
+	// No subscriber, or a full subscriber was dropped: keep the record for PopOldest.
 	global.enqueue(payload)
 }
 
@@ -138,6 +139,9 @@ func (q *queue) enqueue(payload []byte) {
 	q.maybeCompactLocked()
 }
 
+// publishToSubscribers fans payload out to every subscriber. A subscriber whose
+// buffer is full is dropped. It reports true only when every subscriber took
+// the payload, so a caller can keep a record that a dropped subscriber missed.
 func (q *queue) publishToSubscribers(payload []byte) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -146,6 +150,7 @@ func (q *queue) publishToSubscribers(payload []byte) bool {
 		return false
 	}
 
+	delivered := true
 	for id, subscriber := range q.subscribers {
 		cloned := append([]byte(nil), payload...)
 		select {
@@ -153,10 +158,11 @@ func (q *queue) publishToSubscribers(payload []byte) bool {
 		default:
 			delete(q.subscribers, id)
 			close(subscriber)
+			delivered = false
 		}
 	}
 
-	return true
+	return delivered
 }
 
 func (q *queue) subscribe(buffer int, initialPayload []byte) (<-chan []byte, func()) {
