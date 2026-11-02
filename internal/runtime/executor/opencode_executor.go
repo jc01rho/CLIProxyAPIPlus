@@ -99,7 +99,7 @@ func (e *OpenCodeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.A
 // Execute performs a non-streaming request against the OpenCode gateway.
 func (e *OpenCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if opts.Alt == openAICompatSystemOneAlt {
-		return e.executeSystemOne(ctx, auth, req)
+		return e.executeSystemOne(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	baseModel = resolveOpenCodeModelName(e.cfg, auth, baseModel)
@@ -303,7 +303,7 @@ func (e *OpenCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 // POST <baseURL>/systemone, the route OpenCode uses for its jev-* models, and
 // returns the upstream JSON verbatim. Only the model is rewritten to the
 // configured upstream name.
-func (e *OpenCodeExecutor) executeSystemOne(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request) (resp cliproxyexecutor.Response, err error) {
+func (e *OpenCodeExecutor) executeSystemOne(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	baseModel = resolveOpenCodeModelName(e.cfg, auth, baseModel)
 
@@ -322,7 +322,7 @@ func (e *OpenCodeExecutor) executeSystemOne(ctx context.Context, auth *cliproxya
 	if err != nil {
 		return resp, err
 	}
-	applyOpenCodeHeaders(httpReq, openCodeAPIKey(auth), false, openCodeAffinitySession(ctx))
+	applyOpenCodeHeaders(httpReq, openCodeAPIKey(auth), false, openCodeAffinitySession(ctx, opts.Metadata, req.Metadata))
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
