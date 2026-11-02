@@ -183,6 +183,28 @@ func TestExecuteRoutingContextLimitFiltersAliasPoolMembers(t *testing.T) {
 	}
 }
 
+func TestFilterExecutionModelsByRoutingContextMergesDuplicatesAndSuffixes(t *testing.T) {
+	m := newOpenAICompatPoolTestManager(t, "aa", []internalconfig.OpenAICompatibilityModel{
+		{Name: "dup", Alias: "aa", RoutingMaxContextLength: 300000},
+		{Name: "dup", Alias: "aa"},
+		{Name: "capped", Alias: "aa", RoutingMaxContextLength: 300000},
+		{Name: "capped", Alias: "aa", RoutingMaxContextLength: 200000},
+		{Name: "suffixed(8192)", Alias: "aa", RoutingMaxContextLength: 300000},
+	}, nil)
+	auth, ok := m.GetByID("pool-auth-" + t.Name())
+	if !ok {
+		t.Fatal("pool auth not registered")
+	}
+	got := m.filterExecutionModelsByRoutingContext(auth, "aa", []string{"dup", "capped", "suffixed(8192)"}, routingContextOpts(350000), nil)
+	if len(got) != 1 || got[0] != "dup" {
+		t.Fatalf("filtered models = %v, want [dup]: an unlimited duplicate keeps dup, the largest duplicate limit caps capped, and a suffixed name still carries its limit", got)
+	}
+	got = m.filterExecutionModelsByRoutingContext(auth, "aa", []string{"dup", "capped", "suffixed(8192)"}, routingContextOpts(250000), nil)
+	if len(got) != 3 {
+		t.Fatalf("filtered models = %v, want all three under every limit", got)
+	}
+}
+
 func TestPickNextMixedFastPathHonorsRoutingContextLimit(t *testing.T) {
 	const model = "deepseek-v4.1-flash"
 	manager := NewManager(nil, nil, nil)

@@ -78,7 +78,7 @@ func routingContextLimitForModels(requestedModel string, models []modelAliasEntr
 // routingContextEntriesForAuth returns the model routeModel resolves to for
 // auth and the model entries of auth's OpenAI-compatible provider, or no
 // entries when auth is not a config-backed OpenAI-compatible credential.
-func (m *Manager) routingContextEntriesForAuth(auth *Auth, routeModel string) (string, []modelAliasEntry) {
+func (m *Manager) routingContextEntriesForAuth(auth *Auth, routeModel string, routing *apiKeyModelRoutingSnapshot) (string, []modelAliasEntry) {
 	if m == nil || auth == nil || !isConfiguredOpenAICompatAuth(auth) {
 		return "", nil
 	}
@@ -95,7 +95,10 @@ func (m *Manager) routingContextEntriesForAuth(auth *Auth, routeModel string) (s
 		providerKey = strings.TrimSpace(auth.Attributes["provider_key"])
 		compatName = strings.TrimSpace(auth.Attributes["compat_name"])
 	}
-	entry := resolveOpenAICompatConfigForAuth(m.loadAPIKeyModelRouting().config, auth, providerKey, compatName)
+	if routing == nil {
+		routing = m.loadAPIKeyModelRouting()
+	}
+	entry := resolveOpenAICompatConfigForAuth(routing.config, auth, providerKey, compatName)
 	if entry == nil {
 		return "", nil
 	}
@@ -106,7 +109,7 @@ func (m *Manager) routingContextEntriesForAuth(auth *Auth, routeModel string) (s
 // on the OpenAI-compatible model entry auth serves routeModel through; 0 means
 // unlimited. Callers must hold at least m.mu.RLock while auth comes from m.auths.
 func (m *Manager) routingContextLimitForAuth(auth *Auth, routeModel string) int {
-	requestedModel, entries := m.routingContextEntriesForAuth(auth, routeModel)
+	requestedModel, entries := m.routingContextEntriesForAuth(auth, routeModel, nil)
 	return routingContextLimitForModels(requestedModel, entries)
 }
 
@@ -114,17 +117,21 @@ func (m *Manager) routingContextLimitForAuth(auth *Auth, routeModel string) int 
 // routing-max-context-length is below the request's estimated input tokens.
 // Selection keeps an auth while any member of its alias pool can hold the
 // request; this keeps the pool rotation from sending the request to a smaller
-// member. An emptied list makes the caller move on to the next auth.
-func (m *Manager) filterExecutionModelsByRoutingContext(auth *Auth, routeModel string, models []string, opts cliproxyexecutor.Options) []string {
+// member. An emptied list makes the caller move on to the next auth. routing
+// is the snapshot the models were built from, so a concurrent reload cannot
+// leave a capped member unmatched; nil loads the current one.
+func (m *Manager) filterExecutionModelsByRoutingContext(auth *Auth, routeModel string, models []string, opts cliproxyexecutor.Options, routing *apiKeyModelRoutingSnapshot) []string {
 	tokens, ok := estimatedInputTokensFromMetadata(opts.Metadata)
 	if !ok || len(models) == 0 {
 		return models
 	}
-	requestedModel, entries := m.routingContextEntriesForAuth(auth, routeModel)
+	requestedModel, entries := m.routingContextEntriesForAuth(auth, routeModel, routing)
 	if len(entries) == 0 {
 		return models
 	}
 	_, candidates := modelAliasLookupCandidates(requestedModel)
+	// An upstream listed more than once follows the selection rule: any entry
+	// without a limit makes it unlimited, otherwise the largest limit applies.
 	limits := make(map[string]int, len(entries))
 	for _, entry := range entries {
 		name := strings.TrimSpace(entry.GetName())
@@ -132,25 +139,42 @@ func (m *Manager) filterExecutionModelsByRoutingContext(auth *Auth, routeModel s
 			continue
 		}
 		alias := strings.TrimSpace(entry.GetAlias())
+		matched := false
 		for _, candidate := range candidates {
 			if candidate != "" && (strings.EqualFold(alias, candidate) || strings.EqualFold(name, candidate)) {
-				limits[strings.ToLower(name)] = routingContextLimitOf(entry)
+				matched = true
 				break
 			}
 		}
+		if !matched {
+			continue
+		}
+		key := routingContextModelKey(name)
+		limit := routingContextLimitOf(entry)
+		if previous, seen := limits[key]; seen && (previous == 0 || limit == 0) {
+			limits[key] = 0
+			continue
+		}
+		limits[key] = max(limits[key], limit)
 	}
 	out := make([]string, 0, len(models))
 	for _, model := range models {
-		base := strings.TrimSpace(thinking.ParseSuffix(model).ModelName)
-		if base == "" {
-			base = strings.TrimSpace(model)
-		}
-		if limit := limits[strings.ToLower(base)]; limit > 0 && tokens > limit {
+		if limit := limits[routingContextModelKey(model)]; limit > 0 && tokens > limit {
 			continue
 		}
 		out = append(out, model)
 	}
 	return out
+}
+
+// routingContextModelKey compares configured and resolved upstream names
+// without their thinking suffix, e.g. "foo(8192)" and "foo".
+func routingContextModelKey(model string) string {
+	base := strings.TrimSpace(thinking.ParseSuffix(model).ModelName)
+	if base == "" {
+		base = strings.TrimSpace(model)
+	}
+	return strings.ToLower(base)
 }
 
 // authExceedsRoutingContextLimit reports whether the request's estimated input

@@ -611,7 +611,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		execCtx = newUpstreamAttemptContext(execCtx)
 
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
-		models = m.filterExecutionModelsByRoutingContext(auth, routeModel, models, opts)
+		models = m.filterExecutionModelsByRoutingContext(auth, routeModel, models, opts, routing)
 		if len(models) == 0 {
 			continue
 		}
@@ -858,7 +858,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		execCtx = newUpstreamAttemptContext(execCtx)
 
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
-		models = m.filterExecutionModelsByRoutingContext(auth, routeModel, models, opts)
+		models = m.filterExecutionModelsByRoutingContext(auth, routeModel, models, opts, routing)
 		if len(models) == 0 {
 			continue
 		}
@@ -1216,7 +1216,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		// Home owns dispatched credential availability; only local selections need state filtering.
 		if selection == nil {
 			models = m.filterExecutionModels(auth, routeModel, models, pooled)
-			models = m.filterExecutionModelsByRoutingContext(auth, routeModel, models, opts)
+			models = m.filterExecutionModelsByRoutingContext(auth, routeModel, models, opts, routing)
 		}
 		if selection != nil && aliasResult.ForceMapping && responseAlias != "" {
 			aliasResult.OriginalAlias = responseAlias
