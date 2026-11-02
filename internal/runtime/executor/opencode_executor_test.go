@@ -177,6 +177,30 @@ func TestOpenCodeExecutor_SystemOneAltUsesSystemOneRoute(t *testing.T) {
 	}
 }
 
+func TestOpenCodeExecutor_SystemOneUsesMetadataSessionIdentity(t *testing.T) {
+	var gotSession string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSession = r.Header.Get("x-opencode-session")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers":{}}`))
+	}))
+	defer server.Close()
+
+	auth := openCodeTestAuth(map[string]string{"api_key": "public", "base_url": server.URL})
+	meta := map[string]any{cliproxyexecutor.CanonicalSessionIDMetadataKey: "ctx:v1:conversation-a"}
+	_, err := NewOpenCodeExecutor(&config.Config{}).Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:    "jev-latest",
+		Payload:  []byte(`{"model":"jev-latest","questions":{}}`),
+		Metadata: meta,
+	}, cliproxyexecutor.Options{Alt: "systemone"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if want := opencodeHashSession("opencode-session:ctx:v1:conversation-a"); gotSession != want {
+		t.Fatalf("x-opencode-session = %q, want the metadata session %q", gotSession, want)
+	}
+}
+
 func TestIsOpenCodeFreeModel(t *testing.T) {
 	tests := map[string]bool{
 		"big-pickle":                      true,

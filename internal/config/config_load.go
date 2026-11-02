@@ -42,21 +42,19 @@ func ComputeSourceHash(data []byte) string {
 // copies stay identical. When the plaintext cannot be removed it returns an error and
 // leaves configFile untouched, so every later attempt refuses the file again.
 func PrepareConfigFileForUpload(configFile string) error {
-	data, errRead := os.ReadFile(configFile)
-	if errRead != nil {
-		return errRead
+	writing := false
+	_, _, errRewrite := rewriteConfigFile(configFile, func(data []byte) ([]byte, error) {
+		prepared, errPrepare := prepareConfigForUpload(data)
+		if errPrepare != nil || bytes.Equal(prepared, data) {
+			return nil, errPrepare
+		}
+		writing = true
+		return prepared, nil
+	})
+	if errRewrite != nil && writing {
+		return fmt.Errorf("failed to write prepared config file: %w", errRewrite)
 	}
-	prepared, errPrepare := prepareConfigForUpload(data)
-	if errPrepare != nil {
-		return errPrepare
-	}
-	if bytes.Equal(prepared, data) {
-		return nil
-	}
-	if errWrite := os.WriteFile(configFile, prepared, 0600); errWrite != nil {
-		return fmt.Errorf("failed to write prepared config file: %w", errWrite)
-	}
-	return nil
+	return errRewrite
 }
 
 // prepareConfigForUpload returns data with the file rewrites of a startup load applied.
@@ -150,6 +148,37 @@ func managementSecretKeyPath(data []byte) []string {
 		return []string{"management", "secret-key"}
 	}
 	return []string{"remote-management", "secret-key"}
+}
+
+// persistHashedManagementSecret replaces the plaintext management secret in
+// configFile with its hash. The read-modify-write runs under the config file
+// lock, and it skips the write when the file no longer holds plaintext (a
+// concurrent save changed the secret), so it never rolls back a newer save.
+func persistHashedManagementSecret(configFile, plaintext, hashed string) (read, written []byte, err error) {
+	return rewriteConfigFile(configFile, func(current []byte) ([]byte, error) {
+		path := managementSecretKeyPath(current)
+		var root yaml.Node
+		if errParse := yaml.Unmarshal(current, &root); errParse != nil || len(root.Content) == 0 {
+			return nil, errParse
+		}
+		value := yamlPath(expandConfigAliases(root.Content[0]), strings.Join(path, "."))
+		if value == nil || value.Kind != yaml.ScalarNode || value.Value != plaintext {
+			return nil, nil
+		}
+		return updateNestedScalarYAML(current, path, hashed)
+	})
+}
+
+// followConfigWriteBack returns the file bytes a loaded config reflects after
+// a LoadConfig write-back that read read and wrote written. The write-back only
+// changes the representation (hashed secret, dropped overridden fields), so
+// the config still reflects the new bytes, unless another writer changed the
+// file before the write-back read it.
+func followConfigWriteBack(known, read, written []byte) []byte {
+	if written == nil || !bytes.Equal(read, known) {
+		return known
+	}
+	return written
 }
 
 // LoadConfigOptional reads YAML from configFile.
@@ -261,8 +290,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Hash remote management key if plaintext is detected (nested)
 	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
+	// sourceData tracks the file bytes cfg reflects, following LoadConfig's own
+	// write-backs below while no other writer changed the file in between.
+	sourceData := data
 	if cfg.RemoteManagement.SecretKey != "" && !looksLikeBcrypt(cfg.RemoteManagement.SecretKey) {
-		hashed, errHash := hashSecret(cfg.RemoteManagement.SecretKey)
+		plaintext := cfg.RemoteManagement.SecretKey
+		hashed, errHash := hashSecret(plaintext)
 		if errHash != nil {
 			return nil, fmt.Errorf("failed to hash remote management key: %w", errHash)
 		}
@@ -270,7 +303,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 		// Persist the hashed value back to the config file to avoid re-hashing on next startup.
 		// Preserve YAML comments and ordering; update only the nested key.
-		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, managementSecretKeyPath(data), hashed)
+		read, written, _ := persistHashedManagementSecret(configFile, plaintext, hashed)
+		sourceData = followConfigWriteBack(sourceData, read, written)
 	}
 
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
@@ -361,23 +395,26 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Only conflicting legacy fields are removed on load. A legacy-only document
 	// stays legacy until a v8 configuration write explicitly migrates it.
-	current, errRead := os.ReadFile(configFile)
-	if errRead != nil {
-		return nil, errRead
-	}
-	cleaned, changed, errLayout := NormalizeConfigLayout(current, false)
-	if errLayout != nil {
-		return nil, errLayout
-	}
-	if changed {
-		if errWrite := os.WriteFile(configFile, cleaned, 0600); errWrite != nil {
-			return nil, fmt.Errorf("clean conflicting config fields: %w", errWrite)
+	writing := false
+	cleanRead, cleanWritten, errClean := rewriteConfigFile(configFile, func(current []byte) ([]byte, error) {
+		cleaned, changed, errLayout := NormalizeConfigLayout(current, false)
+		if errLayout != nil || !changed {
+			return nil, errLayout
 		}
+		writing = true
+		return cleaned, nil
+	})
+	if errClean != nil && writing {
+		return nil, fmt.Errorf("clean conflicting config fields: %w", errClean)
 	}
+	if errClean != nil {
+		return nil, errClean
+	}
+	sourceData = followConfigWriteBack(sourceData, cleanRead, cleanWritten)
 
-	// Record the exact bytes this config was parsed from, so a consumer can tell
-	// it apart from a newer version of the file.
-	cfg.SourceHash = ComputeSourceHash(data)
+	// Record the exact bytes this config reflects (as parsed, plus LoadConfig's
+	// own write-backs), so a consumer can tell it apart from a newer version of the file.
+	cfg.SourceHash = ComputeSourceHash(sourceData)
 
 	// Return the populated configuration struct.
 	return &cfg, nil

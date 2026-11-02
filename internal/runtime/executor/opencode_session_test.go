@@ -49,6 +49,28 @@ func TestOpenCodeAffinitySession_SkipsLCPRoutingIdentity(t *testing.T) {
 	}
 }
 
+func TestOpenCodeAffinitySession_RejectsLCPRoutingIdentityInContext(t *testing.T) {
+	// After an LCP match the conductor copies the canonical id, which equals the
+	// LCP routing id, into the context session.
+	lcp := "lcp:v1:0123456789abcdef"
+	meta := map[string]any{
+		cliproxyexecutor.CanonicalSessionIDMetadataKey:   lcp,
+		cliproxyexecutor.LCPAffinitySessionIDMetadataKey: lcp,
+	}
+	ctx := util.WithSessionID(context.Background(), lcp)
+	if got := openCodeAffinitySession(ctx, meta); got != "" {
+		t.Fatalf("context session that mirrors the LCP routing id must not become a provider session: %q", got)
+	}
+	// Paths without metadata must still recognize the LCP routing id by its prefix.
+	if got := openCodeAffinitySession(ctx); got != "" {
+		t.Fatalf("LCP-prefixed context session must not become a provider session: %q", got)
+	}
+	prefixed := map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "lcp:v1:other"}
+	if got := openCodeAffinitySession(context.Background(), prefixed); got != "" {
+		t.Fatalf("LCP-prefixed metadata identity must not become a provider session: %q", got)
+	}
+}
+
 func TestOpenCodeAffinitySession_PrefersCanonicalIdentity(t *testing.T) {
 	meta := map[string]any{
 		cliproxyexecutor.CanonicalSessionIDMetadataKey: "canonical",

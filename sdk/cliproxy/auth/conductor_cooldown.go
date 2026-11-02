@@ -862,6 +862,17 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	var handoffSnapshots []*Auth
 	cooldownStateChanged := false
 	scheduleUnauthorizedRefresh := false
+	// resultTargetModels lists the scheduler shards a non-credential-scoped result updates.
+	resultTargetModels := func() []string {
+		if result.CredentialScope || scheduleUnauthorizedRefresh || modelKey == "" {
+			return nil
+		}
+		targetModels := []string{modelKey}
+		if routeKey := canonicalModelKey(result.RouteModel); routeKey != "" && routeKey != modelKey {
+			targetModels = append(targetModels, routeKey)
+		}
+		return targetModels
+	}
 	now := time.Now()
 	// A 401 condemns the access token, except one a -and-cooldown rule matched: that only cools the credential.
 	rejectsToken := !result.Success && (result.Error == nil || result.Error.Code != ErrorCodeForceCooldown) && !shouldSkipCredentialCooldown(result.Error) && (statusCodeFromResult(result.Error) == http.StatusUnauthorized || isUnauthorizedError(result.Error))
@@ -1338,6 +1349,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
+		// persistLocked releases m.mu around Store.Save. Publish the result to the
+		// scheduler first so a concurrent pick cannot select an auth that m.auths
+		// already marks as cooling; the update after Save carries the store delta.
+		if m.scheduler != nil {
+			m.scheduler.upsertAuthResult(auth.Clone(), resultTargetModels(), result.CredentialScope || scheduleUnauthorizedRefresh)
+		}
 		_ = m.persistLocked(ctx, auth)
 		authSnapshot = auth.Clone()
 		if trackCooldownState {
@@ -1348,15 +1365,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.mu.Unlock()
 	releaseMutation()
 	if m.scheduler != nil && authSnapshot != nil {
-		credentialScopedResult := result.CredentialScope || scheduleUnauthorizedRefresh
-		var targetModels []string
-		if !credentialScopedResult && modelKey != "" {
-			targetModels = append(targetModels, modelKey)
-			if routeKey := canonicalModelKey(result.RouteModel); routeKey != "" && routeKey != modelKey {
-				targetModels = append(targetModels, routeKey)
-			}
-		}
-		m.scheduler.upsertAuthResult(authSnapshot, targetModels, credentialScopedResult)
+		m.scheduler.upsertAuthResult(authSnapshot, resultTargetModels(), result.CredentialScope || scheduleUnauthorizedRefresh)
 	}
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
