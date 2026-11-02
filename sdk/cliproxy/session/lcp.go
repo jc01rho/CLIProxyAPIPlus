@@ -883,6 +883,8 @@ func (m *MerklePrefixMatcher) BindWithResult(namespace string, turns []Canonical
 
 // MerklePrefixBindResult describes the session identities produced by binding an LCP sequence.
 type MerklePrefixBindResult struct {
+	// AuthID is the auth the sequence was bound to.
+	AuthID          string
 	SessionID       string
 	ParentSessionID string
 	IsFork          bool
@@ -903,6 +905,16 @@ func (m *MerklePrefixMatcher) BindFingerprintsWithResult(namespace string, finge
 
 // BindFingerprintsWithContext records a precomputed request sequence for an auth with explicit tail and environment context.
 func (m *MerklePrefixMatcher) BindFingerprintsWithContext(namespace string, fingerprints, tailFingerprints []string, envDigest string, minPrefixLength int, authID string) MerklePrefixBindResult {
+	return m.BindUnmatchedFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, authID, nil)
+}
+
+// BindUnmatchedFingerprintsWithContext binds a sequence whose earlier match
+// missed. It re-matches under the matcher lock: when a concurrent request of
+// the same conversation bound the session to another auth in the meantime and
+// accept reports that auth usable, the sequence is bound to that auth instead
+// of authID, so one LCP session never spans two credentials. A nil accept
+// binds authID unconditionally. The result's AuthID names the bound auth.
+func (m *MerklePrefixMatcher) BindUnmatchedFingerprintsWithContext(namespace string, fingerprints, tailFingerprints []string, envDigest string, minPrefixLength int, authID string, accept func(boundAuthID string) bool) MerklePrefixBindResult {
 	if m == nil || strings.TrimSpace(namespace) == "" || strings.TrimSpace(authID) == "" {
 		return MerklePrefixBindResult{}
 	}
@@ -916,10 +928,18 @@ func (m *MerklePrefixMatcher) BindFingerprintsWithContext(namespace string, fing
 	if fingerprints, minPrefixLength, ok = m.sanitizeFingerprints(fingerprints, minPrefixLength); !ok {
 		return MerklePrefixBindResult{}
 	}
+	authID = strings.TrimSpace(authID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.prepareLocked()
-	return m.bindLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, strings.TrimSpace(authID), m.now())
+	now := m.now()
+	if accept != nil {
+		if match, ok := m.matchLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, now); ok && !match.IsFork &&
+			match.AuthID != "" && match.AuthID != "home-pending" && match.AuthID != authID && accept(match.AuthID) {
+			authID = match.AuthID
+		}
+	}
+	return m.bindLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, authID, now)
 }
 
 // Touch refreshes an existing sequence or binds it to authID when it is a new extension.
@@ -1229,6 +1249,7 @@ func (m *MerklePrefixMatcher) bindLocked(namespace string, fingerprints, tailFin
 			}
 			m.addGroupLocked(reboundGroup)
 			return MerklePrefixBindResult{
+				AuthID:          authID,
 				SessionID:       sessionID,
 				ParentSessionID: parentSessionID,
 				IsFork:          isFork,
@@ -1286,6 +1307,7 @@ func (m *MerklePrefixMatcher) bindLocked(namespace string, fingerprints, tailFin
 	}
 	m.addGroupLocked(createdGroup)
 	return MerklePrefixBindResult{
+		AuthID:          authID,
 		SessionID:       sessionID,
 		ParentSessionID: parentSessionID,
 		IsFork:          isFork,

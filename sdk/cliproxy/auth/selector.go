@@ -2037,7 +2037,9 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	}
 
 	var preservedAuthID string
+	matchMissed := true
 	if match, ok := s.matcher.MatchFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength); ok {
+		matchMissed = false
 		for _, auth := range available {
 			if auth == nil || auth.ID != match.AuthID {
 				continue
@@ -2095,7 +2097,30 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	if preservedAuthID != "" {
 		bindAuthID = preservedAuthID
 	}
-	if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID); bindRes.SessionID != "" {
+	var bindRes cliproxysession.MerklePrefixBindResult
+	if matchMissed {
+		// A concurrent request of the same conversation may have bound the session
+		// since the miss above; adopt its auth so the session keeps one credential.
+		availableByID := func(authID string) *Auth {
+			for _, candidate := range available {
+				if candidate != nil && candidate.ID == authID {
+					return candidate
+				}
+			}
+			return nil
+		}
+		bindRes = s.matcher.BindUnmatchedFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID, func(boundAuthID string) bool {
+			return availableByID(boundAuthID) != nil
+		})
+		if bindRes.AuthID != "" && bindRes.AuthID != auth.ID {
+			if adopted := availableByID(bindRes.AuthID); adopted != nil {
+				auth = adopted
+			}
+		}
+	} else {
+		bindRes = s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID)
+	}
+	if bindRes.SessionID != "" {
 		opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
 		opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
 		if bindRes.ParentSessionID != "" {

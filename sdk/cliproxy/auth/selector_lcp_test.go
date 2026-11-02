@@ -1679,3 +1679,75 @@ func BenchmarkSessionAffinitySelectorPickLCP(b *testing.B) {
 		_, _ = selector.Pick(context.Background(), "openai", "gpt-4o", opts, auths)
 	}
 }
+
+// scriptedPickSelector returns a fixed auth per call and can run a hook before
+// returning, which reproduces an interleaving between the affinity lookup and
+// the bind step of SessionAffinitySelector.Pick deterministically.
+type scriptedPickSelector struct {
+	picks []string
+	hooks []func()
+	calls int
+}
+
+func (s *scriptedPickSelector) Pick(_ context.Context, _, _ string, _ cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	call := s.calls
+	s.calls++
+	if call < len(s.hooks) && s.hooks[call] != nil {
+		s.hooks[call]()
+	}
+	if call < len(s.picks) {
+		for _, auth := range auths {
+			if auth.ID == s.picks[call] {
+				return auth, nil
+			}
+		}
+	}
+	return auths[0], nil
+}
+
+const (
+	lcpConversationTwoTurns  = `{"messages":[{"role":"system","content":"stable"},{"role":"user","content":"first"}]}`
+	lcpConversationFourTurns = `{"messages":[{"role":"system","content":"stable"},{"role":"user","content":"first"},{"role":"assistant","content":"answer"},{"role":"user","content":"continue"}]}`
+	lcpConversationSixTurns  = `{"messages":[{"role":"system","content":"stable"},{"role":"user","content":"first"},{"role":"assistant","content":"answer"},{"role":"user","content":"continue"},{"role":"assistant","content":"more"},{"role":"user","content":"again"}]}`
+)
+
+func lcpConversationOptions(payload string) cliproxyexecutor.Options {
+	return cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAI,
+		OriginalRequest: []byte(payload),
+		Metadata:        map[string]any{cliproxyexecutor.CallerScopeMetadataKey: "caller-a"},
+	}
+}
+
+func TestSessionAffinitySelectorLCPConcurrentFirstRequestsShareOneAuth(t *testing.T) {
+	auths := []*Auth{{ID: "auth-a"}, {ID: "auth-b"}}
+	fallback := &scriptedPickSelector{picks: []string{"auth-b", "auth-a"}}
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: fallback, TTL: time.Hour})
+	defer selector.Stop()
+
+	short := lcpConversationOptions(lcpConversationTwoTurns)
+	long := lcpConversationOptions(lcpConversationFourTurns)
+	// The short request of the same conversation runs to completion while the
+	// long one sits between its LCP miss and its bind.
+	fallback.hooks = []func(){func() {
+		if _, errPick := selector.Pick(context.Background(), "openai", "model", short, auths); errPick != nil {
+			t.Errorf("inner Pick() error = %v", errPick)
+		}
+	}}
+	longAuth, errPick := selector.Pick(context.Background(), "openai", "model", long, auths)
+	if errPick != nil {
+		t.Fatalf("outer Pick() error = %v", errPick)
+	}
+
+	shortSession, _ := short.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey].(string)
+	longSession, _ := long.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey].(string)
+	if shortSession == "" || shortSession != longSession {
+		t.Fatalf("expected one LCP session, got short=%q long=%q", shortSession, longSession)
+	}
+	if longAuth.ID != "auth-a" {
+		t.Fatalf("outer Pick() = %q, want auth-a already bound to the session", longAuth.ID)
+	}
+	if authID, state := selector.LookupAffinity("openai", "model", longSession); state != "bound" || authID != "auth-a" {
+		t.Fatalf("LCP session split across credentials: LookupAffinity = (%q, %q), want (auth-a, bound)", authID, state)
+	}
+}
