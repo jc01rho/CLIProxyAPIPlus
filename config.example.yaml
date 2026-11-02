@@ -994,6 +994,7 @@ upstream:
 #           alias: "kimi-k2"               # The alias used in the API.
 #           display-name: "Kimi K2"         # optional catalog display name
 #           max-context-length: 1048576    # optional: override Codex client context window metadata
+#           routing-max-context-length: 320000 # optional: skip this provider when a request's estimated input tokens exceed this; other providers serving the same alias take it. Never advertised to clients; omit or 0 for no limit
 #           image: false                   # optional: set true to allow this model on /v1/images/generations and /v1/images/edits (not chat/responses image input)
 #           input-modalities: [text, image] # optional: declare /v1/chat/completions and /v1/responses multimodal input for Codex clients. Use [text] for upstreams that reject multimodal tool result content.
 #           output-modalities: [text]       # optional: declare output modalities when known

@@ -20,7 +20,7 @@ func ComputeOpenAICompatModelsHash(models []config.OpenAICompatibilityModel) str
 			if name == "" && alias == "" {
 				continue
 			}
-			out(strings.ToLower(name) + "|" + strings.ToLower(alias) + "|" + strings.TrimSpace(model.DisplayName) + "|" + fmt.Sprintf("image=%t", model.Image) + "|" + fmt.Sprintf("force-mapping=%t", model.ForceMapping) + "|" + fmt.Sprintf("is-compat=%t", model.IsCompat) + "|" + fmt.Sprintf("use-max-completion-tokens=%t", model.UseMaxCompletionTokens) + "|input=" + strings.Join(normalizeModalities(model.InputModalities), ",") + "|output=" + strings.Join(normalizeModalities(model.OutputModalities), ",") + "|endpoints=" + strings.Join(model.SupportedEndpoints, ",") + thinkingHashSuffix(model.Thinking))
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias) + "|" + strings.TrimSpace(model.DisplayName) + "|" + fmt.Sprintf("image=%t", model.Image) + "|" + fmt.Sprintf("force-mapping=%t", model.ForceMapping) + "|" + fmt.Sprintf("is-compat=%t", model.IsCompat) + "|" + fmt.Sprintf("use-max-completion-tokens=%t", model.UseMaxCompletionTokens) + routingContextHashSuffix(model.RoutingMaxContextLength) + "|input=" + strings.Join(normalizeModalities(model.InputModalities), ",") + "|output=" + strings.Join(normalizeModalities(model.OutputModalities), ",") + "|endpoints=" + strings.Join(model.SupportedEndpoints, ",") + thinkingHashSuffix(model.Thinking))
 		}
 	})
 	return hashJoined(keys)
@@ -105,6 +105,15 @@ func normalizeModalities(raw []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+// routingContextHashSuffix keeps hashes of models without a routing limit
+// unchanged, so adding the field does not re-register every compat provider.
+func routingContextHashSuffix(limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("|routing-max-context-length=%d", limit)
 }
 
 func thinkingHashSuffix(support *registry.ThinkingSupport) string {
