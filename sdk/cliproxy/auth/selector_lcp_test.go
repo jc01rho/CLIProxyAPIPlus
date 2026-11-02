@@ -1751,3 +1751,38 @@ func TestSessionAffinitySelectorLCPConcurrentFirstRequestsShareOneAuth(t *testin
 		t.Fatalf("LCP session split across credentials: LookupAffinity = (%q, %q), want (auth-a, bound)", authID, state)
 	}
 }
+
+func TestSessionAffinitySelectorLCPDelayedSuccessDoesNotOverrideFailover(t *testing.T) {
+	authA, authB := &Auth{ID: "auth-a"}, &Auth{ID: "auth-b"}
+	fallback := &scriptedPickSelector{picks: []string{"auth-a", "auth-b", "auth-b"}}
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: fallback, TTL: time.Hour})
+	defer selector.Stop()
+	ctx := context.Background()
+
+	first := lcpConversationOptions(lcpConversationTwoTurns)
+	if got, _ := selector.Pick(ctx, "openai", "model", first, []*Auth{authA, authB}); got.ID != "auth-a" {
+		t.Fatalf("first Pick() = %q, want auth-a", got.ID)
+	}
+	selector.OnResult(Result{AuthID: "auth-a", Provider: "openai", Model: "model", Success: true, Options: first})
+
+	// A longer request of the conversation is routed to auth-a and still running.
+	inflight := lcpConversationOptions(lcpConversationFourTurns)
+	if got, _ := selector.Pick(ctx, "openai", "model", inflight, []*Auth{authA, authB}); got.ID != "auth-a" {
+		t.Fatalf("in-flight Pick() = %q, want auth-a", got.ID)
+	}
+	// auth-a drops out for another request of the session: failover rebinds to auth-b.
+	again := lcpConversationOptions(lcpConversationTwoTurns)
+	if got, _ := selector.Pick(ctx, "openai", "model", again, []*Auth{authB}); got.ID != "auth-b" {
+		t.Fatalf("failover Pick() = %q, want auth-b", got.ID)
+	}
+	// The in-flight request on auth-a succeeds late.
+	selector.OnResult(Result{AuthID: "auth-a", Provider: "openai", Model: "model", Success: true, Options: inflight})
+
+	session, _ := again.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey].(string)
+	next := lcpConversationOptions(lcpConversationSixTurns)
+	got, _ := selector.Pick(ctx, "openai", "model", next, []*Auth{authA, authB})
+	authID, state := selector.LookupAffinity("openai", "model", session)
+	if got.ID != "auth-b" || state != "bound" || authID != "auth-b" {
+		t.Fatalf("after failover to auth-b the next turn routed to %q; LookupAffinity = (%q, %q)", got.ID, authID, state)
+	}
+}

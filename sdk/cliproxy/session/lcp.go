@@ -1209,6 +1209,13 @@ func (m *MerklePrefixMatcher) touchLocked(namespace string, fingerprints, tailFi
 		}
 		return true
 	}
+	// A new extension inherits the session of its longest matching prefix. When
+	// that prefix is owned by another auth (the session failed over), a delayed
+	// success must not bind the extension back to the old auth.
+	if match, ok := m.matchLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, now); ok && !match.IsFork &&
+		match.AuthID != "" && match.AuthID != "home-pending" && match.AuthID != authID {
+		return false
+	}
 	m.bindLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, authID, now)
 	return true
 }
