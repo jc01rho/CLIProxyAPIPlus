@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -46,8 +47,8 @@ func TestPersistRefusesToOverwriteUnreloadedExternalEdit(t *testing.T) {
 	if reloaded.RequestRetry != 5 {
 		t.Fatalf("external edit lost: request-retry=%d, want 5 (PUT status=%d)", reloaded.RequestRetry, rec.Code)
 	}
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("PUT status=%d body=%s, want %d", rec.Code, rec.Body.String(), http.StatusConflict)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "config_conflict") {
+		t.Fatalf("PUT status=%d body=%s, want %d config_conflict", rec.Code, rec.Body.String(), http.StatusConflict)
 	}
 }
 

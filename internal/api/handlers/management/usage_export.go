@@ -68,6 +68,12 @@ func (h *Handler) PutUsageExportSettings(c *gin.Context) {
 		writeUsageExportError(c, keeperexport.StableError("invalid_settings"))
 		return
 	}
+	if h.isStaleConfigFileSnapshotLocked(h.cfg) {
+		h.cfg.UsageExport = previous
+		h.mu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"error": "config_conflict", "message": "config file changed on disk and has not been reloaded yet; retry after the reload"})
+		return
+	}
 	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
 		h.cfg.UsageExport = previous
 		h.mu.Unlock()

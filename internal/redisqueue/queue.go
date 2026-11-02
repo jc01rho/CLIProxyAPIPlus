@@ -73,6 +73,8 @@ func Enqueue(payload []byte) {
 		return
 	}
 	// No subscriber, or a full subscriber was dropped: keep the record for PopOldest.
+	// When only some subscribers overflowed, the healthy ones already received it, so a
+	// poller may see it again: delivery is at-least-once, never lossy.
 	global.enqueue(payload)
 }
 

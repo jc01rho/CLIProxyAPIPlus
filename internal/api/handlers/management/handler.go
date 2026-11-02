@@ -235,6 +235,17 @@ func (h *Handler) isStaleConfigFileSnapshotLocked(cfg *config.Config) bool {
 	return config.ComputeSourceHash(data) != cfg.SourceHash
 }
 
+// rejectStaleConfigLocked answers 409 config_conflict and reports true when h.cfg
+// was parsed from bytes that are no longer on disk: an external edit has not been
+// reloaded yet, and saving h.cfg would overwrite it. Callers must hold h.mu.
+func (h *Handler) rejectStaleConfigLocked(c *gin.Context) bool {
+	if !h.isStaleConfigFileSnapshotLocked(h.cfg) {
+		return false
+	}
+	c.JSON(http.StatusConflict, gin.H{"error": "config_conflict", "message": "config file changed on disk and has not been reloaded yet; retry after the reload"})
+	return true
+}
+
 // recordConfigFileSavedLocked marks h.cfg as reflecting the config file bytes
 // a management save just wrote, so the stale snapshot check does not mistake
 // the handler's own save for an external edit. Callers must hold h.mu.
@@ -316,6 +327,9 @@ func (h *Handler) reloadSnapshotConfigLocked() configReloadSnapshot {
 // saveConfigAndSnapshotLocked saves h.cfg and returns a full runtime config snapshot.
 // Callers must hold h.mu.
 func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnapshot, bool) {
+	if h.rejectStaleConfigLocked(c) {
+		return configReloadSnapshot{}, false
+	}
 	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", errSave)})
 		return configReloadSnapshot{}, false
@@ -584,10 +598,7 @@ func (h *Handler) persist(c *gin.Context) bool {
 // persistLocked saves the current in-memory config to disk.
 // It expects the caller to hold h.mu.
 func (h *Handler) persistLocked(c *gin.Context) bool {
-	// h.cfg was parsed from bytes that are no longer on disk: an external edit
-	// has not been reloaded yet, and saving h.cfg would overwrite it.
-	if h.isStaleConfigFileSnapshotLocked(h.cfg) {
-		c.JSON(http.StatusConflict, gin.H{"error": "config_conflict", "message": "config file changed on disk and has not been reloaded yet; retry after the reload"})
+	if h.rejectStaleConfigLocked(c) {
 		return false
 	}
 	// Preserve comments when writing
