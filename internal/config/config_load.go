@@ -43,7 +43,7 @@ func ComputeSourceHash(data []byte) string {
 // leaves configFile untouched, so every later attempt refuses the file again.
 func PrepareConfigFileForUpload(configFile string) error {
 	writing := false
-	errRewrite := rewriteConfigFile(configFile, func(data []byte) ([]byte, error) {
+	_, _, errRewrite := rewriteConfigFile(configFile, func(data []byte) ([]byte, error) {
 		prepared, errPrepare := prepareConfigForUpload(data)
 		if errPrepare != nil || bytes.Equal(prepared, data) {
 			return nil, errPrepare
@@ -154,7 +154,7 @@ func managementSecretKeyPath(data []byte) []string {
 // configFile with its hash. The read-modify-write runs under the config file
 // lock, and it skips the write when the file no longer holds plaintext (a
 // concurrent save changed the secret), so it never rolls back a newer save.
-func persistHashedManagementSecret(configFile, plaintext, hashed string) error {
+func persistHashedManagementSecret(configFile, plaintext, hashed string) (read, written []byte, err error) {
 	return rewriteConfigFile(configFile, func(current []byte) ([]byte, error) {
 		path := managementSecretKeyPath(current)
 		var root yaml.Node
@@ -167,6 +167,18 @@ func persistHashedManagementSecret(configFile, plaintext, hashed string) error {
 		}
 		return updateNestedScalarYAML(current, path, hashed)
 	})
+}
+
+// followConfigWriteBack returns the file bytes a loaded config reflects after
+// a LoadConfig write-back that read read and wrote written. The write-back only
+// changes the representation (hashed secret, dropped overridden fields), so
+// the config still reflects the new bytes, unless another writer changed the
+// file before the write-back read it.
+func followConfigWriteBack(known, read, written []byte) []byte {
+	if written == nil || !bytes.Equal(read, known) {
+		return known
+	}
+	return written
 }
 
 // LoadConfigOptional reads YAML from configFile.
@@ -278,6 +290,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Hash remote management key if plaintext is detected (nested)
 	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
+	// sourceData tracks the file bytes cfg reflects, following LoadConfig's own
+	// write-backs below while no other writer changed the file in between.
+	sourceData := data
 	if cfg.RemoteManagement.SecretKey != "" && !looksLikeBcrypt(cfg.RemoteManagement.SecretKey) {
 		plaintext := cfg.RemoteManagement.SecretKey
 		hashed, errHash := hashSecret(plaintext)
@@ -288,7 +303,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 		// Persist the hashed value back to the config file to avoid re-hashing on next startup.
 		// Preserve YAML comments and ordering; update only the nested key.
-		_ = persistHashedManagementSecret(configFile, plaintext, hashed)
+		read, written, _ := persistHashedManagementSecret(configFile, plaintext, hashed)
+		sourceData = followConfigWriteBack(sourceData, read, written)
 	}
 
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
@@ -380,7 +396,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Only conflicting legacy fields are removed on load. A legacy-only document
 	// stays legacy until a v8 configuration write explicitly migrates it.
 	writing := false
-	errClean := rewriteConfigFile(configFile, func(current []byte) ([]byte, error) {
+	cleanRead, cleanWritten, errClean := rewriteConfigFile(configFile, func(current []byte) ([]byte, error) {
 		cleaned, changed, errLayout := NormalizeConfigLayout(current, false)
 		if errLayout != nil || !changed {
 			return nil, errLayout
@@ -394,10 +410,11 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if errClean != nil {
 		return nil, errClean
 	}
+	sourceData = followConfigWriteBack(sourceData, cleanRead, cleanWritten)
 
-	// Record the exact bytes this config was parsed from, so a consumer can tell
-	// it apart from a newer version of the file.
-	cfg.SourceHash = ComputeSourceHash(data)
+	// Record the exact bytes this config reflects (as parsed, plus LoadConfig's
+	// own write-backs), so a consumer can tell it apart from a newer version of the file.
+	cfg.SourceHash = ComputeSourceHash(sourceData)
 
 	// Return the populated configuration struct.
 	return &cfg, nil

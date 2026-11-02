@@ -59,20 +59,24 @@ func writeConfigFileLocked(configFile string, data []byte, perm os.FileMode) err
 }
 
 // rewriteConfigFile runs a read-modify-write of configFile under the config file
-// lock. A nil result from transform leaves the file untouched.
-func rewriteConfigFile(configFile string, transform func(current []byte) ([]byte, error)) error {
+// lock. A nil result from transform leaves the file untouched. It returns the
+// bytes it read and, when it wrote the file, the bytes it wrote.
+func rewriteConfigFile(configFile string, transform func(current []byte) ([]byte, error)) (read, written []byte, err error) {
 	unlock := lockConfigFile()
 	defer unlock()
 	current, errRead := os.ReadFile(configFile)
 	if errRead != nil {
-		return errRead
+		return nil, nil, errRead
 	}
 	if afterConfigRewriteRead != nil {
 		afterConfigRewriteRead()
 	}
 	next, errTransform := transform(current)
 	if errTransform != nil || next == nil {
-		return errTransform
+		return current, nil, errTransform
 	}
-	return writeConfigFileLocked(configFile, next, 0600)
+	if errWrite := writeConfigFileLocked(configFile, next, 0600); errWrite != nil {
+		return current, nil, errWrite
+	}
+	return current, next, nil
 }

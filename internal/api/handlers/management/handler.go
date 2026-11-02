@@ -235,6 +235,18 @@ func (h *Handler) isStaleConfigFileSnapshotLocked(cfg *config.Config) bool {
 	return config.ComputeSourceHash(data) != cfg.SourceHash
 }
 
+// recordConfigFileSavedLocked marks h.cfg as reflecting the config file bytes
+// a management save just wrote, so the stale snapshot check does not mistake
+// the handler's own save for an external edit. Callers must hold h.mu.
+func (h *Handler) recordConfigFileSavedLocked() {
+	if h.cfg == nil || h.configFilePath == "" {
+		return
+	}
+	if data, errRead := os.ReadFile(h.configFilePath); errRead == nil {
+		h.cfg.SourceHash = config.ComputeSourceHash(data)
+	}
+}
+
 // SetAuthManager updates the auth manager reference used by management endpoints.
 func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	if h == nil {
@@ -308,6 +320,7 @@ func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnaps
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", errSave)})
 		return configReloadSnapshot{}, false
 	}
+	h.recordConfigFileSavedLocked()
 	return h.reloadSnapshotConfigLocked(), true
 }
 
@@ -571,11 +584,18 @@ func (h *Handler) persist(c *gin.Context) bool {
 // persistLocked saves the current in-memory config to disk.
 // It expects the caller to hold h.mu.
 func (h *Handler) persistLocked(c *gin.Context) bool {
+	// h.cfg was parsed from bytes that are no longer on disk: an external edit
+	// has not been reloaded yet, and saving h.cfg would overwrite it.
+	if h.isStaleConfigFileSnapshotLocked(h.cfg) {
+		c.JSON(http.StatusConflict, gin.H{"error": "config_conflict", "message": "config file changed on disk and has not been reloaded yet; retry after the reload"})
+		return false
+	}
 	// Preserve comments when writing
 	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
+	h.recordConfigFileSavedLocked()
 	snapshot := h.reloadSnapshotConfigLocked()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	var reqCtx context.Context

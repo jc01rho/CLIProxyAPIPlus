@@ -406,6 +406,7 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 			})
 			return
 		}
+		h.recordConfigFileSavedLocked()
 	}
 	cfgSnapshot := h.reloadSnapshotConfigLocked()
 	h.mu.Unlock()

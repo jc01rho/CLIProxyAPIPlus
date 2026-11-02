@@ -74,6 +74,7 @@ func (h *Handler) PutUsageExportSettings(c *gin.Context) {
 		writeUsageExportError(c, keeperexport.StableError("storage_error"))
 		return
 	}
+	h.recordConfigFileSavedLocked()
 	snapshot := h.reloadSnapshotConfigLocked()
 	updated := h.cfg
 	effective := settingsFromConfig(updated.UsageExport)

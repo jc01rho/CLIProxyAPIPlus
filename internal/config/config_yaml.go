@@ -130,9 +130,10 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 // SaveConfigPreserveCommentsUpdateNestedScalar updates a nested scalar key path like ["a","b"]
 // while preserving comments and positions.
 func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []string, value string) error {
-	return rewriteConfigFile(configFile, func(current []byte) ([]byte, error) {
+	_, _, err := rewriteConfigFile(configFile, func(current []byte) ([]byte, error) {
 		return updateNestedScalarYAML(current, path, value)
 	})
+	return err
 }
 
 // updateNestedScalarYAML returns data with the nested scalar key path like ["a","b"] set to

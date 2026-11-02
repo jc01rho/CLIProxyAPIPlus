@@ -336,6 +336,7 @@ func (h *Handler) installPluginFromStore(c *gin.Context, goos, goarch string) {
 		})
 		return
 	}
+	h.recordConfigFileSavedLocked()
 	cfgSnapshot := h.reloadSnapshotConfigLocked()
 	h.mu.Unlock()
 
