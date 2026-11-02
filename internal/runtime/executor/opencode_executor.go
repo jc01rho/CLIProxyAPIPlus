@@ -86,7 +86,7 @@ func (e *OpenCodeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.A
 		ctx = req.Context()
 	}
 	httpReq := req.WithContext(ctx)
-	applyOpenCodeHeaders(httpReq, openCodeAPIKey(auth), true)
+	applyOpenCodeHeaders(httpReq, openCodeAPIKey(auth), true, openCodeAffinitySession(ctx))
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -122,7 +122,7 @@ func (e *OpenCodeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	if err != nil {
 		return resp, err
 	}
-	applyOpenCodeHeaders(httpReq, openCodeAPIKey(auth), false)
+	applyOpenCodeHeaders(httpReq, openCodeAPIKey(auth), false, openCodeAffinitySession(ctx, opts.Metadata, req.Metadata))
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -216,7 +216,7 @@ func (e *OpenCodeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	if err != nil {
 		return nil, err
 	}
-	applyOpenCodeHeaders(httpReq, openCodeAPIKey(auth), true)
+	applyOpenCodeHeaders(httpReq, openCodeAPIKey(auth), true, openCodeAffinitySession(ctx, opts.Metadata, req.Metadata))
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -322,7 +322,7 @@ func (e *OpenCodeExecutor) executeSystemOne(ctx context.Context, auth *cliproxya
 	if err != nil {
 		return resp, err
 	}
-	applyOpenCodeHeaders(httpReq, openCodeAPIKey(auth), false)
+	applyOpenCodeHeaders(httpReq, openCodeAPIKey(auth), false, openCodeAffinitySession(ctx))
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -427,8 +427,16 @@ func openCodeChatURL(auth *cliproxyauth.Auth) string {
 // SessionID.create(): the gate decodes it and treats an ascending (or
 // otherwise malformed) id as a foreign client. The CLI sends the same session
 // id on four headers.
-func applyOpenCodeHeaders(req *http.Request, apiKey string, stream bool) {
-	session := newOpenCodeIdentifier("ses", true)
+//
+// affinitySession is the conversation-stable id derived from the proxy's
+// reconciled session identity (openCodeAffinitySession). It keeps the prompt
+// cache warm across turns and holds upstream session affinity. Only when no
+// conversation identity is available does the executor mint a fresh id.
+func applyOpenCodeHeaders(req *http.Request, apiKey string, stream bool, affinitySession string) {
+	session := strings.TrimSpace(affinitySession)
+	if session == "" {
+		session = newOpenCodeIdentifier("ses", true)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", openCodeUserAgent())
 	req.Header.Set("x-opencode-client", openCodeClient)

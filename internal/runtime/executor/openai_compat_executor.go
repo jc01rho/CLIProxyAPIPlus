@@ -265,7 +265,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	// attrs intentionally win when header:x-opencode-* is configured —
 	// explicit user config overrides the Zen fingerprint (project-wide
 	// header: convention).
-	applyOpencodeZenFingerprint(httpReq, e.provider, translated, opts.Headers, apiKey)
+	applyOpencodeZenFingerprint(httpReq, e.provider, translated, opts.Headers, apiKey, openCodeAffinitySession(ctx, opts.Metadata, req.Metadata))
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -413,7 +413,7 @@ func (e *OpenAICompatExecutor) executeSystemOne(ctx context.Context, auth *clipr
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	applyOpencodeZenFingerprint(httpReq, e.provider, payload, opts.Headers, apiKey)
+	applyOpencodeZenFingerprint(httpReq, e.provider, payload, opts.Headers, apiKey, openCodeAffinitySession(ctx, opts.Metadata, req.Metadata))
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -521,7 +521,7 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 	// fingerprint intentionally degrades to the per-request random UUID
 	// fallback (OmniRoute 12719 "no body" branch). attrs still win over the
 	// fingerprint when header:x-opencode-* is configured.
-	applyOpencodeZenFingerprint(httpReq, e.provider, payload, opts.Headers, apiKey)
+	applyOpencodeZenFingerprint(httpReq, e.provider, payload, opts.Headers, apiKey, openCodeAffinitySession(ctx, opts.Metadata, req.Metadata))
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -716,7 +716,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 	// attrs intentionally win when header:x-opencode-* is configured —
 	// explicit user config overrides the Zen fingerprint (project-wide
 	// header: convention).
-	applyOpencodeZenFingerprint(httpReq, e.provider, translated, opts.Headers, apiKey)
+	applyOpencodeZenFingerprint(httpReq, e.provider, translated, opts.Headers, apiKey, openCodeAffinitySession(ctx, opts.Metadata, req.Metadata))
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("Cache-Control", "no-cache")
@@ -1183,7 +1183,7 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 	// fingerprint intentionally degrades to the per-request random UUID
 	// fallback (OmniRoute 12719 "no body" branch). attrs still win over the
 	// fingerprint when header:x-opencode-* is configured.
-	applyOpencodeZenFingerprint(httpReq, e.provider, payload, opts.Headers, apiKey)
+	applyOpencodeZenFingerprint(httpReq, e.provider, payload, opts.Headers, apiKey, openCodeAffinitySession(ctx, opts.Metadata, req.Metadata))
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
