@@ -106,7 +106,7 @@ func (e *OpenAICompatExecutor) openNativeResponses(ctx context.Context, auth *cl
 		authID, authLabel = auth.ID, auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
-	applyOpencodeZenFingerprint(httpReq, e.provider, body, opts.Headers, apiKey)
+	applyOpencodeZenFingerprint(httpReq, e.provider, body, opts.Headers, apiKey, openCodeAffinitySession(ctx, opts.Metadata, req.Metadata))
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	helps.RecordAPIRequest(ctx, cfg, helps.UpstreamRequestLog{URL: url, Method: http.MethodPost, Headers: httpReq.Header.Clone(), Body: body, Provider: e.Identifier(), AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue})
 	client := reporter.TrackHTTPClient(helps.NewProxyAwareHTTPClient(ctx, cfg, auth, 0))

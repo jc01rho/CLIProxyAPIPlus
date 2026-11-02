@@ -74,7 +74,7 @@ func TestApplyOpenCodeHeaders_MirrorsCLIIdentity(t *testing.T) {
 				t.Fatalf("new request: %v", err)
 			}
 
-			applyOpenCodeHeaders(req, tc.apiKey, true)
+			applyOpenCodeHeaders(req, tc.apiKey, true, "")
 
 			if got := req.Header.Get("Authorization"); got != tc.wantBearer {
 				t.Fatalf("Authorization = %q, want %q", got, tc.wantBearer)
