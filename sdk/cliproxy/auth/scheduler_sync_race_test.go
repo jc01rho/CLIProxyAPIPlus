@@ -91,3 +91,52 @@ func TestPickNextSkipsCoolingAuthWhileResultIsPersisted(t *testing.T) {
 		t.Fatalf("fast path selected %s while m.auths marks it blocked (reason=%v until %s) during Store.Save", got.ID, reason, next.Format(time.RFC3339))
 	}
 }
+
+// A scheduler rebuild from a snapshot taken before a concurrent Register must
+// not drop the new auth: picks keep succeeding on the old auth, so nothing
+// would trigger another sync.
+func TestSchedulerRebuildFromStaleSnapshotKeepsNewAuth(t *testing.T) {
+	ctx := context.Background()
+	const model = "rebuild-snapshot-model"
+	m := NewManager(nil, &RoundRobinSelector{}, nil)
+	m.RegisterExecutor(schedulerProviderTestExecutor{provider: "gemini"})
+	registerSchedulerModels(t, "gemini", model, "rebuild-a", "rebuild-b")
+	if _, errRegister := m.Register(ctx, &Auth{ID: "rebuild-a", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("register a: %v", errRegister)
+	}
+	m.RefreshSchedulerEntry("rebuild-a")
+
+	// checkAndSyncScheduler takes its snapshot, then a hot-reload adds b.
+	snapshot := m.snapshotAuths()
+	if _, errRegister := m.Register(ctx, &Auth{ID: "rebuild-b", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("register b: %v", errRegister)
+	}
+	m.RefreshSchedulerEntry("rebuild-b")
+	seen := map[string]int{}
+	for i := 0; i < 4; i++ {
+		got, _, errPick := m.pickNext(ctx, "gemini", model, cliproxyexecutor.Options{}, nil)
+		if errPick != nil {
+			t.Fatalf("pre-rebuild pick: %v", errPick)
+		}
+		seen[got.ID]++
+	}
+	if seen["rebuild-b"] == 0 {
+		t.Fatalf("precondition: b not selectable before rebuild: %v", seen)
+	}
+
+	// checkAndSyncScheduler then rebuilds from the now stale snapshot.
+	m.syncSchedulerFromSnapshot(snapshot)
+
+	seen = map[string]int{}
+	for i := 0; i < 20; i++ {
+		got, _, errPick := m.pickNext(ctx, "gemini", model, cliproxyexecutor.Options{}, nil)
+		if errPick != nil {
+			t.Fatalf("post-rebuild pick: %v", errPick)
+		}
+		seen[got.ID]++
+		m.MarkResult(ctx, Result{AuthID: got.ID, Provider: "gemini", Model: model, Success: true})
+	}
+	if seen["rebuild-b"] == 0 {
+		t.Fatalf("auth rebuild-b is registered and healthy in m.auths but was selected 0/20 times after rebuild (picks=%v, schedulerNeedsSync=%v)", seen, m.schedulerNeedsSync())
+	}
+}

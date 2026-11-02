@@ -129,11 +129,23 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	return !e.disallowFreeAuth || !isFreeCodexAuth(auth)
 }
 
+// maxSchedulerResyncRebuilds bounds the extra rebuilds syncSchedulerFromSnapshot
+// runs when auths change while it rebuilds; checkAndSyncScheduler keeps the
+// version unsynced if the scheduler still has not converged after them.
+const maxSchedulerResyncRebuilds = 3
+
 func (m *Manager) syncSchedulerFromSnapshot(auths []*Auth) {
 	if m == nil || m.scheduler == nil {
 		return
 	}
 	m.scheduler.rebuild(auths)
+	// rebuild resets the scheduler to the snapshot, so an auth registered (or
+	// removed) after the snapshot was taken is lost (or kept) until another
+	// sync, and successful picks on other auths never trigger one. Rebuild from
+	// a fresh snapshot until the scheduler matches m.auths.
+	for attempt := 0; attempt < maxSchedulerResyncRebuilds && m.schedulerNeedsSync(); attempt++ {
+		m.scheduler.rebuild(m.snapshotAuths())
+	}
 }
 
 func (m *Manager) currentVersion() uint64 {
