@@ -149,7 +149,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		// no Antigravity credits fallback may run after it.
 		requestStopped := isRequestTerminatedError(lastErr) || isRequestStopError(lastErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
-		if !requestStopped && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if !requestStopped && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized, req.Model) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
 			} else if ok {
@@ -226,7 +226,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			// wraps the stopped bootstrap error with its stream headers.
 			return nil, lastErr
 		}
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized, req.Model) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits
 			} else if ok {
