@@ -1391,15 +1391,22 @@ func hasAntigravityProvider(providers []string) bool {
 	return false
 }
 
-func shouldAttemptAntigravityCreditsFallback(m *Manager, lastErr error, providers []string) bool {
+func shouldAttemptAntigravityCreditsFallback(m *Manager, lastErr error, providers []string, routeModel string) bool {
 	if isRequestTerminatedError(lastErr) || isRequestStopError(lastErr) {
+		return false
+	}
+	// A Claude/GPT request must not fall back to another Antigravity account,
+	// including the credits retry that borrows a different account's Google One
+	// AI credits.
+	if m.antigravityClaudeOrGPTRoute(nil, routeModel) {
 		return false
 	}
 	status := statusCodeFromError(lastErr)
 	log.WithFields(log.Fields{
-		"lastErr":   errorString(lastErr),
-		"status":    status,
-		"providers": providers,
+		"lastErr":     errorString(lastErr),
+		"status":      status,
+		"providers":   providers,
+		"route_model": routeModel,
 	}).Debug("shouldAttemptAntigravityCreditsFallback")
 	if m == nil || lastErr == nil || m.HomeEnabled() {
 		return false

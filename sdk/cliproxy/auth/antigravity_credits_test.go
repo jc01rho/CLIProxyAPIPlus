@@ -97,7 +97,7 @@ func (h *captureLogHook) Fire(entry *log.Entry) error {
 	return nil
 }
 
-func TestManagerExecuteStream_AntigravityCreditsFallbackAfterBootstrap429(t *testing.T) {
+func TestManagerExecuteStream_AntigravityCreditsFallbackSkippedForClaudeRoute(t *testing.T) {
 	const model = "claude-opus-4-6-thinking"
 	executor := &antigravityCreditsFallbackExecutor{}
 	manager := NewManager(nil, nil, nil)
@@ -112,28 +112,26 @@ func TestManagerExecuteStream_AntigravityCreditsFallbackAfterBootstrap429(t *tes
 	}
 
 	streamResult, errExecute := manager.ExecuteStream(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
-	if errExecute != nil {
-		t.Fatalf("execute stream: %v", errExecute)
-	}
-
-	var payload []byte
-	for chunk := range streamResult.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("unexpected stream error: %v", chunk.Err)
+	failure := errExecute
+	if streamResult != nil {
+		for chunk := range streamResult.Chunks {
+			if chunk.Err != nil {
+				failure = chunk.Err
+				continue
+			}
+			if len(chunk.Payload) > 0 {
+				t.Fatalf("unexpected payload %q, want the quota failure without a credits retry", string(chunk.Payload))
+			}
 		}
-		payload = append(payload, chunk.Payload...)
 	}
-	if string(payload) != "credits fallback" {
-		t.Fatalf("payload = %q, want %q", string(payload), "credits fallback")
+	if failure == nil {
+		t.Fatal("ExecuteStream() reported success, want the upstream quota failure")
 	}
-	if got := streamResult.Headers.Get("X-Credits"); got != model {
-		t.Fatalf("X-Credits header = %q, want routed model", got)
+	if status := statusCodeFromError(failure); status != http.StatusTooManyRequests {
+		t.Fatalf("ExecuteStream() status = %d, want %d; err=%v", status, http.StatusTooManyRequests, failure)
 	}
-	if len(executor.streamCreditsRequested) != 2 {
-		t.Fatalf("stream calls = %d, want 2", len(executor.streamCreditsRequested))
-	}
-	if executor.streamCreditsRequested[0] || !executor.streamCreditsRequested[1] {
-		t.Fatalf("credits flags = %v, want [false true]", executor.streamCreditsRequested)
+	if len(executor.streamCreditsRequested) != 1 || executor.streamCreditsRequested[0] {
+		t.Fatalf("streamCreditsRequested = %v, want [false]: a Claude route must not enter the credits retry", executor.streamCreditsRequested)
 	}
 }
 
@@ -276,14 +274,14 @@ func TestIsAuthBlockedForModel_KeepsGeminiBlockedWithoutCreditsBypass(t *testing
 	}
 }
 
-func TestManagerExecuteAndStream_ExpiredNegativeCreditsHintRecoversDuringModelCooldown(t *testing.T) {
+func TestManagerExecuteAndStream_ClaudeRouteNeverEntersCreditsFallbackDuringModelCooldown(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		name := "execute"
 		if stream {
 			name = "execute_stream"
 		}
 		t.Run(name, func(t *testing.T) {
-			authID := "ag-expired-negative-hint-" + name
+			authID := "ag-claude-no-fallback-" + name
 			const model = "claude-sonnet-4-6"
 			executor := &antigravityCreditsFallbackExecutor{}
 			manager := NewManager(nil, nil, nil)
@@ -315,61 +313,49 @@ func TestManagerExecuteAndStream_ExpiredNegativeCreditsHintRecoversDuringModelCo
 				t.Fatalf("register auth: %v", errRegister)
 			}
 
-			// Fresh negative hint must still suppress credits fallback while model is in cooldown.
+			// A fresh negative hint must suppress the credits retry.
 			SetAntigravityCreditsHint(authID, AntigravityCreditsHint{
 				Known:     true,
 				Available: false,
 				UpdatedAt: time.Now(),
 			})
-			if stream {
-				if _, errStream := manager.ExecuteStream(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{}); errStream == nil {
-					t.Fatal("ExecuteStream() succeeded with fresh negative credits hint, want cooldown error")
-				}
-			} else {
-				if _, errExec := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{}); errExec == nil {
-					t.Fatal("Execute() succeeded with fresh negative credits hint, want cooldown error")
-				}
-			}
-			if len(executor.executeCreditsRequested) != 0 || len(executor.streamCreditsRequested) != 0 {
-				t.Fatalf("executor calls during fresh negative hint = (%d, %d), want (0, 0)", len(executor.executeCreditsRequested), len(executor.streamCreditsRequested))
-			}
+			assertClaudeRouteSkipsCreditsFallback(t, manager, model, stream)
 
-			// Once the negative hint expires, execution must enter credits fallback even while model cooldown is active.
+			// An expired negative hint must not reopen the retry either: the Claude
+			// route stays on its own account while the model cooldown is active.
 			SetAntigravityCreditsHint(authID, AntigravityCreditsHint{
 				Known:     true,
 				Available: false,
 				UpdatedAt: time.Now().Add(-AntigravityCreditsHintRefreshInterval - time.Second),
 			})
-			if stream {
-				streamResult, errStream := manager.ExecuteStream(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
-				if errStream != nil {
-					t.Fatalf("ExecuteStream() after negative hint expiry error = %v", errStream)
-				}
-				var streamed []byte
-				for chunk := range streamResult.Chunks {
-					if chunk.Err != nil {
-						t.Fatalf("unexpected stream chunk error: %v", chunk.Err)
-					}
-					streamed = append(streamed, chunk.Payload...)
-				}
-				if string(streamed) != "credits fallback" {
-					t.Fatalf("ExecuteStream() payload = %q, want %q", string(streamed), "credits fallback")
-				}
-				if len(executor.streamCreditsRequested) != 1 || !executor.streamCreditsRequested[0] {
-					t.Fatalf("streamCreditsRequested = %v, want [true]", executor.streamCreditsRequested)
-				}
-			} else {
-				resp, errExec := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
-				if errExec != nil {
-					t.Fatalf("Execute() after negative hint expiry error = %v", errExec)
-				}
-				if string(resp.Payload) != "credits fallback" {
-					t.Fatalf("Execute() payload = %q, want %q", string(resp.Payload), "credits fallback")
-				}
-				if len(executor.executeCreditsRequested) != 1 || !executor.executeCreditsRequested[0] {
-					t.Fatalf("executeCreditsRequested = %v, want [true]", executor.executeCreditsRequested)
-				}
+			assertClaudeRouteSkipsCreditsFallback(t, manager, model, stream)
+
+			if len(executor.executeCreditsRequested) != 0 || len(executor.streamCreditsRequested) != 0 {
+				t.Fatalf("executor calls = (%d, %d), want (0, 0): a Claude route must never enter the credits retry", len(executor.executeCreditsRequested), len(executor.streamCreditsRequested))
 			}
 		})
+	}
+}
+
+// assertClaudeRouteSkipsCreditsFallback drives one request for the cooling-down
+// Claude model and requires the cooldown failure without any credits retry.
+func assertClaudeRouteSkipsCreditsFallback(t *testing.T, manager *Manager, model string, stream bool) {
+	t.Helper()
+	if stream {
+		result, errStream := manager.ExecuteStream(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+		if result != nil {
+			for chunk := range result.Chunks {
+				if chunk.Err == nil && len(chunk.Payload) > 0 {
+					t.Fatalf("unexpected stream payload %q, want the cooldown failure", string(chunk.Payload))
+				}
+			}
+		}
+		if errStream == nil {
+			t.Fatal("ExecuteStream() reported success, want the cooldown failure")
+		}
+		return
+	}
+	if _, errExec := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{}); errExec == nil {
+		t.Fatal("Execute() reported success, want the cooldown failure")
 	}
 }

@@ -187,3 +187,37 @@ func TestAntigravityHandoffIgnoresOtherStatusCodes(t *testing.T) {
 		assertAntigravityHandoff(t, m, false)
 	}
 }
+
+func TestAntigravityHandoffSkipsAliasedClaudeRoute(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		antigravityModelAliasChannel: {{Name: "claude-sonnet-4-5", Alias: "opus"}},
+	})
+	markResultBounded(t, m, Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "opus",
+		RouteModel:      "opus",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "service unavailable"},
+	})
+	assertAntigravityHandoff(t, m, false)
+}
+
+func TestAntigravityHandoffPromotesStandbyOnAliasedGeminiRoute(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		antigravityModelAliasChannel: {{Name: "gemini-3-flash", Alias: "flash"}},
+	})
+	markResultBounded(t, m, Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "flash",
+		RouteModel:      "flash",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "service unavailable"},
+	})
+	assertAntigravityHandoff(t, m, true)
+}
