@@ -2016,7 +2016,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if isFork && fallbackID != "" {
 		entry.Infof("session-affinity: fork bound to new auth | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
 	} else {
-		entry.Infof("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+		entry.Debugf("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 	}
 	return auth, nil
 }
@@ -2187,7 +2187,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 				delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
 				delete(opts.Metadata, cliproxyexecutor.NodeKindMetadataKey)
 			}
-			entry.Infof("session-affinity: LCP cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(bindRes.SessionID), auth.ID, provider, model)
+			entry.Debugf("session-affinity: LCP cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(bindRes.SessionID), auth.ID, provider, model)
 		}
 	}
 	return auth, true, nil
