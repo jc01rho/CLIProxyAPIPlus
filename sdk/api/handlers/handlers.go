@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
@@ -27,7 +28,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 	"golang.org/x/net/context"
 )
 
@@ -413,11 +413,11 @@ func setServiceTierMetadata(meta map[string]any, rawJSON []byte) {
 		return
 	}
 	serviceTier := coreusage.AutoServiceTier
-	node := gjson.GetBytes(rawJSON, "service_tier")
+	node := ojson.GetBytesNoCopy(rawJSON, "service_tier")
 	if node.Exists() {
 		value := strings.TrimSpace(node.String())
 		if value != "" {
-			serviceTier = value
+			serviceTier = strings.Clone(value)
 		}
 	}
 	meta[coreexecutor.ServiceTierMetadataKey] = serviceTier
@@ -429,7 +429,7 @@ func setGenerateMetadata(meta map[string]any, rawJSON []byte) {
 	}
 	// Missing or true means generation is enabled; only an explicit false disables generation.
 	generate := true
-	node := gjson.GetBytes(rawJSON, "generate")
+	node := ojson.GetBytesNoCopy(rawJSON, "generate")
 	if node.Exists() && node.IsBool() && !node.Bool() {
 		generate = false
 	}

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
@@ -28,8 +29,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -130,6 +129,20 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 
 func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseURL, apiKey string, compat *config.OpenAICompatibility) (resp cliproxyexecutor.Response, err error) {
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
+	if opts.SourceFormat == sdktranslator.FormatOpenAIResponse {
+		if opts.Alt == "responses/compact" {
+			if errExpand := helps.ExpandRecognizedResponsesCompactionCapsules(&req, &opts); errExpand != nil {
+				return resp, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
+			}
+		} else {
+			if errExpand := helps.ExpandResponsesCompactionCapsules(&req, &opts, e.Identifier()); errExpand != nil {
+				return resp, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
+			}
+			if helps.HasResponsesCompactionTriggerRequest(req, opts) {
+				return e.executeOpenAICompatResponsesCompaction(ctx, auth, req, opts, baseURL, apiKey, compat)
+			}
+		}
+	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
@@ -161,93 +174,104 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		return resp, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
-	translated = helps.SetStringIfDifferent(translated, "model", baseModel)
+	doc := ojson.NewDoc(translated)
+	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
-	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
-	if err != nil {
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
 		return resp, err
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	if helps.ShouldNormalizeOpenAIToolResultsForModel(compat, baseModel, requestedModel) {
-		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
+		helps.NormalizeOpenAIToolResultsTextOnlyDoc(doc)
 	}
-	// Provider-specific request transformations
-	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
-	translated = resolveReasoningEffortConflict(translated)
-	translated = normalizeMistralReasoningEffort(baseModel, translated)
-	if isMiMoModel(baseModel) {
-		translated = applyMiMoReasoningBackfill(translated)
-	}
-	// Apply reasoning normalization for all providers when reasoning signals are present
-	if !isMistralProvider(e.provider) {
-		if normalized, _, errNorm := normalizeOpenAIToolCallReasoningContentWithOptions(translated, openAIReasoningNormalizationOptions{
-			requireReasoningSignal: true,
-		}); errNorm == nil {
-			translated = normalized
+	// Fork-only provider normalizers run on the Doc that is actually sent.
+	helps.TransformDocBytes(doc, func(translated []byte) []byte {
+		// Provider-specific request transformations
+		// Resolve conflicts between "reasoning" object and "reasoning_effort" string
+		translated = resolveReasoningEffortConflict(translated)
+		translated = normalizeMistralReasoningEffort(baseModel, translated)
+		if isMiMoModel(baseModel) {
+			translated = applyMiMoReasoningBackfill(translated)
 		}
-	}
-	if isMistralProvider(e.provider) {
-		translated = stripMistralUnsupportedFields(translated)
-	}
-	// Strip unsupported top-level fields for DeepSeek models
-	if isDeepSeekModel(baseModel) {
-		translated = stripDeepSeekUnsupportedFields(translated)
-	}
-	if needsToolCallIDNormalization(baseModel, compat) {
-		if normalized, patched, errNorm := normalizeNVIDIAToolCallIDs(translated); patched > 0 && errNorm == nil {
-			translated = normalized
+		// Apply reasoning normalization for all providers when reasoning signals are present
+		if !isMistralProvider(e.provider) {
+			if normalized, _, errNorm := normalizeOpenAIToolCallReasoningContentWithOptions(translated, openAIReasoningNormalizationOptions{
+				requireReasoningSignal: true,
+			}); errNorm == nil {
+				translated = normalized
+			}
 		}
-	}
-	if isNVIDIACompatProvider(compat) {
-		translated = applyNVIDIAMaxTokensReduction(translated)
-	}
-	if isSensenovaCompatProvider(compat) {
-		translated = applySensenovaMaxTokensClamp(translated)
-		translated = sanitizeSensenovaToolCalls(translated)
-	}
-	// Empty `tools[].function.name` is rejected with invalid_request_error by
-	// every OpenAI-compatible API (e.g. Upstage Solar). Drop the offending
-	// entries unconditionally so any openai-compat provider stays usable when
-	// upstream clients send malformed tool catalogs.
-	translated = sanitizeEmptyToolFunctionNames(translated)
-	// Orphaned tool results (result whose tool_call_id has no matching
-	// assistant tool_call) make strict upstreams such as MiniMax reject the
-	// request with 400 error 2013. Drop them after all other sanitizers so
-	// results orphaned by those sanitizers are covered too.
-	translated = dropOrphanOpenAIToolResults(translated)
-	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compat, translated)
+		if isMistralProvider(e.provider) {
+			translated = stripMistralUnsupportedFields(translated)
+		}
+		// Strip unsupported top-level fields for DeepSeek models
+		if isDeepSeekModel(baseModel) {
+			translated = stripDeepSeekUnsupportedFields(translated)
+		}
+		if needsToolCallIDNormalization(baseModel, compat) {
+			if normalized, patched, errNorm := normalizeNVIDIAToolCallIDs(translated); patched > 0 && errNorm == nil {
+				translated = normalized
+			}
+		}
+		if isNVIDIACompatProvider(compat) {
+			translated = applyNVIDIAMaxTokensReduction(translated)
+		}
+		if isSensenovaCompatProvider(compat) {
+			translated = applySensenovaMaxTokensClamp(translated)
+			translated = sanitizeSensenovaToolCalls(translated)
+		}
+		// Empty `tools[].function.name` is rejected with invalid_request_error by
+		// every OpenAI-compatible API (e.g. Upstage Solar). Drop the offending
+		// entries unconditionally so any openai-compat provider stays usable when
+		// upstream clients send malformed tool catalogs.
+		translated = sanitizeEmptyToolFunctionNames(translated)
+		// Orphaned tool results (result whose tool_call_id has no matching
+		// assistant tool_call) make strict upstreams such as MiniMax reject the
+		// request with 400 error 2013. Drop them after all other sanitizers so
+		// results orphaned by those sanitizers are covered too.
+		translated = dropOrphanOpenAIToolResults(translated)
+		translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compat, translated)
+		return translated
+	})
 	if opts.Alt != "responses/compact" {
 		useMCT := helps.ShouldUseMaxCompletionTokensForModel(compat, baseModel, requestedModel)
-		translated = helps.NormalizeOpenAIMaxTokens(translated, useMCT)
-		translated, err = e.applyPromptCacheKeyWithCompat(ctx, auth, compat, from, baseModel, req, opts, translated)
-		if err != nil {
+		helps.NormalizeOpenAIMaxTokensDoc(doc, useMCT)
+		if err = e.applyPromptCacheKeyWithCompatDoc(ctx, auth, compat, from, baseModel, req, opts, doc); err != nil {
 			return resp, err
 		}
 	}
 	if opts.Alt == "responses/compact" {
-		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
-			translated = updated
-		}
-		translated = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "openai compat executor", translated, true, resolveResponsesSignatureTargetModel(baseModel, req, opts), baseURL)
+		_ = doc.Delete("stream")
+		sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURLDoc(ctx, "openai compat executor", doc, true, resolveResponsesSignatureTargetModel(baseModel, req, opts), baseURL)
 	}
 	// Ensure all tool-related id fields are JSON strings (some clients send
 	// numeric or null ids which upstream providers reject).
-	translated = normalizeToolResultIDsToString(translated)
 	developerRoleKey := e.developerRoleCapabilityKey(auth, baseURL, baseModel, endpoint)
-	if endpoint == "/chat/completions" {
-		translated = e.applyKnownDeveloperRoleFallback(developerRoleKey, translated)
-		if compat != nil && compat.SystemContentAsString {
-			translated, err = helps.NormalizeOpenAISystemContentAsString(translated)
-			if err != nil {
-				return resp, err
+	var errSystemContent error
+	helps.TransformDocBytes(doc, func(translated []byte) []byte {
+		translated = normalizeToolResultIDsToString(translated)
+		if endpoint == "/chat/completions" {
+			translated = e.applyKnownDeveloperRoleFallback(developerRoleKey, translated)
+			if compat != nil && compat.SystemContentAsString {
+				normalized, errNormalize := helps.NormalizeOpenAISystemContentAsString(translated)
+				if errNormalize != nil {
+					errSystemContent = errNormalize
+					return translated
+				}
+				translated = normalized
 			}
 		}
+		return translated
+	})
+	if errSystemContent != nil {
+		return resp, errSystemContent
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
+	translated = doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
@@ -393,8 +417,8 @@ func (e *OpenAICompatExecutor) executeSystemOne(ctx context.Context, auth *clipr
 	}
 
 	payload := append([]byte(nil), req.Payload...)
-	if gjson.GetBytes(payload, "model").String() != baseModel {
-		if next, errSet := sjson.SetBytes(payload, "model", baseModel); errSet == nil {
+	if ojson.GetBytes(payload, "model").String() != baseModel {
+		if next, errSet := ojson.SetBytes(payload, "model", baseModel); errSet == nil {
 			payload = next
 		}
 	}
@@ -591,6 +615,14 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseURL, apiKey string, compat *config.OpenAICompatibility) (_ *cliproxyexecutor.StreamResult, err error) {
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
+	if opts.SourceFormat == sdktranslator.FormatOpenAIResponse && opts.Alt != "responses/compact" {
+		if errExpand := helps.ExpandResponsesCompactionCapsules(&req, &opts, e.Identifier()); errExpand != nil {
+			return nil, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
+		}
+		if helps.HasResponsesCompactionTriggerRequest(req, opts) {
+			return e.executeOpenAICompatResponsesCompactionStream(ctx, auth, req, opts, baseURL, apiKey, compat)
+		}
+	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
@@ -617,88 +649,101 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		return nil, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
-	translated = helps.SetStringIfDifferent(translated, "model", baseModel)
+	doc := ojson.NewDoc(translated)
+	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
-	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
-	if err != nil {
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
 		return nil, err
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	if helps.ShouldNormalizeOpenAIToolResultsForModel(compat, baseModel, requestedModel) {
-		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
+		helps.NormalizeOpenAIToolResultsTextOnlyDoc(doc)
 	}
-	// Provider-specific request transformations
-	// Resolve conflicts between "reasoning" object and "reasoning_effort" string
-	translated = resolveReasoningEffortConflict(translated)
-	translated = normalizeMistralReasoningEffort(baseModel, translated)
-	if isMiMoModel(baseModel) {
-		translated = applyMiMoReasoningBackfill(translated)
-	}
-	// Apply reasoning normalization for all providers when reasoning signals are present
-	if !isMistralProvider(e.provider) {
-		if normalized, _, errNorm := normalizeOpenAIToolCallReasoningContentWithOptions(translated, openAIReasoningNormalizationOptions{
-			requireReasoningSignal: true,
-		}); errNorm == nil {
-			translated = normalized
+	// Fork-only provider normalizers run on the Doc that is actually sent.
+	helps.TransformDocBytes(doc, func(translated []byte) []byte {
+		// Provider-specific request transformations
+		// Resolve conflicts between "reasoning" object and "reasoning_effort" string
+		translated = resolveReasoningEffortConflict(translated)
+		translated = normalizeMistralReasoningEffort(baseModel, translated)
+		if isMiMoModel(baseModel) {
+			translated = applyMiMoReasoningBackfill(translated)
 		}
-	}
-	if isMistralProvider(e.provider) {
-		translated = stripMistralUnsupportedFields(translated)
-	}
-	// Strip unsupported top-level fields for DeepSeek models
-	if isDeepSeekModel(baseModel) {
-		translated = stripDeepSeekUnsupportedFields(translated)
-	}
-	if needsToolCallIDNormalization(baseModel, compat) {
-		if normalized, patched, errNorm := normalizeNVIDIAToolCallIDs(translated); patched > 0 && errNorm == nil {
-			translated = normalized
+		// Apply reasoning normalization for all providers when reasoning signals are present
+		if !isMistralProvider(e.provider) {
+			if normalized, _, errNorm := normalizeOpenAIToolCallReasoningContentWithOptions(translated, openAIReasoningNormalizationOptions{
+				requireReasoningSignal: true,
+			}); errNorm == nil {
+				translated = normalized
+			}
 		}
-	}
-	if isNVIDIACompatProvider(compat) {
-		translated = applyNVIDIAMaxTokensReduction(translated)
-	}
-	if isSensenovaCompatProvider(compat) {
-		translated = applySensenovaMaxTokensClamp(translated)
-		translated = sanitizeSensenovaToolCalls(translated)
-	}
-	// Empty `tools[].function.name` is rejected with invalid_request_error by
-	// every OpenAI-compatible API (e.g. Upstage Solar). Drop the offending
-	// entries unconditionally so any openai-compat provider stays usable when
-	// upstream clients send malformed tool catalogs.
-	translated = sanitizeEmptyToolFunctionNames(translated)
-	// Orphaned tool results make strict upstreams such as MiniMax reject the
-	// request with 400 error 2013; see dropOrphanOpenAIToolResults.
-	translated = dropOrphanOpenAIToolResults(translated)
-	translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compat, translated)
+		if isMistralProvider(e.provider) {
+			translated = stripMistralUnsupportedFields(translated)
+		}
+		// Strip unsupported top-level fields for DeepSeek models
+		if isDeepSeekModel(baseModel) {
+			translated = stripDeepSeekUnsupportedFields(translated)
+		}
+		if needsToolCallIDNormalization(baseModel, compat) {
+			if normalized, patched, errNorm := normalizeNVIDIAToolCallIDs(translated); patched > 0 && errNorm == nil {
+				translated = normalized
+			}
+		}
+		if isNVIDIACompatProvider(compat) {
+			translated = applyNVIDIAMaxTokensReduction(translated)
+		}
+		if isSensenovaCompatProvider(compat) {
+			translated = applySensenovaMaxTokensClamp(translated)
+			translated = sanitizeSensenovaToolCalls(translated)
+		}
+		// Empty `tools[].function.name` is rejected with invalid_request_error by
+		// every OpenAI-compatible API (e.g. Upstage Solar). Drop the offending
+		// entries unconditionally so any openai-compat provider stays usable when
+		// upstream clients send malformed tool catalogs.
+		translated = sanitizeEmptyToolFunctionNames(translated)
+		// Orphaned tool results make strict upstreams such as MiniMax reject the
+		// request with 400 error 2013; see dropOrphanOpenAIToolResults.
+		translated = dropOrphanOpenAIToolResults(translated)
+		translated = stripOpenAICompatProviderUnsupportedFields(e.provider, compat, translated)
+		return translated
+	})
 	if opts.Alt != "responses/compact" {
 		useMCT := helps.ShouldUseMaxCompletionTokensForModel(compat, baseModel, requestedModel)
-		translated = helps.NormalizeOpenAIMaxTokens(translated, useMCT)
-		translated, err = e.applyPromptCacheKeyWithCompat(ctx, auth, compat, from, baseModel, req, opts, translated)
-		if err != nil {
+		helps.NormalizeOpenAIMaxTokensDoc(doc, useMCT)
+		if err = e.applyPromptCacheKeyWithCompatDoc(ctx, auth, compat, from, baseModel, req, opts, doc); err != nil {
 			return nil, err
 		}
 	}
 
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
-	translated = helps.SetBoolIfDifferent(translated, "stream_options.include_usage", true)
+	helps.SetBoolIfDifferentDoc(doc, "stream_options.include_usage", true)
 
 	// Ensure all tool-related id fields are JSON strings (some clients send
 	// numeric or null ids which upstream providers reject).
-	translated = normalizeToolResultIDsToString(translated)
 	developerRoleKey := e.developerRoleCapabilityKey(auth, baseURL, baseModel, "/chat/completions")
-	translated = e.applyKnownDeveloperRoleFallback(developerRoleKey, translated)
-	if compat != nil && compat.SystemContentAsString {
-		translated, err = helps.NormalizeOpenAISystemContentAsString(translated)
-		if err != nil {
-			return nil, err
+	var errSystemContent error
+	helps.TransformDocBytes(doc, func(translated []byte) []byte {
+		translated = normalizeToolResultIDsToString(translated)
+		translated = e.applyKnownDeveloperRoleFallback(developerRoleKey, translated)
+		if compat != nil && compat.SystemContentAsString {
+			normalized, errNormalize := helps.NormalizeOpenAISystemContentAsString(translated)
+			if errNormalize != nil {
+				errSystemContent = errNormalize
+				return translated
+			}
+			translated = normalized
 		}
+		return translated
+	})
+	if errSystemContent != nil {
+		return nil, errSystemContent
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
+	translated = doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
@@ -1276,7 +1321,63 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
 
+func (e *OpenAICompatExecutor) executeOpenAICompatResponsesCompaction(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseURL, apiKey string, compat *config.OpenAICompatibility) (cliproxyexecutor.Response, error) {
+	var resp cliproxyexecutor.Response
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	summaryPayload := helps.PrepareAntigravityCompactionSummaryPayload(helps.ResponsesCompactionSourcePayload(req, opts), baseModel)
+	summaryReq := req
+	summaryReq.Payload = summaryPayload
+	summaryOpts := opts
+	summaryOpts.Alt = ""
+	summaryOpts.Stream = false
+	summaryOpts.OriginalRequest = nil
+	summaryOpts.SourceFormat = sdktranslator.FormatOpenAIResponse
+	summaryOpts.ResponseFormat = sdktranslator.FormatOpenAIResponse
+
+	summaryResp, errSummary := e.executeWithCredentials(ctx, auth, summaryReq, summaryOpts, baseURL, apiKey, compat)
+	if errSummary != nil {
+		return resp, errSummary
+	}
+	respPayload, errBuild := helps.BuildResponsesCompactionResponseFromSummary(baseModel, summaryResp.Payload)
+	if errBuild != nil {
+		return resp, statusErr{code: http.StatusBadGateway, msg: errBuild.Error()}
+	}
+	return cliproxyexecutor.Response{
+		Payload: respPayload,
+		Headers: summaryResp.Headers,
+	}, nil
+}
+
+func (e *OpenAICompatExecutor) executeOpenAICompatResponsesCompactionStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseURL, apiKey string, compat *config.OpenAICompatibility) (*cliproxyexecutor.StreamResult, error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	summaryResp, errSummary := e.executeOpenAICompatResponsesCompaction(ctx, auth, req, opts, baseURL, apiKey, compat)
+	if errSummary != nil {
+		return nil, errSummary
+	}
+	chunks, errChunks := helps.BuildResponsesCompactionStreamChunksFromResponse(baseModel, summaryResp.Payload)
+	if errChunks != nil {
+		return nil, statusErr{code: http.StatusBadGateway, msg: errChunks.Error()}
+	}
+	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
+	for _, chunk := range chunks {
+		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+	}
+	close(out)
+
+	headers := summaryResp.Headers.Clone()
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	headers.Set("Content-Type", "text/event-stream")
+	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}, nil
+}
+
 func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if opts.SourceFormat == sdktranslator.FormatOpenAIResponse && opts.Alt != "responses/compact" {
+		if errExpand := helps.ExpandResponsesCompactionCapsules(&req, &opts, e.Identifier()); errExpand != nil {
+			return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
+		}
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	from := opts.SourceFormat
@@ -1294,12 +1395,14 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 
 	modelForCounting := baseModel
 
-	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
-	if err != nil {
+	doc := ojson.NewDoc(translated)
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
 
-	translated = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)(translated)
+	ctxWithFinalizer := helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts))
+	helps.FinalizePayloadDoc(ctxWithFinalizer, doc)
+	translated = doc.Bytes()
 	enc, err := helps.TokenizerForModel(modelForCounting)
 	if err != nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("openai compat executor: tokenizer init failed: %w", err)
@@ -1367,15 +1470,16 @@ func prepareOpenAICompatImagesPayload(payload []byte, model string, contentType 
 	model = strings.TrimSpace(model)
 	contentType = strings.TrimSpace(contentType)
 	if json.Valid(payload) {
+		doc := ojson.NewDoc(payload)
 		if model != "" {
-			payload = helps.SetStringIfDifferent(payload, "model", model)
+			helps.SetStringIfDifferentDoc(doc, "model", model)
 		}
 		if stream {
-			payload = helps.SetBoolIfDifferent(payload, "stream", true)
+			helps.SetBoolIfDifferentDoc(doc, "stream", true)
 		} else {
-			payload, _ = sjson.DeleteBytes(payload, "stream")
+			_ = doc.Delete("stream")
 		}
-		return payload, "application/json", nil
+		return doc.Bytes(), "application/json", nil
 	}
 
 	mediaType, params, errParse := mime.ParseMediaType(contentType)
@@ -1475,30 +1579,47 @@ func (e *OpenAICompatExecutor) applyPromptCacheKeyWithCompat(ctx context.Context
 	if compat == nil || !compat.SupportPromptCacheKey {
 		return translated, nil
 	}
+	doc := ojson.NewDoc(translated)
+	if errCacheKey := e.applyPromptCacheKeyWithCompatDoc(ctx, auth, compat, from, baseModel, req, opts, doc); errCacheKey != nil {
+		return translated, errCacheKey
+	}
+	return doc.Bytes(), nil
+}
 
-	for _, payload := range [][]byte{req.Payload, opts.OriginalRequest, translated} {
-		if promptCacheKey := strings.TrimSpace(gjson.GetBytes(payload, "prompt_cache_key").String()); promptCacheKey != "" {
-			return helps.SetStringIfDifferent(translated, "prompt_cache_key", promptCacheKey), nil
-		}
+func (e *OpenAICompatExecutor) applyPromptCacheKeyWithCompatDoc(ctx context.Context, auth *cliproxyauth.Auth, compat *config.OpenAICompatibility, from sdktranslator.Format, baseModel string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, doc *ojson.Doc) error {
+	if doc == nil || compat == nil || !compat.SupportPromptCacheKey {
+		return nil
 	}
 
-	modelName := strings.TrimSpace(gjson.GetBytes(translated, "model").String())
+	for _, payload := range [][]byte{req.Payload, opts.OriginalRequest} {
+		if promptCacheKey := strings.TrimSpace(ojson.GetBytesNoCopy(payload, "prompt_cache_key").String()); promptCacheKey != "" {
+			helps.SetStringIfDifferentDoc(doc, "prompt_cache_key", promptCacheKey)
+			return nil
+		}
+	}
+	if promptCacheKey := strings.TrimSpace(doc.Get("prompt_cache_key").String()); promptCacheKey != "" {
+		helps.SetStringIfDifferentDoc(doc, "prompt_cache_key", promptCacheKey)
+		return nil
+	}
+
+	modelName := strings.TrimSpace(doc.Get("model").String())
 	if modelName == "" {
 		modelName = baseModel
 	}
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
 		cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, modelName, req.Payload, opts.Headers)
 		if errCache != nil {
-			return translated, errCache
+			return errCache
 		}
 		if ok {
-			return helps.SetStringIfDifferent(translated, "prompt_cache_key", cached.ID), nil
+			helps.SetStringIfDifferentDoc(doc, "prompt_cache_key", cached.ID)
+			return nil
 		}
 	}
 
 	sessionID := helps.ProviderSessionUUID(e.provider, opts.Metadata, req.Metadata)
 	if sessionID == "" {
-		return translated, nil
+		return nil
 	}
 	provider := strings.TrimSpace(e.provider)
 	if provider == "" {
@@ -1512,7 +1633,8 @@ func (e *OpenAICompatExecutor) applyPromptCacheKeyWithCompat(ctx context.Context
 		sessionID,
 	}, "\x00")
 	promptCacheKey := uuid.NewSHA1(uuid.NameSpaceOID, []byte(identity)).String()
-	return helps.SetStringIfDifferent(translated, "prompt_cache_key", promptCacheKey), nil
+	helps.SetStringIfDifferentDoc(doc, "prompt_cache_key", promptCacheKey)
+	return nil
 }
 
 func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (baseURL, apiKey string) {
@@ -1601,7 +1723,7 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth, req 
 func stripOpenAICompatProviderUnsupportedFields(provider string, compat *config.OpenAICompatibility, payload []byte) []byte {
 	if isKimiOpenAICompatProvider(provider, compat) {
 		payload = normalizeKimiMessageRoles(stripKimiUnsupportedFields(payload))
-		return stripKimiFixedSamplingFields(payload, gjson.GetBytes(payload, "model").String())
+		return stripKimiFixedSamplingFields(payload, ojson.GetBytes(payload, "model").String())
 	}
 	return payload
 }
@@ -1646,14 +1768,14 @@ func isDeepSeekModel(model string) bool {
 // Fields removed: reasoning, reasoningSummary, include, verbosity, interleaved, reasoning_effort
 // The "thinking" field is preserved as it's used by the thinking system.
 func stripDeepSeekUnsupportedFields(body []byte) []byte {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	if len(body) == 0 || !ojson.ValidBytes(body) {
 		return body
 	}
 	fields := []string{"reasoning", "reasoningSummary", "include", "verbosity", "interleaved", "reasoning_effort"}
 	out := body
 	for _, field := range fields {
-		if gjson.GetBytes(out, field).Exists() {
-			updated, err := sjson.DeleteBytes(out, field)
+		if ojson.GetBytes(out, field).Exists() {
+			updated, err := ojson.DeleteBytes(out, field)
 			if err == nil {
 				out = updated
 			}
@@ -1675,14 +1797,14 @@ func normalizeMistralReasoningEffort(model string, body []byte) []byte {
 	if !strings.Contains(strings.ToLower(strings.TrimSpace(model)), "mistral") {
 		return body
 	}
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	if len(body) == 0 || !ojson.ValidBytes(body) {
 		return body
 	}
-	effort := gjson.GetBytes(body, "reasoning_effort")
+	effort := ojson.GetBytes(body, "reasoning_effort")
 	if !effort.Exists() || effort.String() == "high" {
 		return body
 	}
-	if updated, err := sjson.SetBytes(body, "reasoning_effort", "high"); err == nil {
+	if updated, err := ojson.SetBytes(body, "reasoning_effort", "high"); err == nil {
 		return updated
 	}
 	return body
@@ -1692,13 +1814,13 @@ func normalizeMistralReasoningEffort(model string, body []byte) []byte {
 // and the "reasoning_effort" string field. When both exist, "reasoning" is removed
 // to avoid sending conflicting signals to the upstream provider.
 func resolveReasoningEffortConflict(body []byte) []byte {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	if len(body) == 0 || !ojson.ValidBytes(body) {
 		return body
 	}
-	hasReasoning := gjson.GetBytes(body, "reasoning").Exists()
-	hasReasoningEffort := gjson.GetBytes(body, "reasoning_effort").Exists()
+	hasReasoning := ojson.GetBytes(body, "reasoning").Exists()
+	hasReasoningEffort := ojson.GetBytes(body, "reasoning_effort").Exists()
 	if hasReasoning && hasReasoningEffort {
-		updated, err := sjson.DeleteBytes(body, "reasoning")
+		updated, err := ojson.DeleteBytes(body, "reasoning")
 		if err == nil {
 			return updated
 		}
@@ -1743,14 +1865,14 @@ func isNVIDIACompatProvider(compat *config.OpenAICompatibility) bool {
 // applyNVIDIAMaxTokensReduction reduces max_tokens by 2 for NVIDIA endpoints.
 // NVIDIA reserves 2 tokens for internal use.
 func applyNVIDIAMaxTokensReduction(body []byte) []byte {
-	if !gjson.ValidBytes(body) {
+	if !ojson.ValidBytes(body) {
 		return body
 	}
-	mt := gjson.GetBytes(body, "max_tokens")
+	mt := ojson.GetBytes(body, "max_tokens")
 	if !mt.Exists() || mt.Int() < 3 {
 		return body
 	}
-	next, err := sjson.SetBytes(body, "max_tokens", mt.Int()-2)
+	next, err := ojson.SetBytes(body, "max_tokens", mt.Int()-2)
 	if err != nil {
 		return body
 	}
@@ -1774,11 +1896,11 @@ func isSensenovaCompatProvider(compat *config.OpenAICompatibility) bool {
 // applySensenovaMaxTokensClamp clamps max_tokens into the range SenseNova accepts.
 // A non-numeric or absent max_tokens is left untouched so the upstream default applies.
 func applySensenovaMaxTokensClamp(body []byte) []byte {
-	if !gjson.ValidBytes(body) {
+	if !ojson.ValidBytes(body) {
 		return body
 	}
-	mt := gjson.GetBytes(body, "max_tokens")
-	if mt.Type != gjson.Number {
+	mt := ojson.GetBytes(body, "max_tokens")
+	if mt.Type != ojson.Number {
 		return body
 	}
 	requested := mt.Int()
@@ -1792,7 +1914,7 @@ func applySensenovaMaxTokensClamp(body []byte) []byte {
 	if clamped == requested {
 		return body
 	}
-	next, err := sjson.SetBytes(body, "max_tokens", clamped)
+	next, err := ojson.SetBytes(body, "max_tokens", clamped)
 	if err != nil {
 		return body
 	}
@@ -1819,7 +1941,7 @@ func applySensenovaMaxTokensClamp(body []byte) []byte {
 // minpeter proxy) reject such requests with `Invalid function name: ”` or “ `name`
 // must be non-empty “, which silently breaks otherwise valid tool calls/tool catalogs.
 func sanitizeEmptyToolFunctionNames(body []byte) []byte {
-	if !gjson.ValidBytes(body) {
+	if !ojson.ValidBytes(body) {
 		return body
 	}
 	body = sanitizeEmptyToolDeclarations(body)
@@ -1832,7 +1954,7 @@ func sanitizeEmptyToolFunctionNames(body []byte) []byte {
 // the nested Chat Completions form (function.name), the flat Responses-style form
 // (name), and the Responses "custom" tool form (custom.name). The first non-empty
 // candidate wins.
-func toolEffectiveName(tool gjson.Result) string {
+func toolEffectiveName(tool ojson.Result) string {
 	if name := strings.TrimSpace(tool.Get("function.name").String()); name != "" {
 		return name
 	}
@@ -1846,10 +1968,10 @@ func toolEffectiveName(tool gjson.Result) string {
 // toolEffectiveName) is empty or whitespace. If every entry is dropped, the tools
 // field itself is removed.
 func sanitizeEmptyToolDeclarations(body []byte) []byte {
-	if !gjson.ValidBytes(body) {
+	if !ojson.ValidBytes(body) {
 		return body
 	}
-	tools := gjson.GetBytes(body, "tools")
+	tools := ojson.GetBytes(body, "tools")
 	if !tools.IsArray() {
 		return body
 	}
@@ -1868,13 +1990,13 @@ func sanitizeEmptyToolDeclarations(body []byte) []byte {
 		return body
 	}
 	if len(kept) == 0 {
-		next, err := sjson.DeleteBytes(out, "tools")
+		next, err := ojson.DeleteBytes(out, "tools")
 		if err != nil {
 			return body
 		}
 		return next
 	}
-	next, err := sjson.SetRawBytes(out, "tools", []byte("["+strings.Join(kept, ",")+"]"))
+	next, err := ojson.SetRawBytes(out, "tools", []byte("["+strings.Join(kept, ",")+"]"))
 	if err != nil {
 		return body
 	}
@@ -1886,10 +2008,10 @@ func sanitizeEmptyToolDeclarations(body []byte) []byte {
 // not attempt orphaned tool-result cleanup and applies unconditionally to every
 // openai-compatible provider, not just SenseNova.
 func sanitizeEmptyToolCallMessages(body []byte) []byte {
-	if !gjson.ValidBytes(body) {
+	if !ojson.ValidBytes(body) {
 		return body
 	}
-	messages := gjson.GetBytes(body, "messages")
+	messages := ojson.GetBytes(body, "messages")
 	if !messages.IsArray() {
 		return body
 	}
@@ -1917,9 +2039,9 @@ func sanitizeEmptyToolCallMessages(body []byte) []byte {
 		var next []byte
 		var err error
 		if len(kept) == 0 {
-			next, err = sjson.DeleteBytes(out, path)
+			next, err = ojson.DeleteBytes(out, path)
 		} else {
-			next, err = sjson.SetRawBytes(out, path, []byte("["+strings.Join(kept, ",")+"]"))
+			next, err = ojson.SetRawBytes(out, path, []byte("["+strings.Join(kept, ",")+"]"))
 		}
 		if err != nil {
 			return body
@@ -1939,10 +2061,10 @@ func sanitizeEmptyToolCallMessages(body []byte) []byte {
 // with an empty tool_call_id are kept because some clients legitimately omit
 // the id and upstreams tolerate it.
 func dropOrphanOpenAIToolResults(body []byte) []byte {
-	if !gjson.ValidBytes(body) {
+	if !ojson.ValidBytes(body) {
 		return body
 	}
-	messages := gjson.GetBytes(body, "messages")
+	messages := ojson.GetBytes(body, "messages")
 	if !messages.IsArray() {
 		return body
 	}
@@ -1974,7 +2096,7 @@ func dropOrphanOpenAIToolResults(body []byte) []byte {
 		if _, ok := known[id]; ok {
 			continue
 		}
-		next, err := sjson.DeleteBytes(out, fmt.Sprintf("messages.%d", i))
+		next, err := ojson.DeleteBytes(out, fmt.Sprintf("messages.%d", i))
 		if err != nil {
 			return body
 		}
@@ -1987,10 +2109,10 @@ func dropOrphanOpenAIToolResults(body []byte) []byte {
 // Responses API function-call replay (type function_call / custom_tool_call) whose
 // name is empty or whitespace. Other input item types are left untouched.
 func sanitizeEmptyResponsesFunctionCallItems(body []byte) []byte {
-	if !gjson.ValidBytes(body) {
+	if !ojson.ValidBytes(body) {
 		return body
 	}
-	input := gjson.GetBytes(body, "input")
+	input := ojson.GetBytes(body, "input")
 	if !input.IsArray() {
 		return body
 	}
@@ -2010,13 +2132,13 @@ func sanitizeEmptyResponsesFunctionCallItems(body []byte) []byte {
 		return body
 	}
 	if len(kept) == 0 {
-		next, err := sjson.DeleteBytes(body, "input")
+		next, err := ojson.DeleteBytes(body, "input")
 		if err != nil {
 			return body
 		}
 		return next
 	}
-	next, err := sjson.SetRawBytes(body, "input", []byte("["+strings.Join(kept, ",")+"]"))
+	next, err := ojson.SetRawBytes(body, "input", []byte("["+strings.Join(kept, ",")+"]"))
 	if err != nil {
 		return body
 	}
@@ -2027,10 +2149,10 @@ func sanitizeEmptyResponsesFunctionCallItems(body []byte) []byte {
 // without a function name is dropped, and empty or missing arguments become "{}". A message
 // left without any tool call loses the field entirely. Every other field is preserved.
 func sanitizeSensenovaToolCalls(body []byte) []byte {
-	if !gjson.ValidBytes(body) {
+	if !ojson.ValidBytes(body) {
 		return body
 	}
-	messages := gjson.GetBytes(body, "messages")
+	messages := ojson.GetBytes(body, "messages")
 	if !messages.IsArray() {
 		return body
 	}
@@ -2057,7 +2179,7 @@ func sanitizeSensenovaToolCalls(body []byte) []byte {
 			}
 			raw := call.Raw
 			if args := call.Get("function.arguments"); !args.Exists() || strings.TrimSpace(args.String()) == "" {
-				repaired, errSet := sjson.Set(raw, "function.arguments", "{}")
+				repaired, errSet := ojson.Set(raw, "function.arguments", "{}")
 				if errSet != nil {
 					return body
 				}
@@ -2073,9 +2195,9 @@ func sanitizeSensenovaToolCalls(body []byte) []byte {
 		var next []byte
 		var err error
 		if len(kept) == 0 {
-			next, err = sjson.DeleteBytes(out, path)
+			next, err = ojson.DeleteBytes(out, path)
 		} else {
-			next, err = sjson.SetRawBytes(out, path, []byte("["+strings.Join(kept, ",")+"]"))
+			next, err = ojson.SetRawBytes(out, path, []byte("["+strings.Join(kept, ",")+"]"))
 		}
 		if err != nil {
 			return body
@@ -2089,7 +2211,7 @@ func sanitizeSensenovaToolCalls(body []byte) []byte {
 	if len(droppedIDs) == 0 {
 		return out
 	}
-	updated := gjson.GetBytes(out, "messages")
+	updated := ojson.GetBytes(out, "messages")
 	if !updated.IsArray() {
 		return out
 	}
@@ -2104,7 +2226,7 @@ func sanitizeSensenovaToolCalls(body []byte) []byte {
 			continue
 		}
 		var err error
-		out, err = sjson.DeleteBytes(out, fmt.Sprintf("messages.%d", i))
+		out, err = ojson.DeleteBytes(out, fmt.Sprintf("messages.%d", i))
 		if err != nil {
 			return body
 		}
@@ -2150,10 +2272,10 @@ func normalizeDeltaContentArray(line []byte) []byte {
 	if string(jsonTrimmed) == "[DONE]" {
 		return line
 	}
-	if !gjson.ValidBytes(jsonTrimmed) {
+	if !ojson.ValidBytes(jsonTrimmed) {
 		return line
 	}
-	choices := gjson.GetBytes(jsonTrimmed, "choices")
+	choices := ojson.GetBytes(jsonTrimmed, "choices")
 	if !choices.Exists() || !choices.IsArray() || len(choices.Array()) == 0 {
 		return line
 	}
@@ -2166,7 +2288,7 @@ func normalizeDeltaContentArray(line []byte) []byte {
 			continue
 		}
 		// String content: leave as-is
-		if content.Type == gjson.String {
+		if content.Type == ojson.String {
 			continue
 		}
 		// Array content: normalize
@@ -2185,7 +2307,7 @@ func normalizeDeltaContentArray(line []byte) []byte {
 			// Skip "thinking" and other non-text types
 		}
 		combined := strings.Join(textParts, "")
-		next, err := sjson.SetBytes(out, fmt.Sprintf("choices.%d.delta.content", ci), combined)
+		next, err := ojson.SetBytes(out, fmt.Sprintf("choices.%d.delta.content", ci), combined)
 		if err != nil {
 			continue
 		}
@@ -2205,10 +2327,10 @@ func normalizeDeltaContentArray(line []byte) []byte {
 //   - If the last message is assistant with prefix=false → append a placeholder user message
 //   - Otherwise → leave unchanged
 func (e *OpenAICompatExecutor) fixMistralMessageOrder(payload []byte) []byte {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if len(payload) == 0 || !ojson.ValidBytes(payload) {
 		return payload
 	}
-	messages := gjson.GetBytes(payload, "messages")
+	messages := ojson.GetBytes(payload, "messages")
 	if !messages.Exists() || !messages.IsArray() || len(messages.Array()) == 0 {
 		return payload
 	}
@@ -2220,7 +2342,7 @@ func (e *OpenAICompatExecutor) fixMistralMessageOrder(payload []byte) []byte {
 	}
 	prefix := lastMsg.Get("prefix")
 	if prefix.Exists() {
-		if prefix.Type == gjson.True {
+		if prefix.Type == ojson.True {
 			// Already has prefix=true
 			return payload
 		}
@@ -2228,14 +2350,14 @@ func (e *OpenAICompatExecutor) fixMistralMessageOrder(payload []byte) []byte {
 		placeholder := []byte(`{"role":"user","content":"."}`)
 		existing := messages.Raw
 		newMessages := existing[:len(existing)-1] + "," + string(placeholder) + "]"
-		next, err := sjson.SetRawBytes(payload, "messages", []byte(newMessages))
+		next, err := ojson.SetRawBytes(payload, "messages", []byte(newMessages))
 		if err != nil {
 			return payload
 		}
 		return next
 	}
 	// No prefix field: add prefix=true to last assistant message
-	next, err := sjson.SetBytes(payload, fmt.Sprintf("messages.%d.prefix", len(msgs)-1), true)
+	next, err := ojson.SetBytes(payload, fmt.Sprintf("messages.%d.prefix", len(msgs)-1), true)
 	if err != nil {
 		return payload
 	}
@@ -2249,23 +2371,23 @@ func (e *OpenAICompatExecutor) fixMistralMessageOrder(payload []byte) []byte {
 //
 // The function inspects both the chat-completions format (messages array)
 // and the responses format (input array) and coerces non-string id/call_id/
-// tool_call_id fields to their string representation via sjson.
+// tool_call_id fields to their string representation via ojson.
 func normalizeToolResultIDsToString(body []byte) []byte {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	if len(body) == 0 || !ojson.ValidBytes(body) {
 		return body
 	}
 	out := body
 
 	// --- Chat completions format: messages array ---
-	messages := gjson.GetBytes(out, "messages")
+	messages := ojson.GetBytes(out, "messages")
 	if messages.Exists() && messages.IsArray() {
 		for msgIdx, msg := range messages.Array() {
 			// tool role messages: ensure tool_call_id is a string
 			if msg.Get("role").String() == "tool" {
 				tcID := msg.Get("tool_call_id")
-				if tcID.Exists() && tcID.Type != gjson.String {
+				if tcID.Exists() && tcID.Type != ojson.String {
 					path := fmt.Sprintf("messages.%d.tool_call_id", msgIdx)
-					out, _ = sjson.SetBytes(out, path, tcID.String())
+					out, _ = ojson.SetBytes(out, path, tcID.String())
 				}
 			}
 			// assistant messages with tool_calls: ensure each tool call id is a string
@@ -2273,9 +2395,9 @@ func normalizeToolResultIDsToString(body []byte) []byte {
 			if toolCalls.Exists() && toolCalls.IsArray() {
 				for callIdx, call := range toolCalls.Array() {
 					idVal := call.Get("id")
-					if idVal.Exists() && idVal.Type != gjson.String {
+					if idVal.Exists() && idVal.Type != ojson.String {
 						path := fmt.Sprintf("messages.%d.tool_calls.%d.id", msgIdx, callIdx)
-						out, _ = sjson.SetBytes(out, path, idVal.String())
+						out, _ = ojson.SetBytes(out, path, idVal.String())
 					}
 				}
 			}
@@ -2283,16 +2405,16 @@ func normalizeToolResultIDsToString(body []byte) []byte {
 	}
 
 	// --- Responses format: input array ---
-	input := gjson.GetBytes(out, "input")
+	input := ojson.GetBytes(out, "input")
 	if input.Exists() && input.IsArray() {
 		for itemIdx, item := range input.Array() {
 			itemType := item.Get("type").String()
 			if itemType == "function_call" || itemType == "function_call_output" {
 				for _, field := range []string{"id", "call_id"} {
 					val := item.Get(field)
-					if val.Exists() && val.Type != gjson.String {
+					if val.Exists() && val.Type != ojson.String {
 						path := fmt.Sprintf("input.%d.%s", itemIdx, field)
-						out, _ = sjson.SetBytes(out, path, val.String())
+						out, _ = ojson.SetBytes(out, path, val.String())
 					}
 				}
 			}
@@ -2317,7 +2439,7 @@ var openAICompatBracketedStatusRe = regexp.MustCompile(`\[(4[0-9]{2}|5[0-9]{2})\
 // credentials first for budget-preserving statuses (429/503/504).
 func openAICompatEmbeddedStatusFromMessage(payload []byte) int {
 	for _, path := range []string{"error.message", "response.error.message", "message"} {
-		message := gjson.GetBytes(payload, path).String()
+		message := ojson.GetBytes(payload, path).String()
 		if message == "" {
 			continue
 		}
@@ -2332,8 +2454,8 @@ func openAICompatEmbeddedStatusFromMessage(payload []byte) int {
 }
 
 func openAICompatChunkHasFinishReason(payload []byte) bool {
-	for _, choice := range gjson.GetBytes(payload, "choices").Array() {
-		if reason := choice.Get("finish_reason"); reason.Exists() && reason.Type != gjson.Null && strings.TrimSpace(reason.String()) != "" {
+	for _, choice := range ojson.GetBytesNoCopy(payload, "choices").Array() {
+		if reason := choice.Get("finish_reason"); reason.Exists() && reason.Type != ojson.Null && strings.TrimSpace(reason.String()) != "" {
 			return true
 		}
 	}
@@ -2344,16 +2466,16 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
 	if len(payload) == 0 || !json.Valid(payload) {
 		return statusErr{}, false
 	}
-	payloadType := gjson.GetBytes(payload, "type").String()
+	payloadType := ojson.GetBytesNoCopy(payload, "type").String()
 	hasError := false
 	for _, path := range []string{"error", "response.error"} {
-		errorNode := gjson.GetBytes(payload, path)
+		errorNode := ojson.GetBytesNoCopy(payload, path)
 		if errorNode.Exists() && errorNode.Raw != "null" {
 			hasError = true
 			break
 		}
 	}
-	hasTopLevelErrorFields := gjson.GetBytes(payload, "code").Exists() && gjson.GetBytes(payload, "message").Exists()
+	hasTopLevelErrorFields := ojson.GetBytesNoCopy(payload, "code").Exists() && ojson.GetBytesNoCopy(payload, "message").Exists()
 	if !hasError && !strings.EqualFold(payloadType, "error") && !strings.EqualFold(payloadType, "response.error") && !strings.EqualFold(payloadType, "response.failed") &&
 		!openAICompatErrorEvent(eventName) && !hasTopLevelErrorFields {
 		return statusErr{}, false
@@ -2361,7 +2483,7 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
 
 	status := 0
 	for _, path := range []string{"status", "status_code", "error.status", "error.status_code", "response.error.status", "response.error.status_code"} {
-		status = int(gjson.GetBytes(payload, path).Int())
+		status = int(ojson.GetBytesNoCopy(payload, path).Int())
 		if status >= http.StatusBadRequest && status <= 599 {
 			break
 		}
@@ -2474,8 +2596,8 @@ func openAICompatRetryAfter(status int, headers http.Header, body []byte, now ti
 		return delay
 	}
 
-	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
-	message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
+	code := strings.ToLower(strings.TrimSpace(ojson.GetBytesNoCopy(body, "error.code").String()))
+	message := strings.ToLower(strings.TrimSpace(ojson.GetBytesNoCopy(body, "error.message").String()))
 	if strings.Contains(code, "tpmratelimitexceeded") ||
 		(strings.Contains(message, "tokens per minute") && strings.Contains(message, "limit") && strings.Contains(message, "exceeded")) {
 		delay := openAICompatTPMFallbackRetryAfter
@@ -2487,11 +2609,11 @@ func openAICompatRetryAfter(status int, headers http.Header, body []byte, now ti
 // openAICompatRateLimitBodyRetryAfter reads the body's error.retry_after seconds for
 // gateways that send a 429 hint only in the JSON body. retryable=false suppresses it.
 func openAICompatRateLimitBodyRetryAfter(body []byte) *time.Duration {
-	if retryable := gjson.GetBytes(body, "error.retryable"); retryable.Exists() && retryable.Type == gjson.False {
+	if retryable := ojson.GetBytes(body, "error.retryable"); retryable.Exists() && retryable.Type == ojson.False {
 		return nil
 	}
-	hint := gjson.GetBytes(body, "error.retry_after")
-	if hint.Type != gjson.Number || hint.Float() <= 0 {
+	hint := ojson.GetBytes(body, "error.retry_after")
+	if hint.Type != ojson.Number || hint.Float() <= 0 {
 		return nil
 	}
 	delay := time.Duration(hint.Float() * float64(time.Second))
@@ -2503,13 +2625,13 @@ func openAICompatRateLimitBodyRetryAfter(body []byte) *time.Duration {
 // hint, and hints of openAICompatBusyRetryAfterLimit or more are ignored so the
 // request never waits that long for the same credential.
 func openAICompatBusyRetryAfter(headers http.Header, body []byte, now time.Time) *time.Duration {
-	if retryable := gjson.GetBytes(body, "error.retryable"); retryable.Exists() && retryable.Type == gjson.False {
+	if retryable := ojson.GetBytes(body, "error.retryable"); retryable.Exists() && retryable.Type == ojson.False {
 		return nil
 	}
 	delay := openAICompatRetryAfterHeader(headers, now)
 	if delay == nil {
-		hint := gjson.GetBytes(body, "error.retry_after")
-		if hint.Type != gjson.Number || hint.Float() >= openAICompatBusyRetryAfterLimit.Seconds() {
+		hint := ojson.GetBytes(body, "error.retry_after")
+		if hint.Type != ojson.Number || hint.Float() >= openAICompatBusyRetryAfterLimit.Seconds() {
 			return nil
 		}
 		value := time.Duration(hint.Float() * float64(time.Second))

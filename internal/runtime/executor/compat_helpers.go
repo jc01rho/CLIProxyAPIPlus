@@ -10,13 +10,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 	"github.com/tiktoken-go/tokenizer"
 )
 
@@ -288,7 +288,7 @@ func tokenizerForModel(model string) (tokenizer.Codec, error) {
 	return helps.TokenizerForModel(model)
 }
 
-func collectOpenAIContent(content gjson.Result, segments *[]string) {
+func collectOpenAIContent(content ojson.Result, segments *[]string) {
 	helps.CollectOpenAIContent(content, segments)
 }
 

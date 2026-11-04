@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/url"
@@ -655,7 +656,7 @@ func buildGitLabPrompt(payload []byte) gitLabPrompt {
 
 func openAIContentText(content gjson.Result) string {
 	segments := make([]string, 0, 8)
-	collectOpenAIContent(content, &segments)
+	collectOpenAIContent(ojson.Parse(content.Raw), &segments)
 	return strings.TrimSpace(strings.Join(segments, "\n"))
 }
 

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
@@ -22,7 +23,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
@@ -317,7 +317,7 @@ func matchesAuthFileLookup(auth *coreauth.Auth, name string, authIndex string) b
 func (h *Handler) lookupAuthFile(name string, authIndex string) (*coreauth.Auth, bool) {
 	name = strings.TrimSpace(name)
 	authIndex = strings.TrimSpace(authIndex)
-	if h == nil || h.authManager == nil || name == "" {
+	if h == nil || h.authManager == nil || (name == "" && authIndex == "") {
 		return nil, false
 	}
 	if authIndex == "" {
@@ -506,24 +506,24 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, options ...authFilesPagi
 
 	antigravityEntries := make([]antigravityDiskEntry, 0)
 	for index, candidate := range matching {
-		if !strings.EqualFold(strings.TrimSpace(gjson.GetBytes(candidate.data, "type").String()), "antigravity") {
+		if !strings.EqualFold(strings.TrimSpace(ojson.GetBytes(candidate.data, "type").String()), "antigravity") {
 			continue
 		}
 		disabled := false
-		if dv := gjson.GetBytes(candidate.data, "disabled"); dv.Exists() {
+		if dv := ojson.GetBytes(candidate.data, "disabled"); dv.Exists() {
 			switch dv.Type {
-			case gjson.True:
+			case ojson.True:
 				disabled = true
-			case gjson.String:
+			case ojson.String:
 				disabled, _ = strconv.ParseBool(strings.TrimSpace(dv.String()))
 			}
 		}
 		isPrimary := false
-		if pv := gjson.GetBytes(candidate.data, "primary_info.is_primary"); pv.Exists() {
+		if pv := ojson.GetBytes(candidate.data, "primary_info.is_primary"); pv.Exists() {
 			switch pv.Type {
-			case gjson.True:
+			case ojson.True:
 				isPrimary = true
-			case gjson.String:
+			case ojson.String:
 				isPrimary, _ = strconv.ParseBool(strings.TrimSpace(pv.String()))
 			}
 		}
@@ -549,43 +549,45 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, options ...authFilesPagi
 
 		data := candidate.data
 		if len(data) > 0 {
-			typeValue := gjson.GetBytes(data, "type").String()
-			emailValue := gjson.GetBytes(data, "email").String()
+			var fieldBuf [7]ojson.Result
+			fields := ojson.GetManyBytesNoCopy(fieldBuf[:0], data, "type", "email", "project_id", "priority", coreauth.AttributeWeight, "note", "websockets")
+			typeValue := strings.Clone(fields[0].String())
+			emailValue := strings.Clone(fields[1].String())
 			fileData["type"] = typeValue
 			fileData["email"] = emailValue
 			if strings.EqualFold(strings.TrimSpace(typeValue), "antigravity") {
-				if dv := gjson.GetBytes(data, "disabled"); dv.Exists() {
+				if dv := ojson.GetBytes(data, "disabled"); dv.Exists() {
 					switch dv.Type {
-					case gjson.True:
+					case ojson.True:
 						fileData["disabled"] = true
-					case gjson.False:
+					case ojson.False:
 						fileData["disabled"] = false
-					case gjson.String:
+					case ojson.String:
 						if parsed, errParse := strconv.ParseBool(strings.TrimSpace(dv.String())); errParse == nil {
 							fileData["disabled"] = parsed
 						}
 					}
 				}
 			}
-			if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
-				fileData["project_id"] = projectID
+			if projectID := strings.TrimSpace(fields[2].String()); projectID != "" {
+				fileData["project_id"] = strings.Clone(projectID)
 			}
-			if pv := gjson.GetBytes(data, "priority"); pv.Exists() {
+			if pv := fields[3]; pv.Exists() {
 				switch pv.Type {
-				case gjson.Number:
+				case ojson.Number:
 					fileData["priority"] = int(pv.Int())
-				case gjson.String:
+				case ojson.String:
 					if parsed, errAtoi := strconv.Atoi(strings.TrimSpace(pv.String())); errAtoi == nil {
 						fileData["priority"] = parsed
 					}
 				}
 			}
-			if wv := gjson.GetBytes(data, coreauth.AttributeWeight); wv.Exists() {
+			if wv := fields[4]; wv.Exists() {
 				var rawWeight string
 				switch wv.Type {
-				case gjson.Number:
+				case ojson.Number:
 					rawWeight = wv.Raw
-				case gjson.String:
+				case ojson.String:
 					rawWeight = wv.String()
 				}
 				if rawWeight != "" {
@@ -594,18 +596,18 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, options ...authFilesPagi
 					}
 				}
 			}
-			if nv := gjson.GetBytes(data, "note"); nv.Exists() && nv.Type == gjson.String {
+			if nv := fields[5]; nv.Exists() && nv.Type == ojson.String {
 				if trimmed := strings.TrimSpace(nv.String()); trimmed != "" {
-					fileData["note"] = trimmed
+					fileData["note"] = strings.Clone(trimmed)
 				}
 			}
-			if wv := gjson.GetBytes(data, "websockets"); wv.Exists() {
+			if wv := fields[6]; wv.Exists() {
 				switch wv.Type {
-				case gjson.True:
+				case ojson.True:
 					fileData["websockets"] = true
-				case gjson.False:
+				case ojson.False:
 					fileData["websockets"] = false
-				case gjson.String:
+				case ojson.String:
 					if parsed, errParse := strconv.ParseBool(strings.TrimSpace(wv.String())); errParse == nil {
 						fileData["websockets"] = parsed
 					}
@@ -614,10 +616,10 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, options ...authFilesPagi
 			if requestRetry, okRetry := authFileRequestRetryFromJSON(data); okRetry {
 				fileData["request_retry"] = requestRetry
 			}
-			if quotaURL := strings.TrimSpace(gjson.GetBytes(data, "quota_url").String()); quotaURL != "" {
+			if quotaURL := strings.TrimSpace(ojson.GetBytes(data, "quota_url").String()); quotaURL != "" {
 				fileData["quota_url"] = quotaURL
 			}
-			if baseURL := strings.TrimSpace(gjson.GetBytes(data, "base_url").String()); baseURL != "" {
+			if baseURL := strings.TrimSpace(ojson.GetBytes(data, "base_url").String()); baseURL != "" {
 				fileData["base_url"] = baseURL
 			}
 		}

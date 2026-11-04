@@ -17,11 +17,10 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/openai"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/xai"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // thinkingTestCase represents a common test case structure for both suffix and body tests.
@@ -3910,7 +3909,7 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				true,
 			)
 			if applyTo == "claude" {
-				body, _ = sjson.SetBytes(body, "max_tokens", 200000)
+				body, _ = ojson.SetBytes(body, "max_tokens", 200000)
 			}
 
 			body, err := thinking.ApplyThinking(body, tc.model, tc.from, applyTo, tc.to)
@@ -3926,7 +3925,7 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 			}
 
 			for _, fieldPath := range tc.expectAbsent {
-				if gjson.GetBytes(body, fieldPath).Exists() {
+				if ojson.GetBytesNoCopy(body, fieldPath).Exists() {
 					t.Fatalf("expected field %s to be absent, body=%s", fieldPath, string(body))
 				}
 			}
@@ -3935,19 +3934,19 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				var hasThinking bool
 				switch tc.to {
 				case "gemini":
-					hasThinking = gjson.GetBytes(body, "generationConfig.thinkingConfig").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "generationConfig.thinkingConfig").Exists()
 				case "gemini-cli":
-					hasThinking = gjson.GetBytes(body, "request.generationConfig.thinkingConfig").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "request.generationConfig.thinkingConfig").Exists()
 				case "antigravity":
-					hasThinking = gjson.GetBytes(body, "request.generationConfig.thinkingConfig").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "request.generationConfig.thinkingConfig").Exists()
 				case "claude":
-					hasThinking = gjson.GetBytes(body, "thinking").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "thinking").Exists()
 				case "openai":
-					hasThinking = gjson.GetBytes(body, "reasoning_effort").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "reasoning_effort").Exists()
 				case "codex":
-					hasThinking = gjson.GetBytes(body, "reasoning.effort").Exists() || gjson.GetBytes(body, "reasoning").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "reasoning.effort").Exists() || ojson.GetBytesNoCopy(body, "reasoning").Exists()
 				case "kimi":
-					hasThinking = gjson.GetBytes(body, "thinking").Exists() || gjson.GetBytes(body, "reasoning_effort").Exists()
+					hasThinking = ojson.GetBytesNoCopy(body, "thinking").Exists() || ojson.GetBytesNoCopy(body, "reasoning_effort").Exists()
 				}
 				if hasThinking {
 					t.Fatalf("expected no thinking field but found one, body=%s", string(body))
@@ -3956,12 +3955,12 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 			}
 
 			assertField := func(fieldPath, expected string) {
-				val := gjson.GetBytes(body, fieldPath)
+				val := ojson.GetBytesNoCopy(body, fieldPath)
 				if !val.Exists() {
 					t.Fatalf("expected field %s not found, body=%s", fieldPath, string(body))
 				}
 				actualValue := val.String()
-				if val.Type == gjson.Number {
+				if val.Type == ojson.Number {
 					actualValue = fmt.Sprintf("%d", val.Int())
 				}
 				if actualValue != expected {
@@ -3978,7 +3977,7 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 			// 2.1.220 always sends thinking.type="adaptive" alongside
 			// output_config.effort. Emitting effort on its own would be a wire
 			// shape the real client never produces.
-			if tc.to == "claude" && gjson.GetBytes(body, "output_config.effort").Exists() {
+			if tc.to == "claude" && ojson.GetBytesNoCopy(body, "output_config.effort").Exists() {
 				assertField("thinking.type", "adaptive")
 			}
 			if tc.expectField3 != "" {
@@ -3993,7 +3992,7 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				if tc.to == "gemini-cli" || tc.to == "antigravity" {
 					path = "request.generationConfig.thinkingConfig.includeThoughts"
 				}
-				itVal := gjson.GetBytes(body, path)
+				itVal := ojson.GetBytesNoCopy(body, path)
 				if itVal.Exists() {
 					actual := fmt.Sprintf("%v", itVal.Bool())
 					if actual != tc.includeThoughts {

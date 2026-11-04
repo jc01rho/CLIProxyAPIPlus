@@ -11,13 +11,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -138,36 +138,36 @@ func TestClaudeExecutorMinimalNativeHelperCloaksMarkerlessWire(t *testing.T) {
 	}
 
 	for _, path := range []string{"context_management", "output_config"} {
-		if got := gjson.GetBytes(upstreamBody, path); got.Exists() {
+		if got := ojson.GetBytes(upstreamBody, path); got.Exists() {
 			t.Fatalf("helper body unexpectedly contains %s=%s: %s", path, got.Raw, upstreamBody)
 		}
 	}
-	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 2 {
+	if got := ojson.GetBytes(upstreamBody, "system.#").Int(); got != 2 {
 		t.Fatalf("system block count = %d, want masqueraded 2: %s", got, upstreamBody)
 	}
 	// Independent SHA-256 vector: "helper probe" samples "ep0" at indices 4, 7, 20.
-	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header: cc_version=2.1.302.0b3; cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000") {
+	if got := ojson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header: cc_version=2.1.302.0b3; cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000") {
 		t.Fatalf("billing header not re-signed at current baseline: %q", got)
 	}
-	if got := gjson.GetBytes(upstreamBody, "system.1.text").String(); got != "You are Claude Code, Anthropic's official CLI for Claude." {
+	if got := ojson.GetBytes(upstreamBody, "system.1.text").String(); got != "You are Claude Code, Anthropic's official CLI for Claude." {
 		t.Fatalf("system.1.text = %q, want Claude Code identity", got)
 	}
-	if !gjson.GetBytes(upstreamBody, "system.1.cache_control").Exists() {
+	if !ojson.GetBytes(upstreamBody, "system.1.cache_control").Exists() {
 		t.Fatalf("identity system block missing cache_control: %s", upstreamBody)
 	}
 	if !bytes.Contains(upstreamBody, []byte("# currentDate")) {
 		t.Fatalf("helper body missing currentDate system-reminder: %s", upstreamBody)
 	}
-	if !gjson.GetBytes(upstreamBody, "metadata.user_id").Exists() {
+	if !ojson.GetBytes(upstreamBody, "metadata.user_id").Exists() {
 		t.Fatalf("helper body missing metadata.user_id: %s", upstreamBody)
 	}
 	if !bytes.Contains(upstreamBody, []byte(`"text":"helper probe"`)) {
 		t.Fatalf("helper probe text not preserved in messages: %s", upstreamBody)
 	}
-	if got := gjson.GetBytes(upstreamBody, "model").String(); got != "claude-haiku-4-5-20251001" {
+	if got := ojson.GetBytes(upstreamBody, "model").String(); got != "claude-haiku-4-5-20251001" {
 		t.Fatalf("model = %q, want preserved haiku helper model", got)
 	}
-	if got := gjson.GetBytes(upstreamBody, "max_tokens").Int(); got != 1 {
+	if got := ojson.GetBytes(upstreamBody, "max_tokens").Int(); got != 1 {
 		t.Fatalf("max_tokens = %d, want preserved 1", got)
 	}
 	assertClaudeNativeHelperHeaders(t, upstreamHeaders, headers, "application/json", "gzip, deflate, br, zstd")
@@ -205,7 +205,7 @@ func TestClaudeExecutorStructuredNativeHelperPreservesStreamProfile(t *testing.T
 		}
 	}
 
-	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 2 {
+	if got := ojson.GetBytes(upstreamBody, "system.#").Int(); got != 2 {
 		t.Fatalf("system block count = %d, want masqueraded 2: %s", got, upstreamBody)
 	}
 	if !bytes.Contains(upstreamBody, []byte("<system-reminder>\\nReturn a short title.\\n</system-reminder>")) {
@@ -215,14 +215,14 @@ func TestClaudeExecutorStructuredNativeHelperPreservesStreamProfile(t *testing.T
 		t.Fatalf("structured helper top-level order changed: %s", upstreamBody)
 	}
 	for _, path := range []string{"context_management", "output_config.effort"} {
-		if got := gjson.GetBytes(upstreamBody, path); got.Exists() {
+		if got := ojson.GetBytes(upstreamBody, path); got.Exists() {
 			t.Fatalf("structured helper unexpectedly contains %s=%s: %s", path, got.Raw, upstreamBody)
 		}
 	}
-	if got := gjson.GetBytes(upstreamBody, "stream").Bool(); !got {
+	if got := ojson.GetBytes(upstreamBody, "stream").Bool(); !got {
 		t.Fatalf("structured helper stream = false, want true: %s", upstreamBody)
 	}
-	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); strings.Contains(got, "cch=00000") || !strings.Contains(got, " cch=") {
+	if got := ojson.GetBytes(upstreamBody, "system.0.text").String(); strings.Contains(got, "cch=00000") || !strings.Contains(got, " cch=") {
 		t.Fatalf("structured helper billing CCH was not re-signed: %q", got)
 	}
 	assertClaudeNativeHelperHeaders(t, upstreamHeaders, headers, "text/event-stream", "identity")

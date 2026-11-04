@@ -3,16 +3,16 @@ package cache
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/base64"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
-	"github.com/tidwall/gjson"
 )
 
 type fakeCodexReasoningReplayKVClient struct {
@@ -244,10 +244,10 @@ func TestCodexReasoningReplayAppendPreservesCumulativeTurnsInHome(t *testing.T) 
 	if len(items) != 4 {
 		t.Fatalf("cumulative item count = %d, want 4: %q", len(items), items)
 	}
-	if got := gjson.GetBytes(items[0], "id").String(); got != "turn-1" {
+	if got := ojson.GetBytes(items[0], "id").String(); got != "turn-1" {
 		t.Fatalf("first turn id = %q, want turn-1", got)
 	}
-	if got := gjson.GetBytes(items[2], "id").String(); got != "turn-2" {
+	if got := ojson.GetBytes(items[2], "id").String(); got != "turn-2" {
 		t.Fatalf("second turn id = %q, want turn-2", got)
 	}
 }
@@ -297,7 +297,7 @@ func TestCodexReasoningReplayAppendBoundsTurnsPerEntry(t *testing.T) {
 	if len(trimmed) != CodexReasoningReplayCacheMaxTurnsPerEntry*2 {
 		t.Fatalf("trimmed item count = %d, want %d", len(trimmed), CodexReasoningReplayCacheMaxTurnsPerEntry*2)
 	}
-	if firstID := gjson.GetBytes(trimmed[0], "id").String(); firstID != "turn-1" {
+	if firstID := ojson.GetBytes(trimmed[0], "id").String(); firstID != "turn-1" {
 		t.Fatalf("first retained turn = %q, want turn-1", firstID)
 	}
 }
@@ -347,14 +347,14 @@ func TestCodexReasoningReplayCacheScopesByModelAndSession(t *testing.T) {
 
 func TestNormalizeCodexReasoningReplayCustomToolCallItemOmitsStatus(t *testing.T) {
 	item := []byte(`{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"lookup","input":"{}","status":"completed"}`)
-	got, ok := normalizeCodexReasoningReplayCustomToolCallItem(gjson.ParseBytes(item))
+	got, ok := normalizeCodexReasoningReplayCustomToolCallItem(ojson.ParseBytes(item))
 	if !ok {
 		t.Fatal("expected custom_tool_call item to normalize")
 	}
-	if gjson.GetBytes(got, "status").Exists() {
+	if ojson.GetBytes(got, "status").Exists() {
 		t.Fatalf("status should be omitted from replay input: %s", got)
 	}
-	if got := gjson.GetBytes(got, "call_id").String(); got != "call_1" {
+	if got := ojson.GetBytes(got, "call_id").String(); got != "call_1" {
 		t.Fatalf("call_id = %q, want call_1", got)
 	}
 }

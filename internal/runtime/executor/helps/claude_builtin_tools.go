@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 var claudeServerToolVersionPattern = regexp.MustCompile(`_\d{8}$`)
@@ -81,17 +81,17 @@ func AugmentClaudeBuiltinToolRegistry(body []byte, registry map[string]bool) map
 	if registry == nil {
 		registry = newClaudeBuiltinToolRegistry()
 	}
-	tools := gjson.GetBytes(body, "tools")
+	tools := ojson.GetBytesNoCopy(body, "tools")
 	if !tools.Exists() || !tools.IsArray() {
 		return registry
 	}
-	tools.ForEach(func(_, tool gjson.Result) bool {
+	tools.ForEach(func(_, tool ojson.Result) bool {
 		toolType := tool.Get("type").String()
 		if !IsClaudeServerToolType(toolType) {
 			return true
 		}
 		if name := tool.Get("name").String(); name != "" {
-			registry[name] = true
+			registry[strings.Clone(name)] = true
 		}
 		if canonical := CanonicalClaudeServerToolName(toolType); canonical != "" {
 			registry[canonical] = true

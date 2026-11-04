@@ -3,7 +3,7 @@ package responses
 import (
 	"strings"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // splitContentBlocksArray splits a Mistral-style content array into reasoning and
@@ -11,17 +11,17 @@ import (
 // array of ThinkChunk/TextChunk blocks instead of a plain string or a
 // reasoning_content field; without splitting, the raw JSON array leaks into the
 // visible output. It returns isArray=false when content is not an array.
-func splitContentBlocksArray(content gjson.Result) (reasoning string, visible string, isArray bool) {
+func splitContentBlocksArray(content ojson.Result) (reasoning string, visible string, isArray bool) {
 	if !content.IsArray() {
 		return "", "", false
 	}
 	var reasoningBuf, visibleBuf strings.Builder
-	content.ForEach(func(_, block gjson.Result) bool {
+	content.ForEach(func(_, block ojson.Result) bool {
 		switch block.Get("type").String() {
 		case "thinking":
 			thinking := block.Get("thinking")
 			if thinking.IsArray() {
-				thinking.ForEach(func(_, chunk gjson.Result) bool {
+				thinking.ForEach(func(_, chunk ojson.Result) bool {
 					reasoningBuf.WriteString(chunk.Get("text").String())
 					return true
 				})

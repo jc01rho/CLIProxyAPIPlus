@@ -6,6 +6,7 @@ package cliproxy
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
@@ -76,6 +77,9 @@ type Service struct {
 
 	// discoveryManager manages local network mDNS / DNS-SD service advertising.
 	discoveryManager *discoveryAdvertiserManager
+
+	// kvStoreManaged tracks whether this service instance owns local KVStore lifecycle.
+	kvStoreManaged atomic.Bool
 
 	// serverErr channel for server startup/shutdown errors.
 	serverErr chan error

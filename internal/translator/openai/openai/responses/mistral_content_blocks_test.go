@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // Mistral returns message.content as an array of ThinkChunk/TextChunk blocks when
@@ -16,7 +16,7 @@ import (
 func TestSplitContentBlocksArray(t *testing.T) {
 	t.Parallel()
 
-	arrayContent := gjson.Parse(`[{"type":"thinking","thinking":[{"type":"text","text":"secret "},{"type":"text","text":"thought"}],"closed":true},{"type":"text","text":"OK"}]`)
+	arrayContent := ojson.Parse(`[{"type":"thinking","thinking":[{"type":"text","text":"secret "},{"type":"text","text":"thought"}],"closed":true},{"type":"text","text":"OK"}]`)
 	reasoning, visible, isArray := splitContentBlocksArray(arrayContent)
 	if !isArray {
 		t.Fatalf("isArray = false, want true")
@@ -28,11 +28,11 @@ func TestSplitContentBlocksArray(t *testing.T) {
 		t.Fatalf("visible = %q, want %q", visible, "OK")
 	}
 
-	if _, _, isArray := splitContentBlocksArray(gjson.Parse(`"plain string"`)); isArray {
+	if _, _, isArray := splitContentBlocksArray(ojson.Parse(`"plain string"`)); isArray {
 		t.Fatalf("plain string reported as array")
 	}
 
-	thinkingOnly := gjson.Parse(`[{"type":"thinking","thinking":"raw thought","closed":true}]`)
+	thinkingOnly := ojson.Parse(`[{"type":"thinking","thinking":"raw thought","closed":true}]`)
 	reasoning, visible, isArray = splitContentBlocksArray(thinkingOnly)
 	if !isArray || reasoning != "raw thought" || visible != "" {
 		t.Fatalf("thinking-only split = (%q, %q, %v)", reasoning, visible, isArray)
@@ -45,11 +45,11 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_MistralC
 	raw := []byte(`{"id":"chatcmpl_mistral","object":"chat.completion","created":1773896263,"model":"mistral-large-4","choices":[{"index":0,"message":{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"secret thought"}],"closed":true},{"type":"text","text":"OK"}],"tool_calls":null},"finish_reason":"stop"}]}`)
 
 	out := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "mistral-large-4", nil, nil, raw, nil)
-	data := gjson.ParseBytes(out)
+	data := ojson.ParseBytes(out)
 
 	var reasoningText, messageText string
 	var reasoningFound, messageFound bool
-	data.Get("output").ForEach(func(_, item gjson.Result) bool {
+	data.Get("output").ForEach(func(_, item ojson.Result) bool {
 		switch item.Get("type").String() {
 		case "reasoning":
 			reasoningFound = true
