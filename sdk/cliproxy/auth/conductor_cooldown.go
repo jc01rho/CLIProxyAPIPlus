@@ -917,6 +917,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 		if result.Success {
 			auth.Success++
+			delete(m.antigravityHandoffStrikes, auth.ID)
 		} else {
 			auth.Failed++
 		}
@@ -1300,7 +1301,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
 						cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 						if cfg != nil && cfg.AntigravityPrimaryHandoff {
-							handoffSnapshots = m.promoteNextAntigravityPrimary(ctx, auth.ID)
+							if m.antigravityHandoffStrikes == nil {
+								m.antigravityHandoffStrikes = make(map[string]int)
+							}
+							m.antigravityHandoffStrikes[auth.ID]++
+							if m.antigravityHandoffStrikes[auth.ID] >= antigravityHandoffStrikeThreshold {
+								handoffSnapshots = m.promoteNextAntigravityPrimary(ctx, auth.ID)
+							}
 						}
 					}
 				}
@@ -2603,6 +2610,11 @@ func statusCodeFromResult(err *Error) int {
 	return err.StatusCode()
 }
 
+// antigravityHandoffStrikeThreshold is how many consecutive handoff-class
+// failures a primary antigravity credential may take before it is demoted. A
+// success in between resets the count.
+const antigravityHandoffStrikeThreshold = 3
+
 // isAntigravityHandoffError returns true if the error should trigger a primary
 // credential handoff for the Antigravity provider. Quota (429) never hands off,
 // and Claude/GPT routes never hand off on any status, whether the requested model
@@ -2662,6 +2674,7 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 
 	current := allAntigravity[currentIdx]
 	now := time.Now()
+	delete(m.antigravityHandoffStrikes, current.ID)
 	current.Disabled = true
 	current.Status = StatusDisabled
 	current.PrimaryInfo.IsPrimary = false

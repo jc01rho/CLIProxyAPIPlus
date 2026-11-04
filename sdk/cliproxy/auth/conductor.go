@@ -190,6 +190,9 @@ type Manager struct {
 	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex
 	syncSchedulerMu           sync.Mutex
+	// antigravityHandoffStrikes counts consecutive handoff-class failures of a
+	// primary antigravity credential, keyed by auth ID. Guarded by mu.
+	antigravityHandoffStrikes map[string]int
 	// executionSeq stamps upstream dispatches with a monotonic sequence used
 	// to reject cooldown clears from executions dispatched before the cooldown.
 	executionSeq       atomic.Uint64
