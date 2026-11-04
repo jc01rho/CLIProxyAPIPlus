@@ -52,6 +52,15 @@ func markResultBounded(t *testing.T, m *Manager, result Result) {
 	}
 }
 
+// markResultRepeated reports the same result n times, the way n consecutive
+// failed requests would.
+func markResultRepeated(t *testing.T, m *Manager, result Result, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		markResultBounded(t, m, result)
+	}
+}
+
 func assertAntigravityHandoff(t *testing.T, m *Manager, wantPromoted bool) {
 	t.Helper()
 	oldPrimary, ok := m.GetByID("ag-handoff-primary")
@@ -114,14 +123,14 @@ func TestAntigravityHandoffIgnoresQuotaExhaustion(t *testing.T) {
 
 func TestAntigravityHandoffPromotesStandbyOnGatewayFailure(t *testing.T) {
 	m := newAntigravityHandoffManager(t, true)
-	markResultBounded(t, m, Result{
+	markResultRepeated(t, m, Result{
 		AuthID:          "ag-handoff-primary",
 		Provider:        "antigravity",
 		Model:           "gemini-3-pro",
 		Success:         false,
 		CredentialScope: true,
 		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "service unavailable"},
-	})
+	}, antigravityHandoffStrikeThreshold)
 	assertAntigravityHandoff(t, m, true)
 }
 
@@ -156,7 +165,7 @@ func TestAntigravityHandoffAppliesExecutorStatusError(t *testing.T) {
 	if result.Error == nil || result.Error.HTTPStatus != http.StatusServiceUnavailable {
 		t.Fatalf("converted error = %+v, want HTTP 503", result.Error)
 	}
-	markResultBounded(t, m, result)
+	markResultRepeated(t, m, result, antigravityHandoffStrikeThreshold)
 	assertAntigravityHandoff(t, m, true)
 }
 
@@ -210,7 +219,7 @@ func TestAntigravityHandoffPromotesStandbyOnAliasedGeminiRoute(t *testing.T) {
 	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
 		antigravityModelAliasChannel: {{Name: "gemini-3-flash", Alias: "flash"}},
 	})
-	markResultBounded(t, m, Result{
+	markResultRepeated(t, m, Result{
 		AuthID:          "ag-handoff-primary",
 		Provider:        "antigravity",
 		Model:           "flash",
@@ -218,6 +227,53 @@ func TestAntigravityHandoffPromotesStandbyOnAliasedGeminiRoute(t *testing.T) {
 		Success:         false,
 		CredentialScope: true,
 		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "service unavailable"},
+	}, antigravityHandoffStrikeThreshold)
+	assertAntigravityHandoff(t, m, true)
+}
+
+func antigravityGatewayFailure() Result {
+	return Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "gemini-3-pro",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "service unavailable"},
+	}
+}
+
+func TestAntigravityHandoffWaitsForThreeConsecutiveFailures(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	for i := 1; i < antigravityHandoffStrikeThreshold; i++ {
+		markResultBounded(t, m, antigravityGatewayFailure())
+		assertAntigravityHandoff(t, m, false)
+	}
+	markResultBounded(t, m, antigravityGatewayFailure())
+	assertAntigravityHandoff(t, m, true)
+}
+
+func TestAntigravityHandoffSuccessResetsFailureCount(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	markResultRepeated(t, m, antigravityGatewayFailure(), antigravityHandoffStrikeThreshold-1)
+	markResultBounded(t, m, Result{AuthID: "ag-handoff-primary", Provider: "antigravity", Model: "gemini-3-pro", Success: true})
+	markResultRepeated(t, m, antigravityGatewayFailure(), antigravityHandoffStrikeThreshold-1)
+	assertAntigravityHandoff(t, m, false)
+	markResultBounded(t, m, antigravityGatewayFailure())
+	assertAntigravityHandoff(t, m, true)
+}
+
+func TestAntigravityHandoffNonHandoffErrorDoesNotCountOrReset(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	markResultRepeated(t, m, antigravityGatewayFailure(), antigravityHandoffStrikeThreshold-1)
+	markResultBounded(t, m, Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "gemini-3-pro",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusInternalServerError, Message: "upstream error"},
 	})
+	assertAntigravityHandoff(t, m, false)
+	markResultBounded(t, m, antigravityGatewayFailure())
 	assertAntigravityHandoff(t, m, true)
 }
