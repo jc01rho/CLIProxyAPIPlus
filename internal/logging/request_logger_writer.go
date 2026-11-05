@@ -111,7 +111,10 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 
 	// Generate filename with request ID
 	filename := l.generateFilename(url, requestID)
-	if force && !l.enabled {
+	// Enabled+forced logs keep the normal file and get an error-* copy below;
+	// naming the primary file error-* too would make that copy truncate itself.
+	forkErrorCopy := force && l.enabled
+	if (force && !l.enabled) || (statusCode >= 400 && statusCode != 499 && !forkErrorCopy) {
 		filename = l.generateErrorFilename(url, requestID)
 	}
 
@@ -171,7 +174,7 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 		return fmt.Errorf("failed to write log file: %w", writeErr)
 	}
 
-	if force && l.enabled {
+	if forkErrorCopy {
 		errorPath := filepath.Join(l.logsDir, l.generateErrorFilename(url, requestID))
 		if errCopy := copyRequestLog(filePath, errorPath); errCopy != nil {
 			return fmt.Errorf("failed to create error log copy: %w", errCopy)

@@ -265,6 +265,7 @@ func (l *testRequestLoggerWithOptions) IsEnabled() bool {
 
 type testStreamingLogWriter struct {
 	apiWebsocketTimeline []byte
+	apiResponseErrors    []*interfaces.ErrorMessage
 	closed               bool
 }
 
@@ -276,6 +277,12 @@ func (w *testStreamingLogWriter) WriteAPIWebsocketTimeline(apiWebsocketTimeline 
 	w.apiWebsocketTimeline = bytes.Clone(apiWebsocketTimeline)
 	return nil
 }
+
+func (w *testStreamingLogWriter) WriteAPIResponseErrors(errors []*interfaces.ErrorMessage) error {
+	w.apiResponseErrors = append([]*interfaces.ErrorMessage(nil), errors...)
+	return nil
+}
+
 func (w *testStreamingLogWriter) SetFirstChunkTimestamp(time.Time) {}
 func (w *testStreamingLogWriter) Close() error {
 	w.closed = true

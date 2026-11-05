@@ -2,6 +2,8 @@ package auth
 
 import (
 	"bytes"
+	"context"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -288,10 +290,10 @@ func (m *Manager) configuredSelectionModelPool(auth *Auth, routeModel string) []
 	return resolveConfiguredUpstreamModelPool(m.loadAPIKeyModelRouting().config, auth, rewriteModelForAuth(routeModel, auth))
 }
 
-func (m *Manager) isAuthBlockedForRouteModel(auth *Auth, routeModel string, now time.Time) (bool, blockReason, time.Time) {
+func (m *Manager) isAuthBlockedForRouteModel(ctx context.Context, auth *Auth, routeModel string, now time.Time, clientHeaders ...http.Header) (bool, blockReason, time.Time) {
 	pool := m.configuredSelectionModelPool(auth, routeModel)
 	if len(pool) <= 1 {
-		return isAuthBlockedForModel(auth, m.selectionModelForAuth(auth, routeModel), now)
+		return isAuthBlockedForModelForRequest(ctx, auth, m.selectionModelForAuth(auth, routeModel), now, clientHeaders...)
 	}
 	// Pooled execution records and checks each upstream target, not the route key.
 	// An auth remains eligible while any target can execute. Keep credential-wide
@@ -299,7 +301,7 @@ func (m *Manager) isAuthBlockedForRouteModel(auth *Auth, routeModel string, now 
 	reason := blockReasonOther
 	var earliest time.Time
 	for _, model := range pool {
-		blocked, modelReason, next := isAuthBlockedForModel(auth, model, now)
+		blocked, modelReason, next := isAuthBlockedForModelForRequest(ctx, auth, model, now, clientHeaders...)
 		if !blocked {
 			return false, blockReasonNone, time.Time{}
 		}
@@ -414,6 +416,10 @@ func executionResultModel(routeModel, upstreamModel string, pooled bool) string 
 }
 
 func (m *Manager) filterExecutionModels(auth *Auth, routeModel string, candidates []string, pooled bool) []string {
+	return m.filterExecutionModelsForRequest(nil, auth, routeModel, candidates, pooled)
+}
+
+func (m *Manager) filterExecutionModelsForRequest(ctx context.Context, auth *Auth, routeModel string, candidates []string, pooled bool, clientHeaders ...http.Header) []string {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -430,7 +436,7 @@ func (m *Manager) filterExecutionModels(auth *Auth, routeModel string, candidate
 			continue
 		}
 		stateModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
-		blocked, _, _ := isAuthBlockedForModel(auth, stateModel, now)
+		blocked, _, _ := isAuthBlockedForModelForRequest(ctx, auth, stateModel, now, clientHeaders...)
 		if blocked {
 			continue
 		}
@@ -446,8 +452,12 @@ func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string) ([]stri
 }
 
 func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string) ([]string, bool, OAuthModelAliasResult, *apiKeyModelRoutingSnapshot) {
+	return m.preparedExecutionModelsWithAliasForRequest(nil, auth, routeModel)
+}
+
+func (m *Manager) preparedExecutionModelsWithAliasForRequest(ctx context.Context, auth *Auth, routeModel string, clientHeaders ...http.Header) ([]string, bool, OAuthModelAliasResult, *apiKeyModelRoutingSnapshot) {
 	candidates, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(auth, routeModel)
-	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled, aliasResult, routing
+	return m.filterExecutionModelsForRequest(ctx, auth, routeModel, candidates, pooled, clientHeaders...), pooled, aliasResult, routing
 }
 
 const (
