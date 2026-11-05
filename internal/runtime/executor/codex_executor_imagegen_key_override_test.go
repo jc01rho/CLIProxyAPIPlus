@@ -78,8 +78,8 @@ func TestCodexExecutorPerKeyDisableImageGenerationSuppressesInjection(t *testing
 			}
 
 			_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
-				Model:   "gpt-6-astra",
-				Payload: []byte(`{"model":"gpt-6-astra","input":"hello"}`),
+				Model:   "gpt-5.4",
+				Payload: []byte(`{"model":"gpt-5.4","input":"hello"}`),
 			}, cliproxyexecutor.Options{
 				SourceFormat: sdktranslator.FromString("openai-response"),
 			})
@@ -113,8 +113,8 @@ func TestCodexExecutorPerKeyOverrideIsScopedToThatCredential(t *testing.T) {
 	enabledServer, enabledBody := codexImageGenUpstream(t)
 
 	req := cliproxyexecutor.Request{
-		Model:   "gpt-6-astra",
-		Payload: []byte(`{"model":"gpt-6-astra","input":"hello"}`),
+		Model:   "gpt-5.4",
+		Payload: []byte(`{"model":"gpt-5.4","input":"hello"}`),
 	}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")}
 
@@ -164,8 +164,8 @@ func TestCodexExecutorPerKeyStripsClientSentImageGenerationTool(t *testing.T) {
 			}
 
 			_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
-				Model:   "gpt-6-astra",
-				Payload: []byte(`{"model":"gpt-6-astra","input":"hi","tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`),
+				Model:   "gpt-5.4",
+				Payload: []byte(`{"model":"gpt-5.4","input":"hi","tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`),
 			}, cliproxyexecutor.Options{
 				SourceFormat: sdktranslator.FromString("openai-response"),
 			})
