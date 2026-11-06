@@ -227,6 +227,9 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		// entries unconditionally so any openai-compat provider stays usable when
 		// upstream clients send malformed tool catalogs.
 		translated = sanitizeEmptyToolFunctionNames(translated)
+		// Empty/null/missing message content is rejected with 400 invalid_value by
+		// strict upstreams; repair it before orphan cleanup.
+		translated = sanitizeEmptyMessageContent(translated)
 		// Orphaned tool results (result whose tool_call_id has no matching
 		// assistant tool_call) make strict upstreams such as MiniMax reject the
 		// request with 400 error 2013. Drop them after all other sanitizers so
@@ -702,6 +705,9 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		// entries unconditionally so any openai-compat provider stays usable when
 		// upstream clients send malformed tool catalogs.
 		translated = sanitizeEmptyToolFunctionNames(translated)
+		// Empty/null/missing message content is rejected with 400 invalid_value by
+		// strict upstreams; repair it before orphan cleanup.
+		translated = sanitizeEmptyMessageContent(translated)
 		// Orphaned tool results make strict upstreams such as MiniMax reject the
 		// request with 400 error 2013; see dropOrphanOpenAIToolResults.
 		translated = dropOrphanOpenAIToolResults(translated)
@@ -2042,6 +2048,63 @@ func sanitizeEmptyToolCallMessages(body []byte) []byte {
 			next, err = ojson.DeleteBytes(out, path)
 		} else {
 			next, err = ojson.SetRawBytes(out, path, []byte("["+strings.Join(kept, ",")+"]"))
+		}
+		if err != nil {
+			return body
+		}
+		out = next
+	}
+	return out
+}
+
+// sanitizeEmptyMessageContent repairs messages[].content values that strict
+// OpenAI-compatible upstreams reject with 400 invalid_value ("either a string
+// or a non-empty array of text parts, or null on an assistant message only").
+// Such values appear when a translator drops every part of a message (for
+// example a Responses input message whose only parts are unsupported) and
+// leaves `content: []`, or when a client sends null/missing content.
+//   - assistant with tool_calls: an empty array becomes null (null/missing is valid).
+//   - assistant with reasoning_content only: content becomes an empty string.
+//   - assistant with neither: the message is dropped.
+//   - tool: content becomes an empty string so the result keeps its pairing.
+//   - any other role: the message is dropped.
+//
+// Valid values, including empty strings, are left untouched.
+func sanitizeEmptyMessageContent(body []byte) []byte {
+	if !ojson.ValidBytes(body) {
+		return body
+	}
+	messages := ojson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+
+	msgs := messages.Array()
+	out := body
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		content := msg.Get("content")
+		if content.Exists() && content.Type != ojson.Null && (!content.IsArray() || len(content.Array()) > 0) {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+		contentPath := fmt.Sprintf("messages.%d.content", i)
+		toolCalls := msg.Get("tool_calls")
+		var next []byte
+		var err error
+		switch {
+		case role == "assistant" && toolCalls.IsArray() && len(toolCalls.Array()) > 0:
+			if !content.IsArray() {
+				// Missing or null content is valid next to tool_calls.
+				continue
+			}
+			next, err = ojson.SetRawBytes(out, contentPath, []byte("null"))
+		case role == "assistant" && strings.TrimSpace(msg.Get("reasoning_content").String()) != "":
+			next, err = ojson.SetBytes(out, contentPath, "")
+		case role == "tool":
+			next, err = ojson.SetBytes(out, contentPath, "")
+		default:
+			next, err = ojson.DeleteBytes(out, fmt.Sprintf("messages.%d", i))
 		}
 		if err != nil {
 			return body
