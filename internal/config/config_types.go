@@ -1093,15 +1093,17 @@ func (k CommandCodeKey) MatchesCredential(apiKey, proxyURL string) bool {
 
 // CommandCodeModel maps a client alias to an upstream model name.
 type CommandCodeModel struct {
-	Name         string `yaml:"name" json:"name"`
-	Alias        string `yaml:"alias" json:"alias"`
-	ForceMapping bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+	Name             string `yaml:"name" json:"name"`
+	Alias            string `yaml:"alias" json:"alias"`
+	MaxContextLength int    `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
+	ForceMapping     bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m CommandCodeModel) GetName() string        { return m.Name }
-func (m CommandCodeModel) GetAlias() string       { return m.Alias }
-func (m CommandCodeModel) GetDisplayName() string { return "" }
-func (m CommandCodeModel) GetForceMapping() bool  { return m.ForceMapping }
+func (m CommandCodeModel) GetName() string          { return m.Name }
+func (m CommandCodeModel) GetAlias() string         { return m.Alias }
+func (m CommandCodeModel) GetDisplayName() string   { return "" }
+func (m CommandCodeModel) GetMaxContextLength() int { return m.MaxContextLength }
+func (m CommandCodeModel) GetForceMapping() bool    { return m.ForceMapping }
 
 func (k DevinKey) GetAPIKey() string { return k.APIKey }
 
@@ -1176,15 +1178,17 @@ func (k MistralKey) GetProxyURL() string { return k.ProxyURL }
 
 // MistralModel maps a client alias to an upstream model name.
 type MistralModel struct {
-	Name         string `yaml:"name" json:"name"`
-	Alias        string `yaml:"alias" json:"alias"`
-	ForceMapping bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+	Name             string `yaml:"name" json:"name"`
+	Alias            string `yaml:"alias" json:"alias"`
+	MaxContextLength int    `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
+	ForceMapping     bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m MistralModel) GetName() string        { return m.Name }
-func (m MistralModel) GetAlias() string       { return m.Alias }
-func (m MistralModel) GetDisplayName() string { return "" }
-func (m MistralModel) GetForceMapping() bool  { return m.ForceMapping }
+func (m MistralModel) GetName() string          { return m.Name }
+func (m MistralModel) GetAlias() string         { return m.Alias }
+func (m MistralModel) GetDisplayName() string   { return "" }
+func (m MistralModel) GetMaxContextLength() int { return m.MaxContextLength }
+func (m MistralModel) GetForceMapping() bool    { return m.ForceMapping }
 
 // OpenCodeKey represents an OpenCode Zen or OpenCode Go credential. Entries
 // without an api-key use the anonymous "public" credential, which is what the

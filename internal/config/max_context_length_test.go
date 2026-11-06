@@ -34,13 +34,23 @@ xai-api-key:
       - name: xai-upstream
         alias: xai-alias
         max-context-length: 1048576
+commandcode-api-key:
+  - models:
+      - name: commandcode-upstream
+        alias: commandcode-alias
+        max-context-length: 1048576
+mistral-api-key:
+  - models:
+      - name: mistral-upstream
+        alias: mistral-alias
+        max-context-length: 1048576
 openai-compatibility:
   - models:
       - name: compat-upstream
         alias: compat-alias
         max-context-length: 1048576
 `
-	const jsonConfig = `{"codex-api-key":[{"models":[{"name":"codex-upstream","alias":"codex-alias","max-context-length":1048576}]}],"claude-api-key":[{"models":[{"name":"claude-upstream","alias":"claude-alias","max-context-length":1048576}]}],"gemini-api-key":[{"models":[{"name":"gemini-upstream","alias":"gemini-alias","max-context-length":1048576}]}],"interactions-api-key":[{"models":[{"name":"interactions-upstream","alias":"interactions-alias","max-context-length":1048576}]}],"xai-api-key":[{"models":[{"name":"xai-upstream","alias":"xai-alias","max-context-length":1048576}]}],"openai-compatibility":[{"models":[{"name":"compat-upstream","alias":"compat-alias","max-context-length":1048576}]}]}`
+	const jsonConfig = `{"codex-api-key":[{"models":[{"name":"codex-upstream","alias":"codex-alias","max-context-length":1048576}]}],"claude-api-key":[{"models":[{"name":"claude-upstream","alias":"claude-alias","max-context-length":1048576}]}],"gemini-api-key":[{"models":[{"name":"gemini-upstream","alias":"gemini-alias","max-context-length":1048576}]}],"interactions-api-key":[{"models":[{"name":"interactions-upstream","alias":"interactions-alias","max-context-length":1048576}]}],"xai-api-key":[{"models":[{"name":"xai-upstream","alias":"xai-alias","max-context-length":1048576}]}],"commandcode-api-key":[{"models":[{"name":"commandcode-upstream","alias":"commandcode-alias","max-context-length":1048576}]}],"mistral-api-key":[{"models":[{"name":"mistral-upstream","alias":"mistral-alias","max-context-length":1048576}]}],"openai-compatibility":[{"models":[{"name":"compat-upstream","alias":"compat-alias","max-context-length":1048576}]}]}`
 
 	for _, testCase := range []struct {
 		name   string
@@ -74,6 +84,8 @@ openai-compatibility:
 				{name: "gemini", got: cfg.GeminiKey[0].Models[0].MaxContextLength},
 				{name: "interactions", got: cfg.InteractionsKey[0].Models[0].MaxContextLength},
 				{name: "xai", got: cfg.XAIKey[0].Models[0].MaxContextLength},
+				{name: "commandcode", got: cfg.CommandCodeKey[0].Models[0].MaxContextLength},
+				{name: "mistral", got: cfg.MistralKey[0].Models[0].MaxContextLength},
 				{name: "openai compatibility", got: cfg.OpenAICompatibility[0].Models[0].MaxContextLength},
 			}
 			for _, model := range models {
