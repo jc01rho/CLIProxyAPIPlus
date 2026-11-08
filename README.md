@@ -201,6 +201,44 @@ Mimocode uses Xiaomi's OpenAI-compatible endpoint and sends `X-Mimo-Source: mimo
 
 Management REST: `GET/PUT /v0/management/mimocode-api-key`. OAuth key provisioning starts with `GET /v0/management/mimocode-auth-url`; headless clients can submit the encrypted callback value to `POST /v0/management/mimocode-auth-callback`. For relogin, pass the existing auth file as `?name=...` or its `?auth_index=...` so the persisted `key_name` is reused.
 
+### DeepAI (deepai.org reverse proxy)
+
+DeepAI is not an OpenAI-compatible upstream. The chat surface takes a
+`multipart/form-data` body (`chat_style`, `chatHistory`, `model`, `session_uuid`,
+`hacker_is_stinky`, `tool_activity_support`, `thinking_image_tool_support`,
+`enabled_tools`) and answers with a plain-text stream that carries out-of-band
+packets: `\x1C{"tool_activity":"..."}\x1C` activity frames, a
+`\x1DTHINKING_START…\x1E<cot>\x1DTHINKING_END` reasoning block, and a trailing
+`\x1C{json}` payload (generated images, web results). The executor parses those
+into `content`, `reasoning_content` and image markdown, and re-emits them as
+OpenAI chat completions.
+
+Anonymous access is the default. The browser mints a single-use `tryit-<digits>-<hex32>`
+key per request, where the hex part is `reverse(md5(ua + reverse(md5(ua + reverse(md5(ua + digits + salt)))))`
+over the request `User-Agent`; the executor mints the same key when no `api-key`
+is configured. Set `api-key` to a dashboard key, plus `headers.Cookie` with a
+logged-in session cookie, when a plan-gated model (`genius`) is needed. An
+`api-key` of `anonymous` is treated as keyless.
+
+`base-url` defaults to `https://api.deepai.org`. `models` maps client aliases to
+one of the three upstream tiers (`standard`, `genius`, `super_genius`); without a
+`models` list the built-in catalog is exposed (`deepai-standard`,
+`deepai-genius`, `deepai-super-genius`, `gpt-4o-mini`). Upstream reports no token
+counts, so usage is estimated from message and answer length.
+
+**Example config for DeepAI:**
+
+    deepai-api-key:
+      - api-key: ""                # empty or "anonymous" mints a tryit key per request
+        base-url: "https://api.deepai.org"
+        models:
+          - name: "standard"
+            alias: "deepai-standard"
+          - name: "super_genius"
+            alias: "deepai-super-genius"
+
+Management REST: `GET/PUT/PATCH/DELETE /v0/management/deepai-api-key`.
+
 ### Generic usage flow
 
 All providers expose the standard OpenAI-compatible `/v1/chat/completions`, `/v1/chat/completions` (streaming), and `/v1/images/generations` endpoints. Point your client to:

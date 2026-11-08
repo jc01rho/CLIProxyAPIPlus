@@ -186,6 +186,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/mimocode-api-key", s.mgmt.GetMimocodeKeys)
 		mgmt.PUT("/mimocode-api-key", s.mgmt.PutMimocodeKeys)
 
+		mgmt.GET("/deepai-api-key", s.mgmt.GetDeepAIKeys)
+		mgmt.PUT("/deepai-api-key", s.mgmt.PutDeepAIKeys)
+		mgmt.PATCH("/deepai-api-key", s.mgmt.PatchDeepAIKey)
+		mgmt.DELETE("/deepai-api-key", s.mgmt.DeleteDeepAIKey)
+
 		mgmt.GET("/mistral-api-key", s.mgmt.GetMistralKeys)
 		mgmt.PUT("/mistral-api-key", s.mgmt.PutMistralKeys)
 		mgmt.PATCH("/mistral-api-key", s.mgmt.PatchMistralKey)

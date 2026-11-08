@@ -86,6 +86,9 @@ type APIKeyClientResult struct {
 
 	// MimocodeKeyCount is the number of Xiaomi MiMo credentials loaded
 	MimocodeKeyCount int
+
+	// DeepAIKeyCount is the number of DeepAI credentials loaded
+	DeepAIKeyCount int
 }
 
 // WatcherFactory creates a watcher for configuration and token changes.

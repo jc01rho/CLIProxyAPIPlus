@@ -137,6 +137,7 @@ func ParseConfigBytesForFile(data []byte, configFile string) (*Config, error) {
 	cfg.SanitizeCommandCodeKeys()
 	cfg.SanitizeOpenCodeKeys()
 	cfg.SanitizeMistralKeys()
+	cfg.SanitizeDeepAIKeys()
 	if errSanitize := cfg.SanitizeMimocodeKeys(); errSanitize != nil {
 		return nil, errSanitize
 	}

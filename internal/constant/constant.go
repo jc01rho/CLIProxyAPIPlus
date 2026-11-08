@@ -48,6 +48,9 @@ const (
 	// Mimocode represents the Xiaomi MiMo Code provider identifier.
 	Mimocode = "mimocode"
 
+	// DeepAI represents the deepai.org reverse-proxy provider identifier.
+	DeepAI = "deepai"
+
 	// Devin represents the Devin (Cognition) provider identifier.
 	Devin = "devin"
 

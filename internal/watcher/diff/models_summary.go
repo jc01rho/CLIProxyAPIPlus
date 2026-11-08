@@ -45,6 +45,11 @@ type OpenCodeModelsSummary struct {
 	count int
 }
 
+type DeepAIModelsSummary struct {
+	hash  string
+	count int
+}
+
 type MimocodeModelsSummary struct {
 	hash  string
 	count int
@@ -219,4 +224,22 @@ func SummarizeCommandCodeModels(models []config.CommandCodeModel) CommandCodeMod
 		hash:  hashJoined(keys),
 		count: len(keys),
 	}
+}
+
+// SummarizeDeepAIModels hashes DeepAI model aliases for change detection.
+func SummarizeDeepAIModels(models []config.DeepAIModel) DeepAIModelsSummary {
+	if len(models) == 0 {
+		return DeepAIModelsSummary{}
+	}
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return DeepAIModelsSummary{hash: hashJoined(keys), count: len(keys)}
 }

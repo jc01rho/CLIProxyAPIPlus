@@ -311,6 +311,21 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case constant.DeepAI:
+		entry := s.resolveConfigDeepAIKey(a)
+		switch {
+		case entry != nil && len(entry.Models) > 0:
+			models = buildDeepAIConfigModels(entry)
+			excluded = entry.ExcludedModels
+		default:
+			// The upstream exposes no model catalog; the embedded registry
+			// table is the source of truth for /v1/models.
+			models = registry.GetDeepAIModels()
+			if entry != nil {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
 	case constant.Mistral:
 		entry := s.resolveConfigMistralKey(a)
 		switch {

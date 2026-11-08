@@ -119,6 +119,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeOpenCodeKeys(ctx)...)
 	// Mimocode API Keys
 	out = append(out, s.synthesizeMimocodeKeys(ctx)...)
+	// DeepAI API Keys
+	out = append(out, s.synthesizeDeepAIKeys(ctx)...)
 	// Meta API Keys
 	out = append(out, s.synthesizeMetaKeys(ctx)...)
 
@@ -617,6 +619,84 @@ func (s *ConfigSynthesizer) synthesizeOpenCodeKeys(ctx *SynthesisContext) []*cor
 			a.Metadata = nil
 		}
 		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeDeepAIKeys creates Auth entries for deepai.org credentials.
+// A keyless entry is the anonymous upstream path: the executor mints a
+// single-use tryit key per request, so the entry is registered with the
+// anonymous marker rather than skipped.
+func (s *ConfigSynthesizer) synthesizeDeepAIKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.DeepAIKey))
+	for i := range cfg.DeepAIKey {
+		dk := cfg.DeepAIKey[i]
+		prefix := strings.TrimSpace(dk.Prefix)
+		baseURL := strings.TrimSpace(dk.BaseURL)
+		headers := config.NormalizeHeaders(dk.Headers)
+		add := func(key, proxyURL string, weight *int, comment string) {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				key = config.DeepAIAnonymousAPIKey
+			}
+			proxyURL = strings.TrimSpace(proxyURL)
+			id, token := idGen.Next("deepai:apikey", key, baseURL, proxyURL, prefix, config.FormatSortedHeaders(headers))
+			attrs := map[string]string{
+				"source":       fmt.Sprintf("config:deepai[%s]", token),
+				"api_key":      key,
+				"config_index": strconv.Itoa(i),
+				"runtime_only": "true",
+			}
+			if comment != "" {
+				attrs["comment"] = strings.TrimSpace(comment)
+			}
+			if dk.Priority != 0 {
+				attrs["priority"] = strconv.Itoa(dk.Priority)
+			}
+			addWeightToAttrs(weight, attrs)
+			if dk.BillingClass != "" {
+				attrs["billing_class"] = string(dk.BillingClass)
+			}
+			if baseURL != "" {
+				attrs["base_url"] = baseURL
+			}
+			if hash := diff.ComputeDeepAIModelsHash(dk.Models); hash != "" {
+				attrs["models_hash"] = hash
+			}
+			addConfigHeadersToAttrs(headers, attrs)
+			metadata := map[string]any{}
+			if dk.DisableCooling {
+				metadata["disable_cooling"] = true
+			}
+			a := &coreauth.Auth{
+				ID:         id,
+				Provider:   constant.DeepAI,
+				Label:      "deepai-apikey",
+				Prefix:     prefix,
+				Status:     coreauth.StatusActive,
+				ProxyURL:   proxyURL,
+				Attributes: attrs,
+				Metadata:   metadata,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			}
+			ApplyAuthExcludedModelsMeta(a, dk.ExcludedModels, "apikey")
+			if len(a.Metadata) == 0 {
+				a.Metadata = nil
+			}
+			out = append(out, a)
+		}
+		if len(dk.APIKeyEntries) > 0 {
+			for _, entry := range dk.APIKeyEntries {
+				add(entry.APIKey, entry.ProxyURL, entry.Weight, entry.Comment)
+			}
+			continue
+		}
+		add(dk.APIKey, dk.ProxyURL, nil, dk.Comment)
 	}
 	return out
 }
