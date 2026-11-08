@@ -882,6 +882,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetOpenCodeModels()
 	case "mimocode", "mimo-code":
 		return GetMimocodeModels()
+	case "deepai":
+		return GetDeepAIModels()
 	case "meta", "muse":
 		return GetMetaModels()
 	default:

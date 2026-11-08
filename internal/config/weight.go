@@ -181,5 +181,14 @@ func (cfg *Config) ValidateCredentialWeights() error {
 			}
 		}
 	}
+
+	for providerIndex := range cfg.DeepAIKey {
+		for keyIndex := range cfg.DeepAIKey[providerIndex].APIKeyEntries {
+			weight := cfg.DeepAIKey[providerIndex].APIKeyEntries[keyIndex].Weight
+			if errValidate := ValidateCredentialWeight(weight); errValidate != nil {
+				return fmt.Errorf("deepai-api-key[%d].api-key-entries[%d].weight: %w", providerIndex, keyIndex, errValidate)
+			}
+		}
+	}
 	return nil
 }

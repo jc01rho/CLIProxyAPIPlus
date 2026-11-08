@@ -314,6 +314,65 @@ func (cfg *Config) SanitizeMimocodeKeys() error {
 	return nil
 }
 
+// FoldDeepAILegacyAPIKey makes api-key-entries the single source of truth when
+// any nested keys are present.
+func FoldDeepAILegacyAPIKey(entry *DeepAIKey) {
+	if entry == nil {
+		return
+	}
+	legacy := strings.TrimSpace(entry.APIKey)
+	if legacy == "" || len(entry.APIKeyEntries) == 0 {
+		return
+	}
+	for i := range entry.APIKeyEntries {
+		if strings.TrimSpace(entry.APIKeyEntries[i].APIKey) == legacy {
+			entry.APIKey = ""
+			return
+		}
+	}
+	entry.APIKeyEntries = append([]OpenAICompatibilityAPIKey{{
+		APIKey:   legacy,
+		ProxyURL: strings.TrimSpace(entry.ProxyURL),
+	}}, entry.APIKeyEntries...)
+	entry.APIKey = ""
+}
+
+// SanitizeDeepAIKeys normalizes DeepAI credentials. A keyless entry is the
+// anonymous upstream path (the browser mints a single-use tryit key per
+// request), so it is kept rather than dropped.
+func (cfg *Config) SanitizeDeepAIKeys() {
+	if cfg == nil {
+		return
+	}
+	out := make([]DeepAIKey, 0, len(cfg.DeepAIKey))
+	for _, entry := range cfg.DeepAIKey {
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		nested := make([]OpenAICompatibilityAPIKey, 0, len(entry.APIKeyEntries))
+		for _, apiKeyEntry := range entry.APIKeyEntries {
+			apiKeyEntry.APIKey = strings.TrimSpace(apiKeyEntry.APIKey)
+			apiKeyEntry.ProxyURL = strings.TrimSpace(apiKeyEntry.ProxyURL)
+			apiKeyEntry.Comment = strings.TrimSpace(apiKeyEntry.Comment)
+			if apiKeyEntry.APIKey != "" {
+				nested = append(nested, apiKeyEntry)
+			}
+		}
+		entry.APIKeyEntries = nested
+		FoldDeepAILegacyAPIKey(&entry)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BillingClass = normalizeBillingClass(entry.BillingClass)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		for i := range entry.Models {
+			entry.Models[i].Name = strings.TrimSpace(entry.Models[i].Name)
+			entry.Models[i].Alias = strings.TrimSpace(entry.Models[i].Alias)
+		}
+		out = append(out, entry)
+	}
+	cfg.DeepAIKey = out
+}
+
 func (cfg *Config) SanitizeMistralKeys() {
 	if cfg == nil {
 		return

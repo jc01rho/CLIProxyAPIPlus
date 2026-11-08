@@ -502,6 +502,41 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		}
 	}
 
+	// DeepAI keys (do not print key material)
+	if len(oldCfg.DeepAIKey) != len(newCfg.DeepAIKey) {
+		changes = append(changes, fmt.Sprintf("deepai-api-key count: %d -> %d", len(oldCfg.DeepAIKey), len(newCfg.DeepAIKey)))
+	} else {
+		for i := range oldCfg.DeepAIKey {
+			o := oldCfg.DeepAIKey[i]
+			n := newCfg.DeepAIKey[i]
+			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
+				changes = append(changes, fmt.Sprintf("deepai[%d].base-url: %s -> %s", i, strings.TrimSpace(o.BaseURL), strings.TrimSpace(n.BaseURL)))
+			}
+			if strings.TrimSpace(o.ProxyURL) != strings.TrimSpace(n.ProxyURL) {
+				changes = append(changes, fmt.Sprintf("deepai[%d].proxy-url: %s -> %s", i, formatProxyURL(o.ProxyURL), formatProxyURL(n.ProxyURL)))
+			}
+			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
+				changes = append(changes, fmt.Sprintf("deepai[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
+			}
+			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
+				changes = append(changes, fmt.Sprintf("deepai[%d].api-key: updated", i))
+			}
+			if !equalStringMap(o.Headers, n.Headers) {
+				changes = append(changes, fmt.Sprintf("deepai[%d].headers: updated", i))
+			}
+			oldModels := SummarizeDeepAIModels(o.Models)
+			newModels := SummarizeDeepAIModels(n.Models)
+			if oldModels.hash != newModels.hash {
+				changes = append(changes, fmt.Sprintf("deepai[%d].models: updated (%d -> %d entries)", i, oldModels.count, newModels.count))
+			}
+			oldExcluded := SummarizeExcludedModels(o.ExcludedModels)
+			newExcluded := SummarizeExcludedModels(n.ExcludedModels)
+			if oldExcluded.hash != newExcluded.hash {
+				changes = append(changes, fmt.Sprintf("deepai[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
+			}
+		}
+	}
+
 	// xAI keys (do not print key material)
 	if len(oldCfg.XAIKey) != len(newCfg.XAIKey) {
 		changes = append(changes, fmt.Sprintf("xai-api-key count: %d -> %d", len(oldCfg.XAIKey), len(newCfg.XAIKey)))

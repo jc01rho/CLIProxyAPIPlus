@@ -211,6 +211,39 @@ func buildMimocodeConfigModels(entry *config.MimocodeKey) []*ModelInfo {
 	return models
 }
 
+func (s *Service) resolveConfigDeepAIKey(auth *coreauth.Auth) *config.DeepAIKey {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	return resolveNativeAPIKeyConfig(s.cfg.DeepAIKey, auth)
+}
+
+func buildDeepAIConfigModels(entry *config.DeepAIKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	models := buildNativeConfigModels(entry.Models, "deepai", "deepai")
+	staticByID := make(map[string]*registry.ModelInfo)
+	for _, model := range registry.GetDeepAIModels() {
+		if model != nil {
+			staticByID[strings.ToLower(strings.TrimSpace(model.ID))] = model
+		}
+	}
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		staticModel := staticByID[strings.ToLower(strings.TrimSpace(model.MetadataModelID))]
+		if staticModel == nil {
+			continue
+		}
+		model.ContextLength = staticModel.ContextLength
+		model.MaxCompletionTokens = staticModel.MaxCompletionTokens
+		model.SupportedEndpoints = append([]string(nil), staticModel.SupportedEndpoints...)
+	}
+	return models
+}
+
 func buildMistralConfigModels(entry *config.MistralKey) []*ModelInfo {
 	if entry == nil {
 		return nil

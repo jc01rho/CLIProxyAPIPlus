@@ -1330,6 +1330,93 @@ func (m MimocodeModel) GetAlias() string       { return m.Alias }
 func (m MimocodeModel) GetDisplayName() string { return "" }
 func (m MimocodeModel) GetForceMapping() bool  { return m.ForceMapping }
 
+// DeepAIAnonymousAPIKey marks a DeepAI credential that carries no key. The
+// upstream chat surface is anonymous: it mints a single-use "tryit" key per
+// request, so a keyless entry is a valid provider entry, not junk.
+const DeepAIAnonymousAPIKey = "anonymous"
+
+// DeepAIKey represents a deepai.org reverse-proxy credential. APIKey holds an
+// optional dashboard key; when it is empty or DeepAIAnonymousAPIKey the
+// executor mints a browser-equivalent tryit key per request.
+type DeepAIKey struct {
+	APIKey         string                      `yaml:"api-key,omitempty" json:"api-key,omitempty"`
+	Comment        string                      `yaml:"comment,omitempty" json:"comment,omitempty"`
+	Priority       int                         `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Prefix         string                      `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	BaseURL        string                      `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	ProxyURL       string                      `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	BillingClass   BillingClass                `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+	Models         []DeepAIModel               `yaml:"models,omitempty" json:"models,omitempty"`
+	Headers        map[string]string           `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ExcludedModels []string                    `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	DisableCooling bool                        `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+	APIKeyEntries  []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
+}
+
+// GetAPIKey returns the stored key, or the anonymous marker for a keyless
+// entry, so credential resolution still maps the auth back to its config row.
+func (k DeepAIKey) GetAPIKey() string {
+	if key := strings.TrimSpace(k.APIKey); key != "" {
+		return key
+	}
+	return DeepAIAnonymousAPIKey
+}
+func (k DeepAIKey) GetBaseURL() string  { return k.BaseURL }
+func (k DeepAIKey) GetPrefix() string   { return k.Prefix }
+func (k DeepAIKey) GetProxyURL() string { return k.ProxyURL }
+
+// ContainsAPIKey reports whether apiKey is the top-level key or any nested
+// api-key-entries credential.
+func (k DeepAIKey) ContainsAPIKey(apiKey string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return true
+	}
+	for i := range k.APIKeyEntries {
+		if strings.TrimSpace(k.APIKeyEntries[i].APIKey) == apiKey {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesCredential reports whether the given key/proxy pair identifies this
+// entry. A keyless DeepAI entry is stored under the anonymous marker, so the
+// comparison still resolves it.
+func (k DeepAIKey) MatchesCredential(apiKey, proxyURL string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	proxyURL = strings.TrimSpace(proxyURL)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return strings.TrimSpace(k.ProxyURL) == proxyURL
+	}
+	for i := range k.APIKeyEntries {
+		entry := k.APIKeyEntries[i]
+		if strings.TrimSpace(entry.APIKey) == apiKey {
+			return strings.TrimSpace(entry.ProxyURL) == proxyURL
+		}
+	}
+	return false
+}
+
+// DeepAIModel maps a client alias to a DeepAI upstream model tier
+// (standard, genius, super_genius).
+type DeepAIModel struct {
+	Name         string `yaml:"name" json:"name"`
+	Alias        string `yaml:"alias" json:"alias"`
+	ForceMapping bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+}
+
+func (m DeepAIModel) GetName() string        { return m.Name }
+func (m DeepAIModel) GetAlias() string       { return m.Alias }
+func (m DeepAIModel) GetDisplayName() string { return "" }
+func (m DeepAIModel) GetForceMapping() bool  { return m.ForceMapping }
+
 // XAIKey uses the Codex API key structure for native xAI execution.
 type XAIKey = CodexKey
 

@@ -351,6 +351,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewOpenCodeExecutor(cfg))
 	case constant.Mimocode:
 		s.coreManager.RegisterExecutor(executor.NewMimocodeExecutor(cfg))
+	case constant.DeepAI:
+		s.coreManager.RegisterExecutor(executor.NewDeepAIExecutor(cfg))
 	case constant.Devin:
 		s.coreManager.RegisterExecutor(executor.NewDevinExecutor(cfg))
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":

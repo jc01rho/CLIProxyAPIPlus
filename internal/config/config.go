@@ -224,6 +224,7 @@ type Config struct {
 	MistralKey     []MistralKey     `yaml:"mistral-api-key" json:"mistral-api-key"`
 	OpenCodeKey    []OpenCodeKey    `yaml:"opencode-api-key" json:"opencode-api-key"`
 	MimocodeKey    []MimocodeKey    `yaml:"mimocode-api-key" json:"mimocode-api-key"`
+	DeepAIKey      []DeepAIKey      `yaml:"deepai-api-key" json:"deepai-api-key"`
 	AmpCode        AmpCode          `yaml:"ampcode" json:"ampcode"`
 
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.

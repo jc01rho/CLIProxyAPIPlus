@@ -71,7 +71,7 @@ var v8KeyFamilies = []configPath{
 	{"openai-compatibility", "openai-compatibility"},
 	{"commandcode-api-key", "commandcode"},
 	{"devin-api-key", "devin"}, {"mistral-api-key", "mistral"},
-	{"opencode-api-key", "opencode"}, {"mimocode-api-key", "mimocode"},
+	{"opencode-api-key", "opencode"}, {"mimocode-api-key", "mimocode"}, {"deepai-api-key", "deepai"},
 	{"kiro", "kiro"},
 }
 
@@ -500,7 +500,7 @@ func expandV8Groups(groups *yaml.Node, provider string) (*yaml.Node, error) {
 // Keep a weight on its credential instead of adding an unknown provider field.
 func isNestedForkKeyFamily(provider string) bool {
 	switch provider {
-	case "commandcode", "opencode", "mimocode":
+	case "commandcode", "opencode", "mimocode", "deepai":
 		return true
 	default:
 		return false
