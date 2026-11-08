@@ -1058,6 +1058,11 @@ upstream:
 #       base-url: "https://mimo.example.com"
 #       models: [{name: "mimo-v2", alias: "mimo-v2"}]
 #       keys: [{api-key: "replace-with-mimocode-key"}]
+#   deepai:
+#     - name: deepai-1
+#       base-url: "https://api.deepai.org"
+#       models: [{name: "standard", alias: "deepai-standard"}, {name: "super_genius", alias: "deepai-super-genius"}]
+#       keys: [{api-key: ""}] # empty or "anonymous" mints a per-request tryit key
 #   kiro:
 #     - name: kiro-1
 #       keys: [{token-file: "/path/to/kiro-auth.json", region: "us-east-1"}]

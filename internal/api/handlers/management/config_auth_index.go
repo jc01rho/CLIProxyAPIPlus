@@ -38,6 +38,12 @@ type mistralKeyWithAuthIndex struct {
 	AuthIndex string `json:"auth-index,omitempty"`
 }
 
+type deepAIKeyWithAuthIndex struct {
+	config.DeepAIKey
+	APIKeyEntries []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
+	AuthIndex     string                                   `json:"auth-index,omitempty"`
+}
+
 type openCodeKeyWithAuthIndex struct {
 	config.OpenCodeKey
 	APIKeyEntries []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
@@ -972,6 +978,47 @@ func (h *Handler) mistralKeysWithAuthIndex() []mistralKeyWithAuthIndex {
 	return out
 }
 
+// deepAIKeysWithAuthIndex reports each configured DeepAI credential together
+// with the runtime auth index the synthesizer assigned to it.
+func (h *Handler) deepAIKeysWithAuthIndex() []deepAIKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveIndexByID := h.liveAuthIndexByID()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]deepAIKeyWithAuthIndex, len(h.cfg.DeepAIKey))
+	for i := range h.cfg.DeepAIKey {
+		entry := h.cfg.DeepAIKey[i]
+		response := deepAIKeyWithAuthIndex{DeepAIKey: entry}
+		headers := config.NormalizeHeaders(entry.Headers)
+		baseURL := strings.TrimSpace(entry.BaseURL)
+		prefix := strings.TrimSpace(entry.Prefix)
+		if len(entry.APIKeyEntries) == 0 {
+			key := strings.TrimSpace(entry.APIKey)
+			if key == "" {
+				key = config.DeepAIAnonymousAPIKey
+			}
+			id, _ := idGen.Next("deepai:apikey", key, baseURL, strings.TrimSpace(entry.ProxyURL), prefix, config.FormatSortedHeaders(headers))
+			response.AuthIndex = liveIndexByID[id]
+		} else {
+			response.APIKeyEntries = make([]openAICompatibilityAPIKeyWithAuthIndex, len(entry.APIKeyEntries))
+			for j := range entry.APIKeyEntries {
+				apiKeyEntry := entry.APIKeyEntries[j]
+				id, _ := idGen.Next("deepai:apikey", strings.TrimSpace(apiKeyEntry.APIKey), baseURL, strings.TrimSpace(apiKeyEntry.ProxyURL), prefix, config.FormatSortedHeaders(headers))
+				response.APIKeyEntries[j] = openAICompatibilityAPIKeyWithAuthIndex{OpenAICompatibilityAPIKey: apiKeyEntry, AuthIndex: liveIndexByID[id]}
+			}
+		}
+		out[i] = response
+	}
+	return out
+}
 func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
 	if h == nil {
 		return nil
