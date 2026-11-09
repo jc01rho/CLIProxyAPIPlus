@@ -38,6 +38,20 @@ func looksLikeOpencodeZenBaseURL(baseURL string) bool {
 	return host == opencodeZenHostSuffix || strings.HasSuffix(host, "."+opencodeZenHostSuffix)
 }
 
+// opencodeGoPathMarker identifies the OpenCode Go plan gateway
+// (https://opencode.ai/inference/go/...), which shares the Zen host.
+const opencodeGoPathMarker = "/inference/go/"
+
+// opencodeDefaultsToNativeResponses reports whether models without an explicit
+// supported-endpoints declaration should be called on the native /responses
+// endpoint. Zen defaults to Responses, but the Go plan gateway converts the
+// Responses input into chat messages itself and rejects histories with
+// consecutive tool calls (messages[N].content invalid_value), so Go keeps the
+// chat/completions path where the request sanitizers run.
+func opencodeDefaultsToNativeResponses(baseURL string) bool {
+	return looksLikeOpencodeZenBaseURL(baseURL) && !strings.Contains(strings.ToLower(baseURL), opencodeGoPathMarker)
+}
+
 // providerKeyLooksOpencode reports whether the provider key is an opencode
 // branded openai-compatible entry (e.g. "openai-compatible-opencode-free").
 func providerKeyLooksOpencode(providerKey string) bool {
