@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 )
 
 func TestLooksLikeOpencodeZenBaseURL(t *testing.T) {
@@ -22,6 +25,41 @@ func TestLooksLikeOpencodeZenBaseURL(t *testing.T) {
 		if got := looksLikeOpencodeZenBaseURL(tc.url); got != tc.want {
 			t.Errorf("looksLikeOpencodeZenBaseURL(%q) = %v, want %v", tc.url, got, tc.want)
 		}
+	}
+}
+
+func TestOpencodeDefaultsToNativeResponses(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://opencode.ai/zen/v1", true},
+		{"https://opencode.ai/inference/go/openai/v1", false},
+		{"https://OPENCODE.AI/Inference/Go/openai/v1", false},
+		{"http://localhost:8317/v1", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := opencodeDefaultsToNativeResponses(tc.url); got != tc.want {
+			t.Errorf("opencodeDefaultsToNativeResponses(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestOpencodeGoModelsStayOnChatUnlessDeclaredResponsesOnly(t *testing.T) {
+	goURL := "https://opencode.ai/inference/go/openai/v1"
+	undeclared := &config.OpenAICompatibility{BaseURL: goURL, Models: []config.OpenAICompatibilityModel{{Name: "beam-free", Alias: "higher-coding"}}}
+	if helps.CompatModelResponsesOnly(undeclared, "beam-free", "beam-free", opencodeDefaultsToNativeResponses(goURL)) {
+		t.Fatal("undeclared Go model must use chat/completions")
+	}
+	declared := &config.OpenAICompatibility{BaseURL: goURL, Models: []config.OpenAICompatibilityModel{{Name: "beam-free", SupportedEndpoints: []string{"/responses"}}}}
+	if !helps.CompatModelResponsesOnly(declared, "beam-free", "beam-free", opencodeDefaultsToNativeResponses(goURL)) {
+		t.Fatal("Go model declared responses-only must keep /responses")
+	}
+	zenURL := "https://opencode.ai/zen/v1"
+	zen := &config.OpenAICompatibility{BaseURL: zenURL, Models: []config.OpenAICompatibilityModel{{Name: "gpt-5"}}}
+	if !helps.CompatModelResponsesOnly(zen, "gpt-5", "gpt-5", opencodeDefaultsToNativeResponses(zenURL)) {
+		t.Fatal("undeclared Zen model must keep defaulting to /responses")
 	}
 }
 

@@ -230,6 +230,9 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		// Empty/null/missing message content is rejected with 400 invalid_value by
 		// strict upstreams; repair it before orphan cleanup.
 		translated = sanitizeEmptyMessageContent(translated)
+		if looksLikeOpencodeZenBaseURL(baseURL) {
+			translated = helps.StripOpenAIToolSchemaTopLevelCombinators(translated)
+		}
 		// Orphaned tool results (result whose tool_call_id has no matching
 		// assistant tool_call) make strict upstreams such as MiniMax reject the
 		// request with 400 error 2013. Drop them after all other sanitizers so
@@ -708,6 +711,9 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		// Empty/null/missing message content is rejected with 400 invalid_value by
 		// strict upstreams; repair it before orphan cleanup.
 		translated = sanitizeEmptyMessageContent(translated)
+		if looksLikeOpencodeZenBaseURL(baseURL) {
+			translated = helps.StripOpenAIToolSchemaTopLevelCombinators(translated)
+		}
 		// Orphaned tool results make strict upstreams such as MiniMax reject the
 		// request with 400 error 2013; see dropOrphanOpenAIToolResults.
 		translated = dropOrphanOpenAIToolResults(translated)

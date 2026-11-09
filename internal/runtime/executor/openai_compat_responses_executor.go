@@ -45,7 +45,7 @@ func (e *OpenAICompatExecutor) useNativeResponses(auth *cliproxyauth.Auth, req c
 	if compat == nil {
 		return false
 	}
-	return helps.CompatModelResponsesOnly(compat, thinking.ParseSuffix(req.Model).ModelName, thinking.ParseSuffix(helps.PayloadRequestedModel(opts, req.Model)).ModelName, looksLikeOpencodeZenBaseURL(compat.BaseURL))
+	return helps.CompatModelResponsesOnly(compat, thinking.ParseSuffix(req.Model).ModelName, thinking.ParseSuffix(helps.PayloadRequestedModel(opts, req.Model)).ModelName, opencodeDefaultsToNativeResponses(compat.BaseURL))
 }
 
 // openNativeResponses shares request preparation and transport for both modes,
