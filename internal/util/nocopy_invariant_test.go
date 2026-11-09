@@ -105,6 +105,7 @@ type reviewedInPlaceByteWrite struct {
 
 var reviewedInPlaceByteWrites = map[string]reviewedInPlaceByteWrite{
 	"internal/auth/cursor/proto/connect.go":                         {1, "copies payload into a freshly allocated frame; the source data is never modified"},
+	"internal/kvstore/bolt_store.go":                                {1, "copies into a freshly allocated envelope before publication; no no-copy JSON result can alias the destination"},
 	"internal/client/codex/live/tcp_proxy.go":                       {1, "copies header and payload into a freshly allocated frame"},
 	"internal/home/client.go":                                       {1, "zeroes a secret buffer after json.Unmarshal has copied every value out"},
 	"internal/keeperexport/exporter.go":                             {2, "zeroes freshly hex-decoded fingerprint secret buffers private to the writer"},

@@ -97,7 +97,7 @@ func unwrapExecutionBoundaryError(err error) error {
 }
 
 func preferredExecutionAttemptError(fallback, upstream error) error {
-	if errors.Is(fallback, context.Canceled) || errors.Is(fallback, context.DeadlineExceeded) {
+	if errors.Is(fallback, context.Canceled) || errors.Is(fallback, context.DeadlineExceeded) || isSessionAffinityRetryError(fallback) {
 		return fallback
 	}
 	if upstream == nil {
@@ -116,6 +116,46 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 		return markUpstreamExecutionAttempt(&preferred)
 	}
 	return markUpstreamExecutionAttempt(upstream)
+}
+
+func (m *Manager) normalizeSessionAffinityNeverTerminalError(err error, providers []string, model string, opts cliproxyexecutor.Options) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if isRequestTerminatedError(err) || isRequestStopError(err) || isRequestInvalidError(err) || isSessionAffinityRetryError(err) {
+		return err
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		switch authErr.Code {
+		case "session_auth_unavailable", "auth_not_found", "auth_unavailable", "model_cooldown", "provider_not_found", "executor_not_found":
+			return err
+		}
+	}
+	var cooldownErr *modelCooldownError
+	if errors.As(err, &cooldownErr) && cooldownErr != nil {
+		return err
+	}
+	affinity, ok := m.Selector().(*SessionAffinitySelector)
+	if !ok || affinity == nil || !affinity.rebindOnNever {
+		return err
+	}
+	if _, okBound := affinity.boundAuthForRequest(providers, model, opts); !okBound {
+		return err
+	}
+	rerr := resultErrorFromError(err)
+	if shouldRebindSessionAffinityOnError(rerr) {
+		return err
+	}
+	if shouldSkipCredentialCooldown(rerr) && !isTransientTransportResultError(rerr) && !isConnectionLifecycleResultError(rerr) {
+		return err
+	}
+	return &Error{
+		Code:       "session_auth_retry",
+		Message:    "bound session credential is transiently unavailable",
+		Retryable:  true,
+		HTTPStatus: http.StatusServiceUnavailable,
+	}
 }
 
 // Execute performs a non-streaming execution using the configured selector and executor.
@@ -153,6 +193,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		// no Antigravity credits fallback may run after it.
 		requestStopped := isRequestTerminatedError(lastErr) || isRequestStopError(lastErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
+		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, authSelectionModelFromOptions(opts, req.Model), opts)
 		if !requestStopped && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized, req.Model) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
@@ -191,7 +232,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 			}
 		}
 		lastErr = preferredExecutionAttemptError(lastErr, nil)
-		return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(lastErr)
+		lastErr = unwrapExecutionBoundaryError(lastErr)
+		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, authSelectionModelFromOptions(opts, req.Model), opts)
+		return cliproxyexecutor.Response{}, lastErr
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
@@ -230,6 +273,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			// wraps the stopped bootstrap error with its stream headers.
 			return nil, lastErr
 		}
+		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, authSelectionModelFromOptions(opts, req.Model), opts)
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized, req.Model) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits
@@ -2428,7 +2472,9 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 	}
 
 	sessionID := fmt.Sprintf("verify-%s-%d", auth.ID, time.Now().UTC().UnixNano())
-	payload := []byte(fmt.Sprintf(`{"model":%q,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}],"max_output_tokens":1,"store":false}`, verifyModel))
+	// Codex upstreams reject integer max_output_tokens below 16, so the minimal
+	// verification budget must sit at that floor.
+	payload := []byte(fmt.Sprintf(`{"model":%q,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}],"max_output_tokens":16,"store":false}`, verifyModel))
 	req := cliproxyexecutor.Request{
 		Model:   verifyModel,
 		Payload: payload,
