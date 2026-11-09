@@ -29,7 +29,9 @@ type Record struct {
 	TraceID string
 	// SelectionID identifies the scheduler selection decision that produced this usage record when available.
 	SelectionID string
-	Provider    string
+	// HomeSelection carries deferred accounting for reused Home dispatches.
+	HomeSelection *HomeSelection
+	Provider      string
 	// BaseURL stores the configured upstream base URL when available.
 	BaseURL string
 	// ExecutorType stores the concrete executor type that handled the request.
@@ -734,6 +736,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	}
 	if strings.TrimSpace(record.TraceID) == "" {
 		record.TraceID = TraceIDFromContext(ctx)
+	}
+	if record.HomeSelection == nil {
+		record.HomeSelection = HomeSelectionFromContext(ctx)
 	}
 	if strings.TrimSpace(record.SelectionID) == "" {
 		if selID := SelectionIDFromContext(ctx); selID != "" {
