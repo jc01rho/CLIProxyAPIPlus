@@ -819,14 +819,22 @@ func generateImageGenRequestID() string {
 }
 
 func generateStableSessionID(payload []byte) string {
-	return generateStableSessionIDFromContents(ojson.GetBytesNoCopy(payload, "request.contents"))
+	contents := ojson.GetBytesNoCopy(payload, "request.contents")
+	if !contents.IsArray() {
+		contents = ojson.GetBytesNoCopy(payload, "contents")
+	}
+	return generateStableSessionIDFromContents(contents)
 }
 
 func generateStableSessionIDDoc(doc *ojson.Doc) string {
 	if doc == nil {
 		return antigravity.Fnv1a64Signed("")
 	}
-	return generateStableSessionIDFromContents(doc.Get("request.contents"))
+	contents := doc.Get("request.contents")
+	if !contents.IsArray() {
+		contents = doc.Get("contents")
+	}
+	return generateStableSessionIDFromContents(contents)
 }
 
 // generateStableSessionIDFromContents keys the agy conversation by the first user

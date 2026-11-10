@@ -2747,7 +2747,7 @@ func ensureCacheControlDoc(doc *ojson.Doc) bool {
 	if doc == nil {
 		return false
 	}
-	changed := false
+	changed, materializedInMessages := materializeTopLevelCacheControlDoc(doc)
 	if !claudeDocHasCacheableSystem(doc) {
 		if injectToolsCacheControlDoc(doc) {
 			changed = true
@@ -2756,10 +2756,112 @@ func ensureCacheControlDoc(doc *ojson.Doc) bool {
 	if injectSystemCacheControlDoc(doc) {
 		changed = true
 	}
-	if injectMessagesCacheControlDoc(doc) {
+	if !materializedInMessages && injectMessagesCacheControlDoc(doc) {
 		changed = true
 	}
 	return changed
+}
+
+func isBareEphemeralClaudeCacheControl(cc ojson.Result) bool {
+	if !isValidClaudeCacheControl(cc) {
+		return false
+	}
+	return len(cc.Map()) == 1
+}
+
+func buildTextBlockWithRawCacheControl(text, rawCC string) string {
+	if rawCC != "" {
+		return `{"type":"text","text":` + marshalJSONStringWithoutHTMLEscape(text) + `,"cache_control":` + rawCC + `}`
+	}
+	return buildTextBlock(text, nil)
+}
+
+func applyTopLevelCacheControlToBlockDoc(doc *ojson.Doc, blockPath string, topCC ojson.Result) bool {
+	ccPath := blockPath + ".cache_control"
+	existingCC := doc.Get(ccPath)
+	if !isValidClaudeCacheControl(existingCC) || (isBareEphemeralClaudeCacheControl(existingCC) && !isBareEphemeralClaudeCacheControl(topCC)) {
+		if errSet := doc.SetRawBytes(ccPath, []byte(topCC.Raw)); errSet != nil {
+			return false
+		}
+	}
+	return doc.Delete("cache_control") == nil
+}
+
+// materializeTopLevelCacheControlDoc moves a top-level cache_control (Anthropic
+// automatic prompt caching) onto the last cacheable block in the request and
+// removes the top-level field so it participates in the 4-breakpoint limit and
+// TTL normalization/upgrades without duplicating the final breakpoint.
+func materializeTopLevelCacheControlDoc(doc *ojson.Doc) (bool, bool) {
+	if doc == nil || doc.Len() == 0 {
+		return false, false
+	}
+	topCC := doc.Get("cache_control")
+	if !isValidClaudeCacheControl(topCC) {
+		return false, false
+	}
+
+	var scanner claudeStreamDocScanner
+	scanner.scan(doc, false, false)
+	if scanner.messagesIsArray && scanner.lastMessageIndex >= 0 {
+		if scanner.lastEligibleIndex >= 0 && scanner.lastMsgRole == "system" && scanner.lastMsgContentIsNonEmptyString {
+			contentPath := fmt.Sprintf("messages.%d.content", scanner.lastMessageIndex)
+			finalContent := doc.Get(contentPath)
+			if finalContent.Type == ojson.String && strings.TrimSpace(finalContent.String()) != "" {
+				newContent := "[" + buildTextBlockWithRawCacheControl(finalContent.String(), topCC.Raw) + "]"
+				if doc.SetRawBytes(contentPath, []byte(newContent)) == nil && doc.Delete("cache_control") == nil {
+					return true, true
+				}
+			}
+		}
+		if scanner.lastEligibleIndex >= 0 {
+			if scanner.lastEligibleContentIsArray && scanner.lastEligibleTargetBlockIndex >= 0 {
+				blockPath := fmt.Sprintf("messages.%d.content.%d", scanner.lastEligibleIndex, scanner.lastEligibleTargetBlockIndex)
+				if applyTopLevelCacheControlToBlockDoc(doc, blockPath, topCC) {
+					return true, true
+				}
+			}
+			if scanner.lastEligibleContentIsNonEmptyStr {
+				contentPath := fmt.Sprintf("messages.%d.content", scanner.lastEligibleIndex)
+				contentRes := doc.Get(contentPath)
+				if contentRes.Type == ojson.String && strings.TrimSpace(contentRes.String()) != "" {
+					newContent := "[" + buildTextBlockWithRawCacheControl(contentRes.String(), topCC.Raw) + "]"
+					if doc.SetRawBytes(contentPath, []byte(newContent)) == nil && doc.Delete("cache_control") == nil {
+						return true, true
+					}
+				}
+			}
+		}
+	}
+
+	system := doc.Get("system")
+	if system.IsArray() {
+		if lastSysIdx := lastCacheableClaudeSystemIndex(system); lastSysIdx >= 0 {
+			return applyTopLevelCacheControlToBlockDoc(doc, fmt.Sprintf("system.%d", lastSysIdx), topCC), false
+		}
+	} else if system.Type == ojson.String && strings.TrimSpace(system.String()) != "" {
+		newSystem := "[" + buildTextBlockWithRawCacheControl(system.String(), topCC.Raw) + "]"
+		if doc.SetRawBytes("system", []byte(newSystem)) == nil {
+			return doc.Delete("cache_control") == nil, false
+		}
+	}
+
+	tools := doc.Get("tools")
+	if tools.IsArray() {
+		lastEligibleToolIndex := -1
+		idx := 0
+		tools.ForEach(func(_, tool ojson.Result) bool {
+			if !tool.Get("defer_loading").Bool() {
+				lastEligibleToolIndex = idx
+			}
+			idx++
+			return true
+		})
+		if lastEligibleToolIndex >= 0 {
+			return applyTopLevelCacheControlToBlockDoc(doc, fmt.Sprintf("tools.%d", lastEligibleToolIndex), topCC), false
+		}
+	}
+
+	return false, false
 }
 
 // claudePayloadHasCacheableSystem reports whether the payload has a system prompt
@@ -2842,6 +2944,20 @@ func upgradeClaudeCacheControlTTL(payload []byte, ttl string) []byte {
 	return doc.Bytes()
 }
 
+func claudeCacheControlPath(path string) string {
+	if path == "" {
+		return "cache_control"
+	}
+	return path + ".cache_control"
+}
+
+func claudeCacheControlTTLPath(path string) string {
+	if path == "" {
+		return "cache_control.ttl"
+	}
+	return path + ".cache_control.ttl"
+}
+
 func upgradeClaudeCacheControlTTLDoc(doc *ojson.Doc, ttl string) bool {
 	if ttl == "" || doc == nil || doc.Len() == 0 {
 		return false
@@ -2863,7 +2979,7 @@ func upgradeClaudeCacheControlTTLDoc(doc *ojson.Doc, ttl string) bool {
 			upgraded += `,"scope":` + scope.Raw
 		}
 		upgraded += "}"
-		if errSet := doc.SetRawBytes(path+".cache_control", []byte(upgraded)); errSet == nil {
+		if errSet := doc.SetRawBytes(claudeCacheControlPath(path), []byte(upgraded)); errSet == nil {
 			changed = true
 		}
 		return true
@@ -2896,7 +3012,7 @@ func stripClaudeCacheControlTTLDoc(doc *ojson.Doc) bool {
 		if !cacheControl.IsObject() || !cacheControl.Get("ttl").Exists() {
 			return true
 		}
-		if errDel := doc.Delete(path + ".cache_control.ttl"); errDel == nil {
+		if errDel := doc.Delete(claudeCacheControlTTLPath(path)); errDel == nil {
 			changed = true
 		}
 		return true
@@ -2911,6 +3027,7 @@ const (
 	claudeSecTools
 	claudeSecSystem
 	claudeSecMessages
+	claudeSecTopCacheControl
 )
 
 const (
@@ -2986,6 +3103,7 @@ type claudeStreamDocScanner struct {
 	sysCCBuf    [8]claudeScannedCC
 	msgCC       []claudeScannedCC
 	msgCCBuf    [16]claudeScannedCC
+	topCC       []byte
 
 	messagesIsArray                  bool
 	messagesLen                      int
@@ -3024,6 +3142,7 @@ func (s *claudeStreamDocScanner) scan(doc *ojson.Doc, collectCC, stopOnFirstUser
 	s.toolCC = s.toolCCBuf[:0]
 	s.sysCC = s.sysCCBuf[:0]
 	s.msgCC = s.msgCCBuf[:0]
+	s.topCC = nil
 	_, _ = doc.WriteTo(s)
 }
 
@@ -3091,6 +3210,8 @@ func (s *claudeStreamDocScanner) finishCapture(p []byte, endIdx int) {
 		s.sysCC = append(s.sysCC, claudeScannedCC{idx1: s.elemIdx, raw: stored})
 	case claudeSecMessages:
 		s.msgCC = append(s.msgCC, claudeScannedCC{idx1: s.elemIdx, idx2: s.blockIdx, raw: stored})
+	case claudeSecTopCacheControl:
+		s.topCC = stored
 	}
 }
 
@@ -3218,6 +3339,8 @@ func (s *claudeStreamDocScanner) finishKey() {
 			s.topSection = claudeSecSystem
 		case "messages":
 			s.topSection = claudeSecMessages
+		case "cache_control":
+			s.topSection = claudeSecTopCacheControl
 		default:
 			s.topSection = claudeSecNone
 		}
@@ -3262,6 +3385,10 @@ func (s *claudeStreamDocScanner) finishKey() {
 
 func (s *claudeStreamDocScanner) startValue(c byte, idx int) {
 	switch s.depth {
+	case 1:
+		if s.topSection == claudeSecTopCacheControl && s.collectCC && s.isObj[1] {
+			s.startCapture(1, idx)
+		}
 	case 2:
 		if s.topSection != claudeSecNone && !s.isObj[2] {
 			if s.topSection == claudeSecMessages {
@@ -3668,6 +3795,14 @@ func forEachClaudeCacheControlPathDoc(doc *ojson.Doc, visit func(path string, ca
 			return
 		}
 	}
+	if len(scanner.topCC) > 0 {
+		ccRes := util.ParseGJSONBytesNoCopy(scanner.topCC)
+		if ccRes.Exists() {
+			if !visit("", ccRes) {
+				return
+			}
+		}
+	}
 }
 
 // forEachClaudeCacheControlBlock walks every block that can carry cache_control
@@ -3778,11 +3913,15 @@ func shouldEnsureCacheControlDoc(doc *ojson.Doc, cloaked, confirmedClaudeCode bo
 }
 
 func countCacheControls(payload []byte) int {
-	return countCacheControlsResult(
+	count := countCacheControlsResult(
 		ojson.GetBytesNoCopy(payload, "system"),
 		ojson.GetBytesNoCopy(payload, "tools"),
 		ojson.GetBytesNoCopy(payload, "messages"),
 	)
+	if isValidClaudeCacheControl(ojson.GetBytesNoCopy(payload, "cache_control")) {
+		count++
+	}
+	return count
 }
 
 func countCacheControlsDoc(doc *ojson.Doc) int {
@@ -3879,7 +4018,7 @@ func normalizeCacheControlTTLDoc(doc *ojson.Doc) bool {
 		if !seen5m {
 			return true
 		}
-		if errDel := doc.Delete(path + ".cache_control.ttl"); errDel == nil {
+		if errDel := doc.Delete(claudeCacheControlTTLPath(path)); errDel == nil {
 			modified = true
 		}
 		return true
@@ -3925,13 +4064,15 @@ func enforceCacheControlLimitDoc(doc *ojson.Doc, maxBlocks int) bool {
 		maxBlocks--
 	}
 
-	var toolPaths, systemPaths, messagePaths []string
+	var toolPaths, systemPaths, messagePaths, topPaths []string
 	forEachClaudeCacheControlPathDoc(doc, func(path string, cc ojson.Result) bool {
 		if !isValidClaudeCacheControl(cc) {
 			return true
 		}
-		ccPath := path + ".cache_control"
+		ccPath := claudeCacheControlPath(path)
 		switch {
+		case path == "":
+			topPaths = append(topPaths, ccPath)
 		case strings.HasPrefix(path, "tools."):
 			toolPaths = append(toolPaths, ccPath)
 		case strings.HasPrefix(path, "system."):
@@ -3942,7 +4083,7 @@ func enforceCacheControlLimitDoc(doc *ojson.Doc, maxBlocks int) bool {
 		return true
 	})
 
-	total := len(toolPaths) + len(systemPaths) + len(messagePaths)
+	total := len(toolPaths) + len(systemPaths) + len(messagePaths) + len(topPaths)
 	if total <= maxBlocks {
 		return false
 	}
@@ -3986,6 +4127,10 @@ func enforceCacheControlLimitDoc(doc *ojson.Doc, maxBlocks int) bool {
 	if len(toolPaths) > 0 {
 		deleteList(toolPaths[len(toolPaths)-1:])
 	}
+	if excess <= 0 {
+		return changed
+	}
+	deleteList(topPaths)
 	return changed
 }
 
