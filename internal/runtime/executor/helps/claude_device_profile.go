@@ -344,7 +344,7 @@ func pinClaudeDeviceProfilePlatform(profile, baseline ClaudeDeviceProfile) Claud
 // and replaces any software tuple that is not on the measured 2.1 line + package.
 func normalizeClaudeDeviceProfile(profile, baseline, floor ClaudeDeviceProfile) ClaudeDeviceProfile {
 	profile = pinClaudeDeviceProfilePlatform(profile, baseline)
-	if !meetsClaudeDeviceProfileBaseline(profile, floor) {
+	if !meetsClaudeDeviceProfileBaseline(profile, floor) && !meetsClaudeDeviceProfileBaseline(profile, baseline) {
 		profile.UserAgent = baseline.UserAgent
 		profile.PackageVersion = baseline.PackageVersion
 		profile.RuntimeVersion = baseline.RuntimeVersion
@@ -495,7 +495,7 @@ func resolveClaudeDeviceProfileLocal(auth *cliproxyauth.Auth, apiKey string, hea
 	if hasCandidate {
 		candidate = pinClaudeDeviceProfilePlatform(candidate, baseline)
 	}
-	if hasCandidate && !meetsClaudeDeviceProfileBaseline(candidate, nativeClaudeDetectionProfile(cfg)) {
+	if hasCandidate && !meetsClaudeDeviceProfileBaseline(candidate, nativeClaudeDetectionProfile(cfg)) && !meetsClaudeDeviceProfileBaseline(candidate, baseline) {
 		hasCandidate = false
 	}
 	cacheProfile := ClaudeDeviceProfile{}
@@ -557,7 +557,7 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	if hasCandidate {
 		candidate = pinClaudeDeviceProfilePlatform(candidate, baseline)
 	}
-	if hasCandidate && !meetsClaudeDeviceProfileBaseline(candidate, nativeClaudeDetectionProfile(cfg)) {
+	if hasCandidate && !meetsClaudeDeviceProfileBaseline(candidate, nativeClaudeDetectionProfile(cfg)) && !meetsClaudeDeviceProfileBaseline(candidate, baseline) {
 		hasCandidate = false
 	}
 

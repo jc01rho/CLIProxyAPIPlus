@@ -73,7 +73,10 @@ func newAliasAvailabilityFixture(t *testing.T, selector Selector, shape string, 
 	}
 	if seedCooldowns {
 		f.cool("unrelated-model", false)
-		if oauth || len(f.targets) > 1 {
+		// Cooldowns are shared between a route and an alias target with the same
+		// model spelling (glm -> glm-5.3), so only an unrelated route cooldown
+		// proves that selection checks the target.
+		if (oauth && !isSameUnderlyingModelSpelling(f.route, f.targets[0])) || (!oauth && len(f.targets) > 1) {
 			f.cool(f.route, false)
 		}
 	}
