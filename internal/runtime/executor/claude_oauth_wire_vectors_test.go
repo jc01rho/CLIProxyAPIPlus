@@ -159,9 +159,11 @@ func TestClaudeOAuthWireVectors_CCHSignature(t *testing.T) {
 // the vector's identity headers and beta list. Excluded on purpose: fast mode,
 // which CPA never enables for proxied requests; betas the OpenCode host itself
 // appended (fine-grained-tool-streaming), which CPA forwards only when its own
-// caller sends them; and the server-side-fallback date: CPA sends the array
+// caller sends them; the server-side-fallback date: CPA sends the array
 // fallbacks body measured with server-side-fallback-2026-06-01, the vectors send
-// fallbacks:"default" with server-side-fallback-2026-07-01.
+// fallbacks:"default" with server-side-fallback-2026-07-01; and the paired
+// fallback-credit beta, which CPA sends for OAuth requests carrying fallbacks
+// while the vectors' host never requests it.
 func TestClaudeOAuthWireVectors_Headers(t *testing.T) {
 	vectors := loadClaudeOAuthWireVectors(t)
 	for _, tc := range vectors.Cases {
@@ -189,7 +191,7 @@ func TestClaudeOAuthWireVectors_Headers(t *testing.T) {
 				t.Errorf("x-client-request-id = %q, want a UUID", got)
 			}
 			normalize := func(betas string) string {
-				for _, beta := range []string{"fine-grained-tool-streaming-2025-05-14", claudeFastModeBeta} {
+				for _, beta := range []string{"fine-grained-tool-streaming-2025-05-14", claudeFastModeBeta, claudeFallbackCreditBeta} {
 					betas = withoutClaudeBeta(betas, beta)
 				}
 				return strings.ReplaceAll(betas, "server-side-fallback-2026-07-01", claudeServerSideFallbackBeta)

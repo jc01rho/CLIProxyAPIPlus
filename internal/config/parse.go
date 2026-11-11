@@ -141,6 +141,8 @@ func ParseConfigBytesForFile(data []byte, configFile string) (*Config, error) {
 	if errSanitize := cfg.SanitizeMimocodeKeys(); errSanitize != nil {
 		return nil, errSanitize
 	}
+	cfg.SanitizeAntigravity()
+	cfg.SanitizeDevin()
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()

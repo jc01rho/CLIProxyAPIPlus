@@ -966,7 +966,10 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 			if resetIn < 0 {
 				resetIn = 0
 			}
-			return nil, newModelCooldownErrorWithCause(routeModel, providerForError, resetIn, lastCandidateErr)
+			claudeCooldown, claudeSignals := claudeCooldownMetadataForAuths(ctx, auths, func(candidate *Auth) string {
+				return m.selectionModelForAuth(candidate, routeModel)
+			}, now, clientHeaders...)
+			return nil, newModelCooldownErrorForCandidates(routeModel, providerForError, resetIn, lastCandidateErr, claudeCooldown, claudeSignals)
 		}
 		if unauthorizedCount == len(auths) && len(auths) > 0 {
 			terminalCause := latestUnauthorizedCandidateError(auths)
@@ -1091,7 +1094,14 @@ func restoreModelCooldownErrorModel(err error, requestedModel string) error {
 	if !errors.As(err, &cooldownErr) || cooldownErr == nil || cooldownErr.model != "" {
 		return err
 	}
-	return newModelCooldownErrorWithCause(requestedModel, cooldownErr.provider, cooldownErr.resetIn, cooldownErr.cause)
+	return newModelCooldownErrorForCandidates(
+		requestedModel,
+		cooldownErr.provider,
+		cooldownErr.resetIn,
+		cooldownErr.cause,
+		cooldownErr.claudeCooldown,
+		cooldownErr.claudeSignals,
+	)
 }
 
 func latestUnauthorizedCandidateError(auths []*Auth) error {
@@ -1404,7 +1414,7 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		if rejectMessage == "" {
 			rejectMessage = "scheduler rejected candidate selection"
 		}
-		return nil, true, wrapRequestStopError(&Error{Code: rejectCode, Message: rejectMessage})
+		return nil, true, wrapSchedulerRejectError(&Error{Code: rejectCode, Message: rejectMessage})
 	}
 	if selected := pickSchedulerAuthByID(candidates, resp.AuthID); selected != nil {
 		keepSelectionID = true
@@ -2035,7 +2045,7 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	if status == http.StatusOK {
 		return 0, false
 	}
-	if isRequestInvalidError(err) || isRequestStopError(err) {
+	if isRequestInvalidError(err) || isRequestStopError(err) || isSchedulerRejectError(err) {
 		return 0, false
 	}
 	if m.HomeEnabled() {
