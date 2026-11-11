@@ -662,6 +662,7 @@ func (m *Manager) executeWithRetry(
 	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int, int, int) (cliproxyexecutor.Response, error),
 ) (cliproxyexecutor.Response, error) {
 	var lastErr error
+	var preferredUpstreamErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	for attempt := 0; ; attempt++ {
 		roundAttempted := make(map[string]struct{})
@@ -672,6 +673,15 @@ func (m *Manager) executeWithRetry(
 		}
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, errExec
+		}
+		if isSchedulerRejectError(errExec) {
+			if lastErr == nil && preferredUpstreamErr == nil {
+				return cliproxyexecutor.Response{}, errExec
+			}
+			break
+		}
+		if hasUpstreamExecutionAttempt(errExec) {
+			preferredUpstreamErr = errExec
 		}
 		lastErr = errExec
 		if !fallbackAllowed {
@@ -688,6 +698,12 @@ func (m *Manager) executeWithRetry(
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
 		}
+	}
+	if lastErr == nil {
+		return cliproxyexecutor.Response{}, nil
+	}
+	if preferredUpstreamErr != nil {
+		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 	}
 	return cliproxyexecutor.Response{}, lastErr
 }

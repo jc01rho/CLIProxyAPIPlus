@@ -237,6 +237,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			return nil, err
 		}
 	}
+	helps.NormalizeClaudeToolPropertyNamesDoc(doc)
 	sanitizeClaudeMessagesForClaudeUpstreamWithDebugDoc(ctx, doc, baseModel, helps.APIKeyModelIsCompat(req))
 	// Translated requests retain their translator-defined wire order.
 	if from == to {
@@ -248,9 +249,10 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			return nil, err
 		}
 	}
-	if cloaked && len(wireSettings.sensitiveWords) > 0 {
-		matcher := helps.BuildSensitiveWordMatcher(wireSettings.sensitiveWords)
-		helps.ObfuscateSensitiveWordsDoc(doc, matcher)
+	if cloaked {
+		if matcher := wireSettings.buildSensitiveWordMatcher(); matcher != nil {
+			helps.ObfuscateSensitiveWordsDoc(doc, matcher)
+		}
 	}
 	cchBilling := ""
 	// OAuth tokens sign via cchSigning (claudeCCHSigningEnabled returns true for
@@ -350,13 +352,15 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			return nil, errClassified
 		}
 		b, readErr := io.ReadAll(errBody)
+		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		if readErr != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
 			msg := fmt.Sprintf("failed to read error response body: %v", readErr)
 			helps.LogWithRequestID(ctx).Warn(msg)
-			b = []byte(msg)
+			if len(b) == 0 {
+				b = []byte(msg)
+			}
 		}
-		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		if errClose := errBody.Close(); errClose != nil {
 			log.Errorf("response body close error: %v", errClose)

@@ -271,7 +271,8 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 	if !auxiliary && (requested[claudeServerSideFallbackBeta] || ojson.GetBytes(body, "fallbacks").Exists()) {
 		add(claudeServerSideFallbackBeta)
 	}
-	if requested[claudeFallbackCreditBeta] || ojson.GetBytes(body, "fallback_credit_token").Exists() {
+	if requested[claudeFallbackCreditBeta] || ojson.GetBytes(body, "fallback_credit_token").Exists() ||
+		(oauthToken && ojson.GetBytes(body, "fallbacks").Exists()) {
 		add(claudeFallbackCreditBeta)
 	}
 	if requested[claudeStructuredOutputsBeta] && !containsString(betas, claudeStructuredOutputsBeta) {
@@ -341,6 +342,16 @@ func isClaudeHaiku55Model(model string) bool {
 // isClaudeFable51OnlyModel reports Fable 5.1 specifically, excluding Mythos
 // 5.1, which shares the fable family checks elsewhere but does not run the
 // preserved-thinking prefix check.
+func isClaudeFable52Model(model string) bool {
+	model = claudeCanonicalModel(model)
+	for _, prefix := range []string{"claude-fable-5-2", "claude-fable-5.2"} {
+		if model == prefix || strings.HasPrefix(model, prefix+"-") || strings.HasPrefix(model, prefix+"[") {
+			return true
+		}
+	}
+	return false
+}
+
 func isClaudeFable51OnlyModel(model string) bool {
 	m := claudeCanonicalModel(model)
 	for _, target := range []string{"fable-5-1", "fable-5.1"} {
@@ -361,7 +372,7 @@ func isClaudeFable51OnlyModel(model string) bool {
 // prefix fails binding validation unless the request opts into dropping them.
 // See https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
 func isClaudePreservedThinkingModel(model string) bool {
-	return isClaudeOpus55Model(model) || isClaudeSonnet55Model(model) || isClaudeHaiku55Model(model) || isClaudeFable51OnlyModel(model)
+	return isClaudeOpus55Model(model) || isClaudeSonnet55Model(model) || isClaudeHaiku55Model(model) || isClaudeFable51OnlyModel(model) || isClaudeFable52Model(model)
 }
 
 // claudeThinkingTypeAcceptsBlockBinding reports whether the body's thinking
@@ -496,7 +507,8 @@ func applyClaudeCloakThinkingDisplayDoc(doc *ojson.Doc, callerOwned bool) bool {
 // Haiku 5.5 (cortexkit/anthropic-auth b9a8bd928 model-capabilities.ts).
 func claudeModelHasPerTurnEffort(model string) bool {
 	return isClaudeOpus55Model(model) || isClaudeSonnet55Model(model) || isClaudeHaiku55Model(model) ||
-		strings.HasPrefix(claudeCanonicalModel(model), "claude-fable-5-1")
+		strings.HasPrefix(claudeCanonicalModel(model), "claude-fable-5-1") ||
+		isClaudeFable52Model(model)
 }
 
 // claudeModelHasPerTurnTiming reports models whose catalog lists per_turn_timing.
@@ -504,7 +516,11 @@ func claudeModelHasPerTurnEffort(model string) bool {
 // is set, so the beta follows the body or an explicit caller request.
 func claudeModelHasPerTurnTiming(model string) bool {
 	model = claudeCanonicalModel(model)
-	return isClaudeOpus55Model(model) || strings.HasPrefix(model, "claude-fable-5-1") || strings.HasPrefix(model, "claude-mythos-5-1")
+	if isClaudeHaiku55Model(model) {
+		return false
+	}
+	return isClaudeOpus55Model(model) || strings.HasPrefix(model, "claude-fable-5-1") || strings.HasPrefix(model, "claude-mythos-5-1") ||
+		strings.HasPrefix(model, "claude-mythos-5-2") || strings.HasPrefix(model, "claude-mythos-5.2")
 }
 
 func claudeIncludePerTurnControl(body []byte, requested map[string]bool) bool {

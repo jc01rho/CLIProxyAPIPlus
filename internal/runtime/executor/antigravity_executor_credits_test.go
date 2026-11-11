@@ -746,7 +746,12 @@ func TestMaybeRefreshAntigravityCreditsHint_RefreshesExpiredHintAndRecoversCredi
 	}
 }
 
-func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCooldown(t *testing.T) {
+// TestAntigravityManagerExecuteAndStream_ClaudeRouteSkipsCreditsRetry pins the
+// fork contract from #21: a Claude route never enters the Antigravity credits
+// retry, because that retry borrows another account's Google One AI credits.
+// The upstream QUOTA_EXHAUSTED failure therefore surfaces unchanged even after
+// the account's credits are topped up.
+func TestAntigravityManagerExecuteAndStream_ClaudeRouteSkipsCreditsRetry(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		mode := "execute"
 		if stream {
@@ -757,7 +762,7 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 			t.Cleanup(resetAntigravityCreditsRetryState)
 
 			const model = "claude-sonnet-4-6"
-			var toppedUp atomic.Bool
+			var creditsRequests atomic.Int32
 			var loadCodeAssistCalls atomic.Int32
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -765,54 +770,28 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 				_ = r.Body.Close()
 
 				if r.URL.Path == "/v1internal:loadCodeAssist" {
-					callNum := loadCodeAssistCalls.Add(1)
+					loadCodeAssistCalls.Add(1)
 					w.Header().Set("Content-Type", "application/json")
-					if toppedUp.Load() {
-						_, _ = w.Write([]byte(`{"paidTier":{"id":"tier-1","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":"2516","minimumCreditAmountForUsage":"50"}]}}`))
-					} else if callNum == 1 {
-						_, _ = w.Write([]byte(`{"paidTier":{"id":"tier-1","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":"100","minimumCreditAmountForUsage":"50"}]}}`))
-					} else {
-						_, _ = w.Write([]byte(`{"paidTier":{"id":"tier-1","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":"0","minimumCreditAmountForUsage":"50"}]}}`))
+					_, _ = w.Write([]byte(`{"paidTier":{"id":"tier-1","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":"2516","minimumCreditAmountForUsage":"50"}]}}`))
+					return
+				}
+				if strings.Contains(string(body), `"enabledCreditTypes":["GOOGLE_ONE_AI"]`) {
+					creditsRequests.Add(1)
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{
+					"error": {
+						"code": 429,
+						"message": "You have exhausted your capacity on this model. Your quota will reset after 1h0m0s.",
+						"status": "RESOURCE_EXHAUSTED",
+						"details": [
+							{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "QUOTA_EXHAUSTED"},
+							{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "3600s"}
+						]
 					}
-					return
-				}
-
-				hasCreditsFlag := strings.Contains(string(body), `"enabledCreditTypes":["GOOGLE_ONE_AI"]`)
-				if !hasCreditsFlag {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusTooManyRequests)
-					_, _ = w.Write([]byte(`{
-						"error": {
-							"code": 429,
-							"message": "You have exhausted your capacity on this model. Your quota will reset after 1h0m0s.",
-							"status": "RESOURCE_EXHAUSTED",
-							"details": [
-								{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "QUOTA_EXHAUSTED"},
-								{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "3600s"}
-							]
-						}
-					}`))
-					return
-				}
-
-				if !toppedUp.Load() {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusTooManyRequests)
-					_, _ = w.Write([]byte(`{
-						"error": {
-							"code": 429,
-							"message": "Insufficient Google One AI credits balance.",
-							"status": "RESOURCE_EXHAUSTED",
-							"details": [
-								{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "INSUFFICIENT_G1_CREDITS_BALANCE"}
-							]
-						}
-					}`))
-					return
-				}
-
-				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = w.Write([]byte("data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"recovered\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}}\n\n"))
+				}`))
 			}))
 			defer server.Close()
 
@@ -824,7 +803,7 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 			manager.SetConfig(cfg)
 			manager.RegisterExecutor(exec)
 
-			authID := fmt.Sprintf("ag-topup-recovery-%s-%d", mode, time.Now().UnixNano())
+			authID := fmt.Sprintf("ag-claude-credits-skip-%s-%d", mode, time.Now().UnixNano())
 			registry.GetGlobalRegistry().RegisterClient(authID, "antigravity", []*registry.ModelInfo{{ID: model}})
 			t.Cleanup(func() {
 				registry.GetGlobalRegistry().UnregisterClient(authID)
@@ -855,7 +834,6 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 				ResponseFormat: sdktranslator.FormatAntigravity,
 			}
 
-			// Step 1: Exhaust weekly quota (QUOTA_EXHAUSTED) and credits (INSUFFICIENT_G1_CREDITS_BALANCE).
 			cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{
 				Known:           true,
 				Available:       true,
@@ -863,86 +841,27 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 				MinCreditAmount: 50,
 				UpdatedAt:       time.Now(),
 			})
+
+			var errExecute error
 			if stream {
-				if _, errStream := manager.ExecuteStream(context.Background(), []string{"antigravity"}, req, opts); errStream == nil {
-					t.Fatal("initial ExecuteStream() succeeded, want 429 after quota and credits exhaustion")
-				}
+				_, errExecute = manager.ExecuteStream(context.Background(), []string{"antigravity"}, req, opts)
 			} else {
-				if _, errExec := manager.Execute(context.Background(), []string{"antigravity"}, req, opts); errExec == nil {
-					t.Fatal("initial Execute() succeeded, want 429 after quota and credits exhaustion")
-				}
+				_, errExecute = manager.Execute(context.Background(), []string{"antigravity"}, req, opts)
 			}
-			if value, ok := antigravityCreditsHintRefreshByID.Load(authID); ok {
-				if state, ok := value.(*antigravityCreditsHintRefreshState); ok && state != nil {
-					waitForAntigravityCreditsRefresh(t, state)
-				}
+			if errExecute == nil {
+				t.Fatal("request succeeded, want the upstream QUOTA_EXHAUSTED failure")
 			}
-			if _, failed := antigravityCreditsFailureByAuth.Load(authID); !failed {
-				t.Fatal("expected auth to be marked permanently disabled after INSUFFICIENT_G1_CREDITS_BALANCE")
+			if status, okStatus := errExecute.(interface{ StatusCode() int }); !okStatus || status.StatusCode() != http.StatusTooManyRequests {
+				t.Fatalf("error = %v, want a 429 upstream failure", errExecute)
 			}
-			hint, ok := cliproxyauth.GetAntigravityCreditsHint(authID)
-			if !ok || !hint.Known || hint.Available {
-				t.Fatalf("hint after exhaustion = %#v (ok=%v), want Known=true Available=false", hint, ok)
+			if got := creditsRequests.Load(); got != 0 {
+				t.Fatalf("credits retry requests = %d, want 0: a Claude route must not borrow credits", got)
 			}
-
-			// Step 2: Top up credits and expire the cached hint/throttle window while model remains in 1h quota cooldown.
-			toppedUp.Store(true)
-			callsBeforeTopUp := loadCodeAssistCalls.Load()
-			if value, ok := antigravityCreditsHintRefreshByID.Load(authID); ok {
-				if state, ok := value.(*antigravityCreditsHintRefreshState); ok && state != nil {
-					state.mu.Lock()
-					state.lastAttempt = time.Now().Add(-antigravityCreditsHintRefreshInterval - time.Second)
-					state.mu.Unlock()
-				}
-			}
-			cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{
-				Known:           true,
-				Available:       false,
-				CreditAmount:    0,
-				MinCreditAmount: 1,
-				UpdatedAt:       time.Now().Add(-antigravityCreditsHintRefreshInterval - time.Second),
-			})
-
-			// Step 3: Request recovers via credits fallback while model cooldown is active and triggers loadCodeAssist refresh.
-			if stream {
-				streamResult, errStream := manager.ExecuteStream(context.Background(), []string{"antigravity"}, req, opts)
-				if errStream != nil {
-					t.Fatalf("ExecuteStream() after top-up error = %v", errStream)
-				}
-				var streamed strings.Builder
-				for chunk := range streamResult.Chunks {
-					if chunk.Err != nil {
-						t.Fatalf("unexpected stream chunk error: %v", chunk.Err)
-					}
-					streamed.Write(chunk.Payload)
-				}
-				if !strings.Contains(streamed.String(), "recovered") {
-					t.Fatalf("ExecuteStream() payload = %s, want recovered", streamed.String())
-				}
-			} else {
-				resp, errExec := manager.Execute(context.Background(), []string{"antigravity"}, req, opts)
-				if errExec != nil {
-					t.Fatalf("Execute() after top-up error = %v", errExec)
-				}
-				if !strings.Contains(string(resp.Payload), "recovered") {
-					t.Fatalf("Execute() payload = %s, want recovered", string(resp.Payload))
-				}
-			}
-
-			if value, ok := antigravityCreditsHintRefreshByID.Load(authID); ok {
-				if state, ok := value.(*antigravityCreditsHintRefreshState); ok && state != nil {
-					waitForAntigravityCreditsRefresh(t, state)
-				}
-			}
-			if loadCodeAssistCalls.Load() <= callsBeforeTopUp {
-				t.Fatalf("loadCodeAssist calls after top-up = %d, want > %d", loadCodeAssistCalls.Load(), callsBeforeTopUp)
-			}
-			hint, ok = cliproxyauth.GetAntigravityCreditsHint(authID)
-			if !ok || !hint.Known || !hint.Available || hint.CreditAmount != 2516 {
-				t.Fatalf("hint after recovery = %#v (ok=%v), want Known=true Available=true CreditAmount=2516", hint, ok)
+			if got := loadCodeAssistCalls.Load(); got != 0 {
+				t.Fatalf("loadCodeAssist calls = %d, want 0: no credits retry means no balance probe", got)
 			}
 			if _, failed := antigravityCreditsFailureByAuth.Load(authID); failed {
-				t.Fatal("expected permanently disabled credits state to be cleared after recovery")
+				t.Fatal("auth was marked credits-disabled; the route never entered the credits retry")
 			}
 		})
 	}
