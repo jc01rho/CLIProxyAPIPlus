@@ -83,6 +83,15 @@ func (h *OpenAIAPIHandler) SystemOne(c *gin.Context) {
 		})
 		return
 	}
+	if len(gjson.GetBytes(rawJSON, "questions").Map()) == 0 {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Invalid request: 'questions' must contain at least one question",
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
 	if invalidQuestion := invalidSystemOneQuestion(rawJSON); invalidQuestion != "" {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
@@ -98,11 +107,10 @@ func (h *OpenAIAPIHandler) SystemOne(c *gin.Context) {
 
 // invalidSystemOneQuestion returns the id of the first question that cannot be
 // tagged for upstream dispatch, or an empty string when every question carries a
-// known System One type. An empty questions object is also reported as invalid
-// because every upstream requires at least one question.
+// known System One type.
 func invalidSystemOneQuestion(rawJSON []byte) string {
 	questions := gjson.GetBytes(rawJSON, "questions")
-	if !questions.IsObject() || len(questions.Map()) == 0 {
+	if !questions.IsObject() {
 		return "questions"
 	}
 	invalid := ""

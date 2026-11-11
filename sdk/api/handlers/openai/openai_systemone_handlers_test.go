@@ -75,6 +75,9 @@ func TestSystemOneRejectsEmptyQuestions(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusBadRequest, resp.Body.String())
 	}
+	if !strings.Contains(resp.Body.String(), "at least one question") {
+		t.Fatalf("empty questions must say so, got: %s", resp.Body.String())
+	}
 }
 
 func TestInvalidSystemOneQuestionAcceptsTaggedQuestions(t *testing.T) {
