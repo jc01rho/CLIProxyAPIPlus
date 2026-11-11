@@ -16,6 +16,18 @@ import (
 // /v1/systemone and forwards the native TypeSafe payload verbatim.
 const systemOneAlt = "systemone"
 
+// systemOneQuestionTypes lists the tagged question primitives every System One
+// upstream discriminates on. A question object without one of these tags is
+// rejected before routing: upstreams answer such a payload with a shape error
+// (400 on Alibaba, 502 from the Clef worker), and the route-fallback chain then
+// spends every System One provider on the same malformed body until the client
+// times out.
+var systemOneQuestionTypes = map[string]struct{}{
+	"noul":   {},
+	"choice": {},
+	"score":  {},
+}
+
 // SystemOne handles the POST /v1/systemone endpoint.
 // It proxies TypeSafe SystemOne decision requests (noul/choice/score) to the
 // upstream provider selected by the request model, forwarding the native
@@ -62,8 +74,50 @@ func (h *OpenAIAPIHandler) SystemOne(c *gin.Context) {
 		})
 		return
 	}
+	if !gjson.GetBytes(rawJSON, "state").Exists() {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "Invalid request: missing required field 'state'",
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
+	if invalidQuestion := invalidSystemOneQuestion(rawJSON); invalidQuestion != "" {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("Invalid request: question %q needs a 'type' tag of noul, choice or score", invalidQuestion),
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
 
 	h.handleSystemOneNonStreamingResponse(c, rawJSON)
+}
+
+// invalidSystemOneQuestion returns the id of the first question that cannot be
+// tagged for upstream dispatch, or an empty string when every question carries a
+// known System One type. An empty questions object is also reported as invalid
+// because every upstream requires at least one question.
+func invalidSystemOneQuestion(rawJSON []byte) string {
+	questions := gjson.GetBytes(rawJSON, "questions")
+	if !questions.IsObject() || len(questions.Map()) == 0 {
+		return "questions"
+	}
+	invalid := ""
+	questions.ForEach(func(key, value gjson.Result) bool {
+		if !value.IsObject() {
+			invalid = key.String()
+			return false
+		}
+		if _, ok := systemOneQuestionTypes[value.Get("type").String()]; !ok {
+			invalid = key.String()
+			return false
+		}
+		return true
+	})
+	return invalid
 }
 
 // handleSystemOneNonStreamingResponse executes a SystemOne request via the
