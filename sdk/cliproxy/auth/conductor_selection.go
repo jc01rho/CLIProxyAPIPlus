@@ -2585,6 +2585,8 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	registryRef := registry.GetGlobalRegistry()
 	timeGateExcluded := false
 	contextLimitTokens := 0
+	contextLimitLimit := 0
+	contextLimitModel := ""
 	targetKey := canonicalSchedulingProvider(provider)
 	affinitySelector, hasAffinity := selector.(*SessionAffinitySelector)
 	trackTransientAffinity := hasAffinity && affinitySelector != nil && (affinitySelector.rebindOnQuotaOnly || affinitySelector.rebindOnNever)
@@ -2641,6 +2643,8 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if tokens, limit, exceeded := m.authExceedsRoutingContextLimit(candidate, model, opts); exceeded {
 			m.logRoutingContextLimitExcluded(ctx, provider, model, candidate, tokens, limit)
 			contextLimitTokens = tokens
+			contextLimitLimit = limit
+			contextLimitModel = model
 			continue
 		}
 		if trackTransientAffinity {
@@ -2656,7 +2660,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.annotateThresholdDecisionNoMatch(ctx, model, opts, "result=no_matching_auth_for_billing_class")
 		m.mu.RUnlock()
 		if contextLimitTokens > 0 {
-			return nil, nil, authNotFoundAfterContextLimit(contextLimitTokens, timeGateExcluded)
+			return nil, nil, authNotFoundAfterContextLimit(contextLimitTokens, contextLimitLimit, contextLimitModel, timeGateExcluded)
 		}
 		return nil, nil, authNotFoundAfterSelection(timeGateExcluded)
 	}
@@ -3115,6 +3119,8 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	registryRef := registry.GetGlobalRegistry()
 	timeGateExcluded := false
 	contextLimitTokens := 0
+	contextLimitLimit := 0
+	contextLimitModel := ""
 	affinitySelector, hasAffinity := selector.(*SessionAffinitySelector)
 	trackTransientAffinity := hasAffinity && affinitySelector != nil && (affinitySelector.rebindOnQuotaOnly || affinitySelector.rebindOnNever)
 	_, weighted := selector.(*WeightedRoundRobinSelector)
@@ -3168,6 +3174,8 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if tokens, limit, exceeded := m.authExceedsRoutingContextLimit(candidate, model, opts); exceeded {
 			m.logRoutingContextLimitExcluded(ctx, strings.Join(providers, ","), model, candidate, tokens, limit)
 			contextLimitTokens = tokens
+			contextLimitLimit = limit
+			contextLimitModel = model
 			continue
 		}
 		if soleAntigravityPrimaryExcludedAmong("antigravity", m.auths, candidate) {
@@ -3186,7 +3194,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.annotateThresholdDecisionNoMatch(ctx, model, opts, "result=no_matching_auth_for_billing_class")
 		m.mu.RUnlock()
 		if contextLimitTokens > 0 {
-			return nil, nil, "", authNotFoundAfterContextLimit(contextLimitTokens, timeGateExcluded)
+			return nil, nil, "", authNotFoundAfterContextLimit(contextLimitTokens, contextLimitLimit, contextLimitModel, timeGateExcluded)
 		}
 		return nil, nil, "", authNotFoundAfterSelection(timeGateExcluded)
 	}

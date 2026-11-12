@@ -2,11 +2,13 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -416,5 +418,82 @@ func TestExecutePromptTooLongDoesNotRotateCredentials(t *testing.T) {
 	}
 	if got := executor.executeCalls.Load(); got != 1 {
 		t.Fatalf("upstream executions = %d, want 1: an oversized prompt must not be replayed on another credential", got)
+	}
+}
+
+// A claude credential has no routing-max-context-length, so the catalog window is
+// its ceiling. When the request exceeds it, the refusal must reach the client as
+// a 400 it can act on, not as "no auth available" (which surfaces as 500 and
+// reads like a proxy fault).
+func TestOversizedNativeProviderRequestCarriesClientError(t *testing.T) {
+	exec := &contextCeilingTestExecutor{}
+	const model = "claude-sonnet-5-5"
+	manager := contextCeilingTestManager(t, exec, model, 1000000)
+
+	_, errExecute := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, routingContextOpts(1104478))
+	if errExecute == nil {
+		t.Fatal("a 1104478-token prompt must be refused against the 1000000-token window")
+	}
+	if exec.calls != 0 {
+		t.Fatalf("no upstream call may be made, got %d", exec.calls)
+	}
+	var authErr *Error
+	if !errors.As(errExecute, &authErr) || authErr == nil {
+		t.Fatalf("error = %T %v, want an *Error", errExecute, errExecute)
+	}
+	// The code stays auth_not_found so a route with a larger-window fallback
+	// model still gets its chain, but the status must be 400: an unset status
+	// becomes 503, which tells the client to retry a prompt that cannot fit and
+	// sends the operator looking at credential cooldown instead of the request.
+	if authErr.Code != "auth_not_found" {
+		t.Fatalf("code = %q, want auth_not_found so fallback chains still run", authErr.Code)
+	}
+	if status := clienterror.HTTPStatusFromError(errExecute); status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 rather than the 503 an unset status produces", status)
+	}
+	if !strings.Contains(authErr.Message, "1104478") || !strings.Contains(authErr.Message, "1000000") {
+		t.Fatalf("message = %q, want both the estimate and the window named", authErr.Message)
+	}
+}
+
+// The context-1m beta raises the window the upstream accepts for a 200K model, so
+// the selection gate must not refuse a prompt the beta unlocks.
+func TestContext1MBetaRaisesNativeProviderCeiling(t *testing.T) {
+	exec := &contextCeilingTestExecutor{}
+	const model = "claude-sonnet-4-5-20250929"
+	manager := contextCeilingTestManager(t, exec, model, 200000)
+
+	if _, errExecute := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, routingContextOpts(900000)); errExecute == nil {
+		t.Fatal("without the beta header a 900000-token prompt exceeds the 200000-token window")
+	}
+
+	beta := routingContextOpts(900000)
+	beta.Headers = http.Header{"Anthropic-Beta": []string{"context-1m-2025-08-07"}}
+	if _, errExecute := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, beta); errExecute != nil {
+		t.Fatalf("the context-1m beta must allow a 900000-token prompt, got %v", errExecute)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", exec.calls)
+	}
+}
+
+// A request under the window is untouched, and an unknown model keeps routing.
+func TestContextCeilingLeavesNormalRequestsAlone(t *testing.T) {
+	exec := &contextCeilingTestExecutor{}
+	const model = "claude-sonnet-5-5"
+	manager := contextCeilingTestManager(t, exec, model, 1000000)
+
+	for _, tokens := range []int{1000, 1000000} {
+		if _, errExecute := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, routingContextOpts(tokens)); errExecute != nil {
+			t.Fatalf("a %d-token prompt must be attempted, got %v", tokens, errExecute)
+		}
+	}
+	if exec.calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", exec.calls)
+	}
+
+	unknown := contextCeilingTestManager(t, &contextCeilingTestExecutor{}, "model-without-a-catalog-entry", 0)
+	if _, errExecute := unknown.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: "model-without-a-catalog-entry"}, routingContextOpts(5000000)); errExecute != nil {
+		t.Fatalf("an unknown model has no ceiling and must keep routing, got %v", errExecute)
 	}
 }
