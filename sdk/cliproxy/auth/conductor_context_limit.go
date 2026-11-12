@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -189,15 +190,26 @@ func (m *Manager) authExceedsRoutingContextLimit(auth *Auth, routeModel string, 
 	if !ok {
 		return 0, 0, false
 	}
-	limit = m.routingContextLimitForAuth(auth, routeModel)
-	if limit <= 0 {
-		// Native providers (claude, gemini, codex, ...) have no
-		// routing-max-context-length, so their catalog window is the only
-		// ceiling available. Without it an oversized prompt reaches the
-		// upstream, which rejects it after the whole upload.
-		limit = registeredModelContextWindow(auth, routeModel)
+	configured := m.routingContextLimitForAuth(auth, routeModel)
+	if configured > 0 {
+		return tokens, configured, tokens > configured
 	}
-	return tokens, limit, limit > 0 && tokens > limit
+	// Native providers (claude, gemini, codex, ...) have no
+	// routing-max-context-length, so their catalog window is the only ceiling
+	// available. Without it an oversized prompt reaches the upstream, which
+	// rejects it after the whole upload.
+	limit = registeredModelContextWindow(auth, routeModel)
+	if limit <= 0 {
+		return tokens, 0, false
+	}
+	// A client that opts into the 1M context beta takes a prompt far larger
+	// than a default 200K window; the executor forwards that beta, so
+	// refusing here would reject a request the upstream accepts. The beta
+	// only widens the window, never narrows it.
+	if limit < claudeContext1MBetaWindow && requestOptsIntoClaudeContext1M(opts.Headers) {
+		limit = claudeContext1MBetaWindow
+	}
+	return tokens, limit, tokens > limit
 }
 
 // registeredModelContextWindow returns the context window the registry catalog
@@ -271,6 +283,29 @@ func isContextOverflowError(err error) bool {
 	return false
 }
 
+// claudeContext1MBetaWindow is the window the context-1m beta unlocks for
+// models whose catalog entry declares the default 200K window.
+const claudeContext1MBetaWindow = 1000000
+
+// requestOptsIntoClaudeContext1M reports whether the caller asked for Anthropic's
+// 1M context beta. The executor forwards that opt-in, so the upstream accepts a
+// 1M prompt for models whose catalog entry only declares the default window.
+func requestOptsIntoClaudeContext1M(headers http.Header) bool {
+	for name, values := range headers {
+		if !strings.EqualFold(strings.TrimSpace(name), "anthropic-beta") {
+			continue
+		}
+		for _, value := range values {
+			for _, item := range strings.Split(value, ",") {
+				if strings.HasPrefix(strings.ToLower(strings.TrimSpace(item)), "context-1m") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // logRoutingContextLimitExcluded records a candidate skipped because the
 // request is larger than its routing-max-context-length.
 func (m *Manager) logRoutingContextLimitExcluded(ctx context.Context, provider, routeModel string, auth *Auth, tokens, limit int) {
@@ -297,10 +332,27 @@ func (m *Manager) logRoutingContextLimitExcluded(ctx context.Context, provider, 
 // once the routing context limit was applied. It keeps the auth_not_found code
 // so model fallback chains still run, and names the estimate so the cause is
 // visible to the caller.
-func authNotFoundAfterContextLimit(tokens int, timeGateExcluded bool) error {
+// authNotFoundAfterContextLimit reports a selection that found no candidate once
+// the context ceiling was applied.
+//
+// The code stays auth_not_found so model fallback chains still run: a route with
+// a larger-window fallback model can still serve the request. The status is 400
+// rather than the 503 an unset status would produce, because no retry of the same
+// prompt can succeed once every candidate is too small, and 503 told the client
+// to try again later while pointing the operator at credential cooldown state.
+func authNotFoundAfterContextLimit(tokens int, limit int, routeModel string, timeGateExcluded bool) error {
+	model := strings.TrimSpace(thinking.ParseSuffix(strings.TrimSpace(routeModel)).ModelName)
+	if model == "" {
+		model = strings.TrimSpace(routeModel)
+	}
+	message := fmt.Sprintf("no auth available: estimated %d input tokens exceed the context window of every remaining candidate for %s", tokens, model)
+	if limit > 0 {
+		message = fmt.Sprintf("no auth available: estimated %d input tokens exceed the %d-token context window of every remaining candidate for %s", tokens, limit, model)
+	}
 	err := &Error{
-		Code:    "auth_not_found",
-		Message: fmt.Sprintf("no auth available: estimated %d input tokens exceed routing-max-context-length of every remaining candidate", tokens),
+		Code:       "auth_not_found",
+		Message:    message,
+		HTTPStatus: http.StatusBadRequest,
 	}
 	if !timeGateExcluded {
 		return err
