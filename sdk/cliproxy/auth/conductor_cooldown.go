@@ -3445,6 +3445,13 @@ func isRequestInvalidError(err error) bool {
 	if isModelSupportError(err) {
 		return false
 	}
+	// An oversized prompt is a property of the request, not of the credential.
+	// Anthropic answers it with 400 invalid_request_error, so without this
+	// check the executor uploads the same multi-hundred-thousand-token body to
+	// every remaining credential before giving up.
+	if isContextOverflowError(err) {
+		return true
+	}
 	// Local: 400 and 422 fall through to credential/model fallback chains
 	// (e0a8e394, 422-cooldown-and-fallback). Both statuses now rotate
 	// credentials and cool down the failing auth/upstream model like 5xx.

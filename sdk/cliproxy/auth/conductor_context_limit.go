@@ -2,9 +2,11 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
@@ -178,15 +180,95 @@ func routingContextModelKey(model string) string {
 }
 
 // authExceedsRoutingContextLimit reports whether the request's estimated input
-// tokens exceed the routing context limit of auth's model entry. Requests
-// without an estimate are never excluded.
+// tokens exceed the largest input ceiling auth can hold for routeModel: its
+// configured routing-max-context-length when set, otherwise the context window
+// the registry catalog declares for the model. Requests without an estimate are
+// never excluded.
 func (m *Manager) authExceedsRoutingContextLimit(auth *Auth, routeModel string, opts cliproxyexecutor.Options) (tokens int, limit int, exceeded bool) {
 	tokens, ok := estimatedInputTokensFromMetadata(opts.Metadata)
 	if !ok {
 		return 0, 0, false
 	}
 	limit = m.routingContextLimitForAuth(auth, routeModel)
+	if limit <= 0 {
+		// Native providers (claude, gemini, codex, ...) have no
+		// routing-max-context-length, so their catalog window is the only
+		// ceiling available. Without it an oversized prompt reaches the
+		// upstream, which rejects it after the whole upload.
+		limit = registeredModelContextWindow(auth, routeModel)
+	}
 	return tokens, limit, limit > 0 && tokens > limit
+}
+
+// registeredModelContextWindow returns the context window the registry catalog
+// declares for model, or 0 when the model is unknown or the entry belongs to a
+// different provider family than auth. Comparing families keeps an OAuth alias
+// that happens to spell another model's ID from inheriting that model's window.
+func registeredModelContextWindow(auth *Auth, model string) int {
+	if auth == nil {
+		// Without an auth there is no provider family to validate the catalog
+		// entry against, and a bare model ID may name another family's model.
+		return 0
+	}
+	family := strings.ToLower(strings.TrimSpace(auth.Provider))
+	name := strings.TrimSpace(thinking.ParseSuffix(model).ModelName)
+	if name == "" {
+		return 0
+	}
+	info := registry.LookupModelInfo(name, family)
+	if info == nil || (info.ContextLength <= 0 && info.InputTokenLimit <= 0) {
+		// A client-registered entry carries whatever the provider's /models
+		// call reported and may omit the window entirely; the static catalog
+		// still knows it.
+		if static := registry.LookupStaticModelInfoForProvider(name, family); static != nil {
+			info = static
+		}
+	}
+	if info == nil {
+		return 0
+	}
+	if family != "" && info.Type != "" && !strings.EqualFold(info.Type, family) {
+		return 0
+	}
+	if info.ContextLength > 0 {
+		return info.ContextLength
+	}
+	return info.InputTokenLimit
+}
+
+// contextOverflowMarkers are the upstream phrasings for "the prompt itself is
+// larger than the model's input window". They describe the request, not the
+// credential, so retrying the same payload on another credential cannot work.
+var contextOverflowMarkers = []string{
+	"prompt is too long",
+	"prompt_too_long",
+	"context_length_exceeded",
+	"context length exceeded",
+	"context_too_large",
+	"maximum context length",
+}
+
+// isContextOverflowError reports whether err says the prompt exceeds the model
+// window. Both the error code and the message are checked because Anthropic
+// reports the overflow as invalid_request_error with a message only.
+func isContextOverflowError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		switch strings.ToLower(strings.TrimSpace(authErr.Code)) {
+		case "context_length_exceeded", "prompt_too_long", "context_too_large":
+			return true
+		}
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range contextOverflowMarkers {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // logRoutingContextLimitExcluded records a candidate skipped because the

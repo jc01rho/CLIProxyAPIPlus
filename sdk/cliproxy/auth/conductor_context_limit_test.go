@@ -2,9 +2,11 @@ package auth
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -234,5 +236,185 @@ func TestPickNextMixedFastPathHonorsRoutingContextLimit(t *testing.T) {
 		if selected == nil || selected.ID != "big-auth" {
 			t.Fatalf("pickNextMixed() selected %v, want big-auth for a request over the small provider's limit", selected)
 		}
+	}
+}
+
+// Native providers (claude, gemini, codex, ...) have no
+// routing-max-context-length, so the catalog window must be the ceiling that
+// keeps an oversized prompt from reaching the upstream.
+func TestRegisteredModelContextWindow(t *testing.T) {
+	tests := []struct {
+		name  string
+		auth  *Auth
+		model string
+		want  int
+	}{
+		{"1M catalog entry", &Auth{Provider: "claude"}, "claude-sonnet-5-5", 1000000},
+		{"200K catalog entry", &Auth{Provider: "claude"}, "claude-haiku-4-5-20251001", 200000},
+		{"thinking suffix still resolves", &Auth{Provider: "claude"}, "claude-sonnet-5-5(8192)", 1000000},
+		{"unknown model has no ceiling", &Auth{Provider: "claude"}, "claude-nonexistent-9", 0},
+		{"another family's catalog is not borrowed", &Auth{Provider: "openai-compatibility"}, "claude-sonnet-5-5", 0},
+		{"nil auth has no ceiling", nil, "claude-sonnet-5-5", 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := registeredModelContextWindow(tc.auth, tc.model); got != tc.want {
+				t.Fatalf("registeredModelContextWindow(%v, %q) = %d, want %d", tc.auth, tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuthExceedsRoutingContextLimitUsesCatalogWindow(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	claudeAuth := &Auth{ID: "claude-window-auth", Provider: "claude", Status: StatusActive}
+
+	tokens, limit, exceeded := m.authExceedsRoutingContextLimit(claudeAuth, "claude-sonnet-5-5", routingContextOpts(1104478))
+	if !exceeded || limit != 1000000 || tokens != 1104478 {
+		t.Fatalf("authExceedsRoutingContextLimit() = (%d, %d, %t), want (1104478, 1000000, true)", tokens, limit, exceeded)
+	}
+	if _, limit, exceeded := m.authExceedsRoutingContextLimit(claudeAuth, "claude-sonnet-5-5", routingContextOpts(990000)); exceeded {
+		t.Fatalf("a prompt under the %d-token window must stay eligible", limit)
+	}
+	if _, _, exceeded := m.authExceedsRoutingContextLimit(claudeAuth, "claude-nonexistent-9", routingContextOpts(5000000)); exceeded {
+		t.Fatal("a model without a known window must not be excluded")
+	}
+	if _, _, exceeded := m.authExceedsRoutingContextLimit(claudeAuth, "claude-sonnet-5-5", cliproxyexecutor.Options{}); exceeded {
+		t.Fatal("a request without a token estimate must not be excluded")
+	}
+}
+
+// The incident behind this guard: a 1,104,478-token claude prompt hit
+// "prompt is too long: ... > 1000000 maximum" on one credential and the same
+// body was then uploaded to the next one.
+func TestExecuteRejectsPromptOverCatalogWindowWithoutUpstreamCall(t *testing.T) {
+	executor := &claudeCancellationTestExecutor{}
+	manager := NewManager(nil, nil, NoopHook{})
+	manager.SetRetryConfig(0, 0, 0)
+	manager.RegisterExecutor(executor)
+	auth := &Auth{
+		ID:         "claude-window-exec-auth-" + uuid.NewString(),
+		Provider:   "claude",
+		Attributes: map[string]string{"auth_kind": "oauth"},
+		Metadata: map[string]any{
+			"access_token":  "access-token",
+			"refresh_token": "refresh-token",
+			"request_retry": float64(0),
+		},
+	}
+	model := "claude-sonnet-5-5"
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+
+	_, errExecute := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, routingContextOpts(1104478))
+	if errExecute == nil {
+		t.Fatal("an oversized prompt must fail before execution")
+	}
+	if !strings.Contains(errExecute.Error(), "auth_not_found") || !strings.Contains(errExecute.Error(), "1104478") {
+		t.Fatalf("error = %v, want auth_not_found naming the 1104478-token estimate", errExecute)
+	}
+	if got := executor.executeCalls.Load(); got != 0 {
+		t.Fatalf("upstream executions = %d, want 0: the prompt cannot fit the model window", got)
+	}
+	requireClaudeCancellationNeutral(t, manager, auth.ID, model)
+
+	if _, errSmall := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, routingContextOpts(990000)); errSmall != nil {
+		t.Fatalf("a prompt under the window must execute, got %v", errSmall)
+	}
+	if got := executor.executeCalls.Load(); got != 1 {
+		t.Fatalf("upstream executions = %d, want 1 for the in-window prompt", got)
+	}
+}
+
+func TestIsContextOverflowError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "anthropic prompt too long body",
+			err:  &Error{Code: "invalid_request_error", Message: `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 1104478 tokens > 1000000 maximum"}}`, HTTPStatus: 400},
+			want: true,
+		},
+		{name: "code only", err: &Error{Code: "context_length_exceeded", Message: "input too large", HTTPStatus: 400}, want: true},
+		{name: "openai style message", err: &Error{Message: "This model's maximum context length is 200000 tokens", HTTPStatus: 400}, want: true},
+		{name: "ordinary 400", err: &Error{Code: "invalid_request_error", Message: "messages: at least one message is required", HTTPStatus: 400}, want: false},
+		{name: "rate limit", err: &Error{Code: "rate_limit_exceeded", Message: "slow down", HTTPStatus: 429}, want: false},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isContextOverflowError(tc.err); got != tc.want {
+				t.Fatalf("isContextOverflowError(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// Rotation must not repeat an oversized upload on the next credential, while
+// ordinary 400s keep flowing through the credential/model fallback chains.
+func TestIsRequestInvalidErrorStopsOnPromptTooLong(t *testing.T) {
+	overflow := &Error{
+		Code:       "invalid_request_error",
+		Message:    `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 1110175 tokens > 1000000 maximum"}}`,
+		HTTPStatus: http.StatusBadRequest,
+	}
+	if !isRequestInvalidError(overflow) {
+		t.Fatal("an oversized prompt must stop credential rotation")
+	}
+	ordinary := &Error{Code: "invalid_request_error", Message: "messages: at least one message is required", HTTPStatus: http.StatusBadRequest}
+	if isRequestInvalidError(ordinary) {
+		t.Fatal("an ordinary 400 must keep falling through to the fallback chains")
+	}
+}
+
+// The incident: the first credential rejected the prompt as too long and the
+// same 1.1M-token body was uploaded to the next credential. An overflow must
+// stop on the first credential, even when rotation is enabled.
+func TestExecutePromptTooLongDoesNotRotateCredentials(t *testing.T) {
+	executor := &claudeCancellationTestExecutor{}
+	overflow := &Error{
+		Code:       "invalid_request_error",
+		Message:    `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 1110175 tokens > 1000000 maximum"}}`,
+		HTTPStatus: http.StatusBadRequest,
+	}
+	executor.executeFn = func(context.Context, *Auth) (cliproxyexecutor.Response, error) {
+		return cliproxyexecutor.Response{}, overflow
+	}
+	manager := NewManager(nil, nil, NoopHook{})
+	manager.SetRetryConfig(3, 3, 0)
+	manager.RegisterExecutor(executor)
+	model := "claude-sonnet-5-5"
+	for i := 0; i < 2; i++ {
+		auth := &Auth{
+			ID:         "claude-overflow-auth-" + uuid.NewString(),
+			Provider:   "claude",
+			Attributes: map[string]string{"auth_kind": "oauth"},
+			Metadata: map[string]any{
+				"access_token":  "access-token",
+				"refresh_token": "refresh-token",
+				"request_retry": float64(3),
+			},
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+		authID := auth.ID
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("Register() error = %v", errRegister)
+		}
+	}
+
+	// Keep the estimate under the window so the preflight gate stays out of the
+	// way and the upstream rejection is what has to stop the rotation.
+	_, errExecute := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, routingContextOpts(1000))
+	if errExecute == nil {
+		t.Fatal("the upstream rejection must reach the caller")
+	}
+	if got := executor.executeCalls.Load(); got != 1 {
+		t.Fatalf("upstream executions = %d, want 1: an oversized prompt must not be replayed on another credential", got)
 	}
 }
