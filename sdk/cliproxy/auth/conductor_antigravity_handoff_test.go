@@ -121,6 +121,20 @@ func TestAntigravityHandoffIgnoresQuotaExhaustion(t *testing.T) {
 	}
 }
 
+func TestAntigravityHandoffIgnoresModelCapacityExhausted(t *testing.T) {
+	const body = "{\"error\":{\"code\":503,\"message\":\"No capacity available for model gemini-3.8-flash-high on the server\",\"status\":\"UNAVAILABLE\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"MODEL_CAPACITY_EXHAUSTED\"}]}}"
+	m := newAntigravityHandoffManager(t, true)
+	markResultRepeated(t, m, Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "gemini-3.8-flash-high",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: body},
+	}, antigravityHandoffStrikeThreshold+1)
+	assertAntigravityHandoff(t, m, false)
+}
+
 func TestAntigravityHandoffPromotesStandbyOnGatewayFailure(t *testing.T) {
 	m := newAntigravityHandoffManager(t, true)
 	markResultRepeated(t, m, Result{
