@@ -1,7 +1,6 @@
 package util
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 )
@@ -42,13 +41,13 @@ func ExtractDownstreamAPIKey(header http.Header) string {
 				if strings.EqualFold(raw, "bearer") {
 					continue
 				}
-				return fmt.Sprintf("Authorization(%s)", raw)
+				return raw
 			}
 		}
 		if secret == "" {
 			return ""
 		}
-		return fmt.Sprintf("%s(%s)", candidate.scheme, secret)
+		return secret
 	}
 	return ""
 }
