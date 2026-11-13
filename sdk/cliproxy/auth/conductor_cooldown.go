@@ -1565,6 +1565,12 @@ func resultFailureLogFields(ctx context.Context, result Result, auth *Auth) log.
 	if requestedModel := coreusage.RequestedModelAliasFromContext(ctx); requestedModel != "" {
 		fields["requested_model"] = requestedModel
 	}
+	// The preflight input size makes an upstream context_length_exceeded
+	// failure diagnosable from this line alone: it shows how large the
+	// request was and how it compared with the provider's own limit.
+	if tokens, ok := estimatedInputTokensFromMetadata(result.Options.Metadata); ok {
+		fields["estimated_input_tokens"] = tokens
+	}
 	if requestPath, ok := requestPathFromContext(ctx); ok {
 		fields["request_path"] = requestPath
 	}
