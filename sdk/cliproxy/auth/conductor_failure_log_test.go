@@ -224,7 +224,7 @@ func TestManagerMarkResultLogsDownstreamAPIKeyFromAuthorizationHeader(t *testing
 		"provider=codex",
 		"model=gpt-5.6-sol",
 		"credential=TE_tg_sp_devcenter@sparrow.im",
-		`downstream_api_key="Bearer(sk-downstream-who-requested)"`,
+		`downstream_api_key=sk-downstream-who-requested`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected log to contain %q, got: %s", want, got)
