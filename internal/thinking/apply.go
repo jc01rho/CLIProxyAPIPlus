@@ -360,12 +360,19 @@ func applyThinkingDocCore(ctx context.Context, doc *ojson.Doc, docValid bool, so
 	}
 
 	// 3. Model capability check
+	if nativeResponses {
+		normalized, errNormalize := normalizeNativeResponsesEffortDoc(doc, docValid, modelInfo, applier, fromFormat, providerFormat, HasThinkingSuffix(model))
+		modified = modified || normalized
+		if errNormalize != nil {
+			return modified, errNormalize
+		}
+	}
 	if !suffixResult.HasSuffix && len(sourceBody) > 0 && isResponsesFormat(fromFormat) && !docValid && hasThinkingConfig(extractConfigurationUpdateConfig(sourceBody)) {
 		// Do not rebuild a malformed target from a separate source update.
 		return modified, nil
 	}
 	if nativeResponses && !suffixResult.HasSuffix {
-		// Native Responses keeps the top-level baseline and in-turn updates as-is.
+		// Native Responses preserves the baseline and update timeline after validation.
 		if log.IsLevelEnabled(log.DebugLevel) && (modelInfo.Thinking != nil || modelInfo.UserDefined) {
 			if config := extractCodexUsageConfigDoc(doc, docValid); hasThinkingConfig(config) {
 				fields := log.Fields{

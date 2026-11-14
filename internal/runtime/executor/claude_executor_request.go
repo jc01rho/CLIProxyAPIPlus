@@ -1328,6 +1328,7 @@ func applyClaudeHeadersWithNativeProfile(
 
 	incomingBetas := strings.TrimSpace(strings.Join(helps.HeaderValuesCaseInsensitive(incomingHeaders, "Anthropic-Beta"), ","))
 	countTokens := r.URL != nil && strings.HasSuffix(r.URL.Path, "/count_tokens")
+	preserveThreadCapabilities := !countTokens && (incomingBetas != "" || len(extraBetas) > 0) && ojson.GetBytesNoCopy(body, "thread").IsObject()
 	if !confirmedClaudeCode && !wirePolicy.Cloak && wirePolicy.ExplicitNever && !wirePolicy.Uncloak {
 		det := helps.DetectClaudeCodeRequest(incomingHeaders, body, countTokens, cfg)
 		if det.ConfirmedShape {
@@ -1440,7 +1441,28 @@ func applyClaudeHeadersWithNativeProfile(
 			}
 		}
 	}
+	// A Thread declares capabilities for all turns, not just its first body.
+	// Preserve them before binding the final emitted profile to its response ID.
+	if preserveThreadCapabilities {
+		threadCapabilities := incomingBetas
+		if useOAuthBetas {
+			threadCapabilities = withClaudeOAuthCredentialBetas(threadCapabilities, !wirePolicy.Uncloak)
+		}
+		for _, beta := range extraBetas {
+			threadCapabilities = withClaudeBetaAppended(threadCapabilities, beta)
+		}
+		// Keep required protocol additions after the client-declared capabilities.
+		for _, beta := range strings.Split(baseBetas, ",") {
+			threadCapabilities = withClaudeBetaAppended(threadCapabilities, beta)
+		}
+		if advisorNeeded {
+			threadCapabilities = withClaudeAdvisorToolBeta(threadCapabilities)
+		}
+		baseBetas = threadCapabilities
+	}
 	applyBetaHeader := func() {
+		// Fast mode is not enabled for proxied requests: the body speed field is
+		// stripped, and a caller-sent fast-mode beta is dropped as well.
 		// Fast mode is not enabled for proxied requests: the body speed field is
 		// stripped, and a caller-sent fast-mode beta is dropped as well.
 		baseBetas = withoutClaudeBeta(baseBetas, claudeFastModeBeta)
@@ -1462,7 +1484,9 @@ func applyClaudeHeadersWithNativeProfile(
 		// Caller-supplied lists keep the native Claude Code 2.1.280 model and
 		// turn gating; a proxy-built 2.1.302 list is already shaped per class.
 		reqProbeOrHelper := helps.IsClaudeProbeOrHelperRequest(body)
-		if !builtBaseline {
+		if preserveThreadCapabilities {
+			// Caller-declared Thread capabilities stay verbatim on the first turn.
+		} else if !builtBaseline {
 			baseBetas = withClaude280BetaGating(baseBetas, body, helperProfile)
 		} else {
 			// No 2.1.302 vector covers disabled thinking or a pre-5.5 Haiku; keep
@@ -1490,7 +1514,6 @@ func applyClaudeHeadersWithNativeProfile(
 		if !reqProbeOrHelper && !countTokens && helps.ClaudePayloadHas1hTTL(body) {
 			baseBetas = withClaudeExtendedCacheTTLBeta(baseBetas)
 		}
-		// A body carrying thinking.block_binding is rejected upstream unless
 		// A body carrying thinking.block_binding is rejected upstream unless
 		// the binding-controls beta travels with it, in every fingerprint
 		// mode (cloaked, caller-owned, and confirmed passthrough alike).

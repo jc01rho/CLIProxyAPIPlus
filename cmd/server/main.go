@@ -86,6 +86,20 @@ func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode,
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
+	os.Exit(run())
+}
+
+func logStartupErrorf(format string, args ...any) {
+	if log.StandardLogger().Out != os.Stderr {
+		_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
+	}
+	log.Errorf(format, args...)
+}
+
+// run finishes deferred cleanup before main applies the process exit status.
+func run() (exitStatus int) {
+	log.SetOutput(os.Stderr)
+
 	if len(os.Args) > 1 && os.Args[1] == "discover" {
 		discoverFlags := flag.NewFlagSet("discover", flag.ExitOnError)
 		timeoutSec := discoverFlags.Int("timeout", 3, "Discovery timeout in seconds")
@@ -108,7 +122,7 @@ func main() {
 			Include:     include,
 			Exclude:     exclude,
 		})
-		os.Exit(code)
+		return code
 	}
 
 	// For legacy --discover-json flag or JSON requests, keep stdout clean
@@ -278,7 +292,7 @@ func main() {
 			Include:     include,
 			Exclude:     exclude,
 		})
-		os.Exit(code)
+		return code
 	}
 
 	// Core application variables.
@@ -315,7 +329,7 @@ func main() {
 	wd, err := os.Getwd()
 	if err != nil {
 		log.Errorf("failed to get working directory: %v", err)
-		return
+		return 1
 	}
 
 	// Load environment variables from .env if present.
@@ -413,7 +427,7 @@ func main() {
 		cancelHome()
 		if errHomeCfg != nil {
 			log.Errorf("invalid -home-jwt: %v", errHomeCfg)
-			return
+			return 1
 		}
 		if homeDisableClusterDiscovery {
 			homeCfg.DisableClusterDiscovery = true
@@ -430,13 +444,13 @@ func main() {
 		cancelHomeConfig()
 		if errGetConfig != nil {
 			log.Errorf("failed to fetch config from home: %v", errGetConfig)
-			return
+			return 1
 		}
 
 		parsed, errParseConfig := config.ParseConfigBytes(raw)
 		if errParseConfig != nil {
 			log.Errorf("failed to parse config payload from home: %v", errParseConfig)
-			return
+			return 1
 		}
 		if parsed == nil {
 			parsed = &config.Config{}
@@ -493,7 +507,7 @@ func main() {
 			}
 		}
 		if errHomePlugins != nil {
-			return
+			return 1
 		}
 		cfg = parsed
 
@@ -523,14 +537,14 @@ func main() {
 		cancel()
 		if err != nil {
 			log.Errorf("failed to initialize postgres token store: %v", err)
-			return
+			return 1
 		}
 		examplePath := filepath.Join(wd, "config.example.yaml")
 		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 		if errBootstrap := pgStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
 			cancel()
 			log.Errorf("failed to bootstrap postgres-backed config: %v", errBootstrap)
-			return
+			return 1
 		}
 		cancel()
 		configFilePath = pgStoreInst.ConfigPath()
@@ -554,7 +568,7 @@ func main() {
 			parsed, errParse := url.Parse(resolvedEndpoint)
 			if errParse != nil {
 				log.Errorf("failed to parse object store endpoint %q: %v", objectStoreEndpoint, errParse)
-				return
+				return 1
 			}
 			switch strings.ToLower(parsed.Scheme) {
 			case "http":
@@ -563,11 +577,11 @@ func main() {
 				useSSL = true
 			default:
 				log.Errorf("unsupported object store scheme %q (only http and https are allowed)", parsed.Scheme)
-				return
+				return 1
 			}
 			if parsed.Host == "" {
 				log.Errorf("object store endpoint %q is missing host information", objectStoreEndpoint)
-				return
+				return 1
 			}
 			resolvedEndpoint = parsed.Host
 			if parsed.Path != "" && parsed.Path != "/" {
@@ -587,14 +601,14 @@ func main() {
 		objectStoreInst, err = store.NewObjectTokenStore(objCfg)
 		if err != nil {
 			log.Errorf("failed to initialize object token store: %v", err)
-			return
+			return 1
 		}
 		examplePath := filepath.Join(wd, "config.example.yaml")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if errBootstrap := objectStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
 			cancel()
 			log.Errorf("failed to bootstrap object-backed config: %v", errBootstrap)
-			return
+			return 1
 		}
 		cancel()
 		configFilePath = objectStoreInst.ConfigPath()
@@ -620,7 +634,7 @@ func main() {
 		gitStoreInst.SetBaseDir(authDir)
 		if errRepo := gitStoreInst.EnsureRepository(); errRepo != nil {
 			log.Errorf("failed to prepare git token store: %v", errRepo)
-			return
+			return 1
 		}
 		configFilePath = gitStoreInst.ConfigPath()
 		if configFilePath == "" {
@@ -630,20 +644,20 @@ func main() {
 			examplePath := filepath.Join(wd, "config.example.yaml")
 			if _, errExample := os.Stat(examplePath); errExample != nil {
 				log.Errorf("failed to find template config file: %v", errExample)
-				return
+				return 1
 			}
 			if errCopy := misc.CopyConfigTemplate(examplePath, configFilePath); errCopy != nil {
 				log.Errorf("failed to bootstrap git-backed config: %v", errCopy)
-				return
+				return 1
 			}
 			if errCommit := persistSeededConfig(context.Background(), configFilePath, gitStoreInst.PersistConfig); errCommit != nil {
 				log.Errorf("failed to commit initial git-backed config: %v", errCommit)
-				return
+				return 1
 			}
 			log.Infof("git-backed config initialized from template: %s", configFilePath)
 		} else if statErr != nil {
 			log.Errorf("failed to inspect git-backed config: %v", statErr)
-			return
+			return 1
 		}
 		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
 		if err == nil {
@@ -657,14 +671,14 @@ func main() {
 		wd, err = os.Getwd()
 		if err != nil {
 			log.Errorf("failed to get working directory: %v", err)
-			return
+			return 1
 		}
 		configFilePath = filepath.Join(wd, "config.yaml")
 		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
 	}
 	if err != nil {
 		log.Errorf("failed to load config: %v", err)
-		return
+		return 1
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
@@ -701,7 +715,7 @@ func main() {
 
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
 		log.Errorf("failed to configure log output: %v", err)
-		return
+		return 1
 	}
 
 	log.Infof("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
@@ -710,8 +724,8 @@ func main() {
 	util.SetLogLevel(cfg)
 
 	if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
-		log.Errorf("failed to resolve auth directory: %v", errResolveAuthDir)
-		return
+		logStartupErrorf("failed to resolve auth directory: %v", errResolveAuthDir)
+		return 1
 	} else {
 		cfg.AuthDir = resolvedAuthDir
 	}
@@ -754,13 +768,13 @@ func main() {
 		errHomePluginLoad := homeplugins.MarkLoadResults(&homePluginSyncReport, pluginHost)
 		errReportPlugins := home.ReportPluginStatus(context.Background(), homeClient, cfg.Home.NodeID, homePluginSyncReport)
 		if errHomePluginLoad != nil {
-			log.Errorf("failed to load home plugins: %v", errHomePluginLoad)
+			logStartupErrorf("failed to load home plugins: %v", errHomePluginLoad)
 		}
 		if errReportPlugins != nil {
 			log.Warnf("failed to report home plugin load status: %v", errReportPlugins)
 		}
 		if errHomePluginLoad != nil {
-			return
+			return 1
 		}
 	}
 	if homeClient != nil {
@@ -771,10 +785,7 @@ func main() {
 	}
 	if pluginHost.HasTriggeredCommandLineFlags() {
 		if exitCode, handled := pluginHost.ExecuteCommandLine(context.Background(), os.Args[0], os.Args[1:], configFilePath, flag.CommandLine); handled {
-			if exitCode != 0 {
-				os.Exit(exitCode)
-			}
-			return
+			return exitCode
 		}
 	}
 
@@ -875,7 +886,7 @@ func main() {
 		if isCloudDeploy && !configFileExists {
 			// No config file available, just wait for shutdown
 			cmd.WaitForCloudDeploy()
-			return
+			return 0
 		}
 		if localModel && (!tuiMode || standalone) {
 			log.Info("Local model mode: using embedded catalogs unless an explicit catalog source is configured")
@@ -922,11 +933,23 @@ func main() {
 				ready := false
 				backoff := 100 * time.Millisecond
 				for i := 0; i < 30; i++ {
+					select {
+					case <-done:
+						i = 30
+					default:
+					}
+					if i >= 30 {
+						break
+					}
 					if _, errGetConfig := client.GetConfig(); errGetConfig == nil {
 						ready = true
 						break
 					}
-					time.Sleep(backoff)
+					select {
+					case <-done:
+						i = 30
+					case <-time.After(backoff):
+					}
 					if backoff < time.Second {
 						backoff = time.Duration(float64(backoff) * 1.5)
 					}
@@ -937,24 +960,30 @@ func main() {
 					cancel()
 					<-done
 					fmt.Fprintf(os.Stderr, "TUI error: embedded server is not ready\n")
-					return
+					return 1
 				}
 
+				var errTUI error
 				if errRun := tui.Run(cfg.Port, password, hook, origStdout); errRun != nil {
 					restoreIO()
 					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+					errTUI = errRun
 				} else {
 					restoreIO()
 				}
 
 				cancel()
 				<-done
+				if errTUI != nil {
+					return 1
+				}
 			} else {
 				// Default TUI mode: pure management client.
 				// The proxy server must already be running (locally or remotely).
 				baseURL := resolveManagementBaseURL(managementBaseURL, cfg)
 				if errRun := tui.RunWithBaseURL(baseURL, password, nil, os.Stdout); errRun != nil {
 					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+					return 1
 				}
 			}
 		} else {
@@ -969,9 +998,15 @@ func main() {
 				defer kiro.StopGlobalRefreshManager()
 			}
 
-			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
+			if errStart := cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...); errStart != nil {
+				if log.StandardLogger().Out != os.Stderr {
+					_, _ = fmt.Fprintf(os.Stderr, "proxy service error: %v\n", errStart)
+				}
+				return 1
+			}
 		}
 	}
+	return 0
 }
 
 // resolveManagementBaseURL determines the management API base URL for TUI client mode.
