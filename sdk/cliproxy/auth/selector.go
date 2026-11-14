@@ -3064,9 +3064,11 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 		// selected credential is unhealthy, so preserve both explicit and LCP bindings.
 		return
 	}
-	if !res.Success && (s.rebindOnNever || (s.rebindOnQuotaOnly && !shouldRebindSessionAffinityOnError(res.Error))) {
+	if !res.Success && !isCloudflareChallengeResultError(res.Error) && (s.rebindOnNever || (s.rebindOnQuotaOnly && !shouldRebindSessionAffinityOnError(res.Error))) {
 		// Under session-affinity-rebind-on: never (or quota on transient failures),
-		// keep the session bound to its original credential.
+		// keep the session bound to its original credential. An edge block page is
+		// the one failure that always rebinds: the credential cannot serve this
+		// request again, so keeping the binding only reproduces the block.
 		return
 	}
 
