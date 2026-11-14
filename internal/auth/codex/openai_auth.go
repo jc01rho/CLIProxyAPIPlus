@@ -7,6 +7,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -254,6 +255,9 @@ func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Co
 	result, err, _ := codexRefreshGroup.Do(refreshToken, func() (interface{}, error) {
 		refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), codexRefreshTimeout)
 		defer cancelRefresh()
+		if errReadiness := codexRefreshReadiness(refreshCtx, "Codex"); errReadiness != nil {
+			return nil, errReadiness
+		}
 		return journalRefresh(refreshCtx, o.journal(ctx), ClientID, refreshToken, func() (*CodexTokenData, error) {
 			return o.refreshTokensSingleFlight(refreshCtx, refreshToken)
 		}, decodeRefreshReceipt)
@@ -279,14 +283,14 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 
 	req, errReq := http.NewRequestWithContext(ctx, "POST", o.tokenEndpoint(true), strings.NewReader(reqBody))
 	if errReq != nil {
-		return nil, &RefreshOutcomeUnknownError{Stage: "request-create", Cause: errReq}
+		return nil, &RefreshPreSendError{Stage: "request-create", Cause: errReq}
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, errDo := o.doRefreshRequest(req)
 	if errDo != nil {
-		return nil, &RefreshOutcomeUnknownError{Stage: "transport", Cause: errDo}
+		return nil, errDo
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -378,6 +382,9 @@ func (o *CodexAuth) CreateTokenStorage(bundle *CodexAuthBundle) *CodexTokenStora
 // It attempts to refresh the tokens up to a specified maximum number of retries,
 // with an exponential backoff strategy to handle transient network errors.
 func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*CodexTokenData, error) {
+	if maxRetries <= 0 {
+		maxRetries = 1
+	}
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -394,6 +401,9 @@ func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken str
 		if err == nil {
 			return tokenData, nil
 		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrSIWCRefreshDeferred) {
+			return nil, err
+		}
 		if isNonRetryableRefreshErr(err) {
 			log.Warnf("Token refresh attempt %d failed with non-retryable error: %v", attempt+1, err)
 			return nil, err
@@ -407,7 +417,7 @@ func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken str
 }
 
 func isNonRetryableRefreshErr(err error) bool {
-	if err == nil {
+	if err == nil || IsRefreshPreSendError(err) {
 		return false
 	}
 	if IsRefreshOutcomeUnknown(err) {

@@ -97,6 +97,11 @@ func (s *Server) setupRoutes() {
 		v1.GET("/live/:call_id", s.codexLiveHandler.HandleSideband)
 	}
 
+	s.engine.GET("/v1/tunnel", s.handleWebsocketTunnel)
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodTrace, http.MethodConnect} {
+		s.engine.Handle(method, "/v1/tunnel", s.handleWebsocketTunnel)
+	}
+
 	realtimeAuth := realtimeAuthMiddleware(s.accessManager, s.codexLiveHandler)
 	standardAuth := realtimeStandardAuthMiddleware(s.accessManager)
 	s.engine.GET("/v1/realtime", realtimeAuth, modelAccess, s.codexLiveHandler.HandleRealtimeWebsocket)
@@ -620,6 +625,15 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 	}
 
 	s.engine.GET(trimmed, conditionalAuth, finalHandler)
+}
+
+func (s *Server) handleWebsocketTunnel(c *gin.Context) {
+	if s == nil || s.tunnelHub == nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "tunnel hub unavailable"})
+		return
+	}
+	s.tunnelHub.ServeHTTP(c.Writer, c.Request)
+	c.Abort()
 }
 
 // isAnthropicModelsRequest reports whether a /v1/models request should be served in

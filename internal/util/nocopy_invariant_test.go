@@ -112,7 +112,7 @@ var reviewedInPlaceByteWrites = map[string]reviewedInPlaceByteWrite{
 	"internal/keeperexport/runtime.go":                              {1, "zeroes a freshly hex-decoded fingerprint secret buffer private to the writer"},
 	"internal/pluginstore/auth.go":                                  {1, "zeroes a locally built credential buffer after base64 encoding copied it out"},
 	"internal/runtime/executor/claude_executor_cloaking.go":         {4, "shifts []string headers to prepend a block, or copies streamed tokens into private scanner/quote scratch buffers; no byte of any payload is rewritten"},
-	"internal/runtime/executor/claude_executor_request.go":          {3, "shifts []string headers to insert a part; no byte of any payload is rewritten"},
+	"internal/runtime/executor/claude_executor_request.go":          {4, "shifts []string headers to insert a part (3 sites); the gzip cch placeholder is written into a bytes.Clone of body, never the buffer GJSON reads"},
 	"internal/runtime/executor/claude_signing.go":                   {2, "writes CCH digits into bytes.Clone(body); the caller's body is never touched"},
 	"internal/runtime/executor/helps/claude_credential_identity.go": {1, "copies key bytes into a local stack-allocated quote array for json.Unmarshal"},
 	"internal/runtime/executor/helps/claude_mcp_alias.go":           {1, "copies an HMAC sum into a local fixed-size digest array"},
@@ -120,6 +120,8 @@ var reviewedInPlaceByteWrites = map[string]reviewedInPlaceByteWrite{
 	"internal/runtime/executor/zcode_executor.go":                   {1, "copies locally generated random UUID bytes into a private fixed-size array; no GJSON reader sees either buffer"},
 	"internal/translator/common/apply_patch_responses.go":           {1, "shifts [][]byte item references in a private output slice; no byte of any JSON payload is rewritten"},
 	"internal/translator/common/vertex_partial_args.go":             {1, "shifts []string object keys to insert a key; no byte of any payload is rewritten"},
+	"sdk/cliproxy/auth/selector_weighted.go":                        {2, "shifts weightedPoolMember bookkeeping structs when inserting or removing members; no byte of any JSON payload is rewritten"},
+	"sdk/cliproxy/auth/conductor_context_limit.go":                  {1, "limits is a map[string]int, so the assignment stores an int limit and never rewrites a byte buffer read by GJSON"},
 }
 
 // TestInPlaceByteWritesAreReviewed keeps the set of in-place byte writes small
