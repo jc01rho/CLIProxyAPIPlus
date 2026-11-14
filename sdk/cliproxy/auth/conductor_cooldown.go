@@ -1417,6 +1417,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 	}
+	recordCloudflareBlockedAuth(result)
 	modelKey := canonicalModelKey(result.Model)
 
 	var authSnapshot *Auth
@@ -3714,6 +3715,10 @@ func isCloudflareChallengeErrorMessage(message string) bool {
 		strings.Contains(lower, "cf-mitigated") ||
 		strings.Contains(lower, "cloudflare challenge") ||
 		(strings.Contains(lower, "just a moment") && strings.Contains(lower, "cloudflare")) ||
+		// Cloudflare edge access-denied pages (error 1xxx, e.g. 1010) are served
+		// with HTTP 403 and never reach the origin.
+		strings.Contains(lower, "cloudflare to restrict access") ||
+		strings.Contains(lower, "cloudflare-1xxx-errors") ||
 		// Tencent Cloud WAF block pages (e.g. workbuddy upstream) carry the same
 		// challenge semantics: a fixed block page with a feedback endpoint.
 		strings.Contains(lower, "waf block page") ||

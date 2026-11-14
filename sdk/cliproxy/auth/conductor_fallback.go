@@ -664,6 +664,7 @@ func (m *Manager) executeWithRetry(
 	var lastErr error
 	var preferredUpstreamErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	opts = withCloudflareBlockedAuthTracker(opts)
 	for attempt := 0; ; attempt++ {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
@@ -723,6 +724,7 @@ func (m *Manager) executeStreamWithRetry(
 	var preferredUpstreamErr error
 	homeRetryLimit := -1
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	opts = withCloudflareBlockedAuthTracker(opts)
 	attempt := 0
 	retryRoundPending := false
 	retryRoundWaited := false
