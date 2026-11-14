@@ -2171,6 +2171,12 @@ func resultFailureLogFields(ctx context.Context, result Result, auth *Auth) log.
 	if requestedModel := coreusage.RequestedModelAliasFromContext(ctx); requestedModel != "" {
 		fields["requested_model"] = requestedModel
 	}
+	// The preflight input size makes an upstream context_length_exceeded
+	// failure diagnosable from this line alone: it shows how large the
+	// request was and how it compared with the provider's own limit.
+	if tokens, ok := estimatedInputTokensFromMetadata(result.Options.Metadata); ok {
+		fields["estimated_input_tokens"] = tokens
+	}
 	if requestPath, ok := requestPathFromContext(ctx); ok {
 		fields["request_path"] = requestPath
 	}
@@ -3479,10 +3485,15 @@ const antigravityHandoffStrikeThreshold = 3
 
 // isAntigravityHandoffError returns true if the error should trigger a primary
 // credential handoff for the Antigravity provider. Quota (429) never hands off,
-// and Claude/GPT routes never hand off on any status, whether the requested model
-// names the family directly or reaches it through an OAuth model alias.
+// a model capacity shortage (503 MODEL_CAPACITY_EXHAUSTED) never hands off because
+// it is a property of the model, not the credential, and Claude/GPT routes never
+// hand off on any status, whether the requested model names the family directly
+// or reaches it through an OAuth model alias.
 func (m *Manager) isAntigravityHandoffError(auth *Auth, statusCode int, result Result) bool {
 	if m.antigravityClaudeOrGPTRoute(auth, result.Model, result.RouteModel) {
+		return false
+	}
+	if isAntigravityCapacityExhausted(result.Error) {
 		return false
 	}
 	switch statusCode {
@@ -3491,6 +3502,16 @@ func (m *Manager) isAntigravityHandoffError(auth *Auth, statusCode int, result R
 	default:
 		return false
 	}
+}
+
+// isAntigravityCapacityExhausted reports whether err is the upstream's
+// model-level capacity shortage (503 UNAVAILABLE / MODEL_CAPACITY_EXHAUSTED).
+func isAntigravityCapacityExhausted(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Message, "MODEL_CAPACITY_EXHAUSTED") ||
+		strings.Contains(err.Message, "No capacity available for model")
 }
 
 // promoteNextAntigravityPrimary disables the current primary Antigravity credential

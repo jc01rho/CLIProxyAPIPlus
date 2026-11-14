@@ -658,7 +658,7 @@ func extractDownstreamAPIKeyFromRequest(r *http.Request) string {
 	query := r.URL.Query()
 	for _, name := range []string{"key", "auth_token"} {
 		if secret := strings.TrimSpace(query.Get(name)); secret != "" {
-			return "Query-" + name + "(" + secret + ")"
+			return secret
 		}
 	}
 	return ""

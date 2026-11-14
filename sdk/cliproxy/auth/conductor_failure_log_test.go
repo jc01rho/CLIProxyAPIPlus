@@ -224,7 +224,7 @@ func TestManagerMarkResultLogsDownstreamAPIKeyFromAuthorizationHeader(t *testing
 		"provider=codex",
 		"model=gpt-5.6-sol",
 		"credential=TE_tg_sp_devcenter@sparrow.im",
-		`downstream_api_key="Bearer(sk-downstream-who-requested)"`,
+		`downstream_api_key=sk-downstream-who-requested`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected log to contain %q, got: %s", want, got)
@@ -268,5 +268,72 @@ func TestManagerMarkResultLogsDownstreamAPIKeyFromUserAPIKey(t *testing.T) {
 	got := logBuf.String()
 	if !strings.Contains(got, "downstream_api_key=sk-query-key-home-user") {
 		t.Fatalf("expected userApiKey fallback in request failed log, got: %s", got)
+	}
+}
+
+// An upstream context_length_exceeded failure is only diagnosable when the log
+// carries the preflight input estimate that caused it.
+func TestManagerMarkResultLogsEstimatedInputTokens(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "rainby-raid-auth", Provider: "openai-compatibility"}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	logBuf, restoreLogger := captureStandardLogger(t)
+	defer restoreLogger()
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: "openai-compatibility",
+		Model:    "ollama-deepseek-v4.1-flash",
+		Success:  false,
+		Error: &Error{
+			Code:       "request_scoped",
+			Message:    `{"error":{"message":"Request failed or timed out (upstream: context_length_exceeded)"}}`,
+			HTTPStatus: http.StatusBadRequest,
+		},
+		Options: cliproxyexecutor.Options{
+			Metadata: map[string]any{cliproxyexecutor.EstimatedInputTokensMetadataKey: 131072},
+		},
+	})
+
+	got := logBuf.String()
+	if !strings.Contains(got, "request failed") {
+		t.Fatalf("expected failure log, got: %s", got)
+	}
+	if !strings.Contains(got, "estimated_input_tokens=131072") {
+		t.Fatalf("expected estimated_input_tokens=131072 in failure log, got: %s", got)
+	}
+}
+
+func TestManagerMarkResultOmitsEstimatedInputTokensWhenUnknown(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "rainby-raid-auth", Provider: "openai-compatibility"}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	logBuf, restoreLogger := captureStandardLogger(t)
+	defer restoreLogger()
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: "openai-compatibility",
+		Model:    "ollama-deepseek-v4.1-flash",
+		Success:  false,
+		Error: &Error{
+			Code:       "request_scoped",
+			Message:    "request failed",
+			HTTPStatus: http.StatusBadRequest,
+		},
+	})
+
+	got := logBuf.String()
+	if !strings.Contains(got, "request failed") {
+		t.Fatalf("expected failure log, got: %s", got)
+	}
+	if strings.Contains(got, "estimated_input_tokens") {
+		t.Fatalf("expected no estimated_input_tokens field, got: %s", got)
 	}
 }
