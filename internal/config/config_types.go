@@ -1618,6 +1618,11 @@ type OpenAICompatibility struct {
 	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
 
+	// TLSFingerprint selects the TLS ClientHello used toward this provider.
+	// "chrome" mimics a Chrome browser for upstreams behind bot protection;
+	// empty keeps the standard Go transport.
+	TLSFingerprint string `yaml:"tls-fingerprint,omitempty" json:"tls-fingerprint,omitempty"`
+
 	// RejectModelSubstitution discards a response whose model differs from the requested
 	// model and retries the request up to two more times before failing it, so a
 	// gateway that silently swaps in another model never reaches the client.

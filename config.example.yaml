@@ -1025,6 +1025,7 @@ upstream:
 #       base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
 #       support-prompt-cache-key: false # optional: derive prompt_cache_key for requests from all input protocols
 #       system-content-as-string: false # optional: join text-only system content arrays with newlines for upstreams requiring strings
+#       tls-fingerprint: "chrome" # optional: present a Chrome TLS ClientHello (uTLS) to this provider; for upstreams behind Cloudflare bot protection. Empty keeps the standard transport
 #       disable-cooling: false # optional provider override: true disables cooling, false enables it; omit to inherit global
 #       request-retry: 3 # optional per-provider override; 0 disables additional rounds; omit or set < 0 to inherit global
 #       request-scoped-errors: # optional: custom rules to classify upstream errors by status and body patterns

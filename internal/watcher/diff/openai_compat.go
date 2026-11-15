@@ -86,6 +86,9 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if oldEntry.SystemContentAsString != newEntry.SystemContentAsString {
 		details = append(details, fmt.Sprintf("system-content-as-string %t -> %t", oldEntry.SystemContentAsString, newEntry.SystemContentAsString))
 	}
+	if oldEntry.TLSFingerprint != newEntry.TLSFingerprint {
+		details = append(details, fmt.Sprintf("tls-fingerprint %q -> %q", oldEntry.TLSFingerprint, newEntry.TLSFingerprint))
+	}
 	if oldEntry.RejectModelSubstitution != newEntry.RejectModelSubstitution {
 		details = append(details, fmt.Sprintf("reject-model-substitution %t -> %t", oldEntry.RejectModelSubstitution, newEntry.RejectModelSubstitution))
 	}
