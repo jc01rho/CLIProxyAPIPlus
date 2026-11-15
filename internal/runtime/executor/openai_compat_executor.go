@@ -107,7 +107,7 @@ func (e *OpenAICompatExecutor) HttpRequest(ctx context.Context, auth *cliproxyau
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.newHTTPClient(ctx, auth)
 	return httpClient.Do(httpReq)
 }
 
@@ -315,7 +315,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.newHTTPClient(ctx, auth)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -463,7 +463,7 @@ func (e *OpenAICompatExecutor) executeSystemOne(ctx context.Context, auth *clipr
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.newHTTPClient(ctx, auth)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -571,7 +571,7 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.newHTTPClient(ctx, auth)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -795,7 +795,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.newHTTPClient(ctx, auth)
 	// Early role/empty frames are only first-packet fallbacks, not effective tokens.
 	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
@@ -1260,7 +1260,7 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.newHTTPClient(ctx, auth)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -2718,3 +2718,13 @@ func openAICompatRetryAfterHeader(headers http.Header, now time.Time) *time.Dura
 
 // SupportsApplyPatch reports the actual executor contract, independent of its provider name.
 func (e *OpenAICompatExecutor) SupportsApplyPatch() bool { return e != nil }
+
+// newHTTPClient returns the upstream client for this credential: a Chrome TLS
+// fingerprint when the provider sets tls-fingerprint: chrome, the standard
+// proxy-aware client otherwise.
+func (e *OpenAICompatExecutor) newHTTPClient(ctx context.Context, auth *cliproxyauth.Auth) *http.Client {
+	if compat := e.resolveCompatConfig(auth, cliproxyexecutor.Request{}); compat != nil && strings.EqualFold(strings.TrimSpace(compat.TLSFingerprint), "chrome") {
+		return helps.NewChromeHTTPClient(ctx, e.cfg, auth, 0)
+	}
+	return helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+}
