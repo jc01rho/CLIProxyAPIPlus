@@ -551,7 +551,20 @@ func shouldPreserveAttemptBudgetForStatus(statusCode int) bool {
 	}
 }
 
-func (m *Manager) shouldCountAttemptBudget(err error, currentProvider string, providers []string, tried map[string]struct{}, routeModel string) (countBudget bool, sameProviderRetry bool) {
+// sameProviderRetryAllowed reports whether retrying another credential of the same
+// provider may skip the credential attempt budget. The local feature exists to try
+// the remaining same-provider alias credentials *before* the fallback chain, so it
+// only applies when a fallback chain is configured. Streams keep it unconditionally
+// because an embedded upstream 429 event is recovered by failing over to the next
+// credential, with or without a fallback chain.
+func (m *Manager) sameProviderRetryAllowed(stream bool) bool {
+	if stream {
+		return true
+	}
+	return len(m.getFallbackChain()) > 0
+}
+
+func (m *Manager) shouldCountAttemptBudget(err error, currentProvider string, providers []string, tried map[string]struct{}, routeModel string, allowSameProviderRetry bool) (countBudget bool, sameProviderRetry bool) {
 	if err == nil || !shouldPreserveAttemptBudgetForStatus(statusCodeFromError(err)) {
 		return true, false
 	}
@@ -561,7 +574,7 @@ func (m *Manager) shouldCountAttemptBudget(err error, currentProvider string, pr
 	if remainingProviders > 0 {
 		return false, false
 	}
-	if m.countRemainingRouteAuthOptions(providers, tried, routeModel) > 0 {
+	if allowSameProviderRetry && m.countRemainingRouteAuthOptions(providers, tried, routeModel) > 0 {
 		return false, true
 	}
 	return true, false
@@ -881,7 +894,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			return resp, nil
 		}
-		countBudget, sameProviderRetry := m.shouldCountAttemptBudget(authErr, provider, providers, tried, routeModel)
+		countBudget, sameProviderRetry := m.shouldCountAttemptBudget(authErr, provider, providers, tried, routeModel, m.sameProviderRetryAllowed(false))
 		if countBudget {
 			attempted[auth.ID] = struct{}{}
 		}
@@ -1139,7 +1152,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			return resp, nil
 		}
-		countBudget, sameProviderRetry := m.shouldCountAttemptBudget(authErr, provider, providers, tried, routeModel)
+		countBudget, sameProviderRetry := m.shouldCountAttemptBudget(authErr, provider, providers, tried, routeModel, m.sameProviderRetryAllowed(false))
 		if countBudget {
 			attempted[auth.ID] = struct{}{}
 		}
@@ -1510,7 +1523,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream) {
 				return nil, errStream
 			}
-			countBudget, sameProviderRetry := m.shouldCountAttemptBudget(errStream, provider, providers, tried, routeModel)
+			countBudget, sameProviderRetry := m.shouldCountAttemptBudget(errStream, provider, providers, tried, routeModel, m.sameProviderRetryAllowed(true))
 			if countBudget {
 				attempted[auth.ID] = struct{}{}
 			} else {
