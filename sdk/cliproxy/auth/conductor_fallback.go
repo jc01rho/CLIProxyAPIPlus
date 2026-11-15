@@ -663,6 +663,7 @@ func (m *Manager) executeWithRetry(
 ) (cliproxyexecutor.Response, error) {
 	var lastErr error
 	var preferredUpstreamErr error
+	var selectionCooldownDeadline time.Time
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	opts = withCloudflareBlockedAuthTracker(opts)
 	for attempt := 0; ; attempt++ {
@@ -675,6 +676,7 @@ func (m *Manager) executeWithRetry(
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, errExec
 		}
+		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errExec, time.Now())
 		if isSchedulerRejectError(errExec) {
 			if lastErr == nil && preferredUpstreamErr == nil {
 				return cliproxyexecutor.Response{}, errExec
@@ -706,6 +708,7 @@ func (m *Manager) executeWithRetry(
 	if preferredUpstreamErr != nil {
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 	}
+	lastErr = m.annotatePoolCooldownTerminalError(ctx, providers, retryModel, opts, lastErr, selectionCooldownDeadline)
 	return cliproxyexecutor.Response{}, lastErr
 }
 
@@ -722,6 +725,7 @@ func (m *Manager) executeStreamWithRetry(
 ) (*cliproxyexecutor.StreamResult, error) {
 	var lastErr error
 	var preferredUpstreamErr error
+	var selectionCooldownDeadline time.Time
 	homeRetryLimit := -1
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	opts = withCloudflareBlockedAuthTracker(opts)
@@ -734,6 +738,9 @@ func (m *Manager) executeStreamWithRetry(
 		result, errStream := execOnce(ctx, providers, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
 		if errStream == nil {
 			return result, nil
+		}
+		if !m.HomeEnabled() {
+			observeSelectionCooldownDeadline(&selectionCooldownDeadline, errStream, time.Now())
 		}
 		if hasUpstreamExecutionAttempt(errStream) {
 			preferredUpstreamErr = errStream
@@ -786,6 +793,9 @@ func (m *Manager) executeStreamWithRetry(
 	// wrapper).
 	if preferredUpstreamErr != nil && (!m.HomeEnabled() || isHomeRetryRoundExhausted(lastErr)) {
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
+	}
+	if !m.HomeEnabled() {
+		lastErr = m.annotatePoolCooldownTerminalError(ctx, providers, retryModel, opts, lastErr, selectionCooldownDeadline)
 	}
 	return nil, lastErr
 }
