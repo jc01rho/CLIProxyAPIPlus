@@ -2,14 +2,14 @@ package helps
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
+	"github.com/MoeForge/moego/regexp"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )

@@ -10,7 +10,6 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 	antigravity "github.com/router-for-me/CLIProxyAPI/v8/internal/antigravity"

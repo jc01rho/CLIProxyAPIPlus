@@ -2,13 +2,13 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	internalantigravity "github.com/router-for-me/CLIProxyAPI/v8/internal/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
