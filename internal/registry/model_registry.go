@@ -334,9 +334,7 @@ func LookupModelInfo(modelID string, provider ...string) *ModelInfo {
 		return cloneModelInfo(info)
 	}
 	if p != "" {
-		if info := LookupStaticModelInfoByChannel(modelID, p); info != nil {
-			return cloneModelInfo(info)
-		}
+		return cloneModelInfo(LookupStaticModelInfoForProvider(modelID, p))
 	}
 	return cloneModelInfo(LookupStaticModelInfo(modelID))
 }
