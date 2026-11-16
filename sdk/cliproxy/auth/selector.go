@@ -3,21 +3,21 @@ package auth
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"maps"
 	"math"
 	"math/rand"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
+	"github.com/MoeForge/moego/regexp"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"

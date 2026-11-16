@@ -36,6 +36,8 @@ const (
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// EstimatedInputTokensMetadataKey stores a preflight estimated input token count.
 	EstimatedInputTokensMetadataKey = "estimated_input_tokens"
+	// ExcludedAuthIDsMetadataKey excludes specific auth IDs from selection for the current attempt.
+	ExcludedAuthIDsMetadataKey = "excluded_auth_ids"
 	// SelectionIDMetadataKey stores the per-selection ID generated for a plugin scheduler pick.
 	SelectionIDMetadataKey = "selection_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.
