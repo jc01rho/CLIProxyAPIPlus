@@ -65,10 +65,14 @@ func TestIssue7571_ZeroOutputMalformedFunctionCallRotatesWithoutCoolingUnrelated
 			wantHealthyStr: "healthy stream ok",
 		},
 		{
-			name:           "stream_malformed_then_healthy_nonstream",
-			malformedPath:  ":streamGenerateContent?alt=sse",
-			healthyPath:    ":generateContent",
-			wantHealthyStr: "healthy non-stream ok",
+			name:          "stream_malformed_then_healthy_nonstream",
+			malformedPath: ":streamGenerateContent?alt=sse",
+			healthyPath:   ":generateContent",
+			// The fork routes every Antigravity non-stream request through
+			// streamGenerateContent?alt=sse and aggregates the SSE frames
+			// (antigravity_executor_nonstream_sse_test.go), so this request is
+			// served by the stream branch above.
+			wantHealthyStr: "healthy stream ok",
 		},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {

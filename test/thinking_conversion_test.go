@@ -45,7 +45,7 @@ func registerTestModelsForProviders(t *testing.T, prefix string) {
 	t.Helper()
 	reg := registry.GetGlobalRegistry()
 	models := getTestModels()
-	for _, provider := range []string{"gemini", "antigravity", "claude", "openai", "codex", "kimi", "xai", "interactions"} {
+	for _, provider := range []string{"gemini", "gemini-cli", "antigravity", "claude", "openai", "codex", "kimi", "xai", "interactions", "github-copilot"} {
 		clientID := fmt.Sprintf("%s-%s", prefix, provider)
 		reg.RegisterClient(clientID, provider, models)
 		t.Cleanup(func() {
