@@ -155,12 +155,87 @@ func (s *Service) unregisterOpenAICompatExecutor(providerKey string) {
 	if !okExecutor || existing == nil {
 		return
 	}
-	if _, okOpenAICompat := existing.(*executor.OpenAICompatExecutor); okOpenAICompat {
+	// The published executor may be an embedder wrapper around a native
+	// executor; consult the tracked owned executor instead.
+	owned, hasOwned := s.ownedExecutor(providerKey)
+	candidate := existing
+	if hasOwned && owned != nil {
+		candidate = owned
+	}
+	if _, okOpenAICompat := candidate.(*executor.OpenAICompatExecutor); okOpenAICompat {
 		s.coreManager.UnregisterExecutor(providerKey)
+		if s.ownedExecutors != nil {
+			delete(s.ownedExecutors, providerKey)
+		}
+		if s.ownedRevisions != nil {
+			delete(s.ownedRevisions, providerKey)
+		}
 		return
 	}
-	if pluginhost.IsPluginRefreshCompatExecutor(existing) {
+	if pluginhost.IsPluginRefreshCompatExecutor(candidate) {
 		s.coreManager.UnregisterExecutor(providerKey)
+		if s.ownedExecutors != nil {
+			delete(s.ownedExecutors, providerKey)
+		}
+		if s.ownedRevisions != nil {
+			delete(s.ownedRevisions, providerKey)
+		}
+	}
+}
+
+func (s *Service) ownedExecutor(provider string) (coreauth.ProviderExecutor, bool) {
+	if s == nil || s.coreManager == nil {
+		return nil, false
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return nil, false
+	}
+	if s.ownedExecutors != nil {
+		if exec, ok := s.ownedExecutors[provider]; ok && exec != nil {
+			if revision, okRev := s.ownedRevisions[provider]; okRev {
+				if s.coreManager.ExecutorRevision(provider) != revision {
+					// Published changed since the service registered this
+					// executor (external overwrite or removal). The cache is
+					// stale; fall back to the currently published executor.
+					delete(s.ownedExecutors, provider)
+					delete(s.ownedRevisions, provider)
+					return s.coreManager.Executor(provider)
+				}
+				return exec, true
+			}
+			// Legacy entry without revision (not written by registerExecutor):
+			// fall back to the published executor.
+			delete(s.ownedExecutors, provider)
+			return s.coreManager.Executor(provider)
+		}
+	}
+	return s.coreManager.Executor(provider)
+}
+
+func (s *Service) registerExecutor(exec coreauth.ProviderExecutor) {
+	if s == nil || s.coreManager == nil || exec == nil {
+		return
+	}
+	owned := exec
+	if s.executorWrapper != nil {
+		if wrapped := s.executorWrapper(strings.ToLower(strings.TrimSpace(exec.Identifier())), exec); wrapped != nil {
+			exec = wrapped
+		}
+	}
+	provider := strings.ToLower(strings.TrimSpace(exec.Identifier()))
+	if provider != "" {
+		if s.ownedExecutors == nil {
+			s.ownedExecutors = make(map[string]coreauth.ProviderExecutor)
+		}
+		s.ownedExecutors[provider] = owned
+		if s.ownedRevisions == nil {
+			s.ownedRevisions = make(map[string]uint64)
+		}
+	}
+	revision := s.coreManager.RegisterExecutorWithRevision(exec)
+	if provider != "" && revision != 0 {
+		s.ownedRevisions[provider] = revision
 	}
 }
 
@@ -302,7 +377,7 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	s.cfgMu.RUnlock()
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "codex") {
 		if !forceReplace {
-			existingExecutor, hasExecutor := s.coreManager.Executor("codex")
+			existingExecutor, hasExecutor := s.ownedExecutor("codex")
 			if hasExecutor {
 				existingCodexAutoExecutor, isCodexAutoExecutor := existingExecutor.(*executor.CodexAutoExecutor)
 				if isCodexAutoExecutor && existingCodexAutoExecutor.UsesConfig(cfg) {
@@ -310,7 +385,7 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 				}
 			}
 		}
-		s.coreManager.RegisterExecutor(executor.NewCodexAutoExecutor(cfg))
+		s.registerExecutor(executor.NewCodexAutoExecutor(cfg))
 		return
 	}
 	// Skip disabled auth entries when (re)binding executors.
@@ -331,45 +406,45 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	}
 	switch strings.ToLower(a.Provider) {
 	case constant.Gemini:
-		s.coreManager.RegisterExecutor(executor.NewGeminiExecutor(cfg))
+		s.registerExecutor(executor.NewGeminiExecutor(cfg))
 	case constant.GeminiInteractions:
-		s.coreManager.RegisterExecutor(executor.NewGeminiInteractionsExecutor(cfg))
+		s.registerExecutor(executor.NewGeminiInteractionsExecutor(cfg))
 	case "vertex":
-		s.coreManager.RegisterExecutor(executor.NewGeminiVertexExecutor(cfg))
+		s.registerExecutor(executor.NewGeminiVertexExecutor(cfg))
 	case "aistudio":
 		if s.wsGateway != nil {
-			s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(cfg, a.ID, s.wsGateway))
+			s.registerExecutor(executor.NewAIStudioExecutor(cfg, a.ID, s.wsGateway))
 		}
 		return
 	case "antigravity":
-		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(cfg))
+		s.registerExecutor(executor.NewAntigravityExecutor(cfg))
 	case "claude":
-		if existing, found := s.coreManager.Executor("claude"); found {
+		if existing, found := s.ownedExecutor("claude"); found {
 			if previous, ok := existing.(*executor.ClaudeExecutor); ok {
-				s.coreManager.RegisterExecutor(previous.WithConfig(cfg))
+				s.registerExecutor(previous.WithConfig(cfg))
 				return
 			}
 		}
-		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
+		s.registerExecutor(executor.NewClaudeExecutor(cfg))
 	case constant.CommandCode:
-		s.coreManager.RegisterExecutor(executor.NewCommandCodeExecutor(cfg))
+		s.registerExecutor(executor.NewCommandCodeExecutor(cfg))
 	case constant.OpenCode:
-		s.coreManager.RegisterExecutor(executor.NewOpenCodeExecutor(cfg))
+		s.registerExecutor(executor.NewOpenCodeExecutor(cfg))
 	case constant.Mimocode:
-		s.coreManager.RegisterExecutor(executor.NewMimocodeExecutor(cfg))
+		s.registerExecutor(executor.NewMimocodeExecutor(cfg))
 	case constant.DeepAI:
-		s.coreManager.RegisterExecutor(executor.NewDeepAIExecutor(cfg))
+		s.registerExecutor(executor.NewDeepAIExecutor(cfg))
 	case constant.Devin:
-		s.coreManager.RegisterExecutor(executor.NewDevinExecutor(cfg))
+		s.registerExecutor(executor.NewDevinExecutor(cfg))
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
-		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(cfg))
+		s.registerExecutor(executor.NewKimiExecutor(cfg))
 	case "kiro":
-		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(cfg))
+		s.registerExecutor(executor.NewKiroExecutor(cfg))
 	case "zcode":
-		s.coreManager.RegisterExecutor(executor.NewZcodeExecutor(cfg))
+		s.registerExecutor(executor.NewZcodeExecutor(cfg))
 	case "xai":
 		if !forceReplace {
-			existingExecutor, hasExecutor := s.coreManager.Executor("xai")
+			existingExecutor, hasExecutor := s.ownedExecutor("xai")
 			if hasExecutor {
 				existingXAIAutoExecutor, isXAIAutoExecutor := existingExecutor.(*executor.XAIAutoExecutor)
 				if isXAIAutoExecutor && existingXAIAutoExecutor.UsesConfig(cfg) {
@@ -377,23 +452,23 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 				}
 			}
 		}
-		s.coreManager.RegisterExecutor(executor.NewXAIAutoExecutor(cfg))
+		s.registerExecutor(executor.NewXAIAutoExecutor(cfg))
 	case "cline":
-		s.coreManager.RegisterExecutor(executor.NewClineExecutor(cfg))
+		s.registerExecutor(executor.NewClineExecutor(cfg))
 	case "workbuddy":
-		s.coreManager.RegisterExecutor(executor.NewWorkBuddyExecutor(cfg))
+		s.registerExecutor(executor.NewWorkBuddyExecutor(cfg))
 	case "kilo", "kilocode":
-		s.coreManager.RegisterExecutor(executor.NewKiloExecutor(cfg))
+		s.registerExecutor(executor.NewKiloExecutor(cfg))
 	case "alysis":
-		s.coreManager.RegisterExecutor(executor.NewAlysisExecutor(cfg))
+		s.registerExecutor(executor.NewAlysisExecutor(cfg))
 	case "kilo-gateway":
-		s.coreManager.RegisterExecutor(executor.NewKiloExecutorForProvider(cfg, "kilo-gateway"))
+		s.registerExecutor(executor.NewKiloExecutorForProvider(cfg, "kilo-gateway"))
 	case "cursor":
-		s.coreManager.RegisterExecutor(executor.NewCursorExecutor(cfg))
+		s.registerExecutor(executor.NewCursorExecutor(cfg))
 	case "github-copilot":
-		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(cfg))
+		s.registerExecutor(executor.NewGitHubCopilotExecutor(cfg))
 	case "meta":
-		s.coreManager.RegisterExecutor(executor.NewMetaExecutor(cfg))
+		s.registerExecutor(executor.NewMetaExecutor(cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
@@ -427,12 +502,18 @@ func (s *Service) registerOpenAICompatProviderExecutor(providerKey string, auth 
 	nextExecutor := s.wrapOpenAICompatIfPluginAuth(compatExecutor, auth, cfg)
 	if !forceReplace {
 		if existingExecutor, hasExecutor := s.coreManager.Executor(providerKey); hasExecutor {
-			if shouldKeepExistingOpenAICompatExecutor(s, existingExecutor, nextExecutor, cfg, respectNonOwned) {
+			decisionExisting := existingExecutor
+			if _, hasOwned := s.ownedExecutor(providerKey); hasOwned {
+				if owned, ownedOK := s.ownedExecutor(providerKey); ownedOK && owned != nil {
+					decisionExisting = owned
+				}
+			}
+			if shouldKeepExistingOpenAICompatExecutor(s, decisionExisting, nextExecutor, cfg, respectNonOwned) {
 				return
 			}
 		}
 	}
-	s.coreManager.RegisterExecutor(nextExecutor)
+	s.registerExecutor(nextExecutor)
 }
 
 func (s *Service) wrapOpenAICompatIfPluginAuth(compatExecutor *executor.OpenAICompatExecutor, auth *coreauth.Auth, cfg *config.Config) coreauth.ProviderExecutor {

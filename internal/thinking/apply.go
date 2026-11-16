@@ -696,7 +696,7 @@ func applyUserDefinedModelDoc(doc *ojson.Doc, docValid bool, modelInfo *registry
 	}
 
 	if !isPluginApplier {
-		config = normalizeUserDefinedConfig(config, fromFormat, toFormat)
+		config = normalizeUserDefinedConfig(config, modelInfo, fromFormat, toFormat)
 	}
 	// Clamp level-mode configs to the model's declared supported levels. The
 	// user-defined path skips ValidateConfig, so an unsupported level (e.g.
@@ -725,7 +725,7 @@ func applyUserDefinedModelDoc(doc *ojson.Doc, docValid bool, modelInfo *registry
 	return modified, nil
 }
 
-func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat string) ThinkingConfig {
+func normalizeUserDefinedConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFormat, toFormat string) ThinkingConfig {
 	if config.Mode != ModeLevel {
 		return config
 	}
@@ -734,6 +734,11 @@ func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat stri
 	}
 	if !isBudgetCapableProvider(toFormat) {
 		return config
+	}
+	if !strings.EqualFold(string(config.Level), string(LevelNone)) && !strings.EqualFold(string(config.Level), string(LevelAuto)) {
+		if isGeminiFamily(fromFormat) || fromFormat == "interactions" || (modelInfo != nil && modelInfo.Thinking != nil && len(modelInfo.Thinking.Levels) > 0) {
+			return config
+		}
 	}
 	budget, ok := ConvertLevelToBudget(string(config.Level))
 	if !ok {
