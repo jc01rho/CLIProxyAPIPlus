@@ -182,3 +182,31 @@ func TestApplyModelsDevLimitDoesNotChangeRegisteredModel(t *testing.T) {
 		t.Fatalf("explicit alias limits = %+v", alias)
 	}
 }
+
+func TestApplyModelsDevLimitPreservesExplicitMaxContextLength(t *testing.T) {
+	previous := modelsDevLimits.Load()
+	t.Cleanup(func() { modelsDevLimits.Store(previous) })
+	catalog, err := parseModelsDevLimits([]byte(`{"deepseek/deepseek-v4.1-flash":{"limit":{"context":1000000,"input":900000,"output":384000}}}`))
+	if err != nil {
+		t.Fatalf("parse models.dev: %v", err)
+	}
+	modelsDevLimits.Store(catalog)
+
+	configured := &ModelInfo{
+		ID:               "rain-deepseek",
+		MetadataModelID:  "deepseek-v4.1-flash",
+		ExecutionTarget:  "deepseek-v4.1-flash",
+		ContextLength:    265000,
+		MaxContextLength: 265000,
+	}
+	ApplyModelsDevLimit(configured)
+	if configured.ContextLength != 265000 || configured.MaxContextLength != 265000 {
+		t.Fatalf("explicit max-context-length was overwritten: context=%d max=%d", configured.ContextLength, configured.MaxContextLength)
+	}
+	if configured.InputTokenLimit != 0 {
+		t.Fatalf("input token limit should not be overwritten above max-context-length, got %d", configured.InputTokenLimit)
+	}
+	if configured.MaxCompletionTokens != 384000 {
+		t.Fatalf("output limit = %d, want 384000", configured.MaxCompletionTokens)
+	}
+}
