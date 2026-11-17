@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 )
 
 const (
@@ -49,27 +51,7 @@ type TokenBucketTracker struct {
 	config  TokenBucketConfig
 }
 
-// NewTokenBucketTracker creates a token bucket tracker; zero fields use defaults.
-func NewTokenBucketTracker(config TokenBucketConfig) *TokenBucketTracker {
-	cfg := DefaultTokenBucketConfig()
-	if config.MaxTokens != 0 {
-		cfg.MaxTokens = config.MaxTokens
-	}
-	if config.RegenerationRatePerMinute != 0 {
-		cfg.RegenerationRatePerMinute = config.RegenerationRatePerMinute
-	}
-	if config.InitialTokens != 0 {
-		cfg.InitialTokens = config.InitialTokens
-	}
-	return &TokenBucketTracker{buckets: map[int]tokenBucketState{}, config: cfg}
-}
-
-// SetConfig changes the bucket parameters in place; zero fields fall back to the defaults.
-// Existing balances are kept, so a reload does not refill or empty anyone's bucket.
-func (t *TokenBucketTracker) SetConfig(config TokenBucketConfig) {
-	if t == nil {
-		return
-	}
+func normalizeTokenBucketConfig(config TokenBucketConfig) TokenBucketConfig {
 	cfg := DefaultTokenBucketConfig()
 	if config.MaxTokens > 0 {
 		cfg.MaxTokens = config.MaxTokens
@@ -80,9 +62,37 @@ func (t *TokenBucketTracker) SetConfig(config TokenBucketConfig) {
 	if config.InitialTokens > 0 {
 		cfg.InitialTokens = config.InitialTokens
 	}
+	if cfg.InitialTokens > cfg.MaxTokens {
+		cfg.InitialTokens = cfg.MaxTokens
+	}
+	return cfg
+}
+
+// NewTokenBucketTracker creates a token bucket tracker; zero fields use defaults.
+func NewTokenBucketTracker(config TokenBucketConfig) *TokenBucketTracker {
+	return &TokenBucketTracker{buckets: map[int]tokenBucketState{}, config: normalizeTokenBucketConfig(config)}
+}
+
+// SetConfig changes the bucket parameters in place; non-positive fields fall back to
+// defaults and InitialTokens is clamped to MaxTokens. Existing buckets are materialized
+// with the previous configuration first so a reload never retroactively alters accrued tokens.
+func (t *TokenBucketTracker) SetConfig(config TokenBucketConfig) {
+	if t == nil {
+		return
+	}
+	newCfg := normalizeTokenBucketConfig(config)
+	now := time.Now()
 	t.mu.Lock()
-	t.config = cfg
-	t.mu.Unlock()
+	defer t.mu.Unlock()
+	oldCfg := t.config
+	for idx, state := range t.buckets {
+		tokens := math.Min(oldCfg.MaxTokens, state.Tokens+now.Sub(state.LastUpdated).Minutes()*oldCfg.RegenerationRatePerMinute)
+		if tokens > newCfg.MaxTokens {
+			tokens = newCfg.MaxTokens
+		}
+		t.buckets[idx] = tokenBucketState{Tokens: tokens, LastUpdated: now}
+	}
+	t.config = newCfg
 }
 
 // Config returns the effective bucket parameters.
@@ -95,17 +105,35 @@ func (t *TokenBucketTracker) Config() TokenBucketConfig {
 	return t.config
 }
 
-// TimeUntilTokens reports how long until the account holds at least cost tokens.
-func (t *TokenBucketTracker) TimeUntilTokens(accountIndex int, cost float64) time.Duration {
+// TimeUntilTokens reports how long until the account holds at least cost tokens,
+// and false if the configured bucket can never accumulate cost tokens.
+func (t *TokenBucketTracker) TimeUntilTokens(accountIndex int, cost float64) (time.Duration, bool) {
 	if t == nil {
-		return 0
+		return 0, false
 	}
-	missing := cost - t.GetTokens(accountIndex)
-	rate := t.Config().RegenerationRatePerMinute
-	if missing <= 0 || rate <= 0 {
-		return 0
+	now := time.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	cfg := t.config
+	state, ok := t.buckets[accountIndex]
+	var current float64
+	if !ok {
+		current = cfg.InitialTokens
+		if current < cost && cfg.RegenerationRatePerMinute > 0 && cost <= cfg.MaxTokens {
+			// Materialize the unseen bucket so subsequent checks accrue tokens over time.
+			t.buckets[accountIndex] = tokenBucketState{Tokens: current, LastUpdated: now}
+		}
+	} else {
+		current = math.Min(cfg.MaxTokens, state.Tokens+now.Sub(state.LastUpdated).Minutes()*cfg.RegenerationRatePerMinute)
 	}
-	return time.Duration(missing / rate * float64(time.Minute))
+	if current >= cost {
+		return 0, true
+	}
+	if cost > cfg.MaxTokens || cfg.RegenerationRatePerMinute <= 0 {
+		return 0, false
+	}
+	missing := cost - current
+	return time.Duration(missing / cfg.RegenerationRatePerMinute * float64(time.Minute)), true
 }
 
 // GetTokens returns current tokens after minutesSinceUpdate*regenerationRatePerMinute recovery.
@@ -125,11 +153,32 @@ func (t *TokenBucketTracker) GetTokens(accountIndex int) float64 {
 
 // HasTokens reports whether an account has enough tokens; cost defaults to 1.
 func (t *TokenBucketTracker) HasTokens(accountIndex int, cost ...float64) bool {
+	if t == nil {
+		return true
+	}
 	c := 1.0
 	if len(cost) > 0 {
 		c = cost[0]
 	}
-	return t.GetTokens(accountIndex) >= c
+	t.mu.RLock()
+	state, ok := t.buckets[accountIndex]
+	cfg := t.config
+	t.mu.RUnlock()
+	if !ok {
+		if cfg.InitialTokens >= c {
+			return true
+		}
+		// Materialize unseen bucket with initial tokens below cost so refill begins now.
+		t.mu.Lock()
+		if _, exists := t.buckets[accountIndex]; !exists {
+			t.buckets[accountIndex] = tokenBucketState{Tokens: t.config.InitialTokens, LastUpdated: time.Now()}
+		}
+		state = t.buckets[accountIndex]
+		cfg = t.config
+		t.mu.Unlock()
+	}
+	current := math.Min(cfg.MaxTokens, state.Tokens+time.Since(state.LastUpdated).Minutes()*cfg.RegenerationRatePerMinute)
+	return current >= c
 }
 
 // Consume removes tokens and returns false if insufficient; cost defaults to 1.
@@ -141,13 +190,22 @@ func (t *TokenBucketTracker) Consume(accountIndex int, cost ...float64) bool {
 	if len(cost) > 0 {
 		c = cost[0]
 	}
-	current := t.GetTokens(accountIndex)
-	if current < c {
-		return false
-	}
+	now := time.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.buckets[accountIndex] = tokenBucketState{Tokens: current - c, LastUpdated: time.Now()}
+	cfg := t.config
+	state, ok := t.buckets[accountIndex]
+	current := cfg.InitialTokens
+	if ok {
+		current = math.Min(cfg.MaxTokens, state.Tokens+now.Sub(state.LastUpdated).Minutes()*cfg.RegenerationRatePerMinute)
+	}
+	if current < c {
+		if !ok && current < c {
+			t.buckets[accountIndex] = tokenBucketState{Tokens: current, LastUpdated: now}
+		}
+		return false
+	}
+	t.buckets[accountIndex] = tokenBucketState{Tokens: current - c, LastUpdated: now}
 	return true
 }
 
@@ -160,10 +218,16 @@ func (t *TokenBucketTracker) Refund(accountIndex int, amount ...float64) {
 	if len(amount) > 0 {
 		a = amount[0]
 	}
-	current := t.GetTokens(accountIndex)
+	now := time.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.buckets[accountIndex] = tokenBucketState{Tokens: math.Min(t.config.MaxTokens, current+a), LastUpdated: time.Now()}
+	cfg := t.config
+	state, ok := t.buckets[accountIndex]
+	current := cfg.InitialTokens
+	if ok {
+		current = math.Min(cfg.MaxTokens, state.Tokens+now.Sub(state.LastUpdated).Minutes()*cfg.RegenerationRatePerMinute)
+	}
+	t.buckets[accountIndex] = tokenBucketState{Tokens: math.Min(cfg.MaxTokens, current+a), LastUpdated: now}
 }
 
 // GetMaxTokens returns the configured maximum token balance.
@@ -171,6 +235,8 @@ func (t *TokenBucketTracker) GetMaxTokens() float64 {
 	if t == nil {
 		return DefaultTokenBucketMaxTokens
 	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return t.config.MaxTokens
 }
 
@@ -433,7 +499,11 @@ func FetchAvailableModels(ctx context.Context, client *http.Client, accessToken,
 	if len(endpoints) == 0 {
 		endpoints = FetchAvailableModelsEndpointFallbacks
 	}
-	ua := GetRandomizedHeaders(HeaderStyleAntigravity, "").UserAgent
+	// Cloud Code only returns the "Gemini Models" quota group and the newest
+	// model ids (gemini-3.8-flash-*, gemini-4-argon-*) to clients reporting at
+	// least 2.23.0; the legacy agy CLI harness identity (1.1.6) is served the
+	// Claude/GPT group only. Use the floor-enforced Hub runtime identity.
+	ua := misc.AntigravityQuotaUserAgent()
 	errs := []string{}
 	for _, endpoint := range endpoints {
 		endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
@@ -536,7 +606,7 @@ func FetchUserQuotaSummary(ctx context.Context, client *http.Client, accessToken
 	if len(endpoints) == 0 {
 		endpoints = FetchAvailableModelsEndpointFallbacks
 	}
-	userAgent := GetRandomizedHeaders(HeaderStyleAntigravity, "").UserAgent
+	userAgent := misc.AntigravityQuotaUserAgent()
 	errs := []string{}
 	for _, endpoint := range endpoints {
 		endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")

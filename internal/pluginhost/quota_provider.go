@@ -11,6 +11,11 @@ import (
 
 // RegisterPluginForTest registers a plugin directly on the host for testing.
 func (h *Host) RegisterPluginForTest(id string, plugin pluginapi.Plugin) {
+	h.RegisterPluginWithPriorityForTest(id, 1, plugin)
+}
+
+// RegisterPluginWithPriorityForTest registers a plugin with an explicit runtime priority on the host for testing.
+func (h *Host) RegisterPluginWithPriorityForTest(id string, priority int, plugin pluginapi.Plugin) {
 	if h == nil {
 		return
 	}
@@ -20,10 +25,18 @@ func (h *Host) RegisterPluginForTest(id string, plugin pluginapi.Plugin) {
 		version:  "1.0.0",
 		meta:     plugin.Metadata,
 		plugin:   plugin,
-		priority: 1,
+		priority: priority,
 	}
 	records := append(h.activeRecords(), record)
 	h.mu.Lock()
+	h.loaded[id] = &loadedPlugin{
+		id:         id,
+		name:       plugin.Metadata.Name,
+		path:       record.path,
+		version:    record.version,
+		plugin:     plugin,
+		registered: true,
+	}
 	h.rebuildActivePluginMapsLocked(records)
 	h.snapshot.Store(&Snapshot{enabled: true, records: records, quotaSupportedProviders: make(map[string][]string)})
 	h.mu.Unlock()
@@ -150,9 +163,11 @@ func (h *Host) QuotaProviderPluginIDs(ctx context.Context) map[string]string {
 			addCandidate(identifier, record.id)
 		}
 		addCandidate(normalizeProviderID(record.id), record.id)
-		if record.plugin.Capabilities.AuthProvider != nil {
-			if authID, okAuth := h.callAuthProviderIdentifier(record.id, record.plugin.Capabilities.AuthProvider); okAuth {
-				addCandidate(authID, record.id)
+		if hasRecordAuthProvider(record) {
+			if authIDs, okAuth := h.callRecordAuthProviderIdentifiers(record); okAuth {
+				for _, authID := range authIDs {
+					addCandidate(authID, record.id)
+				}
 			}
 		}
 	}
@@ -211,10 +226,14 @@ func (h *Host) quotaProviderRecord(ctx context.Context, provider string) *capabi
 			r := record
 			return &r
 		}
-		if record.plugin.Capabilities.AuthProvider != nil {
-			if authID, okAuth := h.callAuthProviderIdentifier(record.id, record.plugin.Capabilities.AuthProvider); okAuth && authID == provider {
-				r := record
-				return &r
+		if hasRecordAuthProvider(record) {
+			if authIDs, okAuth := h.callRecordAuthProviderIdentifiers(record); okAuth {
+				for _, authID := range authIDs {
+					if authID == provider {
+						r := record
+						return &r
+					}
+				}
 			}
 		}
 	}

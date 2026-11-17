@@ -55,14 +55,19 @@ func TestAntigravityLocalRateLimitIsConfigurable(t *testing.T) {
 	if got := antigravity.GetTokenTracker().Config().RegenerationRatePerMinute; got != 20 {
 		t.Fatalf("regeneration rate = %v, want 20", got)
 	}
-	// 20 per minute is one token every three seconds.
 	err := antigravityEnsureRequestTokens(cfg, auth, nil)
 	var limited antigravityLocalRateLimitError
 	if !errors.As(err, &limited) {
 		t.Fatalf("drained bucket error = %v, want antigravityLocalRateLimitError", err)
 	}
-	if limited.retryAfter <= 0 || limited.retryAfter > 3*time.Second+50*time.Millisecond {
-		t.Fatalf("retryAfter = %v, want within (0, 3s]", limited.retryAfter)
+	if limited.RetryAfter() == nil || *limited.RetryAfter() <= 0 || *limited.RetryAfter() > 3*time.Second+50*time.Millisecond {
+		t.Fatalf("retryAfter = %v, want within (0, 3s]", limited.RetryAfter())
+	}
+	if got := cliproxyauth.SafeResponseHeaders(err).Get("Retry-After"); got != "3" {
+		t.Fatalf("SafeResponseHeaders Retry-After = %q, want 3", got)
+	}
+	if !cliproxyauth.HasTrustedRetryDeadline(err) {
+		t.Fatal("HasTrustedRetryDeadline = false, want true")
 	}
 }
 
@@ -98,10 +103,84 @@ func TestAntigravityLocalRateLimitReloadKeepsBalances(t *testing.T) {
 	}
 }
 
-// The refusal must be tagged so the conductor neither cools the credential down nor hands the
-// primary role to another account.
+func TestAntigravityLocalRateLimitClampsInitialTokensAndMaterializesLowInitial(t *testing.T) {
+	resetAntigravityTokenTracker(t)
+	cfg := &config.Config{}
+	cfg.Antigravity.LocalRateLimit = config.AntigravityLocalRateLimitConfig{
+		MaxTokens: 10, InitialTokens: 50, RegenerationRatePerMinute: 600,
+	}
+	auth := &cliproxyauth.Auth{ID: "ag-limit-clamped"}
+	if got := drainAntigravityBucket(cfg, auth); got != 10 {
+		t.Fatalf("clamped burst = %d, want 10", got)
+	}
+
+	resetAntigravityTokenTracker(t)
+	lowInit := &config.Config{}
+	lowInit.Antigravity.LocalRateLimit = config.AntigravityLocalRateLimitConfig{
+		MaxTokens: 5, InitialTokens: 0.5, RegenerationRatePerMinute: 60000,
+	}
+	lowAuth := &cliproxyauth.Auth{ID: "ag-limit-low-init"}
+	err := antigravityEnsureRequestTokens(lowInit, lowAuth, nil)
+	if err == nil {
+		t.Fatal("expected first call with 0.5 initial tokens to be refused")
+	}
+	var limited antigravityLocalRateLimitError
+	if !errors.As(err, &limited) || limited.RetryAfter() == nil || *limited.RetryAfter() <= 0 {
+		t.Fatalf("expected positive RetryAfter for refillable low-initial bucket, got %v", err)
+	}
+	tracker := antigravity.GetTokenTracker()
+	if gotMax := tracker.GetMaxTokens(); gotMax != 5 {
+		t.Fatalf("GetMaxTokens() = %v, want 5", gotMax)
+	}
+}
+
+func TestAntigravityLocalRateLimitImpossibleCapacityHasNoRetryAfter(t *testing.T) {
+	resetAntigravityTokenTracker(t)
+	cfg := &config.Config{}
+	cfg.Antigravity.LocalRateLimit = config.AntigravityLocalRateLimitConfig{
+		MaxTokens: 0.5, InitialTokens: 0.5, RegenerationRatePerMinute: 60,
+	}
+	err := antigravityEnsureRequestTokens(cfg, &cliproxyauth.Auth{ID: "ag-limit-impossible"}, nil)
+	if err == nil {
+		t.Fatal("expected refusal when MaxTokens < cost")
+	}
+	var limited antigravityLocalRateLimitError
+	if !errors.As(err, &limited) {
+		t.Fatalf("error = %T, want antigravityLocalRateLimitError", err)
+	}
+	if limited.RetryAfter() != nil {
+		t.Fatalf("RetryAfter() = %v, want nil when capacity < cost", *limited.RetryAfter())
+	}
+	if got := cliproxyauth.SafeResponseHeaders(err).Get("Retry-After"); got != "" {
+		t.Fatalf("SafeResponseHeaders Retry-After = %q, want empty", got)
+	}
+}
+
+func TestAntigravityLocalRateLimitStaleExecutorDoesNotRevertReloadedConfig(t *testing.T) {
+	resetAntigravityTokenTracker(t)
+	oldCfg := &config.Config{}
+	oldCfg.Antigravity.LocalRateLimit = config.AntigravityLocalRateLimitConfig{
+		MaxTokens: 10, InitialTokens: 10, RegenerationRatePerMinute: 6,
+	}
+	oldExec := NewAntigravityExecutor(oldCfg)
+
+	newCfg := &config.Config{}
+	newCfg.Antigravity.LocalRateLimit = config.AntigravityLocalRateLimitConfig{
+		MaxTokens: 80, InitialTokens: 80, RegenerationRatePerMinute: 20,
+	}
+	_ = NewAntigravityExecutor(newCfg)
+
+	if err := antigravityEnsureRequestTokens(oldExec.cfg, &cliproxyauth.Auth{ID: "ag-stale"}, nil, oldExec.configGen); err != nil {
+		t.Fatal(err)
+	}
+	if got := antigravity.GetTokenTracker().Config().MaxTokens; got != 80 {
+		t.Fatalf("stale executor reverted MaxTokens to %v, want 80", got)
+	}
+}
+
 func TestAntigravityLocalRateLimitErrorIsRequestScoped(t *testing.T) {
-	var err error = antigravityLocalRateLimitError{retryAfter: 2 * time.Second}
+	d := 2 * time.Second
+	var err error = antigravityLocalRateLimitError{retryAfter: &d}
 	var scoped cliproxyexecutor.RequestScopedError
 	if !errors.As(err, &scoped) || !scoped.IsRequestScoped() {
 		t.Fatal("local rate limit error is not request-scoped")
@@ -116,7 +195,6 @@ func TestAntigravityLocalRateLimitErrorIsRequestScoped(t *testing.T) {
 	}
 }
 
-// An empty local-rate-limit section must not clobber a tracker that was configured elsewhere.
 func TestAntigravityLocalRateLimitEmptySectionKeepsExistingTracker(t *testing.T) {
 	resetAntigravityTokenTracker(t)
 	antigravity.InitTokenTracker(antigravity.TokenBucketConfig{MaxTokens: 7, InitialTokens: 7, RegenerationRatePerMinute: 1})
@@ -126,7 +204,6 @@ func TestAntigravityLocalRateLimitEmptySectionKeepsExistingTracker(t *testing.T)
 	}
 }
 
-// Removing the section after it was applied restores the defaults.
 func TestAntigravityLocalRateLimitRemovedSectionRestoresDefaults(t *testing.T) {
 	resetAntigravityTokenTracker(t)
 	cfg := &config.Config{}

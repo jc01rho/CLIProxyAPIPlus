@@ -21,7 +21,6 @@ import (
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type attemptInfo struct {
@@ -65,6 +64,11 @@ type Handler struct {
 	usageExportRuntime      usageExportRuntime
 	pluginStoreRateLimiter  *pluginstore.GitHubRateLimiter
 	pluginReleases          pluginReleaseCache
+	authCache               managementAuthCache
+	siwcOAuthFactory        func(*config.Config, string) siwcOAuthService
+	siwcCommitMu            sync.Mutex
+	v8AuthUploadMu          sync.Mutex
+	pluginLoginSaveMu       sync.Mutex
 }
 
 type configReloadSnapshot struct {
@@ -140,7 +144,18 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 		log.Debug("management: ignoring config reload parsed from an older config file version")
 		return
 	}
+	prevSecretHash := ""
+	if h.cfg != nil {
+		prevSecretHash = h.cfg.RemoteManagement.SecretKey
+	}
 	h.cfg = cloned
+	nextSecretHash := ""
+	if cloned != nil {
+		nextSecretHash = cloned.RemoteManagement.SecretKey
+	}
+	if prevSecretHash != nextSecretHash {
+		h.authCache.invalidate()
+	}
 	manager := h.authManager
 	apiKeyIPBlacklist := h.apiKeyIPBlacklist
 	h.mu.Unlock()
@@ -188,6 +203,51 @@ func applyConfigToRunningComponents(cfg *config.Config, manager *coreauth.Manage
 	manager.SetFallbackAllowedModels(cfg.Routing.FallbackAllowedModels)
 }
 
+// configSnapshot returns an independent copy of h.cfg under h.mu, for code that runs outside the request holding it.
+func (h *Handler) configSnapshot() *config.Config {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+	if cloned := h.cfg.CloneForRuntime(); cloned != nil {
+		return cloned
+	}
+	copied := *h.cfg
+	return &copied
+}
+
+// pluginHostSnapshot reads h.pluginHost under h.mu.
+func (h *Handler) pluginHostSnapshot() *pluginhost.Host {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pluginHost
+}
+
+// oauthConfigWithProxy returns a configuration snapshot for an OAuth session.
+// When proxyURL is non-empty, it returns a cloned config with ProxyURL overridden
+// without mutating the shared handler configuration.
+func (h *Handler) oauthConfigWithProxy(proxyURL string) *config.Config {
+	cfg := h.configSnapshot()
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return cfg
+	}
+	if cfg == nil {
+		return &config.Config{
+			SDKConfig: config.SDKConfig{ProxyURL: proxyURL},
+		}
+	}
+	cfg.ProxyURL = proxyURL
+	return cfg
+}
+
 // isStaleConfigFileSnapshotLocked reports whether cfg was parsed from config file
 // bytes that are no longer on disk. Management saves hold h.mu, so none can land
 // during the check. Callers must hold h.mu.
@@ -200,6 +260,29 @@ func (h *Handler) isStaleConfigFileSnapshotLocked(cfg *config.Config) bool {
 		return false
 	}
 	return config.ComputeSourceHash(data) != cfg.SourceHash
+}
+
+// rejectStaleConfigLocked answers 409 config_conflict and reports true when h.cfg
+// was parsed from bytes that are no longer on disk: an external edit has not been
+// reloaded yet, and saving h.cfg would overwrite it. Callers must hold h.mu.
+func (h *Handler) rejectStaleConfigLocked(c *gin.Context) bool {
+	if !h.isStaleConfigFileSnapshotLocked(h.cfg) {
+		return false
+	}
+	c.JSON(http.StatusConflict, gin.H{"error": "config_conflict", "message": "config file changed on disk and has not been reloaded yet; retry after the reload"})
+	return true
+}
+
+// recordConfigFileSavedLocked marks h.cfg as reflecting the config file bytes
+// a management save just wrote, so the stale snapshot check does not mistake
+// the handler's own save for an external edit. Callers must hold h.mu.
+func (h *Handler) recordConfigFileSavedLocked() {
+	if h.cfg == nil || h.configFilePath == "" {
+		return
+	}
+	if data, errRead := os.ReadFile(h.configFilePath); errRead == nil {
+		h.cfg.SourceHash = config.ComputeSourceHash(data)
+	}
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
@@ -271,10 +354,14 @@ func (h *Handler) reloadSnapshotConfigLocked() configReloadSnapshot {
 // saveConfigAndSnapshotLocked saves h.cfg and returns a full runtime config snapshot.
 // Callers must hold h.mu.
 func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnapshot, bool) {
+	if h.rejectStaleConfigLocked(c) {
+		return configReloadSnapshot{}, false
+	}
 	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", errSave)})
 		return configReloadSnapshot{}, false
 	}
+	h.recordConfigFileSavedLocked()
 	return h.reloadSnapshotConfigLocked(), true
 }
 
@@ -513,7 +600,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		return true, 0, ""
 	}
 
-	if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
+	if secretHash == "" || !h.authCache.verify(secretHash, provided) {
 		fail()
 		return false, http.StatusUnauthorized, "invalid management key"
 	}
@@ -538,11 +625,15 @@ func (h *Handler) persist(c *gin.Context) bool {
 // persistLocked saves the current in-memory config to disk.
 // It expects the caller to hold h.mu.
 func (h *Handler) persistLocked(c *gin.Context) bool {
+	if h.rejectStaleConfigLocked(c) {
+		return false
+	}
 	// Preserve comments when writing
 	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
+	h.recordConfigFileSavedLocked()
 	snapshot := h.reloadSnapshotConfigLocked()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	var reqCtx context.Context

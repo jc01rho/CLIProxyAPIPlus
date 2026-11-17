@@ -3,11 +3,11 @@ package diff
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -76,29 +76,6 @@ func ComputeMistralModelsHash(models []config.MistralModel) string {
 				continue
 			}
 			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
-		}
-	})
-	return hashJoined(keys)
-}
-
-func ComputeFreebuffModelsHash(models []config.FreebuffModel) string {
-	keys := normalizeModelPairs(func(out func(key string)) {
-		for _, model := range models {
-			name := strings.TrimSpace(model.Name)
-			alias := strings.TrimSpace(model.Alias)
-			agentID := strings.TrimSpace(model.AgentID)
-			displayName := strings.TrimSpace(model.DisplayName)
-			if name == "" && alias == "" && agentID == "" && displayName == "" {
-				continue
-			}
-			out(strings.Join([]string{
-				strings.ToLower(name),
-				strings.ToLower(alias),
-				strings.ToLower(agentID),
-				strings.ToLower(displayName),
-				strconv.Itoa(model.MaxContextLength),
-				strconv.FormatBool(model.ForceMapping),
-			}, "|"))
 		}
 	})
 	return hashJoined(keys)
@@ -180,4 +157,18 @@ func hashJoined(keys []string) string {
 	}
 	sum := sha256.Sum256([]byte(strings.Join(keys, "\n")))
 	return hex.EncodeToString(sum[:])
+}
+
+func ComputeDeepAIModelsHash(models []config.DeepAIModel) string {
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.GetName())
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return hashJoined(keys)
 }

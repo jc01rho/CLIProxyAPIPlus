@@ -457,9 +457,10 @@ func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseSt
 		// Repair and parse the accumulated JSON
 		repairedJSON := RepairJSON(fullInput)
 		var finalInput map[string]interface{}
-		if err := json.Unmarshal([]byte(repairedJSON), &finalInput); err != nil {
-			log.Warnf("kiro: failed to parse accumulated tool input: %v, raw: %s", err, fullInput)
-			finalInput = make(map[string]interface{})
+		parseErr := json.Unmarshal([]byte(repairedJSON), &finalInput)
+		if parseErr != nil {
+			log.Warnf("kiro: failed to parse accumulated tool input: %v, raw: %s", parseErr, fullInput)
+			finalInput = nil
 		}
 
 		// Detect truncation for all tools
@@ -475,6 +476,19 @@ func ProcessToolUseEvent(event map[string]interface{}, currentToolUse *ToolUseSt
 			currentToolUse.TruncationInfo = &truncInfo
 		} else {
 			log.Debugf("kiro: tool use %s input length: %d bytes (no truncation)", currentToolUse.Name, len(fullInput))
+			if parseErr != nil {
+				// Ported from kiro-lb src/stream_core.rs (807c8ab) StreamError::MalformedToolInput:
+				// an unparsable tool input that is not a truncation is a malformed
+				// upstream response, not a call with no arguments. Fail the turn so
+				// the client sees an error instead of invoking the tool with
+				// arguments the model never produced.
+				return nil, nil, fmt.Errorf(
+					"kiro: malformed tool input for %s (ID: %s): %w",
+					currentToolUse.Name,
+					currentToolUse.ToolUseID,
+					parseErr,
+				)
+			}
 		}
 
 		// Create the tool use with truncation info if applicable

@@ -29,6 +29,8 @@ type LoginOptions struct {
 	// bypass the OAuth device flow and exchange the token
 	// directly for an auth record.
 	PersonalToken string
+
+	ProxyURL string
 }
 
 // DoCodexLogin triggers the Codex OAuth flow through the shared authentication manager.
@@ -53,6 +55,7 @@ func DoCodexLogin(cfg *config.Config, options *LoginOptions) {
 	authOpts := &sdkAuth.LoginOptions{
 		NoBrowser:    options.NoBrowser,
 		CallbackPort: options.CallbackPort,
+		ProxyURL:     options.ProxyURL,
 		Metadata:     map[string]string{},
 		Prompt:       promptFn,
 	}

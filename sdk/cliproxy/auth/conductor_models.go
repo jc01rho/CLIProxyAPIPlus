@@ -2,6 +2,8 @@ package auth
 
 import (
 	"bytes"
+	"context"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -288,10 +290,10 @@ func (m *Manager) configuredSelectionModelPool(auth *Auth, routeModel string) []
 	return resolveConfiguredUpstreamModelPool(m.loadAPIKeyModelRouting().config, auth, rewriteModelForAuth(routeModel, auth))
 }
 
-func (m *Manager) isAuthBlockedForRouteModel(auth *Auth, routeModel string, now time.Time) (bool, blockReason, time.Time) {
+func (m *Manager) isAuthBlockedForRouteModel(ctx context.Context, auth *Auth, routeModel string, now time.Time, clientHeaders ...http.Header) (bool, blockReason, time.Time) {
 	pool := m.configuredSelectionModelPool(auth, routeModel)
 	if len(pool) <= 1 {
-		return isAuthBlockedForModel(auth, m.selectionModelForAuth(auth, routeModel), now)
+		return isAuthBlockedForModelForRequest(ctx, auth, m.selectionModelForAuth(auth, routeModel), now, clientHeaders...)
 	}
 	// Pooled execution records and checks each upstream target, not the route key.
 	// An auth remains eligible while any target can execute. Keep credential-wide
@@ -299,7 +301,7 @@ func (m *Manager) isAuthBlockedForRouteModel(auth *Auth, routeModel string, now 
 	reason := blockReasonOther
 	var earliest time.Time
 	for _, model := range pool {
-		blocked, modelReason, next := isAuthBlockedForModel(auth, model, now)
+		blocked, modelReason, next := isAuthBlockedForModelForRequest(ctx, auth, model, now, clientHeaders...)
 		if !blocked {
 			return false, blockReasonNone, time.Time{}
 		}
@@ -348,38 +350,98 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 	}
 
 	state := existingModelState(auth, targetKey)
-	isSuspended := auth.Disabled || auth.Status == StatusDisabled
-	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
-		isSuspended = true
-	}
-	isQuotaExceeded := false
-	var suspendReason string
-	if state != nil {
-		if state.Status == StatusDisabled || state.Unavailable || (!state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)) {
+	authDisabled := auth.Disabled || auth.Status == StatusDisabled
+	stateDisabled := state != nil && state.Status == StatusDisabled
+	terminalUnauthorized := hasUnauthorizedAuthFailure(auth)
+	openEnded := authDisabled || stateDisabled || terminalUnauthorized
+	isSuspended := openEnded
+
+	var credQuotaUntil time.Time
+	credQuotaSuspended := false
+	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" {
+		if auth.Quota.NextRecoverAt.IsZero() {
 			isSuspended = true
+			credQuotaSuspended = true
+			openEnded = true
+		} else if auth.Quota.NextRecoverAt.After(now) {
+			isSuspended = true
+			credQuotaSuspended = true
+			credQuotaUntil = auth.Quota.NextRecoverAt
+		}
+	}
+
+	isQuotaExceeded := false
+	stateSuspended := false
+	var stateUntil time.Time
+	if state != nil {
+		if stateDisabled {
+			stateSuspended = true
+		} else if blocked, _, retryAfter := availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now); blocked {
+			isSuspended = true
+			stateSuspended = true
+			if retryAfter.IsZero() {
+				openEnded = true
+			} else {
+				stateUntil = retryAfter
+			}
 		}
 		if state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
 			isQuotaExceeded = true
 		}
-		if isSuspended {
-			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
-		}
 	}
-	if len(auth.ModelStates) == 0 && auth.Unavailable && auth.NextRetryAfter.After(now) {
+
+	var authFallbackUntil time.Time
+	if len(auth.ModelStates) == 0 {
 		// With no per-model states, scheduling falls back to the credential-wide
 		// cooldown (isAuthBlockedForModel); the projection must agree with it.
 		// When states exist, unmatched models stay schedulable by design, so the
 		// credential-wide fields must not suspend them here either.
-		isSuspended = true
+		if blocked, _, retryAfter := availabilityBlock(auth.Unavailable, auth.Quota.Exceeded, auth.NextRetryAfter, auth.Quota.NextRecoverAt, now); blocked {
+			isSuspended = true
+			if retryAfter.IsZero() {
+				openEnded = true
+			} else {
+				authFallbackUntil = retryAfter
+			}
+		}
 	}
-	if isSuspended && suspendReason == "" {
-		suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+
+	var suspendReason string
+	var suspendUntil time.Time
+	if isSuspended {
+		switch {
+		case authDisabled || stateDisabled:
+			suspendReason = "disabled"
+		case terminalUnauthorized:
+			suspendReason = cooldownReason(auth.StatusMessage, QuotaState{}, auth.LastError)
+			if suspendReason == "" {
+				suspendReason = "unauthorized"
+			}
+		case stateSuspended:
+			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
+			suspendUntil = stateUntil
+			if credQuotaSuspended && (strings.EqualFold(suspendReason, "quota") || strings.EqualFold(suspendReason, "credential_quota")) && credQuotaUntil.After(suspendUntil) {
+				suspendUntil = credQuotaUntil
+			}
+		default:
+			suspendUntil = authFallbackUntil
+			if credQuotaUntil.After(suspendUntil) {
+				suspendUntil = credQuotaUntil
+			}
+		}
+		if suspendReason == "" {
+			suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+		}
+	}
+	if openEnded || !isSuspended {
+		suspendUntil = time.Time{}
 	}
 
 	return registry.ClientModelProjection{
 		ModelID:       targetModel,
 		Suspended:     isSuspended,
 		SuspendReason: suspendReason,
+		SuspendUntil:  suspendUntil,
 		QuotaExceeded: isQuotaExceeded,
 	}
 }
@@ -395,7 +457,7 @@ func (m *Manager) stateModelForExecution(auth *Auth, routeModel, upstreamModel s
 	}
 	stateModel := executionResultModel(routeModel, upstreamModel, pooled)
 	selectionModel := m.selectionModelForAuth(auth, routeModel)
-	if canonicalModelKey(selectionModel) == canonicalModelKey(upstreamModel) && strings.TrimSpace(selectionModel) != "" {
+	if sameCanonicalModelKey(selectionModel, upstreamModel) && strings.TrimSpace(selectionModel) != "" {
 		return strings.TrimSpace(upstreamModel)
 	}
 	return stateModel
@@ -414,6 +476,10 @@ func executionResultModel(routeModel, upstreamModel string, pooled bool) string 
 }
 
 func (m *Manager) filterExecutionModels(auth *Auth, routeModel string, candidates []string, pooled bool) []string {
+	return m.filterExecutionModelsForRequest(nil, auth, routeModel, candidates, pooled)
+}
+
+func (m *Manager) filterExecutionModelsForRequest(ctx context.Context, auth *Auth, routeModel string, candidates []string, pooled bool, clientHeaders ...http.Header) []string {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -430,7 +496,7 @@ func (m *Manager) filterExecutionModels(auth *Auth, routeModel string, candidate
 			continue
 		}
 		stateModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
-		blocked, _, _ := isAuthBlockedForModel(auth, stateModel, now)
+		blocked, _, _ := isAuthBlockedForModelForRequest(ctx, auth, stateModel, now, clientHeaders...)
 		if blocked {
 			continue
 		}
@@ -446,8 +512,12 @@ func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string) ([]stri
 }
 
 func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string) ([]string, bool, OAuthModelAliasResult, *apiKeyModelRoutingSnapshot) {
+	return m.preparedExecutionModelsWithAliasForRequest(nil, auth, routeModel)
+}
+
+func (m *Manager) preparedExecutionModelsWithAliasForRequest(ctx context.Context, auth *Auth, routeModel string, clientHeaders ...http.Header) ([]string, bool, OAuthModelAliasResult, *apiKeyModelRoutingSnapshot) {
 	candidates, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(auth, routeModel)
-	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled, aliasResult, routing
+	return m.filterExecutionModelsForRequest(ctx, auth, routeModel, candidates, pooled, clientHeaders...), pooled, aliasResult, routing
 }
 
 const (
@@ -734,10 +804,6 @@ func configuredModelAliasEntries(cfg *internalconfig.Config, auth *Auth) []model
 		if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
 			models = asModelAliasEntries(entry.Models)
 		}
-	case "freebuff":
-		if entry := resolveFreebuffAPIKeyConfig(cfg, auth); entry != nil {
-			models = asModelAliasEntries(entry.Models)
-		}
 	case "devin":
 		if entry := resolveDevinAPIKeyConfig(cfg, auth); entry != nil {
 			models = asModelAliasEntries(entry.Models)
@@ -910,10 +976,6 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 			if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
-		case "freebuff":
-			if entry := resolveFreebuffAPIKeyConfig(cfg, auth); entry != nil {
-				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
-			}
 		case "devin":
 			if entry := resolveDevinAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
@@ -1048,8 +1110,6 @@ func (m *Manager) applyAPIKeyModelAliasWithRouting(routing *apiKeyModelRoutingSn
 		upstreamModel = resolveUpstreamModelForVertexAPIKey(cfg, auth, requestedModel)
 	case "commandcode":
 		upstreamModel = resolveUpstreamModelForCommandCodeAPIKey(cfg, auth, requestedModel)
-	case "freebuff":
-		upstreamModel = resolveUpstreamModelForFreebuffAPIKey(cfg, auth, requestedModel)
 	case "devin":
 		upstreamModel = resolveUpstreamModelForDevinAPIKey(cfg, auth, requestedModel)
 	case "mistral":
@@ -1191,40 +1251,6 @@ func resolveMistralAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *interna
 	return resolveAPIKeyConfig(cfg.MistralKey, auth)
 }
 
-func resolveFreebuffAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.FreebuffKey {
-	if cfg == nil {
-		return nil
-	}
-	if auth == nil {
-		return nil
-	}
-	attrKey, attrBase := "", ""
-	if auth.Attributes != nil {
-		attrKey = strings.TrimSpace(auth.Attributes[AttributeAPIKey])
-		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
-	}
-	if rawIndex := strings.TrimSpace(auth.Attributes[AttributeConfigIndex]); rawIndex != "" {
-		if index, err := strconv.Atoi(rawIndex); err == nil && index >= 0 && index < len(cfg.FreebuffKey) {
-			entry := &cfg.FreebuffKey[index]
-			if entry.MatchesCredential(attrKey, auth.ProxyURL) &&
-				(attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase)) {
-				return entry
-			}
-			return nil
-		}
-	}
-	for i := range cfg.FreebuffKey {
-		entry := &cfg.FreebuffKey[i]
-		if !entry.MatchesCredential(attrKey, auth.ProxyURL) {
-			continue
-		}
-		if attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase) {
-			return entry
-		}
-	}
-	return nil
-}
-
 func resolveMetaAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.MetaKey {
 	if cfg == nil {
 		return nil
@@ -1328,14 +1354,6 @@ func resolveDevinAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalc
 		}
 	}
 	return nil
-}
-
-func resolveUpstreamModelForFreebuffAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
-	entry := resolveFreebuffAPIKeyConfig(cfg, auth)
-	if entry == nil {
-		return ""
-	}
-	return resolveModelAliasFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
 }
 
 func resolveUpstreamModelForDevinAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {

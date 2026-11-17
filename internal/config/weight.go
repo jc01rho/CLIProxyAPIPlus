@@ -165,14 +165,6 @@ func (cfg *Config) ValidateCredentialWeights() error {
 			}
 		}
 	}
-	for providerIndex := range cfg.FreebuffKey {
-		for keyIndex := range cfg.FreebuffKey[providerIndex].APIKeyEntries {
-			weight := cfg.FreebuffKey[providerIndex].APIKeyEntries[keyIndex].Weight
-			if errValidate := ValidateCredentialWeight(weight); errValidate != nil {
-				return fmt.Errorf("freebuff-api-key[%d].api-key-entries[%d].weight: %w", providerIndex, keyIndex, errValidate)
-			}
-		}
-	}
 	for providerIndex := range cfg.OpenCodeKey {
 		for keyIndex := range cfg.OpenCodeKey[providerIndex].APIKeyEntries {
 			weight := cfg.OpenCodeKey[providerIndex].APIKeyEntries[keyIndex].Weight
@@ -186,6 +178,15 @@ func (cfg *Config) ValidateCredentialWeights() error {
 			weight := cfg.MimocodeKey[providerIndex].APIKeyEntries[keyIndex].Weight
 			if errValidate := ValidateCredentialWeight(weight); errValidate != nil {
 				return fmt.Errorf("mimocode-api-key[%d].api-key-entries[%d].weight: %w", providerIndex, keyIndex, errValidate)
+			}
+		}
+	}
+
+	for providerIndex := range cfg.DeepAIKey {
+		for keyIndex := range cfg.DeepAIKey[providerIndex].APIKeyEntries {
+			weight := cfg.DeepAIKey[providerIndex].APIKeyEntries[keyIndex].Weight
+			if errValidate := ValidateCredentialWeight(weight); errValidate != nil {
+				return fmt.Errorf("deepai-api-key[%d].api-key-entries[%d].weight: %w", providerIndex, keyIndex, errValidate)
 			}
 		}
 	}

@@ -38,6 +38,20 @@ func looksLikeOpencodeZenBaseURL(baseURL string) bool {
 	return host == opencodeZenHostSuffix || strings.HasSuffix(host, "."+opencodeZenHostSuffix)
 }
 
+// opencodeGoPathMarker identifies the OpenCode Go plan gateway
+// (https://opencode.ai/inference/go/...), which shares the Zen host.
+const opencodeGoPathMarker = "/inference/go/"
+
+// opencodeDefaultsToNativeResponses reports whether models without an explicit
+// supported-endpoints declaration should be called on the native /responses
+// endpoint. Zen defaults to Responses, but the Go plan gateway converts the
+// Responses input into chat messages itself and rejects histories with
+// consecutive tool calls (messages[N].content invalid_value), so Go keeps the
+// chat/completions path where the request sanitizers run.
+func opencodeDefaultsToNativeResponses(baseURL string) bool {
+	return looksLikeOpencodeZenBaseURL(baseURL) && !strings.Contains(strings.ToLower(baseURL), opencodeGoPathMarker)
+}
+
 // providerKeyLooksOpencode reports whether the provider key is an opencode
 // branded openai-compatible entry (e.g. "openai-compatible-opencode-free").
 func providerKeyLooksOpencode(providerKey string) bool {
@@ -75,17 +89,20 @@ func newOpencodeRequestID() string {
 // caller cannot influence or spoof upstream session affinity. Derivation
 // priority, all stable within a conversation (every value uses the CLI's
 // descending ses_ identifier shape, which the free-tier gate requires):
-//  1. the client's proxy-session identity (X-Session-Id / X-Session-Affinity),
+//  1. the proxy's reconciled session identity (affinitySession, already the
+//     opaque ses_ form), so upstream affinity follows the backend the scheduler
+//     pinned for this conversation;
+//  2. the client's proxy-session identity (X-Session-Id / X-Session-Affinity),
 //     hashed opaque — explicit conversation identity beats body heuristics;
-//  2. the conversation-prefix fingerprint of the request body (model +
+//  3. the conversation-prefix fingerprint of the request body (model +
 //     system + first user message + tools) — upstream keeps its prompt cache
 //     warm and, from 2026-09-06, errors when no session header is present;
-//  3. a stable per-credential hash of the API key (e.g. image generations,
+//  4. a stable per-credential hash of the API key (e.g. image generations,
 //     whose multipart bodies yield no body fields);
-//  4. a fresh random session id when none of the above are available.
+//  5. a fresh random session id when none of the above are available.
 //
 // x-opencode-request stays per-request UUID.
-func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []byte, clientHeaders http.Header, fallbackSeed string) {
+func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []byte, clientHeaders http.Header, fallbackSeed string, affinitySession string) {
 	if req == nil {
 		return
 	}
@@ -96,7 +113,7 @@ func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []b
 	if !shouldApplyOpencodeZenFingerprint(baseURL, providerKey) {
 		return
 	}
-	req.Header.Set("x-opencode-session", opencodeSessionValue(clientHeaders, body, fallbackSeed))
+	req.Header.Set("x-opencode-session", opencodeSessionValue(clientHeaders, body, fallbackSeed, affinitySession))
 	req.Header.Set("x-opencode-request", newOpencodeRequestID())
 	req.Header.Set("x-opencode-client", opencodeFingerprintClient)
 	req.Header.Set("User-Agent", opencodeFingerprintUserAgent)
@@ -105,7 +122,10 @@ func applyOpencodeZenFingerprint(req *http.Request, providerKey string, body []b
 // opencodeSessionValue resolves the provider-owned x-opencode-session per the
 // priority chain above; every branch produces an opaque ses_ id that
 // reveals nothing about its input.
-func opencodeSessionValue(clientHeaders http.Header, body []byte, fallbackSeed string) string {
+func opencodeSessionValue(clientHeaders http.Header, body []byte, fallbackSeed string, affinitySession string) string {
+	if s := strings.TrimSpace(affinitySession); s != "" {
+		return s
+	}
 	if clientHeaders != nil {
 		for _, name := range []string{"X-Session-Id", "X-Session-Affinity"} {
 			if v := strings.TrimSpace(clientHeaders.Get(name)); v != "" {

@@ -133,3 +133,31 @@ func requireErrorQueueEmpty(t *testing.T) {
 		t.Fatalf("error queue retained %d item(s), want none", len(errorGlobal.items)-errorGlobal.head)
 	}
 }
+
+func TestEnqueueKeepsRecordWhenSubscriberOverflows(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ch, unsubscribe := SubscribeUsage()
+		defer unsubscribe()
+		// The initial support-refresh payload plus these records fill the buffer.
+		for i := 0; i < cap(ch)-1; i++ {
+			Enqueue([]byte("fill"))
+		}
+		Enqueue([]byte("overflow-record"))
+
+		delivered := false
+		for len(ch) > 0 {
+			if string(<-ch) == "overflow-record" {
+				delivered = true
+			}
+		}
+		queued := false
+		for _, item := range PopOldest(cap(ch) + 10) {
+			if string(item) == "overflow-record" {
+				queued = true
+			}
+		}
+		if !delivered && !queued {
+			t.Fatalf("overflow-record lost: not delivered to the dropped subscriber and not queued (buffer=%d)", cap(ch))
+		}
+	})
+}
