@@ -128,9 +128,9 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 	}
 	ensureAntigravityGeminiBoundaryUserContentDoc(baseModel, doc)
-	if errTokens := antigravityEnsureRequestTokens(auth, doc.Bytes()); errTokens != nil {
+	if errTokens := antigravityEnsureRequestTokens(e.cfg, auth, doc.Bytes(), e.configGen); errTokens != nil {
 		err = errTokens
-		antigravityRecordRequestOutcome(auth, http.StatusTooManyRequests, nil, errTokens)
+		// A local refusal never reached Google: it must not count against the credential's health.
 		return nil, err
 	}
 	var replayRequestPayload []byte
@@ -212,7 +212,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 
 	// Stream success
 	antigravityRecordRequestOutcome(auth, httpResp.StatusCode, nil, nil)
-	antigravityConsumeRequestTokens(auth, requestPayload)
+	antigravityConsumeRequestTokens(e.cfg, auth, requestPayload, e.configGen)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}

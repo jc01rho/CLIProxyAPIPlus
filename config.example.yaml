@@ -1348,6 +1348,17 @@ oauth:
       # (wrapping around to the lowest Order). A demoted credential is skipped for its
       # retry deadline or 5 minutes, and if no usable standby remains the primary stays enabled.
       primary-handoff: false
+      # Proxy-side limiter, applied per credential before a request is sent to Google. It is a token
+      # bucket: a request costs one token, the bucket holds max-tokens and refills at
+      # regeneration-rate-per-minute. Omitted or zero values keep the defaults (50 / 6 per minute / 50).
+      # Under primary/standby handoff only the active primary credential receives traffic; legacy
+      # active credentials without primary_info enforce this limit independently per credential.
+      # A refused request returns 429 with Retry-After and does not cool the credential or trigger handoff.
+      # local-rate-limit:
+      #   enabled: true                       # false turns the limiter off
+      #   max-tokens: 50                      # burst size
+      #   regeneration-rate-per-minute: 20    # sustained requests per minute per credential
+      #   initial-tokens: 50                  # starting balance of a credential not used yet (clamped to max-tokens)
       # sensitive-words:              # optional: words to obfuscate with combining grapheme joiners (U+034F) in system instructions
       #   - "API"
       #   - "proxy"

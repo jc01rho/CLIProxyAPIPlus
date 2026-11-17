@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MoeForge/moego/json"
@@ -56,10 +57,13 @@ const (
 // AntigravityExecutor proxies requests to the antigravity upstream.
 type AntigravityExecutor struct {
 	cfg           *config.Config
+	configGen     uint64
 	matcherMu     sync.RWMutex
 	lastWordsKey  string
 	cachedMatcher *helps.SensitiveWordMatcher
 }
+
+var antigravityLatestExecutorGen atomic.Uint64
 
 // NewAntigravityExecutor creates a new Antigravity executor instance.
 //
@@ -69,7 +73,9 @@ type AntigravityExecutor struct {
 // Returns:
 //   - *AntigravityExecutor: A new Antigravity executor instance
 func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
-	return &AntigravityExecutor{cfg: cfg}
+	gen := antigravityLatestExecutorGen.Add(1)
+	applyAntigravityLocalRateLimitConfig(cfg)
+	return &AntigravityExecutor{cfg: cfg, configGen: gen}
 }
 
 func (e *AntigravityExecutor) getSensitiveWordMatcher() *helps.SensitiveWordMatcher {
@@ -1138,16 +1144,121 @@ func antigravityEstimateRequestTokenCost(_ []byte) float64 {
 	// exceeding the MaxTokens=50 bucket and causing permanent exhaustion.
 	return 1
 }
-func antigravityEnsureRequestTokens(auth *cliproxyauth.Auth, payload []byte) error {
+
+// antigravityLocalRateLimitError is a request refused by the proxy's own limiter. It never
+// reached Google, so it says nothing about the credential: it is flagged request-scoped so the
+// conductor neither cools the credential down nor treats it as a handoff trigger, and it keeps
+// the 429 status and a trusted Retry-After header when recovery is possible.
+type antigravityLocalRateLimitError struct {
+	retryAfter *time.Duration
+}
+
+func (e antigravityLocalRateLimitError) Error() string {
+	return "antigravity local rate limit exceeded"
+}
+func (e antigravityLocalRateLimitError) StatusCode() int       { return http.StatusTooManyRequests }
+func (e antigravityLocalRateLimitError) IsRequestScoped() bool { return true }
+func (e antigravityLocalRateLimitError) RetryAfter() *time.Duration {
+	if e.retryAfter == nil {
+		return nil
+	}
+	d := *e.retryAfter
+	return &d
+}
+func (e antigravityLocalRateLimitError) SafeResponseHeaders() http.Header {
+	if e.retryAfter == nil || *e.retryAfter <= 0 {
+		return nil
+	}
+	seconds := int64(*e.retryAfter / time.Second)
+	if *e.retryAfter%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	return http.Header{"Retry-After": []string{strconv.FormatInt(seconds, 10)}}
+}
+
+// antigravityLimiterConfiguredFromYAML records that the global tracker's parameters were set from
+// the config file, so removing the section later restores the defaults.
+var antigravityLimiterConfiguredFromYAML atomic.Bool
+
+func applyAntigravityLocalRateLimitConfig(cfg *config.Config) *antigravity.TokenBucketTracker {
 	tracker := antigravity.GetTokenTracker()
+	if cfg == nil {
+		return tracker
+	}
+	limit := cfg.Antigravity.LocalRateLimit
+	if limit.Enabled != nil && !*limit.Enabled {
+		return nil
+	}
+	if limit.MaxTokens <= 0 && limit.RegenerationRatePerMinute <= 0 && limit.InitialTokens <= 0 {
+		if antigravityLimiterConfiguredFromYAML.CompareAndSwap(true, false) {
+			tracker.SetConfig(antigravity.TokenBucketConfig{})
+		}
+		return tracker
+	}
+	defaults := antigravity.DefaultTokenBucketConfig()
+	want := antigravity.TokenBucketConfig{
+		MaxTokens:                 limit.MaxTokens,
+		RegenerationRatePerMinute: limit.RegenerationRatePerMinute,
+		InitialTokens:             limit.InitialTokens,
+	}
+	if want.MaxTokens <= 0 {
+		want.MaxTokens = defaults.MaxTokens
+	}
+	if want.RegenerationRatePerMinute <= 0 {
+		want.RegenerationRatePerMinute = defaults.RegenerationRatePerMinute
+	}
+	if want.InitialTokens <= 0 {
+		want.InitialTokens = defaults.InitialTokens
+	}
+	if want.InitialTokens > want.MaxTokens {
+		want.InitialTokens = want.MaxTokens
+	}
+	if tracker.Config() != want {
+		tracker.SetConfig(want)
+	}
+	antigravityLimiterConfiguredFromYAML.Store(true)
+	return tracker
+}
+
+// antigravityLocalRateLimitTracker returns the global tracker for cfg (or nil when disabled).
+// When called from an executor whose configGen trails a newer executor, it skips mutating
+// the shared tracker so an in-flight legacy executor cannot revert a reloaded config.
+func antigravityLocalRateLimitTracker(cfg *config.Config, configGen ...uint64) *antigravity.TokenBucketTracker {
+	if cfg != nil && cfg.Antigravity.LocalRateLimit.Enabled != nil && !*cfg.Antigravity.LocalRateLimit.Enabled {
+		return nil
+	}
+	if len(configGen) > 0 && configGen[0] != 0 && configGen[0] != antigravityLatestExecutorGen.Load() {
+		return antigravity.GetTokenTracker()
+	}
+	return applyAntigravityLocalRateLimitConfig(cfg)
+}
+
+func antigravityEnsureRequestTokens(cfg *config.Config, auth *cliproxyauth.Auth, payload []byte, configGen ...uint64) error {
+	tracker := antigravityLocalRateLimitTracker(cfg, configGen...)
+	if tracker == nil {
+		return nil
+	}
 	cost := antigravityEstimateRequestTokenCost(payload)
-	if !tracker.HasTokens(antigravityTrackerAccountIndex(auth), cost) {
-		return statusErr{code: http.StatusTooManyRequests, msg: "antigravity local token bucket exhausted"}
+	index := antigravityTrackerAccountIndex(auth)
+	if !tracker.HasTokens(index, cost) {
+		var retryAfter *time.Duration
+		if wait, ok := tracker.TimeUntilTokens(index, cost); ok {
+			retryAfter = &wait
+		}
+		return antigravityLocalRateLimitError{retryAfter: retryAfter}
 	}
 	return nil
 }
-func antigravityConsumeRequestTokens(auth *cliproxyauth.Auth, payload []byte) {
-	antigravity.GetTokenTracker().Consume(antigravityTrackerAccountIndex(auth), antigravityEstimateRequestTokenCost(payload))
+
+func antigravityConsumeRequestTokens(cfg *config.Config, auth *cliproxyauth.Auth, payload []byte, configGen ...uint64) {
+	tracker := antigravityLocalRateLimitTracker(cfg, configGen...)
+	if tracker == nil {
+		return
+	}
+	tracker.Consume(antigravityTrackerAccountIndex(auth), antigravityEstimateRequestTokenCost(payload))
 }
 func antigravityRecordRequestOutcome(auth *cliproxyauth.Auth, statusCode int, body []byte, err error) {
 	tracker := antigravity.GetHealthTracker()

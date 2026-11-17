@@ -280,6 +280,28 @@ type AntigravityConfig struct {
 	// is explicitly configured. Set to "0", "off", "false", "none", or
 	// "disabled" to explicitly disable the pause.
 	TOSPauseWindow string `yaml:"tos-pause-window,omitempty" json:"tos-pause-window,omitempty"`
+
+	// LocalRateLimit configures the proxy-side per-credential request limiter. It rejects
+	// requests locally, before they reach Google, once a credential has used up its token
+	// bucket.
+	LocalRateLimit AntigravityLocalRateLimitConfig `yaml:"local-rate-limit,omitempty" json:"local-rate-limit,omitempty"`
+}
+
+// AntigravityLocalRateLimitConfig tunes the per-credential token bucket. Zero values keep
+// the built-in defaults, so an empty section changes nothing.
+type AntigravityLocalRateLimitConfig struct {
+	// Enabled turns the limiter on or off. Defaults to true; set to false to disable it.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+
+	// MaxTokens is the bucket capacity per credential, i.e. the largest burst. Defaults to 50.
+	MaxTokens float64 `yaml:"max-tokens,omitempty" json:"max-tokens,omitempty"`
+
+	// RegenerationRatePerMinute is the sustained request rate per credential. Defaults to 6.
+	RegenerationRatePerMinute float64 `yaml:"regeneration-rate-per-minute,omitempty" json:"regeneration-rate-per-minute,omitempty"`
+
+	// InitialTokens is the starting balance of a credential that has not been used yet.
+	// Defaults to 50 (clamped to MaxTokens).
+	InitialTokens float64 `yaml:"initial-tokens,omitempty" json:"initial-tokens,omitempty"`
 }
 
 // AntigravityConnectionPoolConfig controls upstream HTTP/1.1 connection pooling behavior for Antigravity.
