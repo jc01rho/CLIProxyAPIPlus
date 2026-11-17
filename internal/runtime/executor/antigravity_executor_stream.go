@@ -22,8 +22,64 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// ExecuteStream performs a streaming request to the Antigravity API.
-func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+// antigravityEmptyStreamRetries is how many extra upstream attempts ExecuteStream makes when Google
+// closes the stream cleanly without emitting any output or finish reason. Nothing has reached the
+// client at that point, so the retry is invisible to it.
+const antigravityEmptyStreamRetries = 2
+
+// antigravityEmptyStreamError marks an upstream stream that ended with no content and no terminal
+// candidate. It is only surfaced when every attempt came back empty.
+type antigravityEmptyStreamError struct{}
+
+func (antigravityEmptyStreamError) Error() string {
+	return "antigravity stream ended without a terminal candidate response"
+}
+
+// ExecuteStream performs a streaming request to the Antigravity API. An upstream stream that ends
+// empty (no emitted output, no finishReason) is retried before the client has seen any byte of it.
+func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	for attempt := 0; ; attempt++ {
+		allowEmptyRetry := attempt < antigravityEmptyStreamRetries
+		result, err := e.executeStreamOnce(ctx, auth, req, opts, allowEmptyRetry)
+		if err != nil || result == nil || result.Chunks == nil {
+			return result, err
+		}
+		var first cliproxyexecutor.StreamChunk
+		var ok bool
+		select {
+		case first, ok = <-result.Chunks:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		if !ok {
+			return result, nil
+		}
+		var empty antigravityEmptyStreamError
+		if allowEmptyRetry && errors.As(first.Err, &empty) && ctx.Err() == nil {
+			log.Warnf("antigravity executor: auth %s model %s stream ended empty, retrying upstream (attempt %d/%d)", auth.ID, req.Model, attempt+1, antigravityEmptyStreamRetries)
+			continue
+		}
+		out := make(chan cliproxyexecutor.StreamChunk)
+		go func(in <-chan cliproxyexecutor.StreamChunk) {
+			defer close(out)
+			select {
+			case out <- first:
+			case <-ctx.Done():
+				return
+			}
+			for chunk := range in {
+				select {
+				case out <- chunk:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}(result.Chunks)
+		return &cliproxyexecutor.StreamResult{Headers: result.Headers, Chunks: out}, nil
+	}
+}
+
+func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, allowEmptyRetry bool) (_ *cliproxyexecutor.StreamResult, err error) {
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
@@ -243,6 +299,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		terminalSeen := false
 		contentSeen := false
 		terminalFinishReason := ""
+		emptyAbandoned := false
 		commitReplay := func() {
 			if !replayCommitted && replayAccumulator != nil && replayAccumulator.terminal && streamErr == nil && translatedClaudeErr == nil && helps.ApplyPatchTranslationError(param) == nil {
 				replayAccumulator.Commit(ctx)
@@ -261,7 +318,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				commitReplay()
 			}
 			close(out)
-			if translatedErrorStopped {
+			if emptyAbandoned || translatedErrorStopped {
 				return
 			}
 			if streamErr == nil {
@@ -572,9 +629,14 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			// Translating [DONE] after a read error would report a truncated
 			// stream as a successful completion.
 			if !terminalSeen && !contentSeen {
-				streamErr := fmt.Errorf("antigravity stream ended without a terminal candidate response")
-				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-				reporter.PublishFailure(ctx, streamErr)
+				streamErr = antigravityEmptyStreamError{}
+				stopDeliverySupport()
+				if allowEmptyRetry && !zeroOutputGuard.Emitted() {
+					// ExecuteStream will retry this attempt; do not report intermediate failure to usage.
+					emptyAbandoned = true
+				} else {
+					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 				case <-ctx.Done():
