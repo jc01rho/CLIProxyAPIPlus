@@ -54,6 +54,15 @@ func markResultBounded(t *testing.T, m *Manager, result Result) {
 	}
 }
 
+// markResultRepeated reports the same result n times, the way n consecutive
+// failed requests would.
+func markResultRepeated(t *testing.T, m *Manager, result Result, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		markResultBounded(t, m, result)
+	}
+}
+
 func assertAntigravityHandoff(t *testing.T, m *Manager, wantPromoted bool) {
 	t.Helper()
 	oldPrimary, ok := m.GetByID("ag-handoff-primary")
@@ -88,7 +97,7 @@ func assertAntigravityHandoff(t *testing.T, m *Manager, wantPromoted bool) {
 	}
 }
 
-func TestAntigravityHandoffPromotesStandbyOnQuotaExhaustion(t *testing.T) {
+func TestAntigravityHandoffIgnoresQuotaExhaustion(t *testing.T) {
 	bodies := []struct {
 		name string
 		body string
@@ -108,15 +117,59 @@ func TestAntigravityHandoffPromotesStandbyOnQuotaExhaustion(t *testing.T) {
 					CredentialScope: true,
 					Error:           &Error{HTTPStatus: http.StatusTooManyRequests, Message: tc.body},
 				})
-				assertAntigravityHandoff(t, m, true)
+				assertAntigravityHandoff(t, m, false)
 			})
+		}
+	}
+}
+
+func TestAntigravityHandoffIgnoresModelCapacityExhausted(t *testing.T) {
+	const body = "{\"error\":{\"code\":503,\"message\":\"No capacity available for model gemini-3.8-flash-high on the server\",\"status\":\"UNAVAILABLE\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.ErrorInfo\",\"reason\":\"MODEL_CAPACITY_EXHAUSTED\"}]}}"
+	m := newAntigravityHandoffManager(t, true)
+	markResultRepeated(t, m, Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "gemini-3.8-flash-high",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: body},
+	}, antigravityHandoffStrikeThreshold+1)
+	assertAntigravityHandoff(t, m, false)
+}
+
+func TestAntigravityHandoffPromotesStandbyOnGatewayFailure(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	markResultRepeated(t, m, Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "gemini-3-pro",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "service unavailable"},
+	}, antigravityHandoffStrikeThreshold)
+	assertAntigravityHandoff(t, m, true)
+}
+
+func TestAntigravityHandoffSkipsGPTAndClaudeRoutes(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable} {
+		for _, model := range []string{"claude-sonnet-4-5", "gpt-oss-120b-medium"} {
+			m := newAntigravityHandoffManager(t, true)
+			markResultBounded(t, m, Result{
+				AuthID:          "ag-handoff-primary",
+				Provider:        "antigravity",
+				Model:           model,
+				Success:         false,
+				CredentialScope: true,
+				Error:           &Error{HTTPStatus: status, Message: "upstream error"},
+			})
+			assertAntigravityHandoff(t, m, false)
 		}
 	}
 }
 
 func TestAntigravityHandoffAppliesExecutorStatusError(t *testing.T) {
 	m := newAntigravityHandoffManager(t, true)
-	execErr := antigravityUpstreamStatusError{code: http.StatusTooManyRequests, body: antigravityGeminiQuota429Body}
+	execErr := antigravityUpstreamStatusError{code: http.StatusServiceUnavailable, body: "service unavailable"}
 	result := Result{
 		AuthID:          "ag-handoff-primary",
 		Provider:        "antigravity",
@@ -125,10 +178,10 @@ func TestAntigravityHandoffAppliesExecutorStatusError(t *testing.T) {
 		CredentialScope: true,
 		Error:           resultErrorFromError(execErr),
 	}
-	if result.Error == nil || result.Error.HTTPStatus != http.StatusTooManyRequests {
-		t.Fatalf("converted error = %+v, want HTTP 429", result.Error)
+	if result.Error == nil || result.Error.HTTPStatus != http.StatusServiceUnavailable {
+		t.Fatalf("converted error = %+v, want HTTP 503", result.Error)
 	}
-	markResultBounded(t, m, result)
+	markResultRepeated(t, m, result, antigravityHandoffStrikeThreshold)
 	assertAntigravityHandoff(t, m, true)
 }
 
@@ -160,8 +213,71 @@ func TestAntigravityHandoffIgnoresOtherStatusCodes(t *testing.T) {
 	}
 }
 
-// newAntigravityHandoffChain registers len(orders) managed credentials ag-chain-<order>;
-// the one whose Order equals primaryOrder is the enabled primary, the rest are standbys.
+func TestAntigravityHandoffSkipsAliasedClaudeRoute(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		antigravityModelAliasChannel: {{Name: "claude-sonnet-4-5", Alias: "opus"}},
+	})
+	markResultBounded(t, m, Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "opus",
+		RouteModel:      "opus",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "service unavailable"},
+	})
+	assertAntigravityHandoff(t, m, false)
+}
+
+func TestAntigravityHandoffPromotesStandbyOnAliasedGeminiRoute(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		antigravityModelAliasChannel: {{Name: "gemini-3-flash", Alias: "flash"}},
+	})
+	markResultRepeated(t, m, Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "flash",
+		RouteModel:      "flash",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "service unavailable"},
+	}, antigravityHandoffStrikeThreshold)
+	assertAntigravityHandoff(t, m, true)
+}
+
+func antigravityGatewayFailure() Result {
+	return Result{
+		AuthID:          "ag-handoff-primary",
+		Provider:        "antigravity",
+		Model:           "gemini-3-pro",
+		Success:         false,
+		CredentialScope: true,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "service unavailable"},
+	}
+}
+
+func TestAntigravityHandoffWaitsForThreeConsecutiveFailures(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	for i := 1; i < antigravityHandoffStrikeThreshold; i++ {
+		markResultBounded(t, m, antigravityGatewayFailure())
+		assertAntigravityHandoff(t, m, false)
+	}
+	markResultBounded(t, m, antigravityGatewayFailure())
+	assertAntigravityHandoff(t, m, true)
+}
+
+func TestAntigravityHandoffSuccessResetsFailureCount(t *testing.T) {
+	m := newAntigravityHandoffManager(t, true)
+	markResultRepeated(t, m, antigravityGatewayFailure(), antigravityHandoffStrikeThreshold-1)
+	markResultBounded(t, m, Result{AuthID: "ag-handoff-primary", Provider: "antigravity", Model: "gemini-3-pro", Success: true})
+	markResultRepeated(t, m, antigravityGatewayFailure(), antigravityHandoffStrikeThreshold-1)
+	assertAntigravityHandoff(t, m, false)
+	markResultBounded(t, m, antigravityGatewayFailure())
+	assertAntigravityHandoff(t, m, true)
+}
+
 func newAntigravityHandoffChain(t *testing.T, primaryOrder int, orders ...int) *Manager {
 	t.Helper()
 	ctx := WithSkipPersist(context.Background())
@@ -192,14 +308,14 @@ func chainAuthID(order int) string { return "ag-chain-" + string(rune('0'+order)
 
 func failChainPrimary(t *testing.T, m *Manager, order int, status int) {
 	t.Helper()
-	markResultBounded(t, m, Result{
+	markResultRepeated(t, m, Result{
 		AuthID:          chainAuthID(order),
 		Provider:        "antigravity",
 		Model:           "gemini-3-flash",
 		Success:         false,
 		CredentialScope: true,
-		Error:           &Error{HTTPStatus: status, Message: antigravityGeminiQuota429Body},
-	})
+		Error:           &Error{HTTPStatus: status, Message: "upstream failure"},
+	}, antigravityHandoffStrikeThreshold)
 }
 
 func assertChainPrimary(t *testing.T, m *Manager, wantOrder int) {
@@ -215,10 +331,8 @@ func assertChainPrimary(t *testing.T, m *Manager, wantOrder int) {
 	}
 }
 
-// The last credential in the chain used to be a dead end: there was no "next", so a
-// 403/429 on it disabled nothing and every request kept failing on it.
 func TestAntigravityHandoffWrapsAroundFromLastOrder(t *testing.T) {
-	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+	for _, status := range []int{http.StatusForbidden, http.StatusBadGateway, http.StatusServiceUnavailable} {
 		m := newAntigravityHandoffChain(t, 3, 1, 2, 3)
 		failChainPrimary(t, m, 3, status)
 		assertChainPrimary(t, m, 1)
@@ -229,13 +343,11 @@ func TestAntigravityHandoffWrapsAroundFromLastOrder(t *testing.T) {
 	}
 }
 
-// A credential that was just demoted by a failure must not be handed the traffic back
-// by the next failure; with no usable standby the failing primary stays enabled.
 func TestAntigravityHandoffDoesNotPingPongBetweenFailedCredentials(t *testing.T) {
 	m := newAntigravityHandoffChain(t, 1, 1, 2)
-	failChainPrimary(t, m, 1, http.StatusTooManyRequests)
+	failChainPrimary(t, m, 1, http.StatusServiceUnavailable)
 	assertChainPrimary(t, m, 2)
-	failChainPrimary(t, m, 2, http.StatusTooManyRequests)
+	failChainPrimary(t, m, 2, http.StatusServiceUnavailable)
 	assertChainPrimary(t, m, 2)
 	first, _ := m.GetByID(chainAuthID(1))
 	if !first.Disabled || first.PrimaryInfo.IsPrimary {
@@ -245,32 +357,49 @@ func TestAntigravityHandoffDoesNotPingPongBetweenFailedCredentials(t *testing.T)
 
 func TestAntigravityHandoffSkipsBlockedStandbyAndUsesNextOne(t *testing.T) {
 	m := newAntigravityHandoffChain(t, 1, 1, 2, 3)
-	failChainPrimary(t, m, 1, http.StatusTooManyRequests) // 1 -> 2, 1 blocked
+	failChainPrimary(t, m, 1, http.StatusServiceUnavailable)
 	assertChainPrimary(t, m, 2)
-	failChainPrimary(t, m, 2, http.StatusForbidden) // 2 -> 3, not back to 1
+	failChainPrimary(t, m, 2, http.StatusForbidden)
 	assertChainPrimary(t, m, 3)
-	failChainPrimary(t, m, 3, http.StatusTooManyRequests) // 3 -> wrap, 1 and 2 blocked
+	failChainPrimary(t, m, 3, http.StatusBadGateway)
 	assertChainPrimary(t, m, 3)
 }
 
 func TestAntigravityHandoffBlockExpires(t *testing.T) {
 	m := newAntigravityHandoffChain(t, 1, 1, 2)
-	failChainPrimary(t, m, 1, http.StatusTooManyRequests)
+	failChainPrimary(t, m, 1, http.StatusServiceUnavailable)
 	assertChainPrimary(t, m, 2)
 
 	m.mu.Lock()
 	m.auths[chainAuthID(1)].handoffBlockedUntil = time.Now().Add(-time.Second)
 	m.mu.Unlock()
 
-	failChainPrimary(t, m, 2, http.StatusTooManyRequests)
+	failChainPrimary(t, m, 2, http.StatusServiceUnavailable)
 	assertChainPrimary(t, m, 1)
 }
 
-// A restart (or an auth-file reload) drops the in-memory block, so the credential is
-// eligible again instead of staying parked forever.
+func TestAntigravityHandoffBlockPreservesLongerModelRetryAfter(t *testing.T) {
+	m := newAntigravityHandoffChain(t, 1, 1, 2)
+	longRetry := 20 * time.Minute
+	markResultRepeated(t, m, Result{
+		AuthID:          chainAuthID(1),
+		Provider:        "antigravity",
+		Model:           "gemini-3-flash",
+		Success:         false,
+		CredentialScope: false,
+		RetryAfter:      &longRetry,
+		Error:           &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "upstream busy"},
+	}, antigravityHandoffStrikeThreshold)
+	assertChainPrimary(t, m, 2)
+	demoted, _ := m.GetByID(chainAuthID(1))
+	if demoted.handoffBlockedUntil.Before(time.Now().Add(19 * time.Minute)) {
+		t.Fatalf("handoffBlockedUntil = %v, want at least ~20m from model RetryAfter", demoted.handoffBlockedUntil)
+	}
+}
+
 func TestAntigravityHandoffBlockIsRuntimeOnly(t *testing.T) {
 	m := newAntigravityHandoffChain(t, 1, 1, 2)
-	failChainPrimary(t, m, 1, http.StatusTooManyRequests)
+	failChainPrimary(t, m, 1, http.StatusServiceUnavailable)
 	demoted, _ := m.GetByID(chainAuthID(1))
 	if !demoted.handoffBlockedUntil.After(time.Now()) {
 		t.Fatalf("demoted credential has no block deadline: %+v", demoted.handoffBlockedUntil)

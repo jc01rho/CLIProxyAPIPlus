@@ -1,0 +1,1136 @@
+{
+  "schema": "claude-oauth-wire-vectors/v1",
+  "generator": {
+    "repository": "cortexkit/anthropic-auth",
+    "claude_code_version": "2.1.302",
+    "host_path": "opencode-1 OAuth direct send (packages/opencode/src/index.ts sendWithAccessToken)"
+  },
+  "fixed": {
+    "accessToken": "sk-ant-oat01-PLACEHOLDER",
+    "accountUuid": "00000000-0000-4000-8000-000000000000",
+    "deviceId": "0000000000000000000000000000000000000000000000000000000000000000",
+    "claudeCodeSessionId": "11111111-1111-4111-8111-111111111111",
+    "clientRequestId": "22222222-2222-4222-8222-222222222222",
+    "promptId": "33333333-3333-4333-8333-333333333333",
+    "previousRequestId": "req_PLACEHOLDER0000000000000001",
+    "previousMessageId": "msg_PLACEHOLDER0000000000000001",
+    "platform": "darwin",
+    "arch": "arm64",
+    "note": "Every value here replaces a random, account-specific or machine-specific value. authorization carries the placeholder token; metadata.user_id carries the placeholder device, account and session ids."
+  },
+  "primitives": {
+    "note": "Unit checks for the two hash primitives, from packages/opencode/src/tests/cch.test.ts, recomputed here.",
+    "computeCCH_utf8_hello_world_test_message": "cc124",
+    "computeCcVersionSuffix_short_2_1_258": "587"
+  },
+  "cases": [
+    {
+      "id": "fable51-first-turn",
+      "source": "reconstructed",
+      "title": "Fable 5.1, first turn of a session, explicit 1h cache",
+      "covers": [
+        "billing header with cc_prompt_id and no cc_prev_req",
+        "system sanitising and Claude Code identity block",
+        "Fable 5.1 thinking replaced with adaptive/summarized",
+        "output_config.effort pinned from the effort plan baseline",
+        "server-side fallback opt-in (fallbacks: \"default\") and its beta",
+        "per-turn-control beta",
+        "diagnostics.previous_message_id null on the first turn",
+        "explicit cache mode: host breakpoints get ttl 1h"
+      ],
+      "input": {
+        "host": "opencode-1",
+        "route": "oauth",
+        "model": "claude-fable-5-1",
+        "session_id": "ses_PLACEHOLDER_FABLE_0001",
+        "subagent": false,
+        "host_headers": {
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+          "content-type": "application/json",
+          "user-agent": "ai-sdk/anthropic opencode/1.18.18",
+          "x-api-key": "",
+          "x-session-affinity": "ses_PLACEHOLDER_FABLE_0001",
+          "x-cortexkit-effort-plan": "v2.5feff6aa7c8ed4df2fa9f935e2ca5f94.h.0.eb4ff6d05f5f0ad3d0a739add133e72dff8c94089d1b9733a036e2ed27ae0989"
+        },
+        "host_body": "{\"model\":\"claude-fable-5-1\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Summarise the README in two sentences.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"},\"stream\":true}",
+        "effort_markers": {
+          "note": "OpenCode 1 appends these marker blocks to user messages before lowering; the plugin consumes them. lowered_host_body is what reaches the fetch wrapper.",
+          "plan_header": "v2.5feff6aa7c8ed4df2fa9f935e2ca5f94.h.0.eb4ff6d05f5f0ad3d0a739add133e72dff8c94089d1b9733a036e2ed27ae0989",
+          "transition_tokens": [],
+          "anchor_token": null
+        },
+        "lowered_host_body": "{\"model\":\"claude-fable-5-1\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Summarise the README in two sentences.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"},\"stream\":true}",
+        "options": {
+          "cache1hEnabled": true,
+          "cache1hMode": "explicit",
+          "billingLineage": {
+            "promptId": "33333333-3333-4333-8333-333333333333"
+          },
+          "cacheDiagnosticsPreviousMessageId": null,
+          "serverSideFallbackEnabled": true,
+          "midConversationEffortEnabled": true
+        }
+      },
+      "output": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages?beta=true",
+        "request_line": "POST /v1/messages?beta=true HTTP/1.1",
+        "headers_wire_order": [
+          [
+            "Accept",
+            "application/json"
+          ],
+          [
+            "Authorization",
+            "Bearer sk-ant-oat01-PLACEHOLDER"
+          ],
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "User-Agent",
+            "claude-cli/2.1.302 (external, cli)"
+          ],
+          [
+            "anthropic-beta",
+            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,fine-grained-tool-streaming-2025-05-14,server-side-fallback-2026-07-01"
+          ],
+          [
+            "anthropic-dangerous-direct-browser-access",
+            "true"
+          ],
+          [
+            "anthropic-version",
+            "2023-06-01"
+          ],
+          [
+            "x-app",
+            "cli"
+          ],
+          [
+            "x-claude-code-prompt-id",
+            "33333333-3333-4333-8333-333333333333"
+          ],
+          [
+            "x-claude-code-request-class",
+            "main"
+          ],
+          [
+            "x-claude-code-session-id",
+            "11111111-1111-4111-8111-111111111111"
+          ],
+          [
+            "x-client-request-id",
+            "22222222-2222-4222-8222-222222222222"
+          ],
+          [
+            "x-stainless-arch",
+            "arm64"
+          ],
+          [
+            "x-stainless-lang",
+            "js"
+          ],
+          [
+            "x-stainless-os",
+            "MacOS"
+          ],
+          [
+            "x-stainless-package-version",
+            "0.128.0"
+          ],
+          [
+            "x-stainless-retry-count",
+            "0"
+          ],
+          [
+            "x-stainless-runtime",
+            "node"
+          ],
+          [
+            "x-stainless-runtime-version",
+            "v26.3.0"
+          ],
+          [
+            "x-stainless-timeout",
+            "600"
+          ],
+          [
+            "Connection",
+            "keep-alive"
+          ],
+          [
+            "Host",
+            "api.anthropic.com"
+          ],
+          [
+            "Accept-Encoding",
+            "gzip, deflate, br, zstd"
+          ],
+          [
+            "Content-Length",
+            "1451"
+          ]
+        ],
+        "body": "{\"model\":\"claude-fable-5-1\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Summarise the README in two sentences.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.f6a; cc_entrypoint=cli; cch=6b2d9; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"max_tokens\":32000,\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"},\"output_config\":{\"effort\":\"high\"},\"diagnostics\":{\"previous_message_id\":null},\"stream\":true,\"fallbacks\":\"default\"}",
+        "body_sha256": "7fde4652e9c1a8b1f2a96b58540f357b1cd0ee390bf904c74ec4718db349ee58",
+        "body_bytes": 1451,
+        "billing_header": "x-anthropic-billing-header: cc_version=2.1.302.f6a; cc_entrypoint=cli; cch=6b2d9; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;",
+        "cc_version_suffix": {
+          "first_user_text": "Summarise the README in two sentences.",
+          "sampled_chars": "as ",
+          "suffix": "f6a"
+        },
+        "cch": "6b2d9",
+        "cch_canonical_body": "{\"model\":\"\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Summarise the README in two sentences.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.f6a; cc_entrypoint=cli; cch=00000; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"},\"output_config\":{\"effort\":\"high\"},\"diagnostics\":{\"previous_message_id\":null},\"stream\":true,\"fallbacks\":\"default\"}"
+      }
+    },
+    {
+      "id": "opus55-continuation-replayed-thinking",
+      "source": "reconstructed",
+      "title": "Opus 5.5 continuation replaying a signed thinking block, hybrid cache, drop_block binding",
+      "covers": [
+        "billing header with cc_prev_req and cc_prompt_id",
+        "per-turn-control beta on Opus 5.5",
+        "thinking.block_binding for replayed thinking (account setting drop_block); binding beta is on every main request",
+        "replayed thinking block kept byte-for-byte; no cache_control on it",
+        "hybrid cache mode: host breakpoints removed, 1h anchors on the last system block, messages[0], messages[1] and the latest user message",
+        "server-side fallback opt-in for Opus 5.5",
+        "diagnostics.previous_message_id carries the previous response id"
+      ],
+      "input": {
+        "host": "opencode-1",
+        "route": "oauth",
+        "model": "claude-opus-5-5",
+        "session_id": "ses_PLACEHOLDER_OPUS_0002",
+        "subagent": false,
+        "host_headers": {
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+          "content-type": "application/json",
+          "user-agent": "ai-sdk/anthropic opencode/1.18.18",
+          "x-api-key": "",
+          "x-session-affinity": "ses_PLACEHOLDER_OPUS_0002",
+          "x-cortexkit-effort-plan": "v2.8b454cc768f1ff8ab61d3f43477253f2.h.0.2ad6c2310752011c7281f37128229bcad3de11eeb1bc2cf2b7301f617d538056"
+        },
+        "host_body": "{\"model\":\"claude-opus-5-5\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Find where the retry limit is configured.\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user wants the retry limit location.\",\"signature\":\"SIGNATURE_PLACEHOLDER_0001\"},{\"type\":\"text\",\"text\":\"It is set in src/config.ts as MAX_RETRIES = 3.\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Raise it to 5 and explain the trade-off.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"},\"stream\":true}",
+        "effort_markers": {
+          "note": "OpenCode 1 appends these marker blocks to user messages before lowering; the plugin consumes them. lowered_host_body is what reaches the fetch wrapper.",
+          "plan_header": "v2.8b454cc768f1ff8ab61d3f43477253f2.h.0.2ad6c2310752011c7281f37128229bcad3de11eeb1bc2cf2b7301f617d538056",
+          "transition_tokens": [],
+          "anchor_token": null
+        },
+        "lowered_host_body": "{\"model\":\"claude-opus-5-5\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Find where the retry limit is configured.\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user wants the retry limit location.\",\"signature\":\"SIGNATURE_PLACEHOLDER_0001\"},{\"type\":\"text\",\"text\":\"It is set in src/config.ts as MAX_RETRIES = 3.\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Raise it to 5 and explain the trade-off.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"},\"stream\":true}",
+        "options": {
+          "cache1hEnabled": true,
+          "cache1hMode": "hybrid",
+          "thinkingPrefixMismatchBehavior": "drop_block",
+          "billingLineage": {
+            "promptId": "33333333-3333-4333-8333-333333333333",
+            "previousRequestId": "req_PLACEHOLDER0000000000000001"
+          },
+          "cacheDiagnosticsPreviousMessageId": "msg_PLACEHOLDER0000000000000001",
+          "serverSideFallbackEnabled": true,
+          "midConversationEffortEnabled": true
+        }
+      },
+      "output": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages?beta=true",
+        "request_line": "POST /v1/messages?beta=true HTTP/1.1",
+        "headers_wire_order": [
+          [
+            "Accept",
+            "application/json"
+          ],
+          [
+            "Authorization",
+            "Bearer sk-ant-oat01-PLACEHOLDER"
+          ],
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "User-Agent",
+            "claude-cli/2.1.302 (external, cli)"
+          ],
+          [
+            "anthropic-beta",
+            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,fine-grained-tool-streaming-2025-05-14,server-side-fallback-2026-07-01"
+          ],
+          [
+            "anthropic-dangerous-direct-browser-access",
+            "true"
+          ],
+          [
+            "anthropic-version",
+            "2023-06-01"
+          ],
+          [
+            "x-app",
+            "cli"
+          ],
+          [
+            "x-claude-code-prompt-id",
+            "33333333-3333-4333-8333-333333333333"
+          ],
+          [
+            "x-claude-code-request-class",
+            "main"
+          ],
+          [
+            "x-claude-code-session-id",
+            "11111111-1111-4111-8111-111111111111"
+          ],
+          [
+            "x-client-request-id",
+            "22222222-2222-4222-8222-222222222222"
+          ],
+          [
+            "x-stainless-arch",
+            "arm64"
+          ],
+          [
+            "x-stainless-lang",
+            "js"
+          ],
+          [
+            "x-stainless-os",
+            "MacOS"
+          ],
+          [
+            "x-stainless-package-version",
+            "0.128.0"
+          ],
+          [
+            "x-stainless-retry-count",
+            "0"
+          ],
+          [
+            "x-stainless-runtime",
+            "node"
+          ],
+          [
+            "x-stainless-runtime-version",
+            "v26.3.0"
+          ],
+          [
+            "x-stainless-timeout",
+            "600"
+          ],
+          [
+            "Connection",
+            "keep-alive"
+          ],
+          [
+            "Host",
+            "api.anthropic.com"
+          ],
+          [
+            "Accept-Encoding",
+            "gzip, deflate, br, zstd"
+          ],
+          [
+            "Content-Length",
+            "1947"
+          ]
+        ],
+        "body": "{\"model\":\"claude-opus-5-5\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Find where the retry limit is configured.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user wants the retry limit location.\",\"signature\":\"SIGNATURE_PLACEHOLDER_0001\"},{\"type\":\"text\",\"text\":\"It is set in src/config.ts as MAX_RETRIES = 3.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Raise it to 5 and explain the trade-off.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.0b6; cc_entrypoint=cli; cch=24c5d; cc_prev_req=req_PLACEHOLDER0000000000000001; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=2; cc_turn_index=2;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\"},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"max_tokens\":32000,\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\",\"block_binding\":{\"prefix_mismatch_behavior\":\"drop_block\"}},\"output_config\":{\"effort\":\"high\"},\"diagnostics\":{\"previous_message_id\":\"msg_PLACEHOLDER0000000000000001\"},\"stream\":true,\"fallbacks\":\"default\"}",
+        "body_sha256": "a0e1d7234c94ce4e66ee920e8e459f299c03db7cf544adc125d70e2ce99d12fd",
+        "body_bytes": 1947,
+        "billing_header": "x-anthropic-billing-header: cc_version=2.1.302.0b6; cc_entrypoint=cli; cch=24c5d; cc_prev_req=req_PLACEHOLDER0000000000000001; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=2; cc_turn_index=2;",
+        "cc_version_suffix": {
+          "first_user_text": "Find where the retry limit is configured.",
+          "sampled_chars": " e ",
+          "suffix": "0b6"
+        },
+        "cch": "24c5d",
+        "cch_canonical_body": "{\"model\":\"\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Find where the retry limit is configured.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user wants the retry limit location.\",\"signature\":\"SIGNATURE_PLACEHOLDER_0001\"},{\"type\":\"text\",\"text\":\"It is set in src/config.ts as MAX_RETRIES = 3.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Raise it to 5 and explain the trade-off.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.0b6; cc_entrypoint=cli; cch=00000; cc_prev_req=req_PLACEHOLDER0000000000000001; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=2; cc_turn_index=2;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\"},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\",\"block_binding\":{\"prefix_mismatch_behavior\":\"drop_block\"}},\"output_config\":{\"effort\":\"high\"},\"diagnostics\":{\"previous_message_id\":\"msg_PLACEHOLDER0000000000000001\"},\"stream\":true,\"fallbacks\":\"default\"}"
+      }
+    },
+    {
+      "id": "opus55-effort-change",
+      "source": "reconstructed",
+      "title": "Opus 5.5, user lowers effort from high to low on the second turn",
+      "covers": [
+        "empty role:\"system\" message with output_config.effort inserted before the user turn that changed effort",
+        "top-level output_config.effort set to the conversation baseline (high), not the host value (low)",
+        "internal effort marker blocks removed from user content",
+        "cache disabled (OpenCode 1 default): host breakpoints kept as 5-minute ephemeral"
+      ],
+      "input": {
+        "host": "opencode-1",
+        "route": "oauth",
+        "model": "claude-opus-5-5",
+        "session_id": "ses_PLACEHOLDER_OPUS_0003",
+        "subagent": false,
+        "host_headers": {
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+          "content-type": "application/json",
+          "user-agent": "ai-sdk/anthropic opencode/1.18.18",
+          "x-api-key": "",
+          "x-session-affinity": "ses_PLACEHOLDER_OPUS_0003",
+          "x-cortexkit-effort-plan": "v2.9597bd95cb4ec03ec10b8e096b92249b.h.1.1e45406d9c783aff5fd7e219bf31e7ac7ad379479b19676a95c49f86e5b8599a"
+        },
+        "host_body": "{\"model\":\"claude-opus-5-5\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Plan the database migration.\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Step 1: add the column. Step 2: backfill.\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Now just list the files to change.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"low\"},\"stream\":true}",
+        "effort_markers": {
+          "note": "OpenCode 1 appends these marker blocks to user messages before lowering; the plugin consumes them. lowered_host_body is what reaches the fetch wrapper.",
+          "plan_header": "v2.9597bd95cb4ec03ec10b8e096b92249b.h.1.1e45406d9c783aff5fd7e219bf31e7ac7ad379479b19676a95c49f86e5b8599a",
+          "transition_tokens": [
+            "<cortexkit-internal-effort-v2 scope=\"9597bd95cb4ec03ec10b8e096b92249b\" boundary=\"msg_0003\" effort=\"l\" check=\"d6b1ff802e9408af3da21913624c0738\"/>"
+          ],
+          "anchor_token": "<cortexkit-internal-effort-anchor-v1 scope=\"9597bd95cb4ec03ec10b8e096b92249b\" boundary=\"msg_0003\" effort=\"l\" digest=\"1e45406d9c783aff5fd7e219bf31e7ac7ad379479b19676a95c49f86e5b8599a\" check=\"20734a715d084d7cc1b7eeebeb93ce54\"/>"
+        },
+        "lowered_host_body": "{\"model\":\"claude-opus-5-5\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Plan the database migration.\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Step 1: add the column. Step 2: backfill.\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Now just list the files to change.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"<cortexkit-internal-effort-v2 scope=\\\"9597bd95cb4ec03ec10b8e096b92249b\\\" boundary=\\\"msg_0003\\\" effort=\\\"l\\\" check=\\\"d6b1ff802e9408af3da21913624c0738\\\"/>\"},{\"type\":\"text\",\"text\":\"<cortexkit-internal-effort-anchor-v1 scope=\\\"9597bd95cb4ec03ec10b8e096b92249b\\\" boundary=\\\"msg_0003\\\" effort=\\\"l\\\" digest=\\\"1e45406d9c783aff5fd7e219bf31e7ac7ad379479b19676a95c49f86e5b8599a\\\" check=\\\"20734a715d084d7cc1b7eeebeb93ce54\\\"/>\"}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"low\"},\"stream\":true}",
+        "options": {
+          "cache1hEnabled": false,
+          "cache1hMode": "explicit",
+          "billingLineage": {
+            "promptId": "33333333-3333-4333-8333-333333333333",
+            "previousRequestId": "req_PLACEHOLDER0000000000000001"
+          },
+          "cacheDiagnosticsPreviousMessageId": "msg_PLACEHOLDER0000000000000001",
+          "serverSideFallbackEnabled": true,
+          "midConversationEffortEnabled": true
+        }
+      },
+      "output": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages?beta=true",
+        "request_line": "POST /v1/messages?beta=true HTTP/1.1",
+        "headers_wire_order": [
+          [
+            "Accept",
+            "application/json"
+          ],
+          [
+            "Authorization",
+            "Bearer sk-ant-oat01-PLACEHOLDER"
+          ],
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "User-Agent",
+            "claude-cli/2.1.302 (external, cli)"
+          ],
+          [
+            "anthropic-beta",
+            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,fine-grained-tool-streaming-2025-05-14,server-side-fallback-2026-07-01"
+          ],
+          [
+            "anthropic-dangerous-direct-browser-access",
+            "true"
+          ],
+          [
+            "anthropic-version",
+            "2023-06-01"
+          ],
+          [
+            "x-app",
+            "cli"
+          ],
+          [
+            "x-claude-code-prompt-id",
+            "33333333-3333-4333-8333-333333333333"
+          ],
+          [
+            "x-claude-code-request-class",
+            "main"
+          ],
+          [
+            "x-claude-code-session-id",
+            "11111111-1111-4111-8111-111111111111"
+          ],
+          [
+            "x-client-request-id",
+            "22222222-2222-4222-8222-222222222222"
+          ],
+          [
+            "x-stainless-arch",
+            "arm64"
+          ],
+          [
+            "x-stainless-lang",
+            "js"
+          ],
+          [
+            "x-stainless-os",
+            "MacOS"
+          ],
+          [
+            "x-stainless-package-version",
+            "0.128.0"
+          ],
+          [
+            "x-stainless-retry-count",
+            "0"
+          ],
+          [
+            "x-stainless-runtime",
+            "node"
+          ],
+          [
+            "x-stainless-runtime-version",
+            "v26.3.0"
+          ],
+          [
+            "x-stainless-timeout",
+            "600"
+          ],
+          [
+            "Connection",
+            "keep-alive"
+          ],
+          [
+            "Host",
+            "api.anthropic.com"
+          ],
+          [
+            "Accept-Encoding",
+            "gzip, deflate, br, zstd"
+          ],
+          [
+            "Content-Length",
+            "1770"
+          ]
+        ],
+        "body": "{\"model\":\"claude-opus-5-5\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Plan the database migration.\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Step 1: add the column. Step 2: backfill.\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"system\",\"content\":[],\"output_config\":{\"effort\":\"low\"}},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Now just list the files to change.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.0c6; cc_entrypoint=cli; cch=e4dba; cc_prev_req=req_PLACEHOLDER0000000000000001; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=2; cc_turn_index=2;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"max_tokens\":32000,\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"},\"output_config\":{\"effort\":\"high\"},\"diagnostics\":{\"previous_message_id\":\"msg_PLACEHOLDER0000000000000001\"},\"stream\":true,\"fallbacks\":\"default\"}",
+        "body_sha256": "76af1a6a3632bb438b5a1f69bf24ccec40a2ff259be5a7b7c0a8aa3659166232",
+        "body_bytes": 1770,
+        "billing_header": "x-anthropic-billing-header: cc_version=2.1.302.0c6; cc_entrypoint=cli; cch=e4dba; cc_prev_req=req_PLACEHOLDER0000000000000001; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=2; cc_turn_index=2;",
+        "cc_version_suffix": {
+          "first_user_text": "Plan the database migration.",
+          "sampled_chars": " eg",
+          "suffix": "0c6"
+        },
+        "cch": "e4dba",
+        "cch_canonical_body": "{\"model\":\"\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Plan the database migration.\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Step 1: add the column. Step 2: backfill.\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"system\",\"content\":[],\"output_config\":{\"effort\":\"low\"}},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Now just list the files to change.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.0c6; cc_entrypoint=cli; cch=00000; cc_prev_req=req_PLACEHOLDER0000000000000001; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=2; cc_turn_index=2;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"},\"output_config\":{\"effort\":\"high\"},\"diagnostics\":{\"previous_message_id\":\"msg_PLACEHOLDER0000000000000001\"},\"stream\":true,\"fallbacks\":\"default\"}"
+      }
+    },
+    {
+      "id": "sonnet55-between-tools",
+      "source": "reconstructed",
+      "title": "Sonnet 5.5 with thinking turned off by the host, automatic 1h cache",
+      "covers": [
+        "thinking {type:\"disabled\"} rewritten to bare {type:\"between_tools\"}",
+        "output_config.effort xhigh capped to high",
+        "per-turn-control beta on Sonnet 5.5",
+        "no server-side fallback (Sonnet 5.5 is not a fallback source model)",
+        "automatic cache mode: every block breakpoint removed, one top-level cache_control {ephemeral, 1h}"
+      ],
+      "input": {
+        "host": "opencode-1",
+        "route": "oauth",
+        "model": "claude-sonnet-5-5",
+        "session_id": "ses_PLACEHOLDER_SONNET_0004",
+        "subagent": false,
+        "host_headers": {
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+          "content-type": "application/json",
+          "user-agent": "ai-sdk/anthropic opencode/1.18.18",
+          "x-api-key": "",
+          "x-session-affinity": "ses_PLACEHOLDER_SONNET_0004",
+          "x-cortexkit-effort-plan": "v2.8662f71eeadce89061f0ba7a0b1f0e70.x.0.20b8937a2fd4037cacc2c229ae63b0d0dec172d30e1cf08a981765ee161efb52"
+        },
+        "host_body": "{\"model\":\"claude-sonnet-5-5\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Rename the helper function and update its callers.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"thinking\":{\"type\":\"disabled\"},\"output_config\":{\"effort\":\"xhigh\"},\"stream\":true}",
+        "effort_markers": {
+          "note": "OpenCode 1 appends these marker blocks to user messages before lowering; the plugin consumes them. lowered_host_body is what reaches the fetch wrapper.",
+          "plan_header": "v2.8662f71eeadce89061f0ba7a0b1f0e70.x.0.20b8937a2fd4037cacc2c229ae63b0d0dec172d30e1cf08a981765ee161efb52",
+          "transition_tokens": [],
+          "anchor_token": null
+        },
+        "lowered_host_body": "{\"model\":\"claude-sonnet-5-5\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Rename the helper function and update its callers.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"thinking\":{\"type\":\"disabled\"},\"output_config\":{\"effort\":\"xhigh\"},\"stream\":true}",
+        "options": {
+          "cache1hEnabled": true,
+          "cache1hMode": "automatic",
+          "billingLineage": {
+            "promptId": "33333333-3333-4333-8333-333333333333"
+          },
+          "cacheDiagnosticsPreviousMessageId": null,
+          "serverSideFallbackEnabled": true,
+          "midConversationEffortEnabled": true
+        }
+      },
+      "output": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages?beta=true",
+        "request_line": "POST /v1/messages?beta=true HTTP/1.1",
+        "headers_wire_order": [
+          [
+            "Accept",
+            "application/json"
+          ],
+          [
+            "Authorization",
+            "Bearer sk-ant-oat01-PLACEHOLDER"
+          ],
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "User-Agent",
+            "claude-cli/2.1.302 (external, cli)"
+          ],
+          [
+            "anthropic-beta",
+            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,fine-grained-tool-streaming-2025-05-14"
+          ],
+          [
+            "anthropic-dangerous-direct-browser-access",
+            "true"
+          ],
+          [
+            "anthropic-version",
+            "2023-06-01"
+          ],
+          [
+            "x-app",
+            "cli"
+          ],
+          [
+            "x-claude-code-prompt-id",
+            "33333333-3333-4333-8333-333333333333"
+          ],
+          [
+            "x-claude-code-request-class",
+            "main"
+          ],
+          [
+            "x-claude-code-session-id",
+            "11111111-1111-4111-8111-111111111111"
+          ],
+          [
+            "x-client-request-id",
+            "22222222-2222-4222-8222-222222222222"
+          ],
+          [
+            "x-stainless-arch",
+            "arm64"
+          ],
+          [
+            "x-stainless-lang",
+            "js"
+          ],
+          [
+            "x-stainless-os",
+            "MacOS"
+          ],
+          [
+            "x-stainless-package-version",
+            "0.128.0"
+          ],
+          [
+            "x-stainless-retry-count",
+            "0"
+          ],
+          [
+            "x-stainless-runtime",
+            "node"
+          ],
+          [
+            "x-stainless-runtime-version",
+            "v26.3.0"
+          ],
+          [
+            "x-stainless-timeout",
+            "600"
+          ],
+          [
+            "Connection",
+            "keep-alive"
+          ],
+          [
+            "Host",
+            "api.anthropic.com"
+          ],
+          [
+            "Accept-Encoding",
+            "gzip, deflate, br, zstd"
+          ],
+          [
+            "Content-Length",
+            "1328"
+          ]
+        ],
+        "body": "{\"model\":\"claude-sonnet-5-5\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Rename the helper function and update its callers.\"}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.73f; cc_entrypoint=cli; cch=455aa; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\"},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\"}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"max_tokens\":32000,\"thinking\":{\"type\":\"between_tools\"},\"output_config\":{\"effort\":\"high\"},\"diagnostics\":{\"previous_message_id\":null},\"stream\":true,\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}",
+        "body_sha256": "0d384e523724cbbec2ae09a9e7bb72112646871abc85a7aa22f67a658761df62",
+        "body_bytes": 1328,
+        "billing_header": "x-anthropic-billing-header: cc_version=2.1.302.73f; cc_entrypoint=cli; cch=455aa; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;",
+        "cc_version_suffix": {
+          "first_user_text": "Rename the helper function and update its callers.",
+          "sampled_chars": "mtn",
+          "suffix": "73f"
+        },
+        "cch": "455aa",
+        "cch_canonical_body": "{\"model\":\"\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Rename the helper function and update its callers.\"}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.73f; cc_entrypoint=cli; cch=00000; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\"},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\"}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"thinking\":{\"type\":\"between_tools\"},\"output_config\":{\"effort\":\"high\"},\"diagnostics\":{\"previous_message_id\":null},\"stream\":true,\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}"
+      }
+    },
+    {
+      "id": "haiku55-tools-continuation",
+      "source": "reconstructed",
+      "title": "Haiku 5.5 tool-result continuation with two tools, explicit 1h cache",
+      "covers": [
+        "tool names prefixed mcp_ with an upper-cased first letter, in tools[] and in replayed tool_use",
+        "whitespace-only text after the latest tool_use removed",
+        "temperature removed for Haiku 5.5; thinking set to adaptive/summarized",
+        "tool_choice auto kept",
+        "main beta list even without context_management; claude-code follows prompt-caching-scope on Haiku 5.5"
+      ],
+      "input": {
+        "host": "opencode-1",
+        "route": "oauth",
+        "model": "claude-haiku-5-5",
+        "session_id": "ses_PLACEHOLDER_HAIKU_0005",
+        "subagent": false,
+        "host_headers": {
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+          "content-type": "application/json",
+          "user-agent": "ai-sdk/anthropic opencode/1.18.18",
+          "x-api-key": "",
+          "x-session-affinity": "ses_PLACEHOLDER_HAIKU_0005"
+        },
+        "host_body": "{\"model\":\"claude-haiku-5-5\",\"max_tokens\":32000,\"temperature\":0,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"read\",\"description\":\"Read a file from the local filesystem.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"filePath\":{\"type\":\"string\"}},\"required\":[\"filePath\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"bash\",\"description\":\"Run a shell command.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}],\"tool_choice\":{\"type\":\"auto\"},\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What does the README say?\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"I will read it.\"},{\"type\":\"tool_use\",\"id\":\"toolu_PLACEHOLDER_0001\",\"name\":\"read\",\"input\":{\"filePath\":\"README.md\"},\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"\\n\\n\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_PLACEHOLDER_0001\",\"content\":\"Demo project. Run make test.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"output_config\":{\"effort\":\"medium\"},\"stream\":true}",
+        "options": {
+          "cache1hEnabled": true,
+          "cache1hMode": "explicit",
+          "billingLineage": {
+            "promptId": "33333333-3333-4333-8333-333333333333",
+            "previousRequestId": "req_PLACEHOLDER0000000000000001"
+          },
+          "cacheDiagnosticsPreviousMessageId": "msg_PLACEHOLDER0000000000000001",
+          "serverSideFallbackEnabled": true,
+          "midConversationEffortEnabled": true
+        }
+      },
+      "output": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages?beta=true",
+        "request_line": "POST /v1/messages?beta=true HTTP/1.1",
+        "headers_wire_order": [
+          [
+            "Accept",
+            "application/json"
+          ],
+          [
+            "Authorization",
+            "Bearer sk-ant-oat01-PLACEHOLDER"
+          ],
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "User-Agent",
+            "claude-cli/2.1.302 (external, cli)"
+          ],
+          [
+            "anthropic-beta",
+            "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,fine-grained-tool-streaming-2025-05-14"
+          ],
+          [
+            "anthropic-dangerous-direct-browser-access",
+            "true"
+          ],
+          [
+            "anthropic-version",
+            "2023-06-01"
+          ],
+          [
+            "x-app",
+            "cli"
+          ],
+          [
+            "x-claude-code-prompt-id",
+            "33333333-3333-4333-8333-333333333333"
+          ],
+          [
+            "x-claude-code-request-class",
+            "main"
+          ],
+          [
+            "x-claude-code-session-id",
+            "11111111-1111-4111-8111-111111111111"
+          ],
+          [
+            "x-client-request-id",
+            "22222222-2222-4222-8222-222222222222"
+          ],
+          [
+            "x-stainless-arch",
+            "arm64"
+          ],
+          [
+            "x-stainless-lang",
+            "js"
+          ],
+          [
+            "x-stainless-os",
+            "MacOS"
+          ],
+          [
+            "x-stainless-package-version",
+            "0.128.0"
+          ],
+          [
+            "x-stainless-retry-count",
+            "0"
+          ],
+          [
+            "x-stainless-runtime",
+            "node"
+          ],
+          [
+            "x-stainless-runtime-version",
+            "v26.3.0"
+          ],
+          [
+            "x-stainless-timeout",
+            "600"
+          ],
+          [
+            "Connection",
+            "keep-alive"
+          ],
+          [
+            "Host",
+            "api.anthropic.com"
+          ],
+          [
+            "Accept-Encoding",
+            "gzip, deflate, br, zstd"
+          ],
+          [
+            "Content-Length",
+            "2380"
+          ]
+        ],
+        "body": "{\"model\":\"claude-haiku-5-5\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What does the README say?\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"I will read it.\"},{\"type\":\"tool_use\",\"id\":\"toolu_PLACEHOLDER_0001\",\"name\":\"mcp_Read\",\"input\":{\"filePath\":\"README.md\"},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_PLACEHOLDER_0001\",\"content\":\"Demo project. Run make test.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.0b6; cc_entrypoint=cli; cch=f1778; cc_prev_req=req_PLACEHOLDER0000000000000001; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"mcp_Read\",\"description\":\"Read a file from the local filesystem.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"filePath\":{\"type\":\"string\"}},\"required\":[\"filePath\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"mcp_Bash\",\"description\":\"Run a shell command.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}],\"tool_choice\":{\"type\":\"auto\"},\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"max_tokens\":32000,\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"},\"output_config\":{\"effort\":\"medium\"},\"diagnostics\":{\"previous_message_id\":\"msg_PLACEHOLDER0000000000000001\"},\"stream\":true}",
+        "body_sha256": "0251150e207ab38e7db01f98a99d309113724a8e68bbd31ecbf1772028aec30a",
+        "body_bytes": 2380,
+        "billing_header": "x-anthropic-billing-header: cc_version=2.1.302.0b6; cc_entrypoint=cli; cch=f1778; cc_prev_req=req_PLACEHOLDER0000000000000001; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;",
+        "cc_version_suffix": {
+          "first_user_text": "What does the README say?",
+          "sampled_chars": " e ",
+          "suffix": "0b6"
+        },
+        "cch": "f1778",
+        "cch_canonical_body": "{\"model\":\"\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What does the README say?\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"I will read it.\"},{\"type\":\"tool_use\",\"id\":\"toolu_PLACEHOLDER_0001\",\"name\":\"mcp_Read\",\"input\":{\"filePath\":\"README.md\"},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_PLACEHOLDER_0001\",\"content\":\"Demo project. Run make test.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.0b6; cc_entrypoint=cli; cch=00000; cc_prev_req=req_PLACEHOLDER0000000000000001; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"mcp_Read\",\"description\":\"Read a file from the local filesystem.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"filePath\":{\"type\":\"string\"}},\"required\":[\"filePath\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"mcp_Bash\",\"description\":\"Run a shell command.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}],\"tool_choice\":{\"type\":\"auto\"},\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"},\"output_config\":{\"effort\":\"medium\"},\"diagnostics\":{\"previous_message_id\":\"msg_PLACEHOLDER0000000000000001\"},\"stream\":true}"
+      }
+    },
+    {
+      "id": "sonnet55-full-agent-subagent",
+      "source": "reconstructed",
+      "title": "Sonnet 5.5 subagent request whose body has the full agent shape (tools + context_management)",
+      "covers": [
+        "main beta list (claude-code-20250219 first, effort, binding controls and display updates) with per-turn-control directly after prompt-caching-scope",
+        "forced tool_choice {type:\"any\"} removed for Sonnet 5.5",
+        "subagent (x-parent-session-id): 1h cache off, host breakpoints sent as 5-minute ephemeral, no lineage fields"
+      ],
+      "input": {
+        "host": "opencode-1",
+        "route": "oauth",
+        "model": "claude-sonnet-5-5",
+        "session_id": "ses_PLACEHOLDER_SUBAGENT_0006",
+        "subagent": true,
+        "host_headers": {
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+          "content-type": "application/json",
+          "user-agent": "ai-sdk/anthropic opencode/1.18.18",
+          "x-api-key": "",
+          "x-session-affinity": "ses_PLACEHOLDER_SUBAGENT_0006",
+          "x-parent-session-id": "ses_PARENT",
+          "x-cortexkit-effort-plan": "v2.d728c5416fa08ac673713ced5e2013c5.h.0.aad998caee02a8872e467d86bf22ee5510f5a69d26ac72d44715ff5b058ddf40"
+        },
+        "host_body": "{\"model\":\"claude-sonnet-5-5\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"bash\",\"description\":\"Run a shell command.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}],\"tool_choice\":{\"type\":\"any\"},\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Run the unit tests and report failures.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"thinking\":{\"type\":\"adaptive\"},\"context_management\":{\"edits\":[]},\"output_config\":{\"effort\":\"high\"},\"stream\":true}",
+        "effort_markers": {
+          "note": "OpenCode 1 appends these marker blocks to user messages before lowering; the plugin consumes them. lowered_host_body is what reaches the fetch wrapper.",
+          "plan_header": "v2.d728c5416fa08ac673713ced5e2013c5.h.0.aad998caee02a8872e467d86bf22ee5510f5a69d26ac72d44715ff5b058ddf40",
+          "transition_tokens": [],
+          "anchor_token": null
+        },
+        "lowered_host_body": "{\"model\":\"claude-sonnet-5-5\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"bash\",\"description\":\"Run a shell command.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}],\"tool_choice\":{\"type\":\"any\"},\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Run the unit tests and report failures.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"thinking\":{\"type\":\"adaptive\"},\"context_management\":{\"edits\":[]},\"output_config\":{\"effort\":\"high\"},\"stream\":true}",
+        "options": {
+          "cache1hEnabled": false,
+          "cache1hMode": "explicit",
+          "billingLineage": {
+            "promptId": "33333333-3333-4333-8333-333333333333"
+          },
+          "cacheDiagnosticsPreviousMessageId": null,
+          "serverSideFallbackEnabled": true,
+          "midConversationEffortEnabled": true
+        }
+      },
+      "output": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages?beta=true",
+        "request_line": "POST /v1/messages?beta=true HTTP/1.1",
+        "headers_wire_order": [
+          [
+            "Accept",
+            "application/json"
+          ],
+          [
+            "Authorization",
+            "Bearer sk-ant-oat01-PLACEHOLDER"
+          ],
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "User-Agent",
+            "claude-cli/2.1.302 (external, cli)"
+          ],
+          [
+            "anthropic-beta",
+            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,fine-grained-tool-streaming-2025-05-14"
+          ],
+          [
+            "anthropic-dangerous-direct-browser-access",
+            "true"
+          ],
+          [
+            "anthropic-version",
+            "2023-06-01"
+          ],
+          [
+            "x-app",
+            "cli"
+          ],
+          [
+            "x-claude-code-request-class",
+            "main"
+          ],
+          [
+            "x-claude-code-session-id",
+            "11111111-1111-4111-8111-111111111111"
+          ],
+          [
+            "x-client-request-id",
+            "22222222-2222-4222-8222-222222222222"
+          ],
+          [
+            "x-stainless-arch",
+            "arm64"
+          ],
+          [
+            "x-stainless-lang",
+            "js"
+          ],
+          [
+            "x-stainless-os",
+            "MacOS"
+          ],
+          [
+            "x-stainless-package-version",
+            "0.128.0"
+          ],
+          [
+            "x-stainless-retry-count",
+            "0"
+          ],
+          [
+            "x-stainless-runtime",
+            "node"
+          ],
+          [
+            "x-stainless-runtime-version",
+            "v26.3.0"
+          ],
+          [
+            "x-stainless-timeout",
+            "600"
+          ],
+          [
+            "Connection",
+            "keep-alive"
+          ],
+          [
+            "Host",
+            "api.anthropic.com"
+          ],
+          [
+            "Accept-Encoding",
+            "gzip, deflate, br, zstd"
+          ],
+          [
+            "Content-Length",
+            "1570"
+          ]
+        ],
+        "body": "{\"model\":\"claude-sonnet-5-5\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Run the unit tests and report failures.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.44d; cc_entrypoint=cli; cch=74ebc;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"mcp_Bash\",\"description\":\"Run a shell command.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"max_tokens\":32000,\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"},\"context_management\":{\"edits\":[]},\"output_config\":{\"effort\":\"high\"},\"diagnostics\":{\"previous_message_id\":null},\"stream\":true}",
+        "body_sha256": "2906405da1247b5dada4085e57318061056598db27db72bf3e5b6eb9d04a5683",
+        "body_bytes": 1570,
+        "billing_header": "x-anthropic-billing-header: cc_version=2.1.302.44d; cc_entrypoint=cli; cch=74ebc;",
+        "cc_version_suffix": {
+          "first_user_text": "Run the unit tests and report failures.",
+          "sampled_chars": "t n",
+          "suffix": "44d"
+        },
+        "cch": "74ebc",
+        "cch_canonical_body": "{\"model\":\"\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Run the unit tests and report failures.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.44d; cc_entrypoint=cli; cch=00000;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"mcp_Bash\",\"description\":\"Run a shell command.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"},\"context_management\":{\"edits\":[]},\"output_config\":{\"effort\":\"high\"},\"diagnostics\":{\"previous_message_id\":null},\"stream\":true}"
+      }
+    },
+    {
+      "id": "opus48-structured-output-fast",
+      "source": "reconstructed",
+      "title": "Opus 4.8 structured-output request with fast mode on",
+      "covers": [
+        "main beta list plus structured-output before cache-diagnosis for the json_schema output format",
+        "speed \"fast\" and fast-mode beta",
+        "Opus 4.8 keeps host budget thinking unchanged; no per-turn-control, no server-side fallback"
+      ],
+      "input": {
+        "host": "opencode-1",
+        "route": "oauth",
+        "model": "claude-opus-4-8",
+        "session_id": "ses_PLACEHOLDER_OPUS48_0007",
+        "subagent": false,
+        "host_headers": {
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+          "content-type": "application/json",
+          "user-agent": "ai-sdk/anthropic opencode/1.18.18",
+          "x-api-key": "",
+          "x-session-affinity": "ses_PLACEHOLDER_OPUS48_0007"
+        },
+        "host_body": "{\"model\":\"claude-opus-4-8\",\"max_tokens\":32000,\"system\":[{\"type\":\"text\",\"text\":\"You are OpenCode, the best coding agent on the planet.\\n\\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nIf the user asks for help or wants to give feedback inform them of the following:\\n- ctrl+p to list available actions\\n- To give feedback, users should report the issue at https://github.com/anomalyco/opencode\\n\\nWhen the user directly asks about OpenCode, first use the WebFetch tool to gather information from https://opencode.ai/docs\\n\\nOnly refuse if OpenCode honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Here is some useful information about the environment you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Extract the package name and version as JSON.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":8000},\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"version\":{\"type\":\"string\"}},\"required\":[\"name\",\"version\"],\"additionalProperties\":false}}},\"stream\":true}",
+        "options": {
+          "cache1hEnabled": true,
+          "cache1hMode": "explicit",
+          "fastModeEnabled": true,
+          "billingLineage": {
+            "promptId": "33333333-3333-4333-8333-333333333333"
+          },
+          "cacheDiagnosticsPreviousMessageId": null,
+          "serverSideFallbackEnabled": true,
+          "midConversationEffortEnabled": true
+        }
+      },
+      "output": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages?beta=true",
+        "request_line": "POST /v1/messages?beta=true HTTP/1.1",
+        "headers_wire_order": [
+          [
+            "Accept",
+            "application/json"
+          ],
+          [
+            "Authorization",
+            "Bearer sk-ant-oat01-PLACEHOLDER"
+          ],
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "User-Agent",
+            "claude-cli/2.1.302 (external, cli)"
+          ],
+          [
+            "anthropic-beta",
+            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11,structured-outputs-2025-12-15,cache-diagnosis-2026-04-07,fast-mode-2026-02-01,fine-grained-tool-streaming-2025-05-14"
+          ],
+          [
+            "anthropic-dangerous-direct-browser-access",
+            "true"
+          ],
+          [
+            "anthropic-version",
+            "2023-06-01"
+          ],
+          [
+            "x-app",
+            "cli"
+          ],
+          [
+            "x-claude-code-prompt-id",
+            "33333333-3333-4333-8333-333333333333"
+          ],
+          [
+            "x-claude-code-request-class",
+            "main"
+          ],
+          [
+            "x-claude-code-session-id",
+            "11111111-1111-4111-8111-111111111111"
+          ],
+          [
+            "x-client-request-id",
+            "22222222-2222-4222-8222-222222222222"
+          ],
+          [
+            "x-stainless-arch",
+            "arm64"
+          ],
+          [
+            "x-stainless-lang",
+            "js"
+          ],
+          [
+            "x-stainless-os",
+            "MacOS"
+          ],
+          [
+            "x-stainless-package-version",
+            "0.128.0"
+          ],
+          [
+            "x-stainless-retry-count",
+            "0"
+          ],
+          [
+            "x-stainless-runtime",
+            "node"
+          ],
+          [
+            "x-stainless-runtime-version",
+            "v26.3.0"
+          ],
+          [
+            "x-stainless-timeout",
+            "600"
+          ],
+          [
+            "Connection",
+            "keep-alive"
+          ],
+          [
+            "Host",
+            "api.anthropic.com"
+          ],
+          [
+            "Accept-Encoding",
+            "gzip, deflate, br, zstd"
+          ],
+          [
+            "Content-Length",
+            "1617"
+          ]
+        ],
+        "body": "{\"model\":\"claude-opus-4-8\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Extract the package name and version as JSON.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.c63; cc_entrypoint=cli; cch=eebbd; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"max_tokens\":32000,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":8000},\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"version\":{\"type\":\"string\"}},\"required\":[\"name\",\"version\"],\"additionalProperties\":false}}},\"diagnostics\":{\"previous_message_id\":null},\"stream\":true,\"speed\":\"fast\"}",
+        "body_sha256": "7dc5db4eafb8c40a6fae2d417beb3eba635a44b1ab99627b376500ff021edd6f",
+        "body_bytes": 1617,
+        "billing_header": "x-anthropic-billing-header: cc_version=2.1.302.c63; cc_entrypoint=cli; cch=eebbd; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;",
+        "cc_version_suffix": {
+          "first_user_text": "Extract the package name and version as JSON.",
+          "sampled_chars": "a n",
+          "suffix": "c63"
+        },
+        "cch": "eebbd",
+        "cch_canonical_body": "{\"model\":\"\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Extract the package name and version as JSON.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}],\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.302.c63; cc_entrypoint=cli; cch=00000; cc_prompt_id=33333333-3333-4333-8333-333333333333; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;\"},{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"},{\"type\":\"text\",\"text\":\"You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\\n\\nOnly refuse if the assistant honestly cannot help with the request.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}},{\"type\":\"text\",\"text\":\"Environment context you are running in:\\n<env>\\n  Working directory: /work/demo\\n  Is directory a git repo: yes\\n  Platform: darwin\\n  Today's date: Thu Oct 15 2026\\n</env>\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"metadata\":{\"user_id\":\"{\\\"device_id\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"account_uuid\\\":\\\"00000000-0000-4000-8000-000000000000\\\",\\\"session_id\\\":\\\"11111111-1111-4111-8111-111111111111\\\"}\"},\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":8000},\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"version\":{\"type\":\"string\"}},\"required\":[\"name\",\"version\"],\"additionalProperties\":false}}},\"diagnostics\":{\"previous_message_id\":null},\"stream\":true,\"speed\":\"fast\"}"
+      }
+    }
+  ]
+}

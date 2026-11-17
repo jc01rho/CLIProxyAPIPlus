@@ -132,6 +132,8 @@ func parseModelsDevLimits(data []byte) (*modelsDevLimitCatalog, error) {
 }
 
 // ApplyModelsDevLimit overrides missing or differing model-list metadata.
+// Explicit per-model max-context-length overrides from configuration take
+// precedence over models.dev context limits.
 // Callers must pass a clone, not a registered model used by routing.
 func ApplyModelsDevLimit(info *ModelInfo) {
 	if info == nil {
@@ -145,14 +147,18 @@ func ApplyModelsDevLimit(info *ModelInfo) {
 	if !ok {
 		return
 	}
-	if limit.Context > 0 {
-		info.ContextLength = limit.Context
-		info.MaxContextLength = limit.Context
-	}
-	if limit.Input > 0 {
-		info.InputTokenLimit = limit.Input
-	} else if limit.Context > 0 {
-		info.InputTokenLimit = limit.Context
+	if info.MaxContextLength > 0 {
+		info.ContextLength = info.MaxContextLength
+	} else {
+		if limit.Context > 0 {
+			info.ContextLength = limit.Context
+			info.MaxContextLength = limit.Context
+		}
+		if limit.Input > 0 {
+			info.InputTokenLimit = limit.Input
+		} else if limit.Context > 0 {
+			info.InputTokenLimit = limit.Context
+		}
 	}
 	if limit.Output > 0 {
 		info.MaxCompletionTokens = limit.Output

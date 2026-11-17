@@ -4,34 +4,41 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/regexp"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 const (
-	// DefaultClaudeCodeVersion matches the minimum CLI version for Opus 5.5.
-	DefaultClaudeCodeVersion               = "2.1.280"
+	// DefaultClaudeCodeVersion is the Claude Code release the OAuth wire
+	// profile follows (cortexkit/anthropic-auth b9a8bd928 persona).
+	DefaultClaudeCodeVersion               = "2.1.302"
 	defaultClaudeFingerprintUserAgent      = "claude-cli/" + DefaultClaudeCodeVersion + " (external, cli)"
-	defaultClaudeFingerprintPackageVersion = "0.112.1"
+	defaultClaudeFingerprintPackageVersion = "0.128.0"
 	defaultClaudeFingerprintRuntimeVersion = "v26.3.0"
-	defaultClaudeFingerprintOS             = "MacOS"
-	defaultClaudeFingerprintArch           = "arm64"
-	claudeDeviceProfileTTL                 = 7 * 24 * time.Hour
-	claudeDeviceProfileLockTTL             = 5 * time.Second
-	claudeDeviceProfileCleanupPeriod       = time.Hour
-	claudeCodeEntrypoint                   = "cli"
-	claudeCodeBuildHash                    = "3bf"
+	// nativeClaudeCodeFloorVersion and nativeClaudeCodeFloorPackageVersion are
+	// the oldest measured native Claude Code release recognized as a confirmed
+	// client. They stay at 2.1.280 / 0.112.1 so newer native clients between
+	// the measured release and the emulated profile keep native passthrough.
+	nativeClaudeCodeFloorVersion        = "2.1.280"
+	nativeClaudeCodeFloorPackageVersion = "0.112.1"
+	defaultClaudeFingerprintOS          = "MacOS"
+	defaultClaudeFingerprintArch        = "arm64"
+	claudeDeviceProfileTTL              = 7 * 24 * time.Hour
+	claudeDeviceProfileLockTTL          = 5 * time.Second
+	claudeDeviceProfileCleanupPeriod    = time.Hour
+	claudeCodeEntrypoint                = "cli"
+	claudeCodeBuildHash                 = "3bf"
 )
 
 var (
@@ -156,6 +163,28 @@ func defaultClaudeDeviceProfile(cfg *config.Config) ClaudeDeviceProfile {
 	return profile
 }
 
+// nativeClaudeDetectionProfile is the baseline native-client detection compares
+// against: the emulated profile with its CLI and package versions lowered to the
+// measured native floor, unless header-defaults overrides them.
+func nativeClaudeDetectionProfile(cfg *config.Config) ClaudeDeviceProfile {
+	profile := defaultClaudeDeviceProfile(cfg)
+	var hd config.ClaudeHeaderDefaults
+	if cfg != nil {
+		hd = cfg.ClaudeHeaderDefaults
+	}
+	if strings.TrimSpace(hd.UserAgent) == "" {
+		profile.UserAgent = "claude-cli/" + nativeClaudeCodeFloorVersion + " (external, cli)"
+		if version, ok := parseClaudeCLIVersion(profile.UserAgent); ok {
+			profile.version = version
+			profile.hasVersion = true
+		}
+	}
+	if strings.TrimSpace(hd.PackageVersion) == "" {
+		profile.PackageVersion = nativeClaudeCodeFloorPackageVersion
+	}
+	return profile
+}
+
 // mapStainlessOS maps runtime.GOOS to Stainless SDK OS names.
 func mapStainlessOS() string {
 	switch runtime.GOOS {
@@ -225,6 +254,52 @@ func plausibleClaudeCLIVersion(candidate, baseline claudeCLIVersion) bool {
 		candidate.patch >= baseline.patch
 }
 
+func parseClaudeSemver(raw string) (claudeCLIVersion, bool) {
+	parts := strings.Split(strings.TrimSpace(raw), ".")
+	if len(parts) != 3 {
+		return claudeCLIVersion{}, false
+	}
+	major, errMajor := strconv.Atoi(parts[0])
+	if errMajor != nil {
+		return claudeCLIVersion{}, false
+	}
+	minor, errMinor := strconv.Atoi(parts[1])
+	if errMinor != nil {
+		return claudeCLIVersion{}, false
+	}
+	patch, errPatch := strconv.Atoi(parts[2])
+	if errPatch != nil {
+		return claudeCLIVersion{}, false
+	}
+	return claudeCLIVersion{major: major, minor: minor, patch: patch}, true
+}
+
+func plausibleClaudePackageVersion(candidate, baseline string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if !claudePackageVersionPattern.MatchString(candidate) {
+		return false
+	}
+	candVer, okCand := parseClaudeSemver(candidate)
+	baseVer, okBase := parseClaudeSemver(baseline)
+	if !okCand || !okBase {
+		return candidate == strings.TrimSpace(baseline)
+	}
+	return candVer.Compare(baseVer) >= 0
+}
+
+func plausibleClaudeRuntimeVersion(candidate, baseline string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if !claudeRuntimeVersionPattern.MatchString(candidate) {
+		return false
+	}
+	candVer, okCand := parseClaudeSemver(strings.TrimPrefix(candidate, "v"))
+	baseVer, okBase := parseClaudeSemver(strings.TrimPrefix(strings.TrimSpace(baseline), "v"))
+	if !okCand || !okBase {
+		return candidate == strings.TrimSpace(baseline)
+	}
+	return candVer.Compare(baseVer) >= 0
+}
+
 func meetsClaudeDeviceProfileBaseline(candidate, baseline ClaudeDeviceProfile) bool {
 	if candidate.UserAgent == "" || !candidate.hasVersion {
 		return false
@@ -267,9 +342,9 @@ func pinClaudeDeviceProfilePlatform(profile, baseline ClaudeDeviceProfile) Claud
 
 // normalizeClaudeDeviceProfile pins stabilized profiles to the configured platform
 // and replaces any software tuple that is not on the measured 2.1 line + package.
-func normalizeClaudeDeviceProfile(profile, baseline ClaudeDeviceProfile) ClaudeDeviceProfile {
+func normalizeClaudeDeviceProfile(profile, baseline, floor ClaudeDeviceProfile) ClaudeDeviceProfile {
 	profile = pinClaudeDeviceProfilePlatform(profile, baseline)
-	if !meetsClaudeDeviceProfileBaseline(profile, baseline) {
+	if !meetsClaudeDeviceProfileBaseline(profile, floor) && !meetsClaudeDeviceProfileBaseline(profile, baseline) {
 		profile.UserAgent = baseline.UserAgent
 		profile.PackageVersion = baseline.PackageVersion
 		profile.RuntimeVersion = baseline.RuntimeVersion
@@ -284,9 +359,8 @@ func extractClaudeDeviceProfile(headers http.Header, cfg *config.Config) (Claude
 		return ClaudeDeviceProfile{}, false
 	}
 
-	userAgent := strings.TrimSpace(headers.Get("User-Agent"))
-	version, ok := parseClaudeCLIVersion(userAgent)
-	if !ok || !claudeCodeNativeUserAgentPattern.MatchString(userAgent) {
+	userAgent, ok := parseClaudeCodeUserAgent(headers.Get("User-Agent"))
+	if !ok {
 		return ClaudeDeviceProfile{}, false
 	}
 
@@ -300,12 +374,12 @@ func extractClaudeDeviceProfile(headers http.Header, cfg *config.Config) (Claude
 		runtimeVersion = baseline.RuntimeVersion
 	}
 	profile := ClaudeDeviceProfile{
-		UserAgent:      userAgent,
+		UserAgent:      userAgent.profileUserAgent,
 		PackageVersion: packageVersion,
 		RuntimeVersion: runtimeVersion,
 		OS:             firstNonEmptyHeader(headers, "X-Stainless-Os", baseline.OS),
 		Arch:           firstNonEmptyHeader(headers, "X-Stainless-Arch", baseline.Arch),
-		version:        version,
+		version:        userAgent.version,
 		hasVersion:     true,
 	}
 	return profile, true
@@ -335,36 +409,40 @@ func claudeDeviceProfileScopeKey(auth *cliproxyauth.Auth, apiKey string) string 
 // claudeDeviceProfileSubclientScope keeps first-party clients with distinct
 // wire identities from replacing one another in a credential's stabilized
 // profile. The CLI retains the legacy base scope for cache compatibility.
-func claudeDeviceProfileSubclientScope(profile ClaudeDeviceProfile) string {
+func claudeDeviceProfileSubclientScope(profile ClaudeDeviceProfile, configs ...*config.Config) string {
+	var cfg *config.Config
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
 	entrypoint, _ := parseClaudeCodeUserAgentDetails(profile.UserAgent)
 	if entrypoint == "" || entrypoint == "cli" {
 		return ""
 	}
-	if nativeClaudeEntrypoints[entrypoint] {
+	if isNativeClaudeEntrypoint(entrypoint, cfg) {
 		return entrypoint
 	}
 	return "other"
 }
 
-func claudeDeviceProfileScopedKey(auth *cliproxyauth.Auth, apiKey string, profile ClaudeDeviceProfile) string {
+func claudeDeviceProfileScopedKey(auth *cliproxyauth.Auth, apiKey string, profile ClaudeDeviceProfile, configs ...*config.Config) string {
 	key := claudeDeviceProfileScopeKey(auth, apiKey)
-	if subclient := claudeDeviceProfileSubclientScope(profile); subclient != "" {
+	if subclient := claudeDeviceProfileSubclientScope(profile, configs...); subclient != "" {
 		key += "|subclient:" + subclient
 	}
 	return key
 }
 
-func claudeDeviceProfileCacheKey(auth *cliproxyauth.Auth, apiKey string, profile ClaudeDeviceProfile) string {
-	sum := sha256.Sum256([]byte(claudeDeviceProfileScopedKey(auth, apiKey, profile)))
+func claudeDeviceProfileCacheKey(auth *cliproxyauth.Auth, apiKey string, profile ClaudeDeviceProfile, configs ...*config.Config) string {
+	sum := sha256.Sum256([]byte(claudeDeviceProfileScopedKey(auth, apiKey, profile, configs...)))
 	return hex.EncodeToString(sum[:])
 }
 
-func claudeDeviceProfileKVKey(auth *cliproxyauth.Auth, apiKey string, profile ClaudeDeviceProfile) string {
-	return "cpa:claude:device-profile:" + homekv.HashKeyPart(claudeDeviceProfileScopedKey(auth, apiKey, profile))
+func claudeDeviceProfileKVKey(auth *cliproxyauth.Auth, apiKey string, profile ClaudeDeviceProfile, configs ...*config.Config) string {
+	return "cpa:claude:device-profile:" + homekv.HashKeyPart(claudeDeviceProfileScopedKey(auth, apiKey, profile, configs...))
 }
 
-func claudeDeviceProfileLockKVKey(auth *cliproxyauth.Auth, apiKey string, profile ClaudeDeviceProfile) string {
-	return "cpa:claude:device-profile-lock:" + homekv.HashKeyPart(claudeDeviceProfileScopedKey(auth, apiKey, profile))
+func claudeDeviceProfileLockKVKey(auth *cliproxyauth.Auth, apiKey string, profile ClaudeDeviceProfile, configs ...*config.Config) string {
+	return "cpa:claude:device-profile-lock:" + homekv.HashKeyPart(claudeDeviceProfileScopedKey(auth, apiKey, profile, configs...))
 }
 
 func startClaudeDeviceProfileCacheCleanup() {
@@ -417,14 +495,14 @@ func resolveClaudeDeviceProfileLocal(auth *cliproxyauth.Auth, apiKey string, hea
 	if hasCandidate {
 		candidate = pinClaudeDeviceProfilePlatform(candidate, baseline)
 	}
-	if hasCandidate && !meetsClaudeDeviceProfileBaseline(candidate, baseline) {
+	if hasCandidate && !meetsClaudeDeviceProfileBaseline(candidate, nativeClaudeDetectionProfile(cfg)) && !meetsClaudeDeviceProfileBaseline(candidate, baseline) {
 		hasCandidate = false
 	}
 	cacheProfile := ClaudeDeviceProfile{}
 	if hasCandidate {
 		cacheProfile = candidate
 	}
-	cacheKey := claudeDeviceProfileCacheKey(auth, apiKey, cacheProfile)
+	cacheKey := claudeDeviceProfileCacheKey(auth, apiKey, cacheProfile, cfg)
 
 	claudeDeviceProfileCacheMu.RLock()
 	entry, hasCached := claudeDeviceProfileCache[cacheKey]
@@ -440,7 +518,7 @@ func resolveClaudeDeviceProfileLocal(auth *cliproxyauth.Auth, apiKey string, hea
 		entry, hasCached = claudeDeviceProfileCache[cacheKey]
 		cachedValid = hasCached && entry.expire.After(now) && entry.profile.UserAgent != ""
 		if cachedValid {
-			entry.profile = normalizeClaudeDeviceProfile(entry.profile, baseline)
+			entry.profile = normalizeClaudeDeviceProfile(entry.profile, baseline, nativeClaudeDetectionProfile(cfg))
 		}
 		if cachedValid && !shouldUpgradeClaudeDeviceProfile(candidate, entry.profile) {
 			entry.expire = now.Add(claudeDeviceProfileTTL)
@@ -461,7 +539,7 @@ func resolveClaudeDeviceProfileLocal(auth *cliproxyauth.Auth, apiKey string, hea
 		claudeDeviceProfileCacheMu.Lock()
 		entry = claudeDeviceProfileCache[cacheKey]
 		if entry.expire.After(now) && entry.profile.UserAgent != "" {
-			entry.profile = normalizeClaudeDeviceProfile(entry.profile, baseline)
+			entry.profile = normalizeClaudeDeviceProfile(entry.profile, baseline, nativeClaudeDetectionProfile(cfg))
 			entry.expire = now.Add(claudeDeviceProfileTTL)
 			claudeDeviceProfileCache[cacheKey] = entry
 			claudeDeviceProfileCacheMu.Unlock()
@@ -479,7 +557,7 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	if hasCandidate {
 		candidate = pinClaudeDeviceProfilePlatform(candidate, baseline)
 	}
-	if hasCandidate && !meetsClaudeDeviceProfileBaseline(candidate, baseline) {
+	if hasCandidate && !meetsClaudeDeviceProfileBaseline(candidate, nativeClaudeDetectionProfile(cfg)) && !meetsClaudeDeviceProfileBaseline(candidate, baseline) {
 		hasCandidate = false
 	}
 
@@ -487,12 +565,12 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	if hasCandidate {
 		cacheProfile = candidate
 	}
-	valueKey := claudeDeviceProfileKVKey(auth, apiKey, cacheProfile)
+	valueKey := claudeDeviceProfileKVKey(auth, apiKey, cacheProfile, cfg)
 	if !hasCandidate {
-		return readClaudeDeviceProfileFromHome(ctx, client, valueKey, baseline)
+		return readClaudeDeviceProfileFromHome(ctx, client, valueKey, baseline, nativeClaudeDetectionProfile(cfg))
 	}
 
-	lockKey := claudeDeviceProfileLockKVKey(auth, apiKey, cacheProfile)
+	lockKey := claudeDeviceProfileLockKVKey(auth, apiKey, cacheProfile, cfg)
 	gotLock, errLock := client.KVSetNX(ctx, lockKey, []byte("1"), claudeDeviceProfileLockTTL)
 	if errLock != nil {
 		return ClaudeDeviceProfile{}, errLock
@@ -501,7 +579,7 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 		ClaudeDeviceProfileBeforeCandidateStore(candidate)
 	}
 
-	cached, found, errRead := readClaudeDeviceProfileValueFromHome(ctx, client, valueKey, baseline)
+	cached, found, errRead := readClaudeDeviceProfileValueFromHome(ctx, client, valueKey, baseline, nativeClaudeDetectionProfile(cfg))
 	if errRead != nil {
 		return ClaudeDeviceProfile{}, errRead
 	}
@@ -524,8 +602,8 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	return candidate, nil
 }
 
-func readClaudeDeviceProfileFromHome(ctx context.Context, client claudeDeviceProfileKVClient, key string, baseline ClaudeDeviceProfile) (ClaudeDeviceProfile, error) {
-	profile, found, errRead := readClaudeDeviceProfileValueFromHome(ctx, client, key, baseline)
+func readClaudeDeviceProfileFromHome(ctx context.Context, client claudeDeviceProfileKVClient, key string, baseline, floor ClaudeDeviceProfile) (ClaudeDeviceProfile, error) {
+	profile, found, errRead := readClaudeDeviceProfileValueFromHome(ctx, client, key, baseline, floor)
 	if errRead != nil {
 		return ClaudeDeviceProfile{}, errRead
 	}
@@ -538,7 +616,7 @@ func readClaudeDeviceProfileFromHome(ctx context.Context, client claudeDevicePro
 	return profile, nil
 }
 
-func readClaudeDeviceProfileValueFromHome(ctx context.Context, client claudeDeviceProfileKVClient, key string, baseline ClaudeDeviceProfile) (ClaudeDeviceProfile, bool, error) {
+func readClaudeDeviceProfileValueFromHome(ctx context.Context, client claudeDeviceProfileKVClient, key string, baseline, floor ClaudeDeviceProfile) (ClaudeDeviceProfile, bool, error) {
 	raw, found, errGet := client.KVGet(ctx, key)
 	if errGet != nil || !found {
 		return ClaudeDeviceProfile{}, false, errGet
@@ -551,7 +629,7 @@ func readClaudeDeviceProfileValueFromHome(ctx context.Context, client claudeDevi
 	if strings.TrimSpace(profile.UserAgent) == "" {
 		return ClaudeDeviceProfile{}, false, nil
 	}
-	return normalizeClaudeDeviceProfile(profile, baseline), true, nil
+	return normalizeClaudeDeviceProfile(profile, baseline, floor), true, nil
 }
 
 func writeClaudeDeviceProfileToHome(ctx context.Context, client claudeDeviceProfileKVClient, key string, profile ClaudeDeviceProfile) error {
@@ -594,9 +672,22 @@ func (value claudeDeviceProfileKVValue) ToProfile() ClaudeDeviceProfile {
 	return profile
 }
 
-func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfile) {
+// ApplyClaudeDeviceProfileHeaders applies a stable software identity. An optional
+// UA from a confirmed native caller supplies only this request's extension fields.
+func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfile, requestUserAgent ...string) {
 	if r == nil {
 		return
+	}
+	userAgent := profile.UserAgent
+	if len(requestUserAgent) > 0 {
+		stable, validStable := parseClaudeCodeUserAgent(profile.UserAgent)
+		current, validCurrent := parseClaudeCodeUserAgent(requestUserAgent[0])
+		if validStable && validCurrent {
+			userAgent = stable.profileUserAgent
+			if len(current.requestFields) > 0 {
+				userAgent = strings.TrimSuffix(userAgent, ")") + "," + strings.Join(current.requestFields, ",") + ")"
+			}
+		}
 	}
 	for _, headerName := range []string{
 		"User-Agent",
@@ -607,7 +698,7 @@ func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfil
 	} {
 		r.Header.Del(headerName)
 	}
-	r.Header.Set("User-Agent", profile.UserAgent)
+	r.Header.Set("User-Agent", userAgent)
 	r.Header.Set("X-Stainless-Package-Version", profile.PackageVersion)
 	r.Header.Set("X-Stainless-Runtime-Version", profile.RuntimeVersion)
 	r.Header.Set("X-Stainless-Os", profile.OS)
@@ -628,10 +719,11 @@ func ApplyClaudeDefaultDeviceProfileHeaders(r *http.Request, cfg *config.Config)
 	ApplyClaudeDeviceProfileHeaders(r, defaultClaudeDeviceProfile(cfg))
 }
 
-func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg *config.Config, confirmedClaudeCode bool) {
+func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg *config.Config, confirmedClaudeCode bool, keepNewerVersions ...bool) {
 	if r == nil {
 		return
 	}
+	allowNewer := len(keepNewerVersions) > 0 && keepNewerVersions[0]
 	profile := defaultClaudeDeviceProfile(cfg)
 	miscEnsure := func(name, fallback string, valid func(string) bool) {
 		if current := strings.TrimSpace(r.Header.Get(name)); current != "" && (valid == nil || valid(current)) {
@@ -645,8 +737,20 @@ func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg
 	}
 
 	if confirmedClaudeCode {
-		miscEnsure("X-Stainless-Runtime-Version", profile.RuntimeVersion, func(value string) bool { return value == profile.RuntimeVersion })
-		miscEnsure("X-Stainless-Package-Version", profile.PackageVersion, func(value string) bool { return value == profile.PackageVersion })
+		validRuntime := func(value string) bool {
+			if !allowNewer && cfg != nil && strings.TrimSpace(cfg.ClaudeHeaderDefaults.RuntimeVersion) != "" {
+				return value == profile.RuntimeVersion
+			}
+			return plausibleClaudeRuntimeVersion(value, profile.RuntimeVersion)
+		}
+		validPackage := func(value string) bool {
+			if !allowNewer && cfg != nil && strings.TrimSpace(cfg.ClaudeHeaderDefaults.PackageVersion) != "" {
+				return value == profile.PackageVersion
+			}
+			return plausibleClaudePackageVersion(value, profile.PackageVersion)
+		}
+		miscEnsure("X-Stainless-Runtime-Version", profile.RuntimeVersion, validRuntime)
+		miscEnsure("X-Stainless-Package-Version", profile.PackageVersion, validPackage)
 		miscEnsure("X-Stainless-Os", mapStainlessOS(), nil)
 		miscEnsure("X-Stainless-Arch", mapStainlessArch(), nil)
 		if clientUA := strings.TrimSpace(ginHeaders.Get("User-Agent")); plausibleClaudeCodeUserAgent(clientUA, cfg) {

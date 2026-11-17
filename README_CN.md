@@ -38,11 +38,11 @@ CLIProxyAPI 是一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API �
     </tr>
     <tr>
         <td align="center"><a href="https://www.kimi.com/code/?aff=cliproxyapi"><img src="./assets/logo/kimi.svg" alt="Kimi" width="28" height="28" /></a></td>
-        <td>Kimi 系列模型（Kimi K3、K2.8 Preview 等）。<a href="https://platform.kimi.com/docs/guide/kimi-k3-quickstart">Kimi K3</a> 是 Moonshot AI 迄今能力最强的模型，也是全球首个开源 3T 级模型。K3 拥有 2.8T 参数、原生视觉能力与 100 万 Token 上下文，面向长周期编码、知识工作与推理任务。CLIProxyAPI 支持通过 OAuth 或兼容 API 接入 Kimi。立即体验 <strong>Kimi Code 订阅</strong>（<a href="https://www.kimi.com/code?aff=cliproxyapi">中文站</a>｜<a href="https://www.kimi.ai/code?aff=cliproxyapi">Global</a>），或前往 Kimi 开放平台（<a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">中文站</a>｜<a href="https://platform.kimi.ai?track_id=track-8a28e4b291d84f62af2fccc3e7a21cb3&aff=cliproxyapi">Global</a>）获取 <strong>API Key</strong>。感谢 Kimi 对 CLIProxyAPI 及开源社区的支持！</td>
+        <td>Kimi 系列模型（Kimi K3.1 Pro、K3.1 Pro Highspeed、K3、K2.8 Preview 等）。<a href="https://platform.kimi.com/docs/guide/kimi-k3-quickstart">Kimi K3</a> 是 Moonshot AI 的上一代旗舰模型，也是全球首个开源 3T 级模型。K3 拥有 2.8T 参数、原生视觉能力与 100 万 Token 上下文，面向长周期编码、知识工作与推理任务。CLIProxyAPI 支持通过 OAuth 或兼容 API 接入 Kimi。立即体验 <strong>Kimi Code 订阅</strong>（<a href="https://www.kimi.com/code?aff=cliproxyapi">中文站</a>｜<a href="https://www.kimi.ai/code?aff=cliproxyapi">Global</a>），或前往 Kimi 开放平台（<a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">中文站</a>｜<a href="https://platform.kimi.ai?track_id=track-8a28e4b291d84f62af2fccc3e7a21cb3&aff=cliproxyapi">Global</a>）获取 <strong>API Key</strong>。感谢 Kimi 对 CLIProxyAPI 及开源社区的支持！</td>
     </tr>
     <tr>
         <td align="center"><a href="https://developers.openai.com/api/docs/models"><img src="./assets/logo/openai.svg" alt="OpenAI" width="28" height="28" /></a></td>
-        <td>OpenAI GPT-6 系列模型（GPT-6 Astra、GPT-6.1 Sol、GPT-6 Luna），也支持通过 Codex OAuth 接入。Astra 适合复杂推理与编程，Sol 兼顾能力与成本，Luna 适合高吞吐量的明确任务。</td>
+        <td>OpenAI GPT-6 系列模型（GPT-6 Astra、GPT-6.1 Sol、GPT-6.1 Terra、GPT-6 Luna），也支持通过 Codex OAuth 接入。Astra 适合复杂推理与编程，Sol 兼顾能力与成本，Terra 专注于视觉推理与计算机操作，Luna 适合高吞吐量的明确任务。</td>
     </tr>
     <tr>
         <td align="center"><a href="https://www.anthropic.com/claude"><img src="./assets/logo/claude.svg" alt="Anthropic" width="28" height="28" /></a></td>
@@ -62,7 +62,7 @@ CLIProxyAPI 是一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API �
     </tr>
     <tr>
         <td align="center"><a href="https://devin.ai/cli">Devin</a></td>
-        <td>Devin 提供的模型（SWE-2、GPT-6 Astra、Claude Fable 5.1 等）。使用 <code>--devin-login</code> 连接 Devin 账户，即可路由该账户可用的模型。</td>
+        <td>Devin 提供的模型（SWE-2、SWE-2 Flash、GPT-6 Astra、Claude Fable 5.1 等）。使用 <code>--devin-login</code> 连接 Devin 账户，即可路由该账户可用的模型。</td>
     </tr>
     <tr>
         <td align="center"><a href="https://dev.meta.ai">Meta</a></td>
@@ -88,7 +88,6 @@ CLIProxyAPI 是一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API �
 - 支持 Claude Code 多账户轮询
 - 支持 OpenAI Codex 多账户轮询
 - 支持 Grok Build 多账户轮询
-- 原生 Freebuff（Codebuff）执行器：会话复用与 `cost_mode: free`
 - 通过配置接入上游 OpenAI 兼容提供商（例如 OpenRouter）
 - 可复用的 Go SDK（见 `docs/sdk-usage_CN.md`）
 
@@ -122,7 +121,7 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 ### [Oh-My-CPA](https://github.com/WizisCool/oh-my-cpa)
 
-基于 Ant Design 的现代 CLIProxyAPI v8+ 管理面板，将 CPAMC 核心管理能力与 SQLite 持久化请求记录、用量分析整合在一起。覆盖 OAuth 账号、API 提供商、客户端密钥、配额、定价与 CPA 运维；逐请求追踪延迟、首 Token 延迟（TTFT）、Token 用量和成本，支持多维筛选、实时仪表盘与 Token 热力图。支持 OpenRouter 价格同步、自定义定价和逐请求价格快照，保持历史成本稳定；内置 Agent 与 MCP 工具，辅助用量分析和日常管理。
+面向 CLIProxyAPI v8+ 的 Web 控制台，基于 `shadcn/ui` 构建，拥有现代化的 UI/UX、细腻的动效以及桌面与移动端适配。集中管理提供商、OAuth、路由与内置插件，提供完善的请求记录（延迟、TTFT、Token、故障诊断与模型替换）、实时路由、多维度的定价统计、额度窗口预热与预测及 Agent/MCP 工具。采用 AES-GCM 加密与配置自动备份，支持直接二进制运行、Docker 部署及一键更新 OMC/CPA。
 
 ## SDK 文档
 
@@ -169,14 +168,6 @@ CLI 封装器，用于通过 CLIProxyAPI OAuth 即时切换多个 Claude 账户�
 ### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
 
 原生 Windows CLIProxyAPI 分支，集成 TUI、系统托盘及多服务商 OAuth 认证，专为 AI 编程工具打造，无需 API 密钥。
-
-### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
-
-一款 VSCode 扩展，提供了在 VSCode 中快速切换 Claude Code 模型的功能，内置 CLIProxyAPI 作为其后端，支持后台自动启动和关闭。
-
-### [ZeroLimit](https://github.com/0xtbug/zero-limit)
-
-Windows 桌面应用，基于 Tauri + React 构建，用于通过 CLIProxyAPI 监控 AI 编程助手配额。支持跨 Gemini、Claude、OpenAI Codex 和 Antigravity 账户的使用量追踪，提供实时仪表盘、系统托盘集成和一键代理控制，无需 API 密钥。
 
 ### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
 
@@ -270,6 +261,22 @@ Claude Code 状态栏，按当前 CPA 实例展示 Codex / Grok / Antigravity / 
 ### [sub2api](https://github.com/PlaygrndLabs/sub2api)
 
 基于 Cloudflare 的 LLM 网关与代理服务器：一键将 CLIProxyAPI 部署到 Cloudflare Workers + Containers。登录与配置持久化保存在 R2，控制台受密码保护，在创建客户端 API Key 之前拒绝所有 API 请求。
+
+### [Hermes CLIProxyAPI Provider](https://github.com/duu261/hermes-cliproxyapi-provider)
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) 的模型提供方插件：为每个 CLIProxyAPI 提供方注册一个 Hermes 提供方，各自使用其执行器接受的协议（Anthropic Messages、Responses 或 Chat Completions），上下文窗口与推理等级读取自 CLIProxyAPI。可选只读 Management API 查询，用于精确的提供方分组。配套插件提供 `/cpa` 聊天命令，可查看每个号池的账号状态，并可按需查看每个账号的实时额度。已收录于 [Hermes 插件目录](https://hermes-agent.nousresearch.com/docs/plugins)：`hermes plugins install cliproxyapi-provider` 与 `hermes plugins install cpa-status`。
+
+### [Ebb](https://github.com/lucasnsaraujo/ebb)
+
+面向 CLIProxyAPI 账号池的原生 macOS 菜单栏应用。显示账号池中 Claude、Codex 等服务的 5 小时与每周额度还剩多少、何时恢复，并通过 Management API 设置每个登录的路由权重，让各账号均匀消耗。
+
+### [Nia Live Demo](https://github.com/nia-teams/nia-live-demo)
+
+全双工实时语音伙伴，带一块边聊边画、可点击交互的 SVG/HTML 画布。同时依赖 CLIProxyAPI 的两项能力：Codex GPT-Live 1.1 媒体中继（`gpt-live-1-codex`，WebRTC + Sideband）负责语音和随时打断；`ultrafast` 档 Responses（`gpt-6.1-sol` / `gpt-6-astra`）负责在对话过程中实时生成和修改画布。
+
+### [Hyphantria](https://hyphantria.com)
+
+原生 macOS 原理图与 PCB 设计应用，具备 AI 辅助元器件创建、参考设计复用以及联合布局布线优化功能。原生支持 CLIProxyAPI，可将其 AI 辅助功能连接到您的 AI 提供商。
 
 > [!NOTE]  
 > 如果你开发了基于 CLIProxyAPI 的项目，请提交一个 PR（拉取请求）将其添加到此列表中。

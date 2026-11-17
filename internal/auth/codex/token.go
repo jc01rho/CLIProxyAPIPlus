@@ -4,7 +4,6 @@
 package codex
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	log "github.com/sirupsen/logrus"
 )
@@ -32,6 +32,11 @@ func canonicalLockPath(authFilePath string) string {
 	cleaned := filepath.Clean(strings.TrimSpace(authFilePath))
 	if abs, errAbs := filepath.Abs(cleaned); errAbs == nil && strings.TrimSpace(abs) != "" {
 		cleaned = filepath.Clean(abs)
+	}
+	if real, errEval := filepath.EvalSymlinks(cleaned); errEval == nil && strings.TrimSpace(real) != "" {
+		cleaned = filepath.Clean(real)
+	} else if parent, errParent := filepath.EvalSymlinks(filepath.Dir(cleaned)); errParent == nil && strings.TrimSpace(parent) != "" {
+		cleaned = filepath.Clean(filepath.Join(parent, filepath.Base(cleaned)))
 	}
 	return cleaned
 }

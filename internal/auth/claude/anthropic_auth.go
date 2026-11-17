@@ -5,7 +5,6 @@ package claude
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
@@ -34,6 +34,10 @@ const (
 	ClaudeUserAgent        = "axios/1.15.2"
 	ClaudeOAuthScope       = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 	RefreshScope           = ClaudeOAuthScope
+
+	// Native Claude Code includes the Console scope when authorizing a new login.
+	// Keep the established token refresh scope unchanged.
+	claudeOAuthAuthorizeScope = "org:create_api_key " + ClaudeOAuthScope
 
 	claudeRefreshMinBackoff       = 5 * time.Second
 	claudeRefreshMaxBackoff       = 5 * time.Minute
@@ -308,7 +312,7 @@ func (o *ClaudeAuth) GenerateAuthURLWithMode(state string, pkceCodes *PKCECodes,
 		"client_id":             {ClientID},
 		"response_type":         {"code"},
 		"redirect_uri":          {RedirectURI},
-		"scope":                 {"org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"},
+		"scope":                 {claudeOAuthAuthorizeScope},
 		"code_challenge":        {pkceCodes.CodeChallenge},
 		"code_challenge_method": {"S256"},
 		"state":                 {state},

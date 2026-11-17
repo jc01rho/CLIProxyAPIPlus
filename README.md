@@ -38,11 +38,11 @@ You can access the following providers locally and with multiple CLI accounts th
     </tr>
     <tr>
         <td align="center"><a href="https://www.kimi.com/code/?aff=cliproxyapi"><img src="./assets/logo/kimi.svg" alt="Kimi" width="28" height="28" /></a></td>
-        <td>Kimi series models (Kimi K3, K2.8 Preview, etc.). <a href="https://platform.kimi.ai/docs/guide/kimi-k3-quickstart">Kimi K3</a> is Moonshot AI’s most capable model and the world’s first open 3T-class model. With 2.8 trillion parameters, native vision, and a 1-million-token context window, K3 is built for long-horizon coding, knowledge work, and reasoning. CLIProxyAPI supports Kimi through OAuth or compatible API interfaces. Try a <strong>Kimi Code plan</strong> (<a href="https://www.kimi.com/code?aff=cliproxyapi">中文站</a> | <a href="https://www.kimi.ai/code?aff=cliproxyapi">Global</a>), or get an <strong>API key</strong> from the Kimi Open Platform (<a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">中文站</a> | <a href="https://platform.kimi.ai?track_id=track-8a28e4b291d84f62af2fccc3e7a21cb3&aff=cliproxyapi">Global</a>). Thanks to Kimi for supporting CLIProxyAPI and the open-source community!</td>
+        <td>Kimi series models (Kimi K3.1 Pro, K3.1 Pro Highspeed, K3, K2.8 Preview, etc.). <a href="https://platform.kimi.ai/docs/guide/kimi-k3-quickstart">Kimi K3</a> is Moonshot AI’s previous-generation flagship and the world’s first open 3T-class model. With 2.8 trillion parameters, native vision, and a 1-million-token context window, K3 is built for long-horizon coding, knowledge work, and reasoning. CLIProxyAPI supports Kimi through OAuth or compatible API interfaces. Try a <strong>Kimi Code plan</strong> (<a href="https://www.kimi.com/code?aff=cliproxyapi">中文站</a> | <a href="https://www.kimi.ai/code?aff=cliproxyapi">Global</a>), or get an <strong>API key</strong> from the Kimi Open Platform (<a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">中文站</a> | <a href="https://platform.kimi.ai?track_id=track-8a28e4b291d84f62af2fccc3e7a21cb3&aff=cliproxyapi">Global</a>). Thanks to Kimi for supporting CLIProxyAPI and the open-source community!</td>
     </tr>
     <tr>
         <td align="center"><a href="https://developers.openai.com/api/docs/models"><img src="./assets/logo/openai.svg" alt="OpenAI" width="28" height="28" /></a></td>
-        <td>OpenAI GPT-6 models (GPT-6 Astra, GPT-6.1 Sol, GPT-6 Luna), including access through Codex OAuth. Astra is the flagship for complex reasoning and coding, Sol balances capability and cost, and Luna handles focused, high-volume work.</td>
+        <td>OpenAI GPT-6 models (GPT-6 Astra, GPT-6.1 Sol, GPT-6.1 Terra, GPT-6 Luna), including access through Codex OAuth. Astra is the flagship for complex reasoning and coding, Sol balances capability and cost, Terra focuses on visual reasoning and computer use, and Luna handles focused, high-volume work.</td>
     </tr>
     <tr>
         <td align="center"><a href="https://www.anthropic.com/claude/fable"><img src="./assets/logo/claude.svg" alt="Anthropic" width="28" height="28" /></a></td>
@@ -62,7 +62,7 @@ You can access the following providers locally and with multiple CLI accounts th
     </tr>
     <tr>
         <td align="center"><a href="https://devin.ai/cli">Devin</a></td>
-        <td>Devin models (SWE-2, GPT-6 Astra, Claude Fable 5.1, etc.). Connect a Devin account with <code>--devin-login</code> to route the models available to that account.</td>
+        <td>Devin models (SWE-2, SWE-2 Flash, GPT-6 Astra, Claude Fable 5.1, etc.). Connect a Devin account with <code>--devin-login</code> to route the models available to that account.</td>
     </tr>
     <tr>
         <td align="center"><a href="https://dev.meta.ai">Meta</a></td>
@@ -90,7 +90,6 @@ You can access the following providers locally and with multiple CLI accounts th
 - Claude Code multi-account load balancing
 - OpenAI Codex multi-account load balancing
 - Grok Build multi-account load balancing
-- Native Freebuff (Codebuff) executor with session reuse and `cost_mode: free`
 - OpenAI-compatible upstream providers via config (e.g., OpenRouter)
 - Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
 
@@ -155,25 +154,6 @@ Meta Model API is OpenAI-compatible (Chat Completions and Responses). Muse Spark
               levels: ["low", "medium", "high", "xhigh"]
 
 
-### Freebuff (Codebuff)
-
-Freebuff uses a **dedicated executor** (`FreebuffExecutor`), not the `openai-compatibility` path. Put the CLI token from `~/.config/manicode/credentials.json` (`default.authToken`) in `freebuff-api-key`. The executor admits/reuses one Codebuff session per credential, wraps `/api/v1/chat/completions` with START/FINISH, and injects `cost_mode: "free"` plus the Buffy system-prompt marker.
-
-Use Codebuff-native tools (`read_files`, etc.). Arbitrary foreign tool names are rejected upstream as 404; that is a request-scoped 400 and does **not** cool down the credential. `401`/`403`/`429` still do.
-
-**Example config for Freebuff:**
-
-    freebuff-api-key:
-      - api-key: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-        base-url: "https://www.codebuff.com"
-        prefix: "freebuff"
-        models:
-          - name: "deepseek/deepseek-v4-flash"
-            alias: "deepseek-v4-flash"
-            agent-id: "base2-free-deepseek-flash"
-
-Management REST: `GET/PUT/PATCH/DELETE /v0/management/freebuff-api-key`.
-
 ### OpenCode (Zen / Go)
 
 OpenCode has a **dedicated executor** (`OpenCodeExecutor`) instead of the `openai-compatibility` path, because the gateway only serves its free tier to requests that look like they come from the OpenCode client.
@@ -221,6 +201,44 @@ Mimocode uses Xiaomi's OpenAI-compatible endpoint and sends `X-Mimo-Source: mimo
 
 Management REST: `GET/PUT /v0/management/mimocode-api-key`. OAuth key provisioning starts with `GET /v0/management/mimocode-auth-url`; headless clients can submit the encrypted callback value to `POST /v0/management/mimocode-auth-callback`. For relogin, pass the existing auth file as `?name=...` or its `?auth_index=...` so the persisted `key_name` is reused.
 
+### DeepAI (deepai.org reverse proxy)
+
+DeepAI is not an OpenAI-compatible upstream. The chat surface takes a
+`multipart/form-data` body (`chat_style`, `chatHistory`, `model`, `session_uuid`,
+`hacker_is_stinky`, `tool_activity_support`, `thinking_image_tool_support`,
+`enabled_tools`) and answers with a plain-text stream that carries out-of-band
+packets: `\x1C{"tool_activity":"..."}\x1C` activity frames, a
+`\x1DTHINKING_START…\x1E<cot>\x1DTHINKING_END` reasoning block, and a trailing
+`\x1C{json}` payload (generated images, web results). The executor parses those
+into `content`, `reasoning_content` and image markdown, and re-emits them as
+OpenAI chat completions.
+
+Anonymous access is the default. The browser mints a single-use `tryit-<digits>-<hex32>`
+key per request, where the hex part is `reverse(md5(ua + reverse(md5(ua + reverse(md5(ua + digits + salt)))))`
+over the request `User-Agent`; the executor mints the same key when no `api-key`
+is configured. Set `api-key` to a dashboard key, plus `headers.Cookie` with a
+logged-in session cookie, when a plan-gated model (`genius`) is needed. An
+`api-key` of `anonymous` is treated as keyless.
+
+`base-url` defaults to `https://api.deepai.org`. `models` maps client aliases to
+one of the three upstream tiers (`standard`, `genius`, `super_genius`); without a
+`models` list the built-in catalog is exposed (`deepai-standard`,
+`deepai-genius`, `deepai-super-genius`, `gpt-4o-mini`). Upstream reports no token
+counts, so usage is estimated from message and answer length.
+
+**Example config for DeepAI:**
+
+    deepai-api-key:
+      - api-key: ""                # empty or "anonymous" mints a tryit key per request
+        base-url: "https://api.deepai.org"
+        models:
+          - name: "standard"
+            alias: "deepai-standard"
+          - name: "super_genius"
+            alias: "deepai-super-genius"
+
+Management REST: `GET/PUT/PATCH/DELETE /v0/management/deepai-api-key`.
+
 ### Generic usage flow
 
 All providers expose the standard OpenAI-compatible `/v1/chat/completions`, `/v1/chat/completions` (streaming), and `/v1/images/generations` endpoints. Point your client to:
@@ -231,6 +249,8 @@ All providers expose the standard OpenAI-compatible `/v1/chat/completions`, `/v1
 ## Getting Started
 
 CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
+
+[Claude Code with a Codex backend](examples/claude-code-codex/README.md): optional visible progress, classifier routing, image-tool pass-through, and latency diagnostics.
 
 ## Management API
 
@@ -260,7 +280,7 @@ Full CLIProxyAPI management center with request-level monitoring and cost estima
 
 ### [Oh-My-CPA](https://github.com/WizisCool/oh-my-cpa)
 
-Modern Ant Design-based management console for CLIProxyAPI v8+, combining CPAMC-style administration with SQLite-backed request records and usage analytics. Covers OAuth accounts, API providers, client keys, quotas, pricing and CPA operations in one interface. Tracks request-level latency, TTFT, tokens and cost, with multi-dimensional filtering, live dashboards and token heatmaps. OpenRouter price sync, custom rates and per-request price snapshots keep historical costs stable; a built-in Agent and MCP tools support assisted investigation and management.
+Web console for CLIProxyAPI v8+, built on `shadcn/ui` with a modern UI/UX, fluid motion, and desktop and mobile layouts. Centralizes providers, OAuth, visual routing, and built-in plugins, with comprehensive request records (latency, TTFT, tokens, diagnostics, and model substitutions), live routing, multi-dimensional pricing analytics, quota window warmup and forecasting, and Agent/MCP tools. Protected by AES-GCM encryption and automatic config backups, supporting direct binary runs, Docker deployment, and one-click OMC/CPA updates.
 
 ## SDK Docs
 
@@ -312,14 +332,6 @@ Native macOS menu bar app that unifies Claude, Gemini, OpenAI, and Antigravity s
 ### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
 
 Windows-native CLIProxyAPI fork with TUI, system tray, and multi-provider OAuth for AI coding tools - no API keys needed.
-
-### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
-
-VSCode extension for quick switching between Claude Code models, featuring integrated CLIProxyAPI as its backend with automatic background lifecycle management.
-
-### [ZeroLimit](https://github.com/0xtbug/zero-limit)
-
-Windows desktop app built with Tauri + React for monitoring AI coding assistant quotas via CLIProxyAPI. Track usage across Gemini, Claude, OpenAI Codex, and Antigravity accounts with real-time dashboard, system tray integration, and one-click proxy control - no API keys needed.
 
 ### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
 
@@ -419,6 +431,22 @@ A modern, responsive web dashboard and management console for CLIProxyAPI built 
 ### [sub2api](https://github.com/PlaygrndLabs/sub2api)
 
 A Cloudflare-based LLM gateway and proxy server: CLIProxyAPI deployed to Cloudflare Workers + Containers in one click. Logins and config persist in R2, the dashboard sits behind a password, and API calls are refused until a client API key exists.
+
+### [Hermes CLIProxyAPI Provider](https://github.com/duu261/hermes-cliproxyapi-provider)
+
+Model-provider plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that registers one Hermes provider per CLIProxyAPI provider, each on the wire its executor accepts (Anthropic Messages, Responses or Chat Completions), with context windows and reasoning levels read from CLIProxyAPI. Optional read-only Management API pass for exact provider grouping. A companion plugin adds a `/cpa` chat command for each pool's account health and, on request, each account's live quota. Listed in the [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins): `hermes plugins install cliproxyapi-provider` and `hermes plugins install cpa-status`.
+
+### [Ebb](https://github.com/lucasnsaraujo/ebb)
+
+Native macOS menu bar app for CLIProxyAPI pools. It shows how much of the pool's Claude, Codex and other providers' 5-hour and weekly limits is left and when it comes back, and sets each login's routing weight through the Management API so the accounts drain evenly.
+
+### [Nia Live Demo](https://github.com/nia-teams/nia-live-demo)
+
+Real-time full-duplex voice companion with a live, interactive SVG/HTML canvas. It combines two CLIProxyAPI capabilities: the Codex GPT-Live 1.1 media relay (`gpt-live-1-codex`, WebRTC + Sideband) for voice with instant barge-in, and `ultrafast` Responses (`gpt-6.1-sol` / `gpt-6-astra`) for drawing and editing the canvas while you talk.
+
+### [Hyphantria](https://hyphantria.com)
+
+Native macOS schematic and PCB design app with AI-assisted component creation, reference-design adoption, and joint placement and routing optimisation. Natively supports CLIProxyAPI for connecting its AI-assisted features to your AI providers.
 
 > [!NOTE]  
 > If you developed a project based on CLIProxyAPI, please open a PR to add it to this list.

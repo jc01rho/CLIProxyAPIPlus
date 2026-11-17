@@ -3,12 +3,12 @@ package models
 
 import (
 	"bytes"
-	"encoding/json"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
@@ -182,7 +182,7 @@ func applyCodexClientModelsDevLimit(entry map[string]any, id string, model map[s
 	if !ok {
 		return
 	}
-	if limit.Context > 0 {
+	if intModelValue(model, "max_context_length") <= 0 && limit.Context > 0 {
 		entry["context_window"] = limit.Context
 		entry["max_context_window"] = limit.Context
 	}
@@ -598,6 +598,12 @@ func applyCodexClientProviderCapabilities(entry map[string]any, id string, provi
 // Codex requires these keys to be present; omitting them rejects the entire catalog.
 func nullCodexClientRequiredOptions(entry map[string]any) {
 	entry["apply_patch_tool_type"] = nil
+	entry["tool_mode"] = "direct"
+	entry["use_responses_lite"] = false
+	entry["supports_reasoning_effort_updates"] = false
+	if _, exists := entry["supports_image_detail_original"]; exists {
+		entry["supports_image_detail_original"] = false
+	}
 	entry["upgrade"] = nil
 	entry["availability_nux"] = nil
 }
@@ -780,7 +786,7 @@ func isCodexClientImageOrVideoModel(id string) bool {
 		target = strings.TrimSpace(target[idx+1:])
 	}
 	switch target {
-	case "grok-imagine-image-quality", "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5", "grok-imagine-image", "grok-imagine-image-2.0", "grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview", "grok-tts", "grok-voice-tts-1.0":
+	case "grok-imagine-image-quality", "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "gpt-image-2.6", "grok-imagine-image", "grok-imagine-image-2.0", "grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview", "grok-tts", "grok-voice-tts-1.0":
 		return true
 	default:
 		return false
@@ -797,7 +803,7 @@ func applyCodexClientInputModalitiesMetadata(entry map[string]any, modalities []
 	}
 	entry["input_modalities"] = codexModalities
 	if hasImageModality(codexModalities) {
-		entry["supports_image_detail_original"] = true
+		entry["supports_image_detail_original"] = false
 	} else {
 		delete(entry, "supports_image_detail_original")
 	}

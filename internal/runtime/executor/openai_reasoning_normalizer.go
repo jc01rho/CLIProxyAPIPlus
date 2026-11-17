@@ -65,7 +65,9 @@ func normalizeOpenAIToolCallReasoningContentWithOptions(body []byte, opts openAI
 		if !toolCalls.Exists() || !toolCalls.IsArray() || len(toolCalls.Array()) == 0 {
 			continue
 		}
-		if reasoning.Exists() && strings.TrimSpace(reasoning.String()) != "" {
+		if reasoning.Exists() {
+			// A present reasoning_content is authoritative, including the whitespace
+			// sentinel the Claude compat translator emits for tool-call turns.
 			continue
 		}
 
@@ -86,14 +88,18 @@ func normalizeOpenAIToolCallReasoningContentWithOptions(body []byte, opts openAI
 }
 
 func hasOpenAIReasoningSignal(body []byte, msgs []gjson.Result) bool {
-	if value := gjson.GetBytes(body, "reasoning_effort"); value.Exists() && strings.TrimSpace(value.String()) != "" {
-		return true
+	if value := gjson.GetBytes(body, "reasoning_effort"); value.Exists() {
+		effort := strings.ToLower(strings.TrimSpace(value.String()))
+		if effort != "" && effort != "none" && effort != "0" && effort != "false" {
+			return true
+		}
 	}
 	if value := gjson.GetBytes(body, "reasoning"); value.Exists() && value.Type != gjson.Null {
 		return true
 	}
 	if value := gjson.GetBytes(body, "thinking"); value.Exists() && value.Type != gjson.Null {
-		if strings.EqualFold(strings.TrimSpace(value.Get("type").String()), "disabled") {
+		switch strings.ToLower(strings.TrimSpace(value.Get("type").String())) {
+		case "disabled", "none":
 			return false
 		}
 		return true

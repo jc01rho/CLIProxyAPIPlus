@@ -118,8 +118,8 @@ func decodeBase64URL(value string) ([]byte, error) {
 
 // OAuthServer handles one localhost authorization callback.
 type OAuthServer struct {
-	listener net.Listener
-	server   *http.Server
+	listener  net.Listener
+	server    *http.Server
 	result    chan string
 	once      sync.Once
 	closed    chan struct{}

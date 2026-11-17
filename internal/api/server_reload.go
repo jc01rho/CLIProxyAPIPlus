@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -23,7 +24,13 @@ import (
 )
 
 func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) bool {
-	if s == nil || s.accessManager == nil || newCfg == nil {
+	if s == nil || newCfg == nil {
+		return false
+	}
+	if s.tunnelHub != nil {
+		s.tunnelHub.UpdateAllowedAPIKeys(newCfg.APIKeys)
+	}
+	if s.accessManager == nil {
 		return false
 	}
 	if _, err := access.ApplyAccessProviders(s.accessManager, oldCfg, newCfg); err != nil {
@@ -183,7 +190,11 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 			log.WithError(errUpdate).Error("failed to update Codex Live media relay configuration")
 		}
 	}
+	if s.museCodeHandler != nil {
+		s.museCodeHandler.UpdateConfig(cfg)
+	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
+	openai.SetResponsesWebsocketCompressionEnabled(cfg.Codex.WebsocketCompressionEnabled())
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
 		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)
 	}
@@ -199,7 +210,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	s.cfgMu.Unlock()
 
 	s.handlers.UpdateClients(effectiveSDKConfig(cfg))
-	s.handlers.SetPluginHost(s.pluginHost)
+	s.handlers.SetPluginHost(s.interceptorHost)
 	if s.pluginHost != nil {
 		s.pluginHost.SetModelExecutor(s.handlers)
 		s.pluginHost.SetAuthManager(s.handlers.AuthManager)

@@ -1,26 +1,16 @@
 // Package openai implements thinking configuration for OpenAI/Codex models.
-//
-// OpenAI models use the reasoning_effort format with discrete levels
-// (low/medium/high). Some models support xhigh and none levels.
-// See: _bmad-output/planning-artifacts/architecture.md#Epic-8
 package openai
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // Applier implements thinking.ProviderApplier for OpenAI models.
-//
-// OpenAI-specific behavior:
-//   - Output format: reasoning_effort (string: low/medium/high/xhigh)
-//   - Level-only mode: no numeric budget support
-//   - Some models support ZeroAllowed (gpt-5.1, gpt-5.2)
 type Applier struct{}
 
-var _ thinking.ProviderApplier = (*Applier)(nil)
+var _ thinking.ProviderDocApplier = (*Applier)(nil)
 
 // NewApplier creates a new OpenAI thinking applier.
 func NewApplier() *Applier {
@@ -32,39 +22,102 @@ func init() {
 }
 
 // Apply applies thinking configuration to OpenAI request body.
-//
-// Expected output format:
-//
-//	{
-//	  "reasoning_effort": "high"
-//	}
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
-	if thinking.IsUserDefinedModel(modelInfo) {
-		return applyCompatibleOpenAI(body, config, modelInfo)
-	}
-	if modelInfo.Thinking == nil {
+	thinkingType, effort, ok := resolveOpenAIThinking(config, modelInfo)
+	if !ok {
 		return body, nil
 	}
-
-	// Only handle discrete levels and explicit on/off/automatic modes.
-	if config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone && config.Mode != thinking.ModeAuto {
-		return body, nil
+	if len(body) == 0 || !ojson.ValidBytes(body) {
+		body = []byte("{}")
 	}
-
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
-	}
-
-	if thinkingType, ok := openAIThinkingType(config, modelInfo); ok {
+	if thinkingType != "" {
 		return setOpenAIThinkingType(body, thinkingType), nil
 	}
-	if config.Mode == thinking.ModeAuto {
-		return body, nil
-	}
+	result, _ := ojson.SetBytes(body, "reasoning_effort", effort)
+	return result, nil
+}
 
+// ApplyDoc applies thinking configuration onto doc in place.
+func (a *Applier) ApplyDoc(doc *ojson.Doc, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) error {
+	if doc == nil {
+		return nil
+	}
+	thinkingType, effort, ok := resolveOpenAIThinking(config, modelInfo)
+	if !ok {
+		return nil
+	}
+	if thinkingType != "" {
+		_ = doc.Delete("reasoning_effort")
+		_ = doc.Set("thinking.type", thinkingType)
+		return nil
+	}
+	_ = doc.Set("reasoning_effort", effort)
+	return nil
+}
+
+// resolveOpenAIThinking returns either a thinking.type value (for models that
+// expose enable/disable/adaptive switches) or a reasoning_effort value.
+func resolveOpenAIThinking(config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) (thinkingType string, effort string, ok bool) {
+	if thinking.IsUserDefinedModel(modelInfo) {
+		if t, okType := openAIThinkingType(config, modelInfo); okType {
+			return t, "", true
+		}
+		effort, ok = resolveOpenAIEffort(config, modelInfo)
+		return "", effort, ok
+	}
+	if modelInfo.Thinking == nil {
+		return "", "", false
+	}
+	// Only handle discrete levels and explicit on/off/automatic modes.
+	if config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone && config.Mode != thinking.ModeAuto {
+		return "", "", false
+	}
+	if t, okType := openAIThinkingType(config, modelInfo); okType {
+		return t, "", true
+	}
+	if config.Mode == thinking.ModeAuto {
+		return "", "", false
+	}
+	effort, ok = resolveOpenAIEffort(config, modelInfo)
+	return "", effort, ok
+}
+
+func resolveOpenAIEffort(config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) (string, bool) {
+	if thinking.IsUserDefinedModel(modelInfo) {
+		switch config.Mode {
+		case thinking.ModeLevel:
+			if config.Level == "" {
+				return "", false
+			}
+			return string(config.Level), true
+		case thinking.ModeNone:
+			effort := string(thinking.LevelNone)
+			if config.Level != "" {
+				effort = string(config.Level)
+			}
+			return effort, true
+		case thinking.ModeAuto:
+			// Auto mode for user-defined models: pass through as "auto"
+			return string(thinking.LevelAuto), true
+		case thinking.ModeBudget:
+			// Budget mode: convert budget to level using threshold mapping
+			level, ok := thinking.ConvertBudgetToLevel(config.Budget)
+			if !ok {
+				return "", false
+			}
+			return level, true
+		default:
+			return "", false
+		}
+	}
+	if modelInfo.Thinking == nil {
+		return "", false
+	}
+	if config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone {
+		return "", false
+	}
 	if config.Mode == thinking.ModeLevel {
-		result, _ := sjson.SetBytes(body, "reasoning_effort", string(config.Level))
-		return result, nil
+		return string(config.Level), true
 	}
 
 	effort := ""
@@ -81,49 +134,9 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		effort = support.Levels[0]
 	}
 	if effort == "" {
-		return body, nil
+		return "", false
 	}
-
-	result, _ := sjson.SetBytes(body, "reasoning_effort", effort)
-	return result, nil
-}
-
-func applyCompatibleOpenAI(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
-	}
-	if thinkingType, ok := openAIThinkingType(config, modelInfo); ok {
-		return setOpenAIThinkingType(body, thinkingType), nil
-	}
-
-	var effort string
-	switch config.Mode {
-	case thinking.ModeLevel:
-		if config.Level == "" {
-			return body, nil
-		}
-		effort = string(config.Level)
-	case thinking.ModeNone:
-		effort = string(thinking.LevelNone)
-		if config.Level != "" {
-			effort = string(config.Level)
-		}
-	case thinking.ModeAuto:
-		// Auto mode for user-defined models: pass through as "auto"
-		effort = string(thinking.LevelAuto)
-	case thinking.ModeBudget:
-		// Budget mode: convert budget to level using threshold mapping
-		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
-		if !ok {
-			return body, nil
-		}
-		effort = level
-	default:
-		return body, nil
-	}
-
-	result, _ := sjson.SetBytes(body, "reasoning_effort", effort)
-	return result, nil
+	return effort, true
 }
 
 func openAIThinkingType(config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) (string, bool) {
@@ -156,9 +169,9 @@ func openAIThinkingType(config thinking.ThinkingConfig, modelInfo *registry.Mode
 }
 
 func setOpenAIThinkingType(body []byte, thinkingType string) []byte {
-	if withoutEffort, err := sjson.DeleteBytes(body, "reasoning_effort"); err == nil {
+	if withoutEffort, err := ojson.DeleteBytes(body, "reasoning_effort"); err == nil {
 		body = withoutEffort
 	}
-	result, _ := sjson.SetBytes(body, "thinking.type", thinkingType)
+	result, _ := ojson.SetBytes(body, "thinking.type", thinkingType)
 	return result
 }

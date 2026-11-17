@@ -62,6 +62,39 @@ func TestOpenAICompatExecutorSystemOnePassthrough(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorSystemOneRewritesAliasToUpstreamModel(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-1.13-free","answers":{"ok":{"type":"noul","noul":0.9}}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test-key",
+	}}
+	payload := []byte(`{"model":"jev-latest","state":"s","questions":{"ok":{"type":"noul","instructions":"q"}}}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "jev-1.13-free",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "systemone",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "model").String(); got != "jev-1.13-free" {
+		t.Fatalf("upstream model = %q, want jev-1.13-free; body = %s", got, gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "questions.ok.instructions").String(); got != "q" {
+		t.Fatalf("questions not forwarded: %s", gotBody)
+	}
+}
+
 func TestOpenAICompatSystemOneURL(t *testing.T) {
 	cases := map[string]string{
 		"https://api.typesafe.ai":     "https://api.typesafe.ai/v1/systemone",

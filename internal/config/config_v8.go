@@ -38,6 +38,9 @@ var v8SharedPaths = []configPath{
 	{"oauth.providers.codex.orphan-delegation-compatibility", "upstream.codex.orphan-delegation-compatibility"},
 	{"oauth.providers.codex.model-level-cooling", "upstream.codex.model-level-cooling"},
 	{"oauth.providers.codex.response-steering", "upstream.codex.response-steering"},
+	{"oauth.providers.codex.upstream-request-compression", "upstream.codex.upstream-request-compression"},
+	{"oauth.providers.codex.upstream-request-compression-min-bytes", "upstream.codex.upstream-request-compression-min-bytes"},
+	{"oauth.providers.codex.websocket-compression", "upstream.codex.websocket-compression"},
 	{"oauth.providers.claude.model-level-cooling", "upstream.claude.model-level-cooling"},
 	{"oauth.providers.claude.claude-code.disable-cloaking-model-list", "upstream.claude.disable-cloaking-model-list"},
 	{"oauth.providers.claude.disable-claude-cloak-mode", "upstream.claude.disable-claude-cloak-mode"},
@@ -66,9 +69,9 @@ var v8KeyFamilies = []configPath{
 	{"vertex-api-key", "vertex"}, {"codex-api-key", "codex"},
 	{"claude-api-key", "claude"}, {"xai-api-key", "xai"}, {"meta-api-key", "meta"},
 	{"openai-compatibility", "openai-compatibility"},
-	{"commandcode-api-key", "commandcode"}, {"freebuff-api-key", "freebuff"},
+	{"commandcode-api-key", "commandcode"},
 	{"devin-api-key", "devin"}, {"mistral-api-key", "mistral"},
-	{"opencode-api-key", "opencode"}, {"mimocode-api-key", "mimocode"},
+	{"opencode-api-key", "opencode"}, {"mimocode-api-key", "mimocode"}, {"deepai-api-key", "deepai"},
 	{"kiro", "kiro"},
 }
 
@@ -76,7 +79,7 @@ func buildV8Paths() []configPath {
 	prefixes := []configPath{
 		{"host", "server.host"}, {"port", "server.port"}, {"max-request-body-bytes", "server.max-request-body-bytes"}, {"trusted-proxies", "server.trusted-proxies"},
 		{"github-token", "server.github-token"},
-		{"tls", "server.tls"}, {"commercial-mode", "server.commercial-mode"}, {"discovery", "server.discovery"},
+		{"tls", "server.tls"}, {"shutdown-timeout", "server.shutdown-timeout"}, {"commercial-mode", "server.commercial-mode"}, {"discovery", "server.discovery"}, {"kv-store", "server.kv-store"},
 		{"remote-management", "management"}, {"api-keys", "access.api-keys"},
 		{"api-key-model-whitelists", "access.api-key-model-whitelists"},
 		{"api-key-ip-blacklist", "access.api-key-ip-blacklist"},
@@ -88,6 +91,7 @@ func buildV8Paths() []configPath {
 		{"transient-error-cooldown-seconds", "routing.cooldown.transient-error-cooldown-seconds"},
 		{"proxy-url", "requests.proxy-url"}, {"tls-handshake-timeout-seconds", "requests.tls-handshake-timeout-seconds"}, {"passthrough-headers", "requests.passthrough-headers"},
 		{"nonstream-keepalive-interval", "requests.nonstream-keepalive-interval"}, {"streaming", "requests.streaming"}, {"payload", "requests.payload"},
+		{"response-compression", "server.response-compression"},
 		{"auth-dir", "oauth.auth-dir"}, {"auth-auto-refresh-workers", "oauth.auth-auto-refresh-workers"},
 		{"oauth-endpoint-overrides", "oauth.endpoint-overrides"}, {"incognito-browser", "oauth.incognito-browser"},
 		{"kiro-fingerprint", "oauth.providers.kiro.fingerprint"},
@@ -104,6 +108,9 @@ func buildV8Paths() []configPath {
 		{"codex.orphan-delegation-compatibility", "upstream.codex.orphan-delegation-compatibility"},
 		{"codex.model-level-cooling", "upstream.codex.model-level-cooling"},
 		{"codex.response-steering", "upstream.codex.response-steering"},
+		{"codex.upstream-request-compression", "upstream.codex.upstream-request-compression"},
+		{"codex.upstream-request-compression-min-bytes", "upstream.codex.upstream-request-compression-min-bytes"},
+		{"codex.websocket-compression", "upstream.codex.websocket-compression"},
 		{"codex", "oauth.providers.codex"}, {"codex-header-defaults", "oauth.providers.codex.header-defaults"},
 		{"claude", "upstream.claude"}, {"claude-code", "upstream.claude"},
 		{"disable-claude-cloak-mode", "upstream.claude.disable-claude-cloak-mode"},
@@ -258,6 +265,29 @@ func legacyPath(root *yaml.Node, path string) *yaml.Node {
 	return node
 }
 
+// EffectiveResponseCompression returns the downstream response compression
+// settings from their canonical storage (SDKConfig.ResponseCompression, YAML
+// server.response-compression), falling back to the JSON/programmatic mirror
+// on the outer Config when the canonical value was never populated.
+func (cfg *Config) EffectiveResponseCompression() ResponseCompressionConfig {
+	if cfg == nil {
+		return ResponseCompressionConfig{}
+	}
+	if cfg.ResponseCompression.Enabled != nil || cfg.ResponseCompression.MinBytes != 0 {
+		return cfg.ResponseCompression
+	}
+	return cfg.ServerResponseCompression
+}
+
+// SyncServerResponseCompression copies the canonical response compression
+// settings into the JSON-visible mirror on the outer Config.
+func (cfg *Config) SyncServerResponseCompression() {
+	if cfg == nil {
+		return
+	}
+	cfg.ServerResponseCompression = cfg.ResponseCompression
+}
+
 // UnmarshalYAML accepts both layouts, including partially migrated documents.
 // Presence, rather than Go zero values, determines which setting wins.
 func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
@@ -273,6 +303,7 @@ func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
 		return errValidate
 	}
 	*cfg = Config(decoded)
+	cfg.SyncServerResponseCompression()
 	cfg.OAuthOnlyFields = nil
 	source := expandConfigAliases(node)
 	for _, path := range v8Paths {
@@ -374,6 +405,9 @@ var sharedKeyFields = map[string]bool{
 	"models": true, "excluded-models": true, "disable-cooling": true,
 	"request-retry": true, "request-scoped-errors": true,
 	"billing-class": true, "comment": true,
+	// connection-pool follows proxy-url: a group-level default that each key may
+	// override, so an operator can pool one provider without touching the others.
+	"connection-pool": true,
 }
 
 func expandV8Groups(groups *yaml.Node, provider string) (*yaml.Node, error) {
@@ -439,12 +473,22 @@ func expandV8Groups(groups *yaml.Node, provider string) (*yaml.Node, error) {
 				}
 			}
 			for i := 0; i < len(key.Content); i += 2 {
-				if key.Content[i].Value == "auth_index" || key.Content[i].Value == "auth-index" {
+				field := key.Content[i].Value
+				if field == "auth_index" || field == "auth-index" {
 					continue
 				}
-				if key.Content[i+1].Tag != "!!null" {
-					setYAMLPath(item, key.Content[i].Value, key.Content[i+1])
+				if key.Content[i+1].Tag == "!!null" {
+					continue
 				}
+				if field == "connection-pool" {
+					// A per-key block merges onto the group block so a key that overrides
+					// one field keeps inheriting the rest, matching the runtime resolution
+					// where an omitted field inherits the outer value. Replacing the whole
+					// block would silently drop the group's enabled: true.
+					setYAMLPath(item, field, mergeConnectionPoolNode(yamlPath(group, field), key.Content[i+1]))
+					continue
+				}
+				setYAMLPath(item, field, key.Content[i+1])
 			}
 			out.Content = append(out.Content, item)
 		}
@@ -456,11 +500,27 @@ func expandV8Groups(groups *yaml.Node, provider string) (*yaml.Node, error) {
 // Keep a weight on its credential instead of adding an unknown provider field.
 func isNestedForkKeyFamily(provider string) bool {
 	switch provider {
-	case "commandcode", "freebuff", "opencode", "mimocode":
+	case "commandcode", "opencode", "mimocode", "deepai":
 		return true
 	default:
 		return false
 	}
+}
+
+// mergeConnectionPoolNode merges a per-key connection-pool block onto the group block.
+// Missing sub-keys fall back to the group value; the result is always a fresh node.
+func mergeConnectionPoolNode(base, override *yaml.Node) *yaml.Node {
+	merged := deepCopyNode(base)
+	if merged == nil || merged.Kind != yaml.MappingNode || override == nil || override.Kind != yaml.MappingNode {
+		return deepCopyNode(override)
+	}
+	for i := 0; i < len(override.Content); i += 2 {
+		if override.Content[i+1].Tag == "!!null" {
+			continue
+		}
+		setYAMLPath(merged, override.Content[i].Value, override.Content[i+1])
+	}
+	return merged
 }
 
 // groupLegacyKeys deliberately keeps one group per legacy entry: equal endpoints
@@ -587,7 +647,7 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 	}
 	root = expandConfigAliases(root)
 	sections := v8AllowedRoots()
-	for _, shared := range []string{"api-keys", "plugins", "quota-exceeded", "routing", "client"} {
+	for _, shared := range []string{"api-keys", "plugins", "quota-exceeded", "routing", "client", "claude-warmup"} {
 		delete(sections, shared)
 	}
 	for i := 0; i < len(root.Content); i += 2 {
@@ -617,7 +677,8 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 }
 
 func v8AllowedRoots() map[string]bool {
-	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true}
+	// claude-warmup is a fork-only root kept at the same path in both layouts.
+	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true, "claude-warmup": true}
 	for _, path := range v8Paths {
 		section, _, _ := strings.Cut(path.current, ".")
 		allowed[section] = true

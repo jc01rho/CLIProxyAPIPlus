@@ -117,6 +117,9 @@ func TestAntigravityEnablePromotesAndDemotesPreviousPrimary(t *testing.T) {
 	if !ok || newPrimary == nil || newPrimary.Disabled || newPrimary.PrimaryInfo == nil || !newPrimary.PrimaryInfo.IsPrimary {
 		t.Fatalf("promoted standby not primary: %+v", newPrimary)
 	}
+	if newPrimary.PrimaryInfo.Order != 2 {
+		t.Fatalf("promoted standby order = %d, want 2 (preserved)", newPrimary.PrimaryInfo.Order)
+	}
 	oldPrimary, ok := manager.GetByID("ag-ena-a")
 	if !ok || oldPrimary == nil || !oldPrimary.Disabled || oldPrimary.PrimaryInfo == nil || oldPrimary.PrimaryInfo.IsPrimary {
 		t.Fatalf("previous primary not demoted: %+v", oldPrimary)
