@@ -100,6 +100,7 @@ func TestCacheHelperRejectsUniqueItemsBeforeHTTP(t *testing.T) {
 		"https://example.invalid/v1/responses",
 		cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: body},
 		body,
+		nil,
 	)
 	if err == nil {
 		t.Fatal("expected uniqueItems rejection")
@@ -134,6 +135,7 @@ func TestCacheHelperStripsRejectedInputItemFields(t *testing.T) {
 		"https://example.invalid/v1/responses",
 		cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: body},
 		body,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("cacheHelper returned error: %v", err)

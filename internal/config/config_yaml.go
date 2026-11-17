@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -17,6 +18,8 @@ import (
 func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...bool) error {
 	persistCfg := cfg
 	migrating := len(migrateV8) > 0 && migrateV8[0]
+	unlock := lockConfigFile()
+	defer unlock()
 	// Load original YAML as a node tree to preserve comments and ordering.
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -70,6 +73,10 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-request-scoped-errors")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-settings")
+	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "antigravity", "sensitive-words-replace")
+	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "antigravity", "sensitive-patterns-replace")
+	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "devin", "sensitive-words-replace")
+	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "devin", "sensitive-patterns-replace")
 	replacePluginConfigsSubtree(original.Content[0], generated.Content[0])
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
@@ -114,7 +121,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 			return fmt.Errorf("decode migrated config: %w", err)
 		}
 	}
-	if err = os.WriteFile(configFile, data, 0600); err != nil {
+	if err = writeConfigFileLocked(configFile, data, 0600); err != nil {
 		return err
 	}
 	if migrated != nil {
@@ -127,15 +134,10 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 // SaveConfigPreserveCommentsUpdateNestedScalar updates a nested scalar key path like ["a","b"]
 // while preserving comments and positions.
 func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []string, value string) error {
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		return err
-	}
-	data, err = updateNestedScalarYAML(data, path, value)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configFile, data, 0600)
+	_, _, err := rewriteConfigFile(configFile, func(current []byte) ([]byte, error) {
+		return updateNestedScalarYAML(current, path, value)
+	})
+	return err
 }
 
 // updateNestedScalarYAML returns data with the nested scalar key path like ["a","b"] set to
@@ -377,12 +379,81 @@ func appendPath(path []string, key string) []string {
 // isKnownDefaultValue returns true if the given node at the specified path
 // represents a known default value that should not be written to the config file.
 // This prevents non-zero defaults from polluting the config.
+//
+// Credential connection-pool blocks (enabled, idle-conn-timeout,
+// max-idle-conns-per-host) are deliberately absent from the pointer-backed
+// zero-value whitelist below. The pruning here only applies to keys that are new
+// to the destination document: a block already present on disk is merged into its
+// existing node and survives. So an empty block (connection-pool: {} is the opt-in
+// for the default pool), an explicit enabled: false, and an explicit
+// max-idle-conns-per-host: 0 all persist when the operator wrote them by hand or
+// through the v8 management API, which writes the YAML tree directly. The
+// remaining gap is a block that only exists in an in-memory Config, for example one
+// an SDK embedder adds through sdk/config.SaveConfigPreserveComments to a file that
+// never carried it: pruning drops those zero-valued sub-keys. No management
+// endpoint mutates ProxyConnectionPool, so that path is reachable only from code.
+func isSensitiveWordsReplaceEntryPath(path []string) bool {
+	for i, part := range path {
+		if part == "sensitive-words-replace" && i < len(path)-1 {
+			return true
+		}
+	}
+	return false
+}
+
+func isSensitivePatternsReplaceEntryPath(path []string) bool {
+	for i, part := range path {
+		if part == "sensitive-patterns-replace" && i < len(path)-1 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonEmptySensitiveWordsReplace(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			k := node.Content[i]
+			v := node.Content[i+1]
+			if k != nil && k.Value == "sensitive-words-replace" && v != nil && v.Kind == yaml.MappingNode && len(v.Content) > 0 {
+				return true
+			}
+			if k != nil && k.Value == "sensitive-patterns-replace" && v != nil && v.Kind == yaml.SequenceNode && len(v.Content) > 0 {
+				return true
+			}
+			if hasNonEmptySensitiveWordsReplace(v) {
+				return true
+			}
+		}
+	case yaml.SequenceNode:
+		for _, child := range node.Content {
+			if hasNonEmptySensitiveWordsReplace(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 	return isKnownDefaultValueWithConfigDir(path, node, "")
 }
 
 func isKnownDefaultValueWithConfigDir(path []string, node *yaml.Node, configDir string) bool {
-	if isPluginConfigsSubtreePath(path) {
+	if isPluginConfigsSubtreePath(path) || isSensitiveWordsReplaceEntryPath(path) || isSensitivePatternsReplaceEntryPath(path) {
+		return false
+	}
+	if len(path) > 0 && path[len(path)-1] == "sensitive-words-replace" && node != nil && node.Kind == yaml.MappingNode && len(node.Content) > 0 {
+		return false
+	}
+	if len(path) > 0 && path[len(path)-1] == "sensitive-patterns-replace" && node != nil && node.Kind == yaml.SequenceNode && len(node.Content) > 0 {
+		return false
+	}
+	if hasNonEmptySensitiveWordsReplace(node) {
 		return false
 	}
 	if len(path) == 1 && path[0] == "plugins" && node != nil && node.Kind == yaml.MappingNode {
@@ -407,9 +478,23 @@ func isKnownDefaultValueWithConfigDir(path []string, node *yaml.Node, configDir 
 		return false
 	}
 
+	// session-date-pin-days is pointer-backed: only an explicit zero is
+	// preserved; the default value must not pollute saves.
+	if len(path) > 0 && path[len(path)-1] == "session-date-pin-days" && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!int" && node.Value == "0" {
+		return false
+	}
+
 	// Pointer-backed booleans (such as cache-user-id and disable-cooling): explicit false is meaningful and must be preserved.
 	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
 		return false
+	}
+
+	// A parent mapping carrying an explicit session-date-pin-days value must
+	// survive the zero-value check below, or the new key is never written.
+	if node != nil && node.Kind == yaml.MappingNode {
+		if pinIdx := findMapKeyIndex(node, "session-date-pin-days"); pinIdx >= 0 {
+			return false
+		}
 	}
 
 	// First check if it's a zero value
@@ -443,6 +528,8 @@ func isKnownDefaultValueWithConfigDir(path []string, node *yaml.Node, configDir 
 		switch fullPath {
 		case "error-logs-max-files":
 			return node.Value == "10"
+		case "claude.session-date-pin-days":
+			return node.Value == strconv.Itoa(DefaultClaudeSessionDatePinDays)
 		}
 	}
 
@@ -456,7 +543,10 @@ func pruneKnownDefaultsInNewNode(path []string, node *yaml.Node) {
 }
 
 func pruneKnownDefaultsInNewNodeWithConfigDir(path []string, node *yaml.Node, configDir string) {
-	if node == nil || isPluginConfigsSubtreePath(path) {
+	if node == nil || isPluginConfigsSubtreePath(path) || isSensitiveWordsReplaceEntryPath(path) || isSensitivePatternsReplaceEntryPath(path) {
+		return
+	}
+	if len(path) > 0 && (path[len(path)-1] == "sensitive-words-replace" || path[len(path)-1] == "sensitive-patterns-replace") {
 		return
 	}
 
@@ -817,6 +907,9 @@ func pruneMappingToGeneratedKeys(dstRoot, srcRoot *yaml.Node, keyPath ...string)
 		return
 	}
 	if srcVal.Kind != yaml.MappingNode {
+		if srcVal.Kind == yaml.SequenceNode && dstVal != nil && dstVal.Kind == yaml.SequenceNode {
+			return
+		}
 		dstRoot.Content[dstIdx+1] = deepCopyNode(srcVal)
 		return
 	}
@@ -862,12 +955,21 @@ func pruneMissingMapKeys(dstMap, srcMap *yaml.Node) {
 // This is strictly scoped to credential-nested mappings such as "cloak" and "headers" under
 // known credential sequence paths to prevent stale deleted keys from persisting while leaving
 // all other mappings and root sections unaffected.
+//
+// Credential connection-pool blocks stay out of this list on purpose. Pruning only runs while
+// merging a document from an in-memory Config, and a removed pool sub-key can mean either
+// "delete it" or "inherit the group value" depending on the caller; guessing wrong would silently
+// change pooling for a credential. Hand-edited files and v8 management saves therefore keep a
+// sub-key until the whole block is removed.
 func shouldPruneNestedMappingKeys(path []string) bool {
 	if len(path) < 2 {
 		return false
 	}
 	parent := path[len(path)-2]
 	last := path[len(path)-1]
+	if last == "sensitive-words-replace" && (parent == "antigravity" || parent == "devin" || parent == "cloak") {
+		return true
+	}
 	switch parent {
 	case "claude-api-key":
 		return last == "cloak" || last == "headers"

@@ -24,6 +24,7 @@ var claudeCode2_1_220WireHeaderOrder = []string{
 	"Accept",
 	"Authorization",
 	"Content-Type",
+	"X-Claude-Code-Request-Class",
 	"X-Claude-Code-Session-Id",
 	"X-Stainless-Arch",
 	"X-Stainless-Lang",
@@ -212,8 +213,8 @@ func TestClaudeExecutorHasSingleUpstreamSendBoundary(t *testing.T) {
 		if strings.Contains(text, "httpClient.Do(") {
 			t.Errorf("%s bypasses the send boundary with a direct httpClient.Do", name)
 		}
-		if !strings.Contains(text, "doClaudeUpstreamRequest(") {
-			t.Errorf("%s does not route through doClaudeUpstreamRequest", name)
+		if !strings.Contains(text, "doClaudeUpstreamRequestWithBody(") {
+			t.Errorf("%s does not route through doClaudeUpstreamRequestWithBody", name)
 		}
 	}
 }

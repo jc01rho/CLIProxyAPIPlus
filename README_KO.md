@@ -79,7 +79,6 @@ CLIProxyAPI는 CLI 도구를 위한 OpenAI/Gemini/Claude/Codex/Grok 호환 API �
 - Claude Code 다중 계정 로드 밸런싱
 - OpenAI Codex 다중 계정 로드 밸런싱
 - Grok Build 다중 계정 로드 밸런싱
-- 네이티브 Freebuff(Codebuff) executor: 세션 재사용 및 `cost_mode: free`
 - 설정으로 OpenAI 호환 업스트림 프로바이더 연결(예: OpenRouter)
 - 재사용 가능한 Go SDK(`docs/sdk-usage.md` 참조)
 

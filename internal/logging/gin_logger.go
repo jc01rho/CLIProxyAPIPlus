@@ -32,6 +32,7 @@ var aiAPIPrefixes = []string{
 	"/v1beta",
 	"/openai/v1",
 	"/backend-api/codex",
+	"/muse-code",
 }
 
 const (
@@ -245,27 +246,26 @@ func GinLogrusLogger(configs ...*config.Config) gin.HandlerFunc {
 		start := time.Now()
 		path := c.Request.URL.Path
 		raw := util.MaskSensitiveQuery(c.Request.URL.RawQuery)
+		// OAuth state is a callback capability; authorization codes and issued
+		// client IDs must not be included in management access logs either.
+		if strings.HasPrefix(path, "/v8/management/oauth/") {
+			raw = ""
+		}
 
+		// Copy the AI request body as the handler reads it instead of reading it up
+		// front, so a request rejected before its handler (authentication, CORS
+		// preflight) is answered without consuming its body (upstream 477605dc6).
+		// The handler still sees at most limit+1 bytes, as before.
 		var requestBody []byte
-		if isAIAPIPath(path) && c.Request.Body != nil {
-			originalBody := c.Request.Body
+		var bodyCopy *ginCapturedRequestBody
+		if isAIAPIPath(path) && c.Request.Body != nil && c.Request.Body != http.NoBody {
 			limit := int64(maxGinCapturedAIRequestBodyBytes)
 			if configured := c.GetInt64("maxRequestBodyBytes"); configured > 0 {
 				limit = configured
 			}
-			var reader io.Reader = originalBody
-			if limit < math.MaxInt64 {
-				reader = io.LimitReader(originalBody, limit+1)
-			}
-			var errRead error
-			requestBody, errRead = io.ReadAll(reader)
-			_ = originalBody.Close()
-			c.Request.Body = io.NopCloser(bytes.NewReader(requestBody))
-			c.Set(requestBodyKey, requestBody)
-			var maxBytesErr *http.MaxBytesError
-			if errors.As(errRead, &maxBytesErr) {
-				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": errRead.Error()})
-			}
+			bodyCopy = &ginCapturedRequestBody{original: c.Request.Body, limit: limit}
+			c.Request.Body = bodyCopy
+			defer func() { _ = bodyCopy.original.Close() }()
 		}
 
 		// Only generate request ID for AI API paths
@@ -319,6 +319,12 @@ func GinLogrusLogger(configs ...*config.Config) gin.HandlerFunc {
 				}
 			}
 		}
+		if len(requestBody) == 0 && bodyCopy != nil {
+			if bodyCopy.shouldDrainAfterHandler(c.Request.Method, statusCode) {
+				bodyCopy.drain()
+			}
+			requestBody = bodyCopy.buf.Bytes()
+		}
 		if len(requestBody) > 0 {
 			modelName = gjson.GetBytes(requestBody, "model").String()
 			modelName = strings.TrimSpace(modelName)
@@ -352,7 +358,7 @@ func GinLogrusLogger(configs ...*config.Config) gin.HandlerFunc {
 			requestID = "--------"
 		}
 
-		logLine := fmt.Sprintf("%3d | %13v | %15s | %-7s \"%s\"", statusCode, latency, clientIP, method, path)
+		logLine := fmt.Sprintf("%3d | %13v | %15s | %-7s %q", statusCode, latency, clientIP, method, path)
 
 		if isAIAPIPath(path) && (modelName != "" || providerInfo != "" || authKeyName != "") {
 			displayModelName := modelName
@@ -491,6 +497,59 @@ func GinLogrusLogger(configs ...*config.Config) gin.HandlerFunc {
 }
 
 // isAIAPIPath checks if the given path is an AI API endpoint that should have request ID tracking.
+// ginCapturedRequestBody passes at most limit+1 bytes of the request body to
+// the handler and keeps a copy of them for the access log.
+type ginCapturedRequestBody struct {
+	original io.ReadCloser
+	buf      bytes.Buffer
+	limit    int64
+	done     bool
+}
+
+func (b *ginCapturedRequestBody) Read(p []byte) (int, error) {
+	allowed := b.limit
+	if allowed < math.MaxInt64 {
+		allowed++
+	}
+	remaining := allowed - int64(b.buf.Len())
+	if b.done || remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	n, err := b.original.Read(p)
+	b.buf.Write(p[:n])
+	if err != nil {
+		b.done = true
+	}
+	return n, err
+}
+
+func (b *ginCapturedRequestBody) Close() error { return b.original.Close() }
+
+// shouldDrainAfterHandler reports whether the unread rest of the body may be
+// read for the log: never for a request rejected as unauthenticated or
+// forbidden, a redirect, or a method that carries no request payload.
+func (b *ginCapturedRequestBody) shouldDrainAfterHandler(method string, status int) bool {
+	if b.done {
+		return false
+	}
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+	default:
+		return false
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return false
+	}
+	return status < http.StatusMultipleChoices || status >= http.StatusBadRequest
+}
+
+func (b *ginCapturedRequestBody) drain() {
+	_, _ = io.Copy(io.Discard, b)
+}
+
 func isAIAPIPath(path string) bool {
 	for _, prefix := range aiAPIPrefixes {
 		if path == prefix || strings.HasPrefix(path, prefix+"/") {
@@ -600,7 +659,7 @@ func extractDownstreamAPIKeyFromRequest(r *http.Request) string {
 	query := r.URL.Query()
 	for _, name := range []string{"key", "auth_token"} {
 		if secret := strings.TrimSpace(query.Get(name)); secret != "" {
-			return "Query-" + name + "(" + secret + ")"
+			return secret
 		}
 	}
 	return ""

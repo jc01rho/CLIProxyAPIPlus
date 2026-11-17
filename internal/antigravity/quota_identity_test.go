@@ -56,7 +56,7 @@ func assertIdentityMeetsQuotaFloor(t *testing.T, label, userAgent string) {
 
 // TestQuotaRequestsUseIdentityAboveTheGeminiQuotaFloor pins the identity used by the
 // quota and model-discovery RPCs: the legacy agy harness identity silently drops the
-// Gemini Models group upstream, so these calls must use the executor runtime identity.
+// Gemini Models group upstream, so these calls must use the floor-guarded runtime identity.
 func TestQuotaRequestsUseIdentityAboveTheGeminiQuotaFloor(t *testing.T) {
 	seen := map[string][]string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

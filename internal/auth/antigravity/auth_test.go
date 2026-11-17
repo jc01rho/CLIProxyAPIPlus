@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -18,7 +19,7 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestBuildAuthURLMatchesReferenceQueryOrder(t *testing.T) {
 	auth := NewAntigravityAuth(nil, nil)
 	got := auth.BuildAuthURL("state value", "http://localhost:51121/oauth-callback", &PKCECodes{CodeChallenge: "challenge/value"})
-	want := AuthEndpoint + "?" + "client_id=" + ClientID + "&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A51121%2Foauth-callback&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcclog+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fexperimentsandconfigs&code_challenge=challenge%2Fvalue&code_challenge_method=S256&state=state+value&access_type=offline&prompt=consent"
+	want := AuthEndpoint + "?" + "client_id=" + ClientID + "&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A51121%2Foauth-callback&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Faicode+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcclog+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fexperimentsandconfigs&code_challenge=challenge%2Fvalue&code_challenge_method=S256&state=state+value&access_type=offline&prompt=consent"
 	if got != want {
 		t.Fatalf("auth URL = %q, want %q", got, want)
 	}
@@ -74,9 +75,23 @@ func TestExchangeCodeForTokensMasksSensitiveErrorBody(t *testing.T) {
 	}
 }
 
+func TestBuildAuthURLIncludesAICodeScope(t *testing.T) {
+	parsedURL, err := url.Parse(NewAntigravityAuth(nil, nil).BuildAuthURL("state", "http://localhost/callback", &PKCECodes{CodeChallenge: "challenge"}))
+	if err != nil {
+		t.Fatalf("parse auth URL: %v", err)
+	}
+
+	for _, scope := range strings.Fields(parsedURL.Query().Get("scope")) {
+		if scope == "https://www.googleapis.com/auth/aicode" {
+			return
+		}
+	}
+	t.Fatalf("authorization URL scope does not include %q", "https://www.googleapis.com/auth/aicode")
+}
+
 func TestFetchProjectIDFromLoadCodeAssist(t *testing.T) {
 	auth := NewAntigravityAuth(nil, &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
+		if req.URL.String() != "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
 			t.Fatalf("unexpected request URL: %s", req.URL.String())
 		}
 		assertLoadCodeAssistHeaders(t, req)
@@ -97,7 +112,7 @@ func TestFetchProjectIDFallsBackToDailyOnboardUser(t *testing.T) {
 	var sawOnboard bool
 	auth := NewAntigravityAuth(nil, &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.String() {
-		case "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist":
+		case "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist":
 			assertLoadCodeAssistHeaders(t, req)
 			return jsonResponse(`{"allowedTiers":[{"id":"free-tier","isDefault":true}]}`), nil
 		case "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser":
@@ -160,8 +175,8 @@ func assertLoadCodeAssistHeaders(t *testing.T, req *http.Request) {
 	if got := req.Header.Get("Authorization"); got != "Bearer access-token" {
 		t.Fatalf("Authorization = %q", got)
 	}
-	if got := req.Header.Get("Accept"); got != "*/*" {
-		t.Fatalf("Accept = %q", got)
+	if got := req.Header.Get("Accept"); got != "" {
+		t.Fatalf("Accept = %q, want omitted", got)
 	}
 	if got := req.Header.Get("X-Goog-Api-Client"); got != "" {
 		t.Fatalf("X-Goog-Api-Client = %q, want empty", got)

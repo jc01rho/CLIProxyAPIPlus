@@ -28,7 +28,7 @@ func TestResolveFallbackModels_SkipsModelsOutsideAPIKeyWhitelist(t *testing.T) {
 	manager.SetFallbackChain([]string{"gpt-4.1-mini", "claude-sonnet-4", "gpt-4o"}, 5)
 
 	ctx := contextWithModelWhitelist([]string{"gpt-*"})
-	got := manager.resolveFallbackModels(ctx, "gpt-5.5")
+	got := manager.resolveFallbackModels(ctx, "gpt-5.5", false)
 
 	want := []string{"gpt-4.1-mini", "gpt-4o"}
 	if len(got) != len(want) {
@@ -57,7 +57,7 @@ func TestResolveFallbackModels_UnrestrictedKeyKeepsEveryCandidate(t *testing.T) 
 		{name: "empty whitelist", ctx: contextWithModelWhitelist(nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := manager.resolveFallbackModels(tc.ctx, "gpt-5.5")
+			got := manager.resolveFallbackModels(tc.ctx, "gpt-5.5", false)
 			if len(got) != len(want) {
 				t.Fatalf("fallback candidates = %v, want %v", got, want)
 			}
@@ -75,7 +75,7 @@ func TestResolveFallbackModels_WhitelistBlockingEveryCandidateYieldsNone(t *test
 	manager.SetFallbackChain([]string{"claude-sonnet-4", "claude-opus-4"}, 5)
 
 	ctx := contextWithModelWhitelist([]string{"gpt-*"})
-	if got := manager.resolveFallbackModels(ctx, "gpt-5.5"); len(got) != 0 {
+	if got := manager.resolveFallbackModels(ctx, "gpt-5.5", false); len(got) != 0 {
 		t.Fatalf("fallback candidates = %v, want none", got)
 	}
 }
@@ -85,7 +85,7 @@ func TestResolveFallbackModels_DepthCapAppliesAfterWhitelistFiltering(t *testing
 	manager.SetFallbackChain([]string{"claude-a", "claude-b", "gpt-4.1", "gpt-4o"}, 2)
 
 	ctx := contextWithModelWhitelist([]string{"gpt-*"})
-	got := manager.resolveFallbackModels(ctx, "gpt-5.5")
+	got := manager.resolveFallbackModels(ctx, "gpt-5.5", false)
 
 	// Without whitelist-aware filtering the two Claude entries would consume the
 	// depth budget and starve the models this key is actually allowed to use.
@@ -235,7 +235,7 @@ func TestAudioTranscriptionModelsNeverFallbackToOtherModels(t *testing.T) {
 		"models/gemini-3.5-transcribe",
 	} {
 		t.Run(model, func(t *testing.T) {
-			if got := manager.resolveFallbackModels(context.Background(), model); len(got) != 0 {
+			if got := manager.resolveFallbackModels(context.Background(), model, false); len(got) != 0 {
 				t.Fatalf("resolveFallbackModels(%q) = %v, want empty", model, got)
 			}
 			if providers, fallbackModel := manager.ResolveProvidersForFallback(context.Background(), model); len(providers) != 0 || fallbackModel != "" {

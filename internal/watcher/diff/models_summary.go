@@ -3,6 +3,7 @@ package diff
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -40,6 +41,11 @@ type MistralModelsSummary struct {
 }
 
 type OpenCodeModelsSummary struct {
+	hash  string
+	count int
+}
+
+type DeepAIModelsSummary struct {
 	hash  string
 	count int
 }
@@ -143,7 +149,11 @@ func SummarizeVertexModels(models []config.VertexCompatModel) VertexModelsSummar
 		if alias != "" {
 			name = alias
 		}
-		names = append(names, name+"|"+strings.TrimSpace(model.DisplayName)+thinkingHashSuffix(model.Thinking))
+		key := name + "|" + strings.TrimSpace(model.DisplayName)
+		if model.OpenAPI != nil {
+			key += fmt.Sprintf("|openapi=%t", *model.OpenAPI)
+		}
+		names = append(names, key+thinkingHashSuffix(model.Thinking))
 	}
 	if len(names) == 0 {
 		return VertexModelsSummary{}
@@ -214,4 +224,22 @@ func SummarizeCommandCodeModels(models []config.CommandCodeModel) CommandCodeMod
 		hash:  hashJoined(keys),
 		count: len(keys),
 	}
+}
+
+// SummarizeDeepAIModels hashes DeepAI model aliases for change detection.
+func SummarizeDeepAIModels(models []config.DeepAIModel) DeepAIModelsSummary {
+	if len(models) == 0 {
+		return DeepAIModelsSummary{}
+	}
+	keys := normalizeModelPairs(func(out func(key string)) {
+		for _, model := range models {
+			name := strings.TrimSpace(model.Name)
+			alias := strings.TrimSpace(model.Alias)
+			if name == "" && alias == "" {
+				continue
+			}
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias))
+		}
+	})
+	return DeepAIModelsSummary{hash: hashJoined(keys), count: len(keys)}
 }

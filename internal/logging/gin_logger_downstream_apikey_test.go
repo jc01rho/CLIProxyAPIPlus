@@ -21,9 +21,9 @@ func TestExtractDownstreamAPIKey_ReturnsRawSecret(t *testing.T) {
 		headers http.Header
 		want    string
 	}{
-		{"bearer", http.Header{"Authorization": {"Bearer " + secret}}, "Bearer(" + secret + ")"},
-		{"x-api-key", http.Header{"X-Api-Key": {secret}}, "X-Api-Key(" + secret + ")"},
-		{"api-key", http.Header{"Api-Key": {secret}}, "X-Api-Key(" + secret + ")"},
+		{"bearer", http.Header{"Authorization": {"Bearer " + secret}}, secret},
+		{"x-api-key", http.Header{"X-Api-Key": {secret}}, secret},
+		{"api-key", http.Header{"Api-Key": {secret}}, secret},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,7 +72,7 @@ func TestGinLogrusLoggerIncludesRawDownstreamAPIKeyOnNonAIAPIPath(t *testing.T) 
 
 	logOutput := logBuffer.String()
 	t.Logf("404 non-AI log output: %s", logOutput)
-	if !strings.Contains(logOutput, "downstream_api_key=Bearer("+fullSecret+")") {
+	if !strings.Contains(logOutput, "downstream_api_key="+fullSecret) {
 		t.Fatalf("expected downstream API key in 404 non-AI log, got: %s", logOutput)
 	}
 }
@@ -106,7 +106,7 @@ func TestGinLogrusLoggerIncludesRawDownstreamAPIKeyOnWarnAndError(t *testing.T) 
 
 			logOutput := logBuffer.String()
 			t.Logf("%d log output: %s", statusCode, logOutput)
-			if !strings.Contains(logOutput, "downstream_api_key=Bearer("+fullSecret+")") {
+			if !strings.Contains(logOutput, "downstream_api_key="+fullSecret) {
 				t.Fatalf("expected original API key in %d log, got: %s", statusCode, logOutput)
 			}
 		})
@@ -118,9 +118,9 @@ func TestGinLogrusLoggerDownstreamKeyOnSuccessfulAIRequests(t *testing.T) {
 		name, path, header, key, want string
 		stream                        bool
 	}{
-		{"chat bearer", "/v1/chat/completions", "Authorization", "Bearer senpi-test-client", "Bearer(senpi-test-client)", false},
-		{"responses stream", "/v1/responses", "Authorization", "Bearer opencode-test-client", "Bearer(opencode-test-client)", true},
-		{"messages key", "/v1/messages", "X-Api-Key", "aside-test-client", "X-Api-Key(aside-test-client)", false},
+		{"chat bearer", "/v1/chat/completions", "Authorization", "Bearer senpi-test-client", "senpi-test-client", false},
+		{"responses stream", "/v1/responses", "Authorization", "Bearer opencode-test-client", "opencode-test-client", true},
+		{"messages key", "/v1/messages", "X-Api-Key", "aside-test-client", "aside-test-client", false},
 		{"no key", "/v1/chat/completions", "", "", "", false},
 		{"management success", "/v0/management/config", "Authorization", "Bearer management-secret", "", false},
 	} {
@@ -179,8 +179,8 @@ func TestGinLogrusLoggerIncludesQueryCredentialOnUnauthorized(t *testing.T) {
 		query string
 		want  string
 	}{
-		{"key param", "?key=sk-query-secret", "downstream_api_key=Query-key(sk-query-secret)"},
-		{"auth_token param", "?auth_token=tok-secret", "downstream_api_key=Query-auth_token(tok-secret)"},
+		{"key param", "?key=sk-query-secret", "downstream_api_key=sk-query-secret"},
+		{"auth_token param", "?auth_token=tok-secret", "downstream_api_key=tok-secret"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -221,7 +221,7 @@ func TestGinLogrusLoggerHeaderCredentialWinsOverQuery(t *testing.T) {
 	engine.ServeHTTP(httptest.NewRecorder(), req)
 
 	out := logBuffer.String()
-	if !strings.Contains(out, "downstream_api_key=Bearer(from-header)") || strings.Contains(out, "from-query)") {
+	if !strings.Contains(out, "downstream_api_key=from-header") || strings.Contains(out, "from-query") {
 		t.Fatalf("header credential must win, got: %s", out)
 	}
 }

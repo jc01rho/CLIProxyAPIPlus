@@ -74,7 +74,7 @@ func TestApplyOpenCodeHeaders_MirrorsCLIIdentity(t *testing.T) {
 				t.Fatalf("new request: %v", err)
 			}
 
-			applyOpenCodeHeaders(req, tc.apiKey, true)
+			applyOpenCodeHeaders(req, tc.apiKey, true, "")
 
 			if got := req.Header.Get("Authorization"); got != tc.wantBearer {
 				t.Fatalf("Authorization = %q, want %q", got, tc.wantBearer)
@@ -174,6 +174,30 @@ func TestOpenCodeExecutor_SystemOneAltUsesSystemOneRoute(t *testing.T) {
 	}
 	if got := gjson.GetBytes(resp.Payload, "answers.q1.noul").Float(); got != 0.88 {
 		t.Fatalf("response must be returned verbatim, got %s", resp.Payload)
+	}
+}
+
+func TestOpenCodeExecutor_SystemOneUsesMetadataSessionIdentity(t *testing.T) {
+	var gotSession string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSession = r.Header.Get("x-opencode-session")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers":{}}`))
+	}))
+	defer server.Close()
+
+	auth := openCodeTestAuth(map[string]string{"api_key": "public", "base_url": server.URL})
+	meta := map[string]any{cliproxyexecutor.CanonicalSessionIDMetadataKey: "ctx:v1:conversation-a"}
+	_, err := NewOpenCodeExecutor(&config.Config{}).Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:    "jev-latest",
+		Payload:  []byte(`{"model":"jev-latest","questions":{}}`),
+		Metadata: meta,
+	}, cliproxyexecutor.Options{Alt: "systemone"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if want := opencodeHashSession("opencode-session:ctx:v1:conversation-a"); gotSession != want {
+		t.Fatalf("x-opencode-session = %q, want the metadata session %q", gotSession, want)
 	}
 }
 

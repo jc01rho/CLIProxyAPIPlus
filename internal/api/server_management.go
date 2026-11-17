@@ -85,6 +85,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.POST("/reset-quota", s.mgmt.ResetQuota)
+		mgmt.POST("/claude-warmup/run", s.mgmt.PostClaudeWarmupRun)
 
 		mgmt.GET("/quota/providers", s.mgmt.GetQuotaProviders)
 		mgmt.POST("/quota/fetch", s.mgmt.FetchCredentialQuota)
@@ -177,11 +178,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/commandcode-api-key", s.mgmt.PatchCommandCodeKey)
 		mgmt.DELETE("/commandcode-api-key", s.mgmt.DeleteCommandCodeKey)
 
-		mgmt.GET("/freebuff-api-key", s.mgmt.GetFreebuffKeys)
-		mgmt.PUT("/freebuff-api-key", s.mgmt.PutFreebuffKeys)
-		mgmt.PATCH("/freebuff-api-key", s.mgmt.PatchFreebuffKey)
-		mgmt.DELETE("/freebuff-api-key", s.mgmt.DeleteFreebuffKey)
-
 		mgmt.GET("/opencode-api-key", s.mgmt.GetOpenCodeKeys)
 		mgmt.PUT("/opencode-api-key", s.mgmt.PutOpenCodeKeys)
 		mgmt.PATCH("/opencode-api-key", s.mgmt.PatchOpenCodeKey)
@@ -189,6 +185,11 @@ func (s *Server) registerManagementRoutes() {
 
 		mgmt.GET("/mimocode-api-key", s.mgmt.GetMimocodeKeys)
 		mgmt.PUT("/mimocode-api-key", s.mgmt.PutMimocodeKeys)
+
+		mgmt.GET("/deepai-api-key", s.mgmt.GetDeepAIKeys)
+		mgmt.PUT("/deepai-api-key", s.mgmt.PutDeepAIKeys)
+		mgmt.PATCH("/deepai-api-key", s.mgmt.PatchDeepAIKey)
+		mgmt.DELETE("/deepai-api-key", s.mgmt.DeleteDeepAIKey)
 
 		mgmt.GET("/mistral-api-key", s.mgmt.GetMistralKeys)
 		mgmt.PUT("/mistral-api-key", s.mgmt.PutMistralKeys)

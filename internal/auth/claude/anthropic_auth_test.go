@@ -114,6 +114,30 @@ func TestClaudeAuthBlankExplicitOverrideFallsBackToDefaultEndpoints(t *testing.T
 	}
 }
 
+func TestNewAnthropicHttpClientRefusesRedirects(t *testing.T) {
+	var followed atomic.Int32
+	client := NewAnthropicHttpClient(nil)
+	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "platform.claude.com" {
+			followed.Add(1)
+		}
+		return &http.Response{
+			StatusCode: http.StatusTemporaryRedirect,
+			Header:     http.Header{"Location": {"https://attacker.example.com/steal"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	})
+	req, _ := http.NewRequest(http.MethodPost, TokenURL, strings.NewReader(`{"refresh_token":"rt"}`))
+	_, err := client.Do(req)
+	if !errors.Is(err, ErrOAuthRedirectRefused) {
+		t.Fatalf("Do() error = %v, want ErrOAuthRedirectRefused", err)
+	}
+	if got := followed.Load(); got != 0 {
+		t.Fatalf("redirect followed %d times, want 0", got)
+	}
+}
+
 func TestNewAnthropicHttpClientDoesNotSetRequestTimeout(t *testing.T) {
 	client := NewAnthropicHttpClient(nil)
 	if got := client.Timeout; got != 0 {
@@ -229,6 +253,7 @@ func TestExchangeCodeForTokensMatchesCortexkitControlPlaneShape(t *testing.T) {
 	var order []string
 	headers := make(map[string]http.Header)
 	var tokenBody []byte
+	state := strings.Repeat("Ab9-_", 8) + "AbA"
 
 	auth := &ClaudeAuth{
 		httpClient: &http.Client{
@@ -268,7 +293,7 @@ func TestExchangeCodeForTokensMatchesCortexkitControlPlaneShape(t *testing.T) {
 		},
 	}
 
-	bundle, errExchange := auth.ExchangeCodeForTokens(t.Context(), "auth-code", "state-value", &PKCECodes{CodeVerifier: "verifier"})
+	bundle, errExchange := auth.ExchangeCodeForTokens(t.Context(), "auth-code", state, &PKCECodes{CodeVerifier: "verifier"})
 	if errExchange != nil {
 		t.Fatalf("ExchangeCodeForTokens() error = %v", errExchange)
 	}
@@ -284,7 +309,7 @@ func TestExchangeCodeForTokensMatchesCortexkitControlPlaneShape(t *testing.T) {
 	}
 
 	// Key order matches cortexkit's authorization-code exchange.
-	wantBody := `{"code":"auth-code","state":"state-value","grant_type":"authorization_code","client_id":"` + ClientID + `","redirect_uri":"` + RedirectURI + `","code_verifier":"verifier"}`
+	wantBody := `{"code":"auth-code","state":"` + state + `","grant_type":"authorization_code","client_id":"` + ClientID + `","redirect_uri":"` + RedirectURI + `","code_verifier":"verifier"}`
 	if got := string(tokenBody); got != wantBody {
 		t.Fatalf("exchange body = %q, want %q", got, wantBody)
 	}

@@ -12,7 +12,7 @@ func TestRequestTerminatedErrorSkipsCreditsFallback(t *testing.T) {
 	if !isRequestTerminatedError(errTerminated) {
 		t.Fatal("isRequestTerminatedError() = false")
 	}
-	if shouldAttemptAntigravityCreditsFallback(&Manager{}, errTerminated, []string{"antigravity"}) {
+	if shouldAttemptAntigravityCreditsFallback(&Manager{}, errTerminated, []string{"antigravity"}, "gemini-3-pro") {
 		t.Fatal("terminated request must not use Antigravity credits fallback")
 	}
 }

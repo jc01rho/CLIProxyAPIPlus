@@ -3,7 +3,6 @@ package management
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
 	copilotauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/copilot"
