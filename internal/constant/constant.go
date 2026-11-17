@@ -42,14 +42,14 @@ const (
 	// CommandCode represents the Command Code provider identifier.
 	CommandCode = "commandcode"
 
-	// Freebuff represents the Freebuff provider identifier.
-	Freebuff = "freebuff"
-
 	// OpenCode represents the OpenCode Zen / OpenCode Go provider identifier.
 	OpenCode = "opencode"
 
 	// Mimocode represents the Xiaomi MiMo Code provider identifier.
 	Mimocode = "mimocode"
+
+	// DeepAI represents the deepai.org reverse-proxy provider identifier.
+	DeepAI = "deepai"
 
 	// Devin represents the Devin (Cognition) provider identifier.
 	Devin = "devin"

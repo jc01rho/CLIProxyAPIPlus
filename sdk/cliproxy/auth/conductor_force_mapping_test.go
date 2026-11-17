@@ -501,7 +501,11 @@ func TestManagerExecuteStream_LiveDerivedForceMapping_AllProviders(t *testing.T)
 	}
 }
 
-func TestManagerExecute_AntigravityCreditsFallbackForceMappingRewritesResponse(t *testing.T) {
+// TestManagerExecute_ClaudeRouteSkipsAntigravityCreditsRetry keeps the alias
+// force-mapping fixture and pins the routing contract instead: a route whose
+// requested name is a Claude model must never enter the Antigravity credits retry,
+// even when the alias resolves upstream to a Gemini model.
+func TestManagerExecute_ClaudeRouteSkipsAntigravityCreditsRetry(t *testing.T) {
 	const (
 		upstreamModel = "gemini-3-flash-preview"
 		aliasModel    = "claude-haiku-4-5-20251001"
@@ -509,22 +513,23 @@ func TestManagerExecute_AntigravityCreditsFallbackForceMappingRewritesResponse(t
 
 	manager, executor := setupForceMappingCreditsFallbackManager(t, upstreamModel, aliasModel)
 	resp, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{})
-	if errExecute != nil {
-		t.Fatalf("execute error = %v, want success", errExecute)
+	if errExecute == nil {
+		t.Fatalf("execute error = nil with payload %s, want the capacity failure with no credits retry", string(resp.Payload))
 	}
-
-	if got := executor.ExecuteModels(); len(got) != 2 || got[0] != upstreamModel || got[1] != upstreamModel {
-		t.Fatalf("execute models = %v, want [%s %s]", got, upstreamModel, upstreamModel)
+	if status := statusCodeFromError(errExecute); status != http.StatusServiceUnavailable {
+		t.Fatalf("execute status = %d, want %d; err=%v", status, http.StatusServiceUnavailable, errExecute)
 	}
-	if got := executor.ExecuteCreditsRequested(); len(got) != 2 || got[0] || !got[1] {
-		t.Fatalf("credits flags = %v, want [false true]", got)
+	if got := executor.ExecuteModels(); len(got) != 1 || got[0] != upstreamModel {
+		t.Fatalf("execute models = %v, want [%s]: a Claude route must not be retried on credits", got, upstreamModel)
 	}
-	if got := string(resp.Payload); !strings.Contains(got, aliasModel) || forceMappingPayloadLeaksUpstream(got, upstreamModel) {
-		t.Fatalf("response payload = %s, want alias %q without upstream %q", got, aliasModel, upstreamModel)
+	if got := executor.ExecuteCreditsRequested(); len(got) != 1 || got[0] {
+		t.Fatalf("credits flags = %v, want [false]", got)
 	}
 }
 
-func TestManagerExecuteStream_AntigravityCreditsFallbackForceMappingRewritesResponse(t *testing.T) {
+// TestManagerExecuteStream_ClaudeRouteSkipsAntigravityCreditsRetry is the
+// streaming sibling of TestManagerExecute_ClaudeRouteSkipsAntigravityCreditsRetry.
+func TestManagerExecuteStream_ClaudeRouteSkipsAntigravityCreditsRetry(t *testing.T) {
 	const (
 		upstreamModel = "gemini-3-flash-preview"
 		aliasModel    = "claude-haiku-4-5-20251001"
@@ -532,25 +537,29 @@ func TestManagerExecuteStream_AntigravityCreditsFallbackForceMappingRewritesResp
 
 	manager, executor := setupForceMappingCreditsFallbackManager(t, upstreamModel, aliasModel)
 	streamResult, errExecute := manager.ExecuteStream(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{})
-	if errExecute != nil {
-		t.Fatalf("execute stream error = %v, want success", errExecute)
-	}
-
-	if got := executor.StreamModels(); len(got) != 2 || got[0] != upstreamModel || got[1] != upstreamModel {
-		t.Fatalf("stream models = %v, want [%s %s]", got, upstreamModel, upstreamModel)
-	}
-	if got := executor.StreamCreditsRequested(); len(got) != 2 || got[0] || !got[1] {
-		t.Fatalf("credits flags = %v, want [false true]", got)
-	}
-	var payload []byte
-	for chunk := range streamResult.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("unexpected stream error: %v", chunk.Err)
+	failure := errExecute
+	if streamResult != nil {
+		for chunk := range streamResult.Chunks {
+			if chunk.Err != nil {
+				failure = chunk.Err
+				continue
+			}
+			if len(chunk.Payload) > 0 {
+				t.Fatalf("unexpected stream payload %q, want the capacity failure with no credits retry", string(chunk.Payload))
+			}
 		}
-		payload = append(payload, chunk.Payload...)
 	}
-	if got := string(payload); !strings.Contains(got, aliasModel) || forceMappingPayloadLeaksUpstream(got, upstreamModel) {
-		t.Fatalf("stream payload = %s, want alias %q without upstream %q", got, aliasModel, upstreamModel)
+	if failure == nil {
+		t.Fatal("ExecuteStream() reported success, want the capacity failure with no credits retry")
+	}
+	if status := statusCodeFromError(failure); status != http.StatusServiceUnavailable {
+		t.Fatalf("stream status = %d, want %d; err=%v", status, http.StatusServiceUnavailable, failure)
+	}
+	if got := executor.StreamModels(); len(got) != 1 || got[0] != upstreamModel {
+		t.Fatalf("stream models = %v, want [%s]: a Claude route must not be retried on credits", got, upstreamModel)
+	}
+	if got := executor.StreamCreditsRequested(); len(got) != 1 || got[0] {
+		t.Fatalf("credits flags = %v, want [false]", got)
 	}
 }
 

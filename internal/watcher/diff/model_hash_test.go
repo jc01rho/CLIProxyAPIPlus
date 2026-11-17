@@ -37,6 +37,32 @@ func TestComputeOpenAICompatModelsHash_IncludesImageFlag(t *testing.T) {
 	}
 }
 
+func TestComputeOpenAICompatModelsHashIncludesRoutingContextLimit(t *testing.T) {
+	unset := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "ds", Alias: "aa"}})
+	zero := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "ds", Alias: "aa", RoutingMaxContextLength: 0}})
+	limited := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "ds", Alias: "aa", RoutingMaxContextLength: 320000}})
+	raised := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "ds", Alias: "aa", RoutingMaxContextLength: 640000}})
+	if zero != unset {
+		t.Fatal("a zero routing context limit must hash like an unset one")
+	}
+	if limited == unset || limited == raised {
+		t.Fatal("changing the routing context limit must change the hash")
+	}
+}
+
+func TestComputeOpenAICompatModelsHashIncludesMaxContextLength(t *testing.T) {
+	unset := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "ds", Alias: "aa"}})
+	zero := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "ds", Alias: "aa", MaxContextLength: 0}})
+	limited := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "ds", Alias: "aa", MaxContextLength: 197000}})
+	raised := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "ds", Alias: "aa", MaxContextLength: 265000}})
+	if zero != unset {
+		t.Fatal("a zero max-context-length must hash like an unset one")
+	}
+	if limited == unset || limited == raised {
+		t.Fatal("changing max-context-length must change the hash")
+	}
+}
+
 func TestComputeOpenAICompatModelsHashIncludesModalities(t *testing.T) {
 	base := []config.OpenAICompatibilityModel{{Name: "model", InputModalities: []string{"text"}, OutputModalities: []string{"text"}}}
 	inputChanged := []config.OpenAICompatibilityModel{{Name: "model", InputModalities: []string{"text", "image"}, OutputModalities: []string{"text"}}}

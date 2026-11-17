@@ -662,7 +662,10 @@ func (m *Manager) executeWithRetry(
 	execOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options, int, int, int) (cliproxyexecutor.Response, error),
 ) (cliproxyexecutor.Response, error) {
 	var lastErr error
+	var preferredUpstreamErr error
+	var selectionCooldownDeadline time.Time
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	opts = withCloudflareBlockedAuthTracker(opts)
 	for attempt := 0; ; attempt++ {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
@@ -671,7 +674,17 @@ func (m *Manager) executeWithRetry(
 			return resp, nil
 		}
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
-			return cliproxyexecutor.Response{}, unwrapRequestStopError(errExec)
+			return cliproxyexecutor.Response{}, errExec
+		}
+		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errExec, time.Now())
+		if isSchedulerRejectError(errExec) {
+			if lastErr == nil && preferredUpstreamErr == nil {
+				return cliproxyexecutor.Response{}, errExec
+			}
+			break
+		}
+		if hasUpstreamExecutionAttempt(errExec) {
+			preferredUpstreamErr = errExec
 		}
 		lastErr = errExec
 		if !fallbackAllowed {
@@ -689,6 +702,13 @@ func (m *Manager) executeWithRetry(
 			return cliproxyexecutor.Response{}, errWait
 		}
 	}
+	if lastErr == nil {
+		return cliproxyexecutor.Response{}, nil
+	}
+	if preferredUpstreamErr != nil {
+		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
+	}
+	lastErr = m.annotatePoolCooldownTerminalError(ctx, providers, retryModel, opts, lastErr, selectionCooldownDeadline)
 	return cliproxyexecutor.Response{}, lastErr
 }
 
@@ -705,8 +725,10 @@ func (m *Manager) executeStreamWithRetry(
 ) (*cliproxyexecutor.StreamResult, error) {
 	var lastErr error
 	var preferredUpstreamErr error
+	var selectionCooldownDeadline time.Time
 	homeRetryLimit := -1
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	opts = withCloudflareBlockedAuthTracker(opts)
 	attempt := 0
 	retryRoundPending := false
 	retryRoundWaited := false
@@ -717,6 +739,9 @@ func (m *Manager) executeStreamWithRetry(
 		if errStream == nil {
 			return result, nil
 		}
+		if !m.HomeEnabled() {
+			observeSelectionCooldownDeadline(&selectionCooldownDeadline, errStream, time.Now())
+		}
 		if hasUpstreamExecutionAttempt(errStream) {
 			preferredUpstreamErr = errStream
 		}
@@ -726,7 +751,7 @@ func (m *Manager) executeStreamWithRetry(
 			// follow it, regardless of home-retry, request-retry, or
 			// credential-retry configuration.
 			if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
-				return nil, unwrapRequestStopError(errStream)
+				return nil, errStream
 			}
 			return nil, errStream
 		}
@@ -745,7 +770,7 @@ func (m *Manager) executeStreamWithRetry(
 		retryRoundPending = false
 		retryRoundWaited = false
 		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
-			return nil, unwrapRequestStopError(errStream)
+			return nil, errStream
 		}
 		lastErr = errStream
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errStream, attempt, providers, retryModel, maxWait, homeRetryLimit, defaultRequestRetry, roundAttempted)
@@ -768,6 +793,9 @@ func (m *Manager) executeStreamWithRetry(
 	// wrapper).
 	if preferredUpstreamErr != nil && (!m.HomeEnabled() || isHomeRetryRoundExhausted(lastErr)) {
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
+	}
+	if !m.HomeEnabled() {
+		lastErr = m.annotatePoolCooldownTerminalError(ctx, providers, retryModel, opts, lastErr, selectionCooldownDeadline)
 	}
 	return nil, lastErr
 }

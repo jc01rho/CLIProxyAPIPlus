@@ -58,6 +58,14 @@ type ExecutionSessionSharer interface {
 	SharesExecutionSessionsWith(other ProviderExecutor) bool
 }
 
+// ExecutorUnwrapper exposes the underlying executor for wrappers so reuse and
+// session-lifecycle decisions can consult the service-owned executor even when
+// a wrapper hides its concrete type. Wrappers should return their immediate
+// inner executor; the manager follows the chain.
+type ExecutorUnwrapper interface {
+	Unwrap() ProviderExecutor
+}
+
 // AuthExecutionSessionCloser allows executors to release execution sessions
 // associated with a removed credential without tearing down other credentials' sessions.
 type AuthExecutionSessionCloser interface {
@@ -76,6 +84,9 @@ type Result struct {
 	RouteModel string
 	// Success marks whether the execution succeeded.
 	Success bool
+	// CompletedResponse reports that the upstream execution produced a completed
+	// generation response (as opposed to an incomplete stream or non-generation call).
+	CompletedResponse bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
 	// CredentialScope indicates that the failure affects the whole credential across models (e.g. Anthropic 5h/7d unified limits).
@@ -88,6 +99,12 @@ type Result struct {
 	// observed watermark. Count-tokens requests reuse the credential but are not
 	// generation traffic; their response headers are not a generation snapshot.
 	SkipQuotaObservation bool
+	// AccessToken captures the active access token under which the request was executed.
+	AccessToken string
+	// RefreshToken captures the refresh credential associated with the request,
+	// used to distinguish a same-account OAuth token rotation from a genuine
+	// credential replacement when evaluating result staleness.
+	RefreshToken string
 	// CredentialVersion captures the credential version under which the request was executed.
 	CredentialVersion uint64
 	// RegistrationEpoch captures the registration epoch under which the request was executed.
@@ -174,10 +191,12 @@ type resultPolicyHolder struct {
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
+	inFlightTracker           *inFlightTracker
 	store                     Store
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore
 	executors                 map[string]ProviderExecutor
+	executorRevisions         map[string]uint64
 	selector                  Selector
 	hook                      Hook
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
@@ -185,6 +204,9 @@ type Manager struct {
 	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex
 	syncSchedulerMu           sync.Mutex
+	// antigravityHandoffStrikes counts consecutive handoff-class failures of a
+	// primary antigravity credential, keyed by auth ID. Guarded by mu.
+	antigravityHandoffStrikes map[string]int
 	// executionSeq stamps upstream dispatches with a monotonic sequence used
 	// to reject cooldown clears from executions dispatched before the cooldown.
 	executionSeq       atomic.Uint64
@@ -270,9 +292,11 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
+		inFlightTracker:       newInFlightTracker(),
 		store:                 store,
 		authLoadGate:          semaphore.NewWeighted(math.MaxInt64),
 		executors:             make(map[string]ProviderExecutor),
+		executorRevisions:     make(map[string]uint64),
 		selector:              selector,
 		hook:                  hook,
 		auths:                 make(map[string]*Auth),

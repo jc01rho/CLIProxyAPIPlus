@@ -97,6 +97,8 @@ func ParseConfigBytesForFile(data []byte, configFile string) (*Config, error) {
 		cfg.Pprof.Addr = DefaultPprofAddr
 	}
 
+	cfg.KVStore.Path = strings.TrimSpace(cfg.KVStore.Path)
+
 	if cfg.LogsMaxTotalSizeMB < 0 {
 		cfg.LogsMaxTotalSizeMB = 0
 	}
@@ -117,6 +119,7 @@ func ParseConfigBytesForFile(data []byte, configFile string) (*Config, error) {
 	}
 
 	cfg.NormalizePluginsConfig()
+	cfg.NormalizeClaudeConfig()
 	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {
 		return nil, errResolvePluginsDir
 	}
@@ -132,12 +135,14 @@ func ParseConfigBytesForFile(data []byte, configFile string) (*Config, error) {
 	cfg.SanitizeClaudeHeaderDefaults()
 	cfg.SanitizeClaudeKeys()
 	cfg.SanitizeCommandCodeKeys()
-	cfg.SanitizeFreebuffKeys()
 	cfg.SanitizeOpenCodeKeys()
 	cfg.SanitizeMistralKeys()
+	cfg.SanitizeDeepAIKeys()
 	if errSanitize := cfg.SanitizeMimocodeKeys(); errSanitize != nil {
 		return nil, errSanitize
 	}
+	cfg.SanitizeAntigravity()
+	cfg.SanitizeDevin()
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()

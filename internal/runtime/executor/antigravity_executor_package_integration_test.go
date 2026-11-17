@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
@@ -362,8 +363,6 @@ func drainAntigravityStream(t *testing.T, result *cliproxyexecutor.StreamResult)
 	return payloads, streamErr
 }
 
-// Google sometimes closes the SSE stream cleanly with no content and no finishReason. The executor
-// must retry that upstream call itself, and the client must only see the attempt that worked.
 func TestAntigravityExecuteStream_RetriesEmptyStreamThenSucceeds(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -402,7 +401,14 @@ func TestAntigravityExecuteStream_GivesUpAfterRepeatedEmptyStreams(t *testing.T)
 	}))
 	defer server.Close()
 
-	result, err := NewAntigravityExecutor(&config.Config{}).ExecuteStream(context.Background(), antigravityEmptyStreamTestAuth(server.URL), cliproxyexecutor.Request{
+	auth := antigravityEmptyStreamTestAuth(server.URL)
+	capture := &malformedFunctionCallUsageCapture{authID: auth.ID, records: make(chan usage.Record, 4)}
+	usage.RegisterNamedPlugin(t.Name(), capture)
+	t.Cleanup(func() {
+		usage.RegisterNamedPlugin(t.Name(), malformedFunctionCallUsageNoop{})
+	})
+
+	result, err := NewAntigravityExecutor(&config.Config{}).ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "gemini-2.5-pro",
 		Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
@@ -418,5 +424,18 @@ func TestAntigravityExecuteStream_GivesUpAfterRepeatedEmptyStreams(t *testing.T)
 	}
 	if got := calls.Load(); got != int32(1+antigravityEmptyStreamRetries) {
 		t.Fatalf("upstream calls = %d, want %d", got, 1+antigravityEmptyStreamRetries)
+	}
+	select {
+	case rec := <-capture.records:
+		if !rec.Failed {
+			t.Fatalf("expected final empty-stream failure usage record, got Failed=false: %+v", rec)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("final empty-stream failure was never published to usage reporter")
+	}
+	select {
+	case extra := <-capture.records:
+		t.Fatalf("unexpected extra usage record from retried intermediate attempts: %+v", extra)
+	default:
 	}
 }

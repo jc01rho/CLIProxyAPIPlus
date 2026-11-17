@@ -3,7 +3,6 @@ package pluginhost
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -132,6 +132,78 @@ func (h *Host) callHostAuthSave(ctx context.Context, request []byte) ([]byte, er
 		Name: name,
 		Path: path,
 	})
+}
+
+func (h *Host) callHostAuthModels(ctx context.Context, request []byte) ([]byte, error) {
+	_ = ctx
+	var req pluginapi.HostAuthModelsRequest
+	if len(bytesTrimSpace(request)) > 0 {
+		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+			return nil, fmt.Errorf("decode host auth models request: %w", errUnmarshal)
+		}
+	}
+	reg := registry.GetGlobalRegistry()
+	authIndex := strings.TrimSpace(req.AuthIndex)
+	if authIndex != "" {
+		auth, errGet := h.authByIndex(authIndex)
+		if errGet != nil {
+			return nil, errGet
+		}
+		return marshalRPCResult(pluginapi.HostAuthModelsResponse{
+			Credentials: []pluginapi.HostAuthModels{buildHostAuthModels(auth, reg)},
+		})
+	}
+	manager := h.currentAuthManager()
+	if manager == nil {
+		return marshalRPCResult(pluginapi.HostAuthModelsResponse{
+			Credentials: []pluginapi.HostAuthModels{},
+		})
+	}
+	auths := manager.List()
+	credentials := make([]pluginapi.HostAuthModels, 0, len(auths))
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		credentials = append(credentials, buildHostAuthModels(auth, reg))
+	}
+	sort.Slice(credentials, func(i, j int) bool {
+		leftID := strings.ToLower(credentials[i].ID)
+		rightID := strings.ToLower(credentials[j].ID)
+		if leftID != rightID {
+			return leftID < rightID
+		}
+		if credentials[i].ID != credentials[j].ID {
+			return credentials[i].ID < credentials[j].ID
+		}
+		return credentials[i].AuthIndex < credentials[j].AuthIndex
+	})
+	return marshalRPCResult(pluginapi.HostAuthModelsResponse{
+		Credentials: credentials,
+	})
+}
+
+func buildHostAuthModels(auth *coreauth.Auth, reg *registry.ModelRegistry) pluginapi.HostAuthModels {
+	auth.EnsureIndex()
+	var regModels []*registry.ModelInfo
+	if reg != nil && strings.TrimSpace(auth.ID) != "" {
+		regModels = reg.GetModelsForClient(auth.ID)
+	}
+	models := make([]string, 0, len(regModels))
+	for _, m := range regModels {
+		if m == nil {
+			continue
+		}
+		if id := strings.TrimSpace(m.ID); id != "" {
+			models = append(models, id)
+		}
+	}
+	return pluginapi.HostAuthModels{
+		ID:        auth.ID,
+		AuthIndex: auth.Index,
+		Provider:  strings.TrimSpace(auth.Provider),
+		Models:    models,
+	}
 }
 
 func (h *Host) listAuthFiles() ([]pluginapi.HostAuthFileEntry, error) {
@@ -744,26 +816,7 @@ func (h *Host) resolvedAuthDir() string {
 }
 
 func (h *Host) authIDForPath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	path = filepath.Clean(path)
-	if !filepath.IsAbs(path) {
-		if abs, errAbs := filepath.Abs(path); errAbs == nil {
-			path = abs
-		}
-	}
-	id := path
-	if authDir := h.resolvedAuthDir(); authDir != "" {
-		if rel, errRel := filepath.Rel(authDir, path); errRel == nil && rel != "" {
-			id = rel
-		}
-	}
-	if runtime.GOOS == "windows" {
-		id = strings.ToLower(id)
-	}
-	return id
+	return authIDForPath(path, h.resolvedAuthDir())
 }
 
 func authEmail(auth *coreauth.Auth) string {

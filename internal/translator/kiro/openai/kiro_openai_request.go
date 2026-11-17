@@ -22,6 +22,7 @@ import (
 type KiroPayload struct {
 	ConversationState            KiroConversationState `json:"conversationState"`
 	ProfileArn                   string                `json:"profileArn,omitempty"`
+	AgentMode                    string                `json:"agentMode,omitempty"`
 	InferenceConfig              *KiroInferenceConfig  `json:"inferenceConfig,omitempty"`
 	AdditionalModelRequestFields map[string]any        `json:"additionalModelRequestFields,omitempty"`
 }
@@ -39,6 +40,7 @@ type KiroConversationState struct {
 	AgentTaskType       string               `json:"agentTaskType,omitempty"`
 	ChatTriggerType     string               `json:"chatTriggerType"` // Required: "MANUAL"
 	ConversationID      string               `json:"conversationId"`
+	RootConversationID  string               `json:"rootConversationId,omitempty"`
 	CurrentMessage      KiroCurrentMessage   `json:"currentMessage"`
 	History             []KiroHistoryMessage `json:"history,omitempty"`
 }
@@ -352,13 +354,17 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 
 	payload := KiroPayload{
 		ConversationState: KiroConversationState{
-			AgentTaskType:   "vibe",
-			ChatTriggerType: "MANUAL",
-			ConversationID:  conversationID,
-			CurrentMessage:  currentMessage,
-			History:         history,
+			AgentTaskType:      "vibe",
+			ChatTriggerType:    "MANUAL",
+			ConversationID:     conversationID,
+			RootConversationID: conversationID,
+			CurrentMessage:     currentMessage,
+			History:            history,
 		},
-		ProfileArn:                   profileArn,
+		ProfileArn: profileArn,
+		// Ported from kiro-lb src/convert_core.rs (807c8ab): every generation
+		// request carries the agent mode next to the task type.
+		AgentMode:                    "vibe",
 		InferenceConfig:              inferenceConfig,
 		AdditionalModelRequestFields: thinkingPlan.Fields,
 	}
@@ -370,9 +376,12 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 		}
 	}
 
-	// Only set AgentContinuationID if client provided
+	// Ported from kiro-lb src/convert_core.rs (807c8ab): a continuation ID is
+	// always present, generated per request when the client does not supply one.
 	if continuationID != "" {
 		payload.ConversationState.AgentContinuationID = continuationID
+	} else {
+		payload.ConversationState.AgentContinuationID = uuid.New().String()
 	}
 
 	result, err := json.Marshal(payload)

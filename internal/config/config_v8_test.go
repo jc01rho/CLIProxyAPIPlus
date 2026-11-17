@@ -129,7 +129,6 @@ usage-export:
   delivery: {max-batch-events: 17, max-batch-bytes: 65536, flush-interval-ms: 1000, request-timeout-ms: 15000, initial-backoff-ms: 1000, max-backoff-ms: 60000}
   metadata: {enabled: false, interval-ms: 60000, categories: []}
 commandcode-api-key: [{api-key: command, base-url: 'https://command.example.invalid', models: [{name: model-1, alias: command-alias}]}]
-freebuff-api-key: [{api-key: freebuff, base-url: 'https://www.codebuff.com', models: [{name: model-1, alias: freebuff-alias, agent-id: base2}]}]
 devin-api-key: [{api-key: devin, base-url: 'https://devin.example.invalid', models: [{name: model-1, alias: devin-alias}]}]
 mistral-api-key: [{api-key: mistral, models: [{name: model-1, alias: mistral-alias}]}]
 opencode-api-key: [{api-key: public, models: [{name: big-pickle, alias: big-pickle}]}]
@@ -148,7 +147,7 @@ ampcode: {upstream-url: 'https://amp.example.invalid', upstream-api-key: amp-sec
 	if err = ValidateV8Config(migrated); err != nil {
 		t.Fatalf("migrated fork settings rejected: %v", err)
 	}
-	for _, field := range []string{"commandcode-api-key", "freebuff-api-key", "devin-api-key", "mistral-api-key", "opencode-api-key", "mimocode-api-key", "kiro", "usage-export", "ampcode", "kiro-preferred-endpoint"} {
+	for _, field := range []string{"commandcode-api-key", "devin-api-key", "mistral-api-key", "opencode-api-key", "mimocode-api-key", "kiro", "usage-export", "ampcode", "kiro-preferred-endpoint"} {
 		var node yaml.Node
 		if err = yaml.Unmarshal(migrated, &node); err != nil {
 			t.Fatal(err)
@@ -191,7 +190,7 @@ ampcode: {upstream-url: 'https://amp.example.invalid', upstream-api-key: amp-sec
 		t.Fatal(err)
 	}
 	if reloaded.RequestLogSuccessBody || reloaded.Routing.ModelTimeGates[0].Name != "after-v0-save" ||
-		len(reloaded.CommandCodeKey) != 1 || len(reloaded.FreebuffKey) != 1 || len(reloaded.DevinKey) != 1 ||
+		len(reloaded.CommandCodeKey) != 1 || len(reloaded.DevinKey) != 1 ||
 		len(reloaded.MistralKey) != 1 || len(reloaded.OpenCodeKey) != 1 || len(reloaded.MimocodeKey) != 1 ||
 		len(reloaded.KiroKey) != 1 || reloaded.UsageExport.Keeper.TokenEnv != "CPA_KEEPER_TOKEN" ||
 		reloaded.AmpCode.UpstreamAPIKey != "amp-secret" || !reloaded.ClineFreeModelsOnly {
@@ -303,7 +302,7 @@ func TestV8ForkCredentialGroupExamplesDecode(t *testing.T) {
 		t.Fatalf("fork provider example is invalid v8: %v", err)
 	}
 	cfg, err := ParseConfigBytes(data)
-	if err != nil || len(cfg.CommandCodeKey) != 1 || len(cfg.FreebuffKey) != 1 ||
+	if err != nil || len(cfg.CommandCodeKey) != 1 ||
 		len(cfg.DevinKey) != 1 || len(cfg.MistralKey) != 1 || len(cfg.OpenCodeKey) != 1 ||
 		len(cfg.MimocodeKey) != 1 || len(cfg.KiroKey) != 1 {
 		t.Fatalf("fork provider examples did not decode: %v", err)
@@ -354,11 +353,6 @@ func TestV8ForkCredentialGroupsPreserveSharedSettingsAndLegacyKeyEntries(t *test
       billing-class: per-request
       models: [{name: model-1, alias: command-alias}]
       keys: [{api-key: first, weight: 0}, {api-key: second, weight: 1}]
-  freebuff:
-    - name: freebuff-1
-      base-url: https://www.codebuff.com
-      models: [{name: model-1, alias: freebuff-alias, agent-id: base2}]
-      keys: [{api-key: freebuff}]
   opencode:
     - name: opencode-1
       models: [{name: big-pickle, alias: big-pickle}]
@@ -372,8 +366,8 @@ func TestV8ForkCredentialGroupsPreserveSharedSettingsAndLegacyKeyEntries(t *test
 		len(cfg.CommandCodeKey[0].APIKeyEntries) != 1 || cfg.CommandCodeKey[0].APIKeyEntries[0].APIKey != "first" ||
 		cfg.CommandCodeKey[0].APIKeyEntries[0].Weight == nil || *cfg.CommandCodeKey[0].APIKeyEntries[0].Weight != 0 ||
 		len(cfg.CommandCodeKey[1].APIKeyEntries) != 1 || cfg.CommandCodeKey[1].APIKeyEntries[0].APIKey != "second" ||
-		len(cfg.FreebuffKey) != 1 || len(cfg.OpenCodeKey) != 1 {
-		t.Fatalf("fork group inheritance or explicit zero override lost: %+v / %+v / %+v", cfg.CommandCodeKey, cfg.FreebuffKey, cfg.OpenCodeKey)
+		len(cfg.OpenCodeKey) != 1 {
+		t.Fatalf("fork group inheritance or explicit zero override lost: %+v / %+v", cfg.CommandCodeKey, cfg.OpenCodeKey)
 	}
 	var flat yaml.Node
 	if err = yaml.Unmarshal(raw, &flat); err != nil {
@@ -397,7 +391,6 @@ func TestV8ForkCredentialGroupsPreserveSharedSettingsAndLegacyKeyEntries(t *test
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(cfg.CommandCodeKey, reloaded.CommandCodeKey) ||
-		!reflect.DeepEqual(cfg.FreebuffKey, reloaded.FreebuffKey) ||
 		!reflect.DeepEqual(cfg.OpenCodeKey, reloaded.OpenCodeKey) {
 		t.Fatal("fork group settings changed on v0 save")
 	}
@@ -432,6 +425,28 @@ request-log-success-body: true
 	}
 	if !strings.Contains(string(saved), "commandcode-api-key:") || !strings.Contains(string(saved), "request-log-success-body:") || !strings.Contains(string(saved), "usage-export:") || strings.Contains(string(saved), "config-version:") {
 		t.Fatal("v0 save unexpectedly migrated the legacy-only layout")
+	}
+}
+
+func TestV8ShutdownTimeoutParse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"v8 nested", "server:\n  shutdown-timeout: 15\n", 15},
+		{"legacy top-level", "shutdown-timeout: 7\n", 7},
+		{"absent defaults to zero", "server:\n  port: 8317\n", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseConfigBytes([]byte(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ShutdownTimeoutSeconds != tc.want {
+				t.Fatalf("ShutdownTimeoutSeconds = %d, want %d", cfg.ShutdownTimeoutSeconds, tc.want)
+			}
+		})
 	}
 }
 
@@ -1262,5 +1277,90 @@ func TestV8SecretHashResolvesReferences(t *testing.T) {
 				t.Fatalf("second load changed the persisted hash or settings: %v", err)
 			}
 		})
+	}
+}
+
+// The freebuff provider was removed. Existing configs that still carry its key
+// must keep loading, and a v8 migration archives the dead section as a comment.
+func TestRemovedFreebuffKeyIsIgnoredAndArchived(t *testing.T) {
+	legacy := []byte("port: 8317\nfreebuff-api-key: [{api-key: gone}]\ncommandcode-api-key: [{api-key: kept}]\n")
+	cfg, err := ParseConfigBytes(legacy)
+	if err != nil || len(cfg.CommandCodeKey) != 1 {
+		t.Fatalf("legacy config with a removed freebuff key must still load: %v", err)
+	}
+	v8 := []byte("config-version: 8\napi-keys:\n  freebuff:\n    - name: gone\n      keys: [{api-key: gone}]\n  commandcode:\n    - name: kept\n      keys: [{api-key: kept}]\n")
+	cfg, err = ParseConfigBytes(v8)
+	if err != nil || len(cfg.CommandCodeKey) != 1 {
+		t.Fatalf("v8 config with a removed freebuff group must still load: %v", err)
+	}
+	migrated, changed, err := NormalizeConfigLayout(legacy, true)
+	if err != nil || !changed {
+		t.Fatalf("migration failed: changed=%v err=%v", changed, err)
+	}
+	if !strings.Contains(string(migrated), "# freebuff-api-key:") || strings.Contains(string(migrated), "\nfreebuff") {
+		t.Fatalf("freebuff section was not archived as a comment:\n%s", migrated)
+	}
+}
+
+func TestV8ExampleDocumentsSessionAffinityCompactionGuidance(t *testing.T) {
+	example, errRead := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	var doc yaml.Node
+	if errUnmarshal := yaml.Unmarshal(example, &doc); errUnmarshal != nil {
+		t.Fatal(errUnmarshal)
+	}
+	routing := yamlPath(doc.Content[0], "routing")
+	if routing == nil {
+		t.Fatal("config.example.yaml is missing routing block")
+	}
+	idx := findMapKeyIndex(routing, "session-affinity")
+	if idx < 0 {
+		t.Fatal("config.example.yaml is missing routing.session-affinity")
+	}
+	comment := routing.Content[idx].HeadComment
+	for _, required := range []string{
+		"Merkle LCP prefix/compaction matching",
+		"2 shared trailing turns",
+		"replaces all earlier turns with a summary",
+		"send X-Session-ID",
+	} {
+		if !strings.Contains(comment, required) {
+			t.Fatalf("routing.session-affinity comment in config.example.yaml is missing %q; got:\n%s", required, comment)
+		}
+	}
+}
+
+func TestV8AntigravityLocalRateLimitIsReadFromProviderSection(t *testing.T) {
+	v8 := []byte(`config-version: 8
+oauth:
+  providers:
+    antigravity:
+      primary-handoff: false
+      local-rate-limit:
+        enabled: true
+        max-tokens: 80
+        regeneration-rate-per-minute: 20
+`)
+	cfg, err := ParseConfigBytes(v8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := cfg.Antigravity.LocalRateLimit
+	if limit.Enabled == nil || !*limit.Enabled || limit.MaxTokens != 80 || limit.RegenerationRatePerMinute != 20 || limit.InitialTokens != 0 {
+		t.Fatalf("local-rate-limit = %+v, want enabled, 80 burst, 20/min", limit)
+	}
+	if err = ValidateV8Config(v8); err != nil {
+		t.Fatalf("v8 layout rejected: %v", err)
+	}
+
+	off := []byte("config-version: 8\noauth:\n  providers:\n    antigravity:\n      local-rate-limit:\n        enabled: false\n")
+	cfg, err = ParseConfigBytes(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Antigravity.LocalRateLimit.Enabled == nil || *cfg.Antigravity.LocalRateLimit.Enabled {
+		t.Fatalf("enabled: false was not read: %+v", cfg.Antigravity.LocalRateLimit)
 	}
 }

@@ -83,6 +83,7 @@ func TestRegisterModelsForAuth_AllStaticProviderCatalogsAppearInOpenAIList(t *te
 		{provider: "cursor", modelID: internalregistry.GetCursorModels()[0].ID},
 		{provider: "mistral", modelID: internalregistry.GetMistralModels()[0].ID},
 		{provider: "commandcode", modelID: internalregistry.GetCommandCodeModels()[0].ID},
+		{provider: "deepai", modelID: internalregistry.GetDeepAIModels()[0].ID},
 	}
 
 	service := &Service{cfg: &config.Config{}}

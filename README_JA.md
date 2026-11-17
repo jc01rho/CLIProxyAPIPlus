@@ -38,11 +38,11 @@ CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインタ�
     </tr>
     <tr>
         <td align="center"><a href="https://www.kimi.com/code/?aff=cliproxyapi"><img src="./assets/logo/kimi.svg" alt="Kimi" width="28" height="28" /></a></td>
-        <td>Kimiシリーズモデル（Kimi K3、K2.8 Previewなど）。<a href="https://platform.kimi.ai/docs/guide/kimi-k3-quickstart">Kimi K3</a>は、Moonshot AIで最も高性能なモデルであり、世界初のオープンな3兆パラメータ級モデルです。2.8兆のパラメータ、ネイティブな視覚機能、100万トークンのコンテキストウィンドウを備え、長期間にわたるコーディング、知識作業、推論向けに構築されています。CLIProxyAPIはOAuthまたは互換APIインターフェース経由でKimiをサポートします。<strong>Kimi Code プラン</strong>（<a href="https://www.kimi.com/code?aff=cliproxyapi">中文站</a> | <a href="https://www.kimi.ai/code?aff=cliproxyapi">Global</a>）を試すか、Kimi Open Platform（<a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">中文站</a> | <a href="https://platform.kimi.ai?track_id=track-8a28e4b291d84f62af2fccc3e7a21cb3&aff=cliproxyapi">Global</a>）で<strong>APIキー</strong>を取得してください。CLIProxyAPIとオープンソースコミュニティを支援してくださるKimiに感謝します！</td>
+        <td>Kimiシリーズモデル（Kimi K3.1 Pro、K3.1 Pro Highspeed、K3、K2.8 Previewなど）。<a href="https://platform.kimi.ai/docs/guide/kimi-k3-quickstart">Kimi K3</a>は、Moonshot AIの前世代のフラッグシップモデルであり、世界初のオープンな3兆パラメータ級モデルです。2.8兆のパラメータ、ネイティブな視覚機能、100万トークンのコンテキストウィンドウを備え、長期間にわたるコーディング、知識作業、推論向けに構築されています。CLIProxyAPIはOAuthまたは互換APIインターフェース経由でKimiをサポートします。<strong>Kimi Code プラン</strong>（<a href="https://www.kimi.com/code?aff=cliproxyapi">中文站</a> | <a href="https://www.kimi.ai/code?aff=cliproxyapi">Global</a>）を試すか、Kimi Open Platform（<a href="https://platform.kimi.com?track_id=track-f15622e7182046baa22ca35e006e13a7&aff=cliproxyapi">中文站</a> | <a href="https://platform.kimi.ai?track_id=track-8a28e4b291d84f62af2fccc3e7a21cb3&aff=cliproxyapi">Global</a>）で<strong>APIキー</strong>を取得してください。CLIProxyAPIとオープンソースコミュニティを支援してくださるKimiに感謝します！</td>
     </tr>
     <tr>
         <td align="center"><a href="https://developers.openai.com/api/docs/models"><img src="./assets/logo/openai.svg" alt="OpenAI" width="28" height="28" /></a></td>
-        <td>OpenAI GPT-6シリーズモデル（GPT-6 Astra、GPT-6.1 Sol、GPT-6 Luna）。Codex OAuth経由でも利用できます。Astraは複雑な推論とコーディング、Solは性能とコストのバランス、Lunaは大量の明確なタスクに適しています。</td>
+        <td>OpenAI GPT-6シリーズモデル（GPT-6 Astra、GPT-6.1 Sol、GPT-6.1 Terra、GPT-6 Luna）。Codex OAuth経由でも利用できます。Astraは複雑な推論とコーディング、Solは性能とコストのバランス、Terraは視覚的推論とコンピューター操作、Lunaは大量の明確なタスクに適しています。</td>
     </tr>
     <tr>
         <td align="center"><a href="https://www.anthropic.com/claude"><img src="./assets/logo/claude.svg" alt="Anthropic" width="28" height="28" /></a></td>
@@ -62,7 +62,7 @@ CLIProxyAPI は、CLI向けのOpenAI/Gemini/Claude/Codex/Grok互換APIインタ�
     </tr>
     <tr>
         <td align="center"><a href="https://devin.ai/cli">Devin</a></td>
-        <td>Devinのモデル（SWE-2、GPT-6 Astra、Claude Fable 5.1など）。<code>--devin-login</code>でDevinアカウントに接続し、そのアカウントで利用可能なモデルにリクエストを送れます。</td>
+        <td>Devinのモデル（SWE-2、SWE-2 Flash、GPT-6 Astra、Claude Fable 5.1など）。<code>--devin-login</code>でDevinアカウントに接続し、そのアカウントで利用可能なモデルにリクエストを送れます。</td>
     </tr>
 </tbody>
 </table>
@@ -116,7 +116,7 @@ v6.10.0以降、CLIProxyAPIおよび [CPAMC](https://github.com/router-for-me/Cl
 
 ### [Oh-My-CPA](https://github.com/WizisCool/oh-my-cpa)
 
-Ant Design を採用した CLIProxyAPI v8+ 向けのモダンな管理コンソール。CPAMC に相当する主要な管理機能と、SQLite に永続化するリクエスト記録・使用量分析を統合し、OAuth アカウント、API プロバイダー、クライアントキー、クォータ、料金設定、CPA 運用を一つの画面で管理できます。リクエストごとのレイテンシ、最初のトークンまでの時間（TTFT）、トークン数、コストを追跡し、多条件フィルター、リアルタイムダッシュボード、トークンヒートマップを提供します。OpenRouter の価格同期、カスタム料金、リクエストごとの価格スナップショットで過去のコストを保持し、組み込み Agent と MCP ツールで分析と日常管理を支援します。
+CLIProxyAPI v8+ 向けの Web コンソールです。`shadcn/ui` を基盤に、モダンな UI/UX と滑らかなモーション、デスクトップ・モバイル両対応のレイアウトを備えています。プロバイダー、OAuth、ルーティング、組み込みプラグインを一元管理し、充実したリクエスト記録（レイテンシ、TTFT、トークン、障害診断、モデル置換検知）、リアルタイムルーティング、多次元の料金統計、クォータウィンドウのウォームアップと予測、Agent/MCP を提供。AES-GCM 暗号化と設定自動バックアップを備え、バイナリ直接実行、Docker デプロイ、OMC/CPA のワンクリック更新に対応しています。
 
 ## SDKドキュメント
 
@@ -163,14 +163,6 @@ Claude、Gemini、OpenAI、Antigravityのサブスクリプションを統合し
 ### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
 
 TUI、システムトレイ、マルチプロバイダーOAuthを備えたWindows向けCLIProxyAPIフォーク - AIコーディングツール用、APIキー不要
-
-### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
-
-Claude Codeモデルを素早く切り替えるVSCode拡張機能。バックエンドとしてCLIProxyAPIを統合し、バックグラウンドでの自動ライフサイクル管理を搭載
-
-### [ZeroLimit](https://github.com/0xtbug/zero-limit)
-
-CLIProxyAPIを使用してAIコーディングアシスタントのクォータを監視するTauri + React製のWindowsデスクトップアプリ。Gemini、Claude、OpenAI Codex、Antigravityアカウントの使用量をリアルタイムダッシュボード、システムトレイ統合、ワンクリックプロキシコントロールで追跡 - APIキー不要
 
 ### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
 
@@ -264,6 +256,22 @@ React と Tailwind CSS で構築された、CLIProxyAPI 向けのモダンでレ
 ### [sub2api](https://github.com/PlaygrndLabs/sub2api)
 
 Cloudflare ベースの LLM ゲートウェイ兼プロキシサーバー。CLIProxyAPI を Cloudflare Workers + Containers にワンクリックでデプロイします。ログインと設定は R2 に永続化され、ダッシュボードはパスワードで保護され、クライアント API キーを作成するまで API リクエストはすべて拒否されます。
+
+### [Hermes CLIProxyAPI Provider](https://github.com/duu261/hermes-cliproxyapi-provider)
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) 向けのモデルプロバイダープラグイン。CLIProxyAPI のプロバイダーごとに Hermes プロバイダーを 1 つ登録し、それぞれの executor が受け付けるプロトコル（Anthropic Messages、Responses、Chat Completions）を使います。コンテキストウィンドウと推論レベルは CLIProxyAPI から取得します。正確なプロバイダーグループ分けのための読み取り専用 Management API 照会はオプションです。コンパニオンプラグインの `/cpa` チャットコマンドで、各プールのアカウント状態と、必要に応じて各アカウントのリアルタイムのクォータを確認できます。[Hermes プラグインカタログ](https://hermes-agent.nousresearch.com/docs/plugins)に掲載されています：`hermes plugins install cliproxyapi-provider` および `hermes plugins install cpa-status`。
+
+### [Ebb](https://github.com/lucasnsaraujo/ebb)
+
+CLIProxyAPI のアカウントプール向けのネイティブ macOS メニューバーアプリ。プール全体で Claude、Codex などの 5 時間枠と週間枠がどれだけ残っているか、いつ戻るかを表示し、Management API で各ログインのルーティング重みを設定してアカウントを均等に消費させます。
+
+### [Nia Live Demo](https://github.com/nia-teams/nia-live-demo)
+
+話しながらリアルタイムで描画・操作できるインタラクティブな SVG/HTML キャンバスを備えた、全二重音声コンパニオン。CLIProxyAPI の 2 つの機能を組み合わせています：音声対話と即時割り込みを担う Codex GPT-Live 1.1 メディアリレー（`gpt-live-1-codex`、WebRTC + Sideband）と、会話中にキャンバスをリアルタイムで生成・編集する `ultrafast` Responses（`gpt-6.1-sol` / `gpt-6-astra`）です。
+
+### [Hyphantria](https://hyphantria.com)
+
+AI 支援による部品作成、リファレンスデザインの採用、および配置・配線の同時最適化を備えたネイティブ macOS 向け回路図・PCB 設計アプリ。CLIProxyAPI をネイティブサポートしており、AI 支援機能をお使いの AI プロバイダーに接続できます。
 
 > [!NOTE]
 > CLIProxyAPIをベースにプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。

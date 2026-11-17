@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -121,6 +122,47 @@ type ClaudeConfig struct {
 	// translation elsewhere, and per-credential search advertising in the Codex
 	// catalog. Default false keeps the translation that predates tool_search support.
 	ToolSearch bool `yaml:"tool-search" json:"tool-search"`
+	// ServerSideFallback opts cloaked Claude requests into Anthropic server-side
+	// refusal fallback injection (claude-opus-5-5 -> claude-opus-4-8 and
+	// claude-fable-5-1 -> claude-opus-5) when the request body does not already
+	// specify fallbacks. Default false leaves cross-model fallbacks omitted unless
+	// explicitly configured by the caller or payload rules.
+	ServerSideFallback bool `yaml:"server-side-fallback" json:"server-side-fallback"`
+	// SessionDatePinDays retains the cloaked currentDate pin per session for
+	// this many days in in-memory mode (server.kv-store.disabled: true without
+	// Home), independently of continuity expiry and credential switches. A nil
+	// value (unset) defaults to 7 days; an explicit 0 keeps the
+	// continuity-scoped pin (1h lifetime). When a KV store (local bbolt or Home
+	// KV) is active, session date pins are persisted permanently and
+	// session-date-pin-days is ignored.
+	SessionDatePinDays *int `yaml:"session-date-pin-days" json:"session-date-pin-days"`
+	// RequestGzip gzips OAuth request bodies of at least 4096 characters sent
+	// straight to api.anthropic.com without a proxy, as Claude Code 2.1.302 does.
+	// Default false keeps uncompressed bodies.
+	RequestGzip bool `yaml:"request-gzip,omitempty" json:"request-gzip,omitempty"`
+}
+
+// DefaultClaudeSessionDatePinDays is the session date pin retention applied
+// when session-date-pin-days is not configured.
+const DefaultClaudeSessionDatePinDays = 7
+
+// SessionDatePinRetention returns the configured session date pin retention.
+// An unset value defaults to 7 days; an explicit zero keeps the legacy
+// continuity-scoped behavior. Days are clamped so the duration cannot
+// overflow.
+func (c ClaudeConfig) SessionDatePinRetention() time.Duration {
+	days := DefaultClaudeSessionDatePinDays
+	if c.SessionDatePinDays != nil {
+		days = *c.SessionDatePinDays
+	}
+	if days <= 0 {
+		return 0
+	}
+	maxDays := int((time.Duration(math.MaxInt64) / (24 * time.Hour)))
+	if days > maxDays {
+		days = maxDays
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 // ClaudeHeaderDefaults configures the measured Claude Code software baseline.
@@ -128,6 +170,7 @@ type ClaudeConfig struct {
 // Claude Code, package, and runtime versions exactly match this baseline; unmeasured
 // versions use the configured values. Timeout remains a fallback. Stabilized profiles
 // also pin OS and Arch and never learn newer software versions automatically.
+// NativeEntrypoints extends the built-in native Claude Code entrypoint allowlist.
 // AnthropicBetaStrip and AnthropicBetaAppend are exact-name operator overrides applied
 // to the final Anthropic-Beta set; InjectDiagnostics and ClientRequestID tune the
 // first-party Claude Code CLI request shape.
@@ -140,6 +183,7 @@ type ClaudeHeaderDefaults struct {
 	Timeout                string   `yaml:"timeout" json:"timeout"`
 	Timezone               string   `yaml:"timezone" json:"timezone"`
 	StabilizeDeviceProfile *bool    `yaml:"stabilize-device-profile,omitempty" json:"stabilize-device-profile,omitempty"`
+	NativeEntrypoints      []string `yaml:"native-entrypoints,omitempty" json:"native-entrypoints,omitempty"`
 	AnthropicBetaStrip     []string `yaml:"anthropic-beta-strip,omitempty" json:"anthropic-beta-strip,omitempty"`
 	AnthropicBetaAppend    []string `yaml:"anthropic-beta-append,omitempty" json:"anthropic-beta-append,omitempty"`
 	InjectDiagnostics      *bool    `yaml:"inject-diagnostics,omitempty" json:"inject-diagnostics,omitempty"`
@@ -168,19 +212,96 @@ type XAIConfig struct {
 	InjectXSearch bool `yaml:"inject-x-search" json:"inject-x-search"`
 }
 
+// SensitivePatternRule defines a Go RE2 regular expression replacement rule.
+type SensitivePatternRule struct {
+	// Pattern is the Go RE2 regular expression to match.
+	Pattern string `yaml:"pattern" json:"pattern"`
+
+	// Replacement is the substitution string (empty string deletes matches).
+	Replacement string `yaml:"replacement" json:"replacement"`
+}
+
 // DevinConfig configures provider-wide Devin request behavior.
 type DevinConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters in system prompts and messages.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// SensitiveWordsReplace maps sensitive words or phrases to literal replacements in system prompts.
+	SensitiveWordsReplace map[string]string `yaml:"sensitive-words-replace,omitempty" json:"sensitive-words-replace,omitempty"`
+
+	// SensitivePatternsReplace defines ordered Go RE2 regex replacement rules for system prompts.
+	SensitivePatternsReplace []SensitivePatternRule `yaml:"sensitive-patterns-replace,omitempty" json:"sensitive-patterns-replace,omitempty"`
+}
+
+// ProxyConnectionPoolConfig configures upstream connection reuse for one api-key
+// credential (group level or per key).
+//
+// Pools are per credential: two API keys never share a connection, and OAuth
+// credentials are not poolable at all (Antigravity keeps its own switch). The
+// transport cache is bounded, so a deployment with very many keys degrades to the
+// historical one-transport-per-request behavior instead of growing without limit.
+type ProxyConnectionPoolConfig struct {
+	// Enabled controls whether connection reuse is active for this credential.
+	// Writing the connection-pool block is the opt-in, so an omitted or true
+	// value enables pooling; an explicit false opts a key out of its group pool.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+
+	// IdleConnTimeout is how long an idle pooled connection survives before it
+	// is closed. Defaults to "300s". Measured against ollama.com, an idle
+	// connection was still reused after 600s, so 300s sits inside the upstream
+	// window while covering the multi-minute gaps between interactive requests.
+	// Zero or a negative value disables keep-alives, so every request dials
+	// afresh.
+	IdleConnTimeout string `yaml:"idle-conn-timeout,omitempty" json:"idle-conn-timeout,omitempty"`
+
+	// MaxIdleConnsPerHost caps idle connections kept per upstream host.
+	// Defaults to 2, matching net/http's DefaultMaxIdleConnsPerHost. Zero or a
+	// negative value disables keep-alives as well.
+	MaxIdleConnsPerHost *int `yaml:"max-idle-conns-per-host,omitempty" json:"max-idle-conns-per-host,omitempty"`
 }
 
 // AntigravityConfig configures provider-wide Antigravity request behavior.
 type AntigravityConfig struct {
-	// SensitiveWords is a list of words to obfuscate with zero-width characters in system instructions.
+	// SensitiveWords is a list of words to obfuscate with invisible combining grapheme joiners in system instructions.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// SensitiveWordsReplace maps sensitive words or phrases to literal replacements in system instructions.
+	SensitiveWordsReplace map[string]string `yaml:"sensitive-words-replace,omitempty" json:"sensitive-words-replace,omitempty"`
+
+	// SensitivePatternsReplace defines ordered Go RE2 regex replacement rules for system instructions.
+	SensitivePatternsReplace []SensitivePatternRule `yaml:"sensitive-patterns-replace,omitempty" json:"sensitive-patterns-replace,omitempty"`
 
 	// ConnectionPool configures upstream HTTP connection pooling behavior for Antigravity.
 	ConnectionPool AntigravityConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+
+	// TOSPauseWindow controls the pool-wide protective pause armed after the first
+	// 403 TOS_VIOLATION. Defaults to "0" (disabled), so only the violating
+	// credential is deactivated unless a positive Go duration string (e.g. "6h")
+	// is explicitly configured. Set to "0", "off", "false", "none", or
+	// "disabled" to explicitly disable the pause.
+	TOSPauseWindow string `yaml:"tos-pause-window,omitempty" json:"tos-pause-window,omitempty"`
+
+	// LocalRateLimit configures the proxy-side per-credential request limiter. It rejects
+	// requests locally, before they reach Google, once a credential has used up its token
+	// bucket.
+	LocalRateLimit AntigravityLocalRateLimitConfig `yaml:"local-rate-limit,omitempty" json:"local-rate-limit,omitempty"`
+}
+
+// AntigravityLocalRateLimitConfig tunes the per-credential token bucket. Zero values keep
+// the built-in defaults, so an empty section changes nothing.
+type AntigravityLocalRateLimitConfig struct {
+	// Enabled turns the limiter on or off. Defaults to true; set to false to disable it.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+
+	// MaxTokens is the bucket capacity per credential, i.e. the largest burst. Defaults to 50.
+	MaxTokens float64 `yaml:"max-tokens,omitempty" json:"max-tokens,omitempty"`
+
+	// RegenerationRatePerMinute is the sustained request rate per credential. Defaults to 6.
+	RegenerationRatePerMinute float64 `yaml:"regeneration-rate-per-minute,omitempty" json:"regeneration-rate-per-minute,omitempty"`
+
+	// InitialTokens is the starting balance of a credential that has not been used yet.
+	// Defaults to 50 (clamped to MaxTokens).
+	InitialTokens float64 `yaml:"initial-tokens,omitempty" json:"initial-tokens,omitempty"`
 }
 
 // AntigravityConnectionPoolConfig controls upstream HTTP/1.1 connection pooling behavior for Antigravity.
@@ -198,8 +319,35 @@ type AntigravityConnectionPoolConfig struct {
 	MaxIdleConnsPerHost *int `yaml:"max-idle-conns-per-host,omitempty" json:"max-idle-conns-per-host,omitempty"`
 }
 
+// ResponseCompressionConfig controls downstream HTTP response compression.
+type ResponseCompressionConfig struct {
+	// Enabled defaults to true when unset.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// MinBytes defaults to 1024 when zero or negative.
+	MinBytes int `yaml:"min-bytes" json:"min-bytes"`
+}
+
+// IsEnabled reports whether negotiated response compression is enabled.
+func (c ResponseCompressionConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// EffectiveMinBytes returns the minimum non-streaming response size to compress.
+func (c ResponseCompressionConfig) EffectiveMinBytes() int {
+	if c.MinBytes <= 0 {
+		return 1024
+	}
+	return c.MinBytes
+}
+
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
+	// WebsocketCompression controls upstream and downstream permessage-deflate; unset means enabled.
+	WebsocketCompression *bool `yaml:"websocket-compression,omitempty" json:"websocket-compression,omitempty"`
+	// UpstreamRequestCompression enables zstd request bodies for the ChatGPT Codex backend.
+	UpstreamRequestCompression bool `yaml:"upstream-request-compression" json:"upstream-request-compression"`
+	// UpstreamRequestCompressionMinBytes defaults to 1024 when zero or negative.
+	UpstreamRequestCompressionMinBytes int `yaml:"upstream-request-compression-min-bytes,omitempty" json:"upstream-request-compression-min-bytes,omitempty"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
@@ -241,6 +389,19 @@ type CodexConfig struct {
 	// for Codex Sign in with ChatGPT (SIWC) OAuth authorization and API requests.
 	// Defaults to "CLIProxyAPI".
 	SignInWithChatGPTIdentifier string `yaml:"signin-with-chatgpt-identifier,omitempty" json:"signin-with-chatgpt-identifier,omitempty"`
+}
+
+// WebsocketCompressionEnabled reports whether WebSocket compression is enabled.
+func (c *CodexConfig) WebsocketCompressionEnabled() bool {
+	return c == nil || c.WebsocketCompression == nil || *c.WebsocketCompression
+}
+
+// RequestCompressionMinBytes returns the minimum request size eligible for compression.
+func (c *CodexConfig) RequestCompressionMinBytes() int {
+	if c == nil || c.UpstreamRequestCompressionMinBytes <= 0 {
+		return 1024
+	}
+	return c.UpstreamRequestCompressionMinBytes
 }
 
 // DefaultSignInWithChatGPTIdentifier is the default identifier (agent_name_hint and User-Agent prefix)
@@ -328,6 +489,47 @@ type DiscoveryInterfacesConfig struct {
 	Exclude []string `yaml:"exclude" json:"exclude"`
 }
 
+// KVStoreConfig holds configuration for the local persistent bbolt KV store.
+type KVStoreConfig struct {
+	// Disabled turns off the local bbolt KV store when true (fallback to in-memory).
+	// Defaults to false (bbolt enabled by default in non-Home mode).
+	Disabled bool `yaml:"disabled" json:"disabled"`
+
+	// Path is the file system path to the bbolt database file.
+	// When empty, it defaults to "<auth-dir>/kv.db".
+	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+}
+
+// EffectivePath returns the trimmed Path or DefaultKVStorePath ("kv.db") when empty.
+func (c KVStoreConfig) EffectivePath() string {
+	if trimmed := strings.TrimSpace(c.Path); trimmed != "" {
+		return trimmed
+	}
+	return DefaultKVStorePath
+}
+
+// EffectivePathForAuthDir returns the trimmed Path when explicitly configured,
+// or joins the given authDir (falling back to DefaultAuthDir when authDir is empty)
+// with DefaultKVStorePath ("<auth-dir>/kv.db").
+func (c KVStoreConfig) EffectivePathForAuthDir(authDir string) string {
+	if trimmed := strings.TrimSpace(c.Path); trimmed != "" {
+		return trimmed
+	}
+	baseDir := strings.TrimSpace(authDir)
+	if baseDir == "" {
+		baseDir = DefaultAuthDir
+	}
+	return filepath.Join(baseDir, DefaultKVStorePath)
+}
+
+// EffectiveKVStorePath returns the configured KVStore.Path or "<auth-dir>/kv.db" when empty.
+func (cfg *Config) EffectiveKVStorePath() string {
+	if cfg == nil {
+		return filepath.Join(DefaultAuthDir, DefaultKVStorePath)
+	}
+	return cfg.KVStore.EffectivePathForAuthDir(cfg.AuthDir)
+}
+
 // DiscoveryConfig controls local network mDNS / DNS-SD service advertising.
 type DiscoveryConfig struct {
 	// Enabled toggles mDNS service advertising on the local network (default: false).
@@ -348,7 +550,8 @@ type DiscoveryConfig struct {
 	// AuthRequired indicates whether authentication is required for client calls (default: true).
 	AuthRequired *bool `yaml:"auth-required" json:"auth-required"`
 
-	// AdvertiseManagement explicitly controls whether management endpoints are exposed (default: false).
+	// AdvertiseManagement is deprecated and ignored. Management endpoints are never
+	// advertised over DNS-SD; the field remains so existing config files still load.
 	AdvertiseManagement bool `yaml:"advertise-management" json:"advertise-management"`
 }
 
@@ -406,9 +609,13 @@ type RoutingConfig struct {
 	FallbackAllowedModels []string `yaml:"fallback-allowed-models,omitempty" json:"fallback-allowed-models,omitempty"`
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
-	// Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,
-	// followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,
-	// execution or derived session identity, and the existing message-content hash fallback.
+	// Explicit Claude Code, Codex, OpenCode, pi, and generic (X-Session-ID) session headers
+	// are preferred, followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,
+	// execution session identity, Merkle LCP prefix/compaction matching, derived session
+	// identity, and the existing message-content hash fallback.
+	// LCP compaction matching requires at least 2 shared trailing turns; clients whose
+	// compaction replaces all earlier turns with a summary should send X-Session-ID (or
+	// another explicit session ID), or affinity starts a new binding at every compaction.
 	// Automatic failover is always enabled when bound auth becomes unavailable.
 	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
 
@@ -430,6 +637,8 @@ type RoutingConfig struct {
 	//   - "quota": transient errors (408, 5xx, empty stream, buffer limit) fail over for that
 	//     request only while keeping the session bound to its original credential; quota and
 	//     auth errors (429, 401/402/403, 404/model support, invalid_grant) rebind as normal.
+	//   - "never": never move or fail over an established session to another credential;
+	//     keep the binding and return the error (or retry the same credential) instead.
 	// Ignored when SessionAffinity is false.
 	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
 
@@ -448,6 +657,9 @@ type RoutingConfig struct {
 // When Fork is true, the alias is added as an additional model in listings while
 // keeping the original model ID available.
 type OAuthModelAlias struct {
+	// OpenAPI overrides Vertex endpoint selection for this model.
+	OpenAPI *bool `yaml:"openapi,omitempty" json:"openapi,omitempty"`
+
 	Name  string `yaml:"name" json:"name"`
 	Alias string `yaml:"alias" json:"alias"`
 	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
@@ -460,6 +672,9 @@ type OAuthModelAlias struct {
 
 // OAuthModelSetting defines provider/channel model settings (such as context window overrides) for OAuth credentials.
 type OAuthModelSetting struct {
+	// OpenAPI overrides Vertex endpoint selection for this model.
+	OpenAPI *bool `yaml:"openapi,omitempty" json:"openapi,omitempty"`
+
 	Name  string `yaml:"name" json:"name"`
 	Alias string `yaml:"alias,omitempty" json:"alias,omitempty"`
 
@@ -559,11 +774,11 @@ type PayloadModelRule struct {
 // CloakConfig configures request cloaking for non-Claude-Code clients.
 // Cloaking disguises API requests to appear as originating from the official Claude Code CLI.
 type CloakConfig struct {
-	// Mode controls cloaking behavior: "auto" (default), "always", or "never".
+	// Mode controls cloaking behavior: "auto" (default), "always", "never", or "uncloak".
 	// Supplying this CloakConfig explicitly enables cloaking for an unprofiled API key.
 	// - "auto": cloak unless strong request signals identify a verified native entrypoint
 	// - "always": cloak every unconfirmed client; confirmed native Claude Code remains passthrough
-	// - "never": never apply cloaking
+	// - "never" / "uncloak": never apply cloaking; on non-CLI API keys, also strip incoming Claude Code identity and billing attribution
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
 
 	// StrictMode controls how caller system prompts are handled when cloaking.
@@ -574,6 +789,12 @@ type CloakConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters.
 	// This can help bypass certain content filters.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// SensitiveWordsReplace maps sensitive words or phrases to literal replacements.
+	SensitiveWordsReplace map[string]string `yaml:"sensitive-words-replace,omitempty" json:"sensitive-words-replace,omitempty"`
+
+	// SensitivePatternsReplace defines ordered Go RE2 regex replacement rules.
+	SensitivePatternsReplace []SensitivePatternRule `yaml:"sensitive-patterns-replace,omitempty" json:"sensitive-patterns-replace,omitempty"`
 
 	// CacheUserID controls whether Claude user_id values are cached per API key.
 	// When false, a fresh random user_id is generated for every request.
@@ -605,6 +826,10 @@ type ClaudeKey struct {
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
 	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+	// ConnectionPool configures upstream connection reuse for this credential.
+	// Omitted disables pooling (preserving the fresh-transport-per-request default);
+	// pools stay per credential, so opting in never shares connections with another key.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
 
 	// Models defines upstream model names and aliases for request routing.
 	Models []ClaudeModel `yaml:"models" json:"models"`
@@ -733,6 +958,10 @@ type CodexKey struct {
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
 	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+	// ConnectionPool configures upstream connection reuse for this credential.
+	// Omitted disables pooling (preserving the fresh-transport-per-request default);
+	// pools stay per credential, so opting in never shares connections with another key.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
 
 	// Models defines upstream model names and aliases for request routing.
 	Models []CodexModel `yaml:"models" json:"models"`
@@ -793,6 +1022,7 @@ type CodexModel struct {
 	// Use this for third-party Responses-compatible endpoints that do not accept
 	// native agent_message items or empty-signature thinking blocks. Default false
 	// keeps the native behavior unchanged.
+	// When enabled, compaction_trigger items also use local summary compaction.
 	IsCompat bool `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
 
 	// SupportConfigurationUpdate enables configuration_update for this API-key model.
@@ -932,88 +1162,17 @@ func (k CommandCodeKey) MatchesCredential(apiKey, proxyURL string) bool {
 
 // CommandCodeModel maps a client alias to an upstream model name.
 type CommandCodeModel struct {
-	Name         string `yaml:"name" json:"name"`
-	Alias        string `yaml:"alias" json:"alias"`
-	ForceMapping bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
-}
-
-func (m CommandCodeModel) GetName() string        { return m.Name }
-func (m CommandCodeModel) GetAlias() string       { return m.Alias }
-func (m CommandCodeModel) GetDisplayName() string { return "" }
-func (m CommandCodeModel) GetForceMapping() bool  { return m.ForceMapping }
-
-// FreebuffKey represents a Freebuff API credential.
-type FreebuffKey struct {
-	APIKey         string                      `yaml:"api-key,omitempty" json:"api-key,omitempty"`
-	Comment        string                      `yaml:"comment,omitempty" json:"comment,omitempty"`
-	Priority       int                         `yaml:"priority,omitempty" json:"priority,omitempty"`
-	Prefix         string                      `yaml:"prefix,omitempty" json:"prefix,omitempty"`
-	BaseURL        string                      `yaml:"base-url,omitempty" json:"base-url,omitempty"`
-	ProxyURL       string                      `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
-	BillingClass   BillingClass                `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
-	Models         []FreebuffModel             `yaml:"models,omitempty" json:"models,omitempty"`
-	Headers        map[string]string           `yaml:"headers,omitempty" json:"headers,omitempty"`
-	ExcludedModels []string                    `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
-	DisableCooling bool                        `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
-	APIKeyEntries  []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
-}
-
-func (k FreebuffKey) GetAPIKey() string   { return k.APIKey }
-func (k FreebuffKey) GetBaseURL() string  { return k.BaseURL }
-func (k FreebuffKey) GetPrefix() string   { return k.Prefix }
-func (k FreebuffKey) GetProxyURL() string { return k.ProxyURL }
-
-func (k FreebuffKey) ContainsAPIKey(apiKey string) bool {
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
-		return false
-	}
-	if strings.TrimSpace(k.APIKey) == apiKey {
-		return true
-	}
-	for i := range k.APIKeyEntries {
-		if strings.TrimSpace(k.APIKeyEntries[i].APIKey) == apiKey {
-			return true
-		}
-	}
-	return false
-}
-
-func (k FreebuffKey) MatchesCredential(apiKey, proxyURL string) bool {
-	apiKey = strings.TrimSpace(apiKey)
-	proxyURL = strings.TrimSpace(proxyURL)
-	if apiKey == "" {
-		return false
-	}
-	if strings.TrimSpace(k.APIKey) == apiKey {
-		return strings.TrimSpace(k.ProxyURL) == proxyURL
-	}
-	for i := range k.APIKeyEntries {
-		entry := k.APIKeyEntries[i]
-		if strings.TrimSpace(entry.APIKey) == apiKey {
-			return strings.TrimSpace(entry.ProxyURL) == proxyURL
-		}
-	}
-	return false
-}
-
-// FreebuffModel maps a client alias to a Freebuff model and root agent.
-type FreebuffModel struct {
 	Name             string `yaml:"name" json:"name"`
 	Alias            string `yaml:"alias" json:"alias"`
-	AgentID          string `yaml:"agent-id" json:"agent-id"`
-	DisplayName      string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 	MaxContextLength int    `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
 	ForceMapping     bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m FreebuffModel) GetName() string        { return m.Name }
-func (m FreebuffModel) GetAlias() string       { return m.Alias }
-func (m FreebuffModel) GetDisplayName() string { return m.DisplayName }
-func (m FreebuffModel) GetMaxContextLength() int {
-	return m.MaxContextLength
-}
-func (m FreebuffModel) GetForceMapping() bool { return m.ForceMapping }
+func (m CommandCodeModel) GetName() string          { return m.Name }
+func (m CommandCodeModel) GetAlias() string         { return m.Alias }
+func (m CommandCodeModel) GetDisplayName() string   { return "" }
+func (m CommandCodeModel) GetMaxContextLength() int { return m.MaxContextLength }
+func (m CommandCodeModel) GetForceMapping() bool    { return m.ForceMapping }
 
 func (k DevinKey) GetAPIKey() string { return k.APIKey }
 
@@ -1088,15 +1247,17 @@ func (k MistralKey) GetProxyURL() string { return k.ProxyURL }
 
 // MistralModel maps a client alias to an upstream model name.
 type MistralModel struct {
-	Name         string `yaml:"name" json:"name"`
-	Alias        string `yaml:"alias" json:"alias"`
-	ForceMapping bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+	Name             string `yaml:"name" json:"name"`
+	Alias            string `yaml:"alias" json:"alias"`
+	MaxContextLength int    `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
+	ForceMapping     bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m MistralModel) GetName() string        { return m.Name }
-func (m MistralModel) GetAlias() string       { return m.Alias }
-func (m MistralModel) GetDisplayName() string { return "" }
-func (m MistralModel) GetForceMapping() bool  { return m.ForceMapping }
+func (m MistralModel) GetName() string          { return m.Name }
+func (m MistralModel) GetAlias() string         { return m.Alias }
+func (m MistralModel) GetDisplayName() string   { return "" }
+func (m MistralModel) GetMaxContextLength() int { return m.MaxContextLength }
+func (m MistralModel) GetForceMapping() bool    { return m.ForceMapping }
 
 // OpenCodeKey represents an OpenCode Zen or OpenCode Go credential. Entries
 // without an api-key use the anonymous "public" credential, which is what the
@@ -1238,6 +1399,93 @@ func (m MimocodeModel) GetAlias() string       { return m.Alias }
 func (m MimocodeModel) GetDisplayName() string { return "" }
 func (m MimocodeModel) GetForceMapping() bool  { return m.ForceMapping }
 
+// DeepAIAnonymousAPIKey marks a DeepAI credential that carries no key. The
+// upstream chat surface is anonymous: it mints a single-use "tryit" key per
+// request, so a keyless entry is a valid provider entry, not junk.
+const DeepAIAnonymousAPIKey = "anonymous"
+
+// DeepAIKey represents a deepai.org reverse-proxy credential. APIKey holds an
+// optional dashboard key; when it is empty or DeepAIAnonymousAPIKey the
+// executor mints a browser-equivalent tryit key per request.
+type DeepAIKey struct {
+	APIKey         string                      `yaml:"api-key,omitempty" json:"api-key,omitempty"`
+	Comment        string                      `yaml:"comment,omitempty" json:"comment,omitempty"`
+	Priority       int                         `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Prefix         string                      `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	BaseURL        string                      `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	ProxyURL       string                      `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	BillingClass   BillingClass                `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+	Models         []DeepAIModel               `yaml:"models,omitempty" json:"models,omitempty"`
+	Headers        map[string]string           `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ExcludedModels []string                    `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	DisableCooling bool                        `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+	APIKeyEntries  []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
+}
+
+// GetAPIKey returns the stored key, or the anonymous marker for a keyless
+// entry, so credential resolution still maps the auth back to its config row.
+func (k DeepAIKey) GetAPIKey() string {
+	if key := strings.TrimSpace(k.APIKey); key != "" {
+		return key
+	}
+	return DeepAIAnonymousAPIKey
+}
+func (k DeepAIKey) GetBaseURL() string  { return k.BaseURL }
+func (k DeepAIKey) GetPrefix() string   { return k.Prefix }
+func (k DeepAIKey) GetProxyURL() string { return k.ProxyURL }
+
+// ContainsAPIKey reports whether apiKey is the top-level key or any nested
+// api-key-entries credential.
+func (k DeepAIKey) ContainsAPIKey(apiKey string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return true
+	}
+	for i := range k.APIKeyEntries {
+		if strings.TrimSpace(k.APIKeyEntries[i].APIKey) == apiKey {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesCredential reports whether the given key/proxy pair identifies this
+// entry. A keyless DeepAI entry is stored under the anonymous marker, so the
+// comparison still resolves it.
+func (k DeepAIKey) MatchesCredential(apiKey, proxyURL string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	proxyURL = strings.TrimSpace(proxyURL)
+	if apiKey == "" {
+		return false
+	}
+	if strings.TrimSpace(k.APIKey) == apiKey {
+		return strings.TrimSpace(k.ProxyURL) == proxyURL
+	}
+	for i := range k.APIKeyEntries {
+		entry := k.APIKeyEntries[i]
+		if strings.TrimSpace(entry.APIKey) == apiKey {
+			return strings.TrimSpace(entry.ProxyURL) == proxyURL
+		}
+	}
+	return false
+}
+
+// DeepAIModel maps a client alias to a DeepAI upstream model tier
+// (standard, genius, super_genius).
+type DeepAIModel struct {
+	Name         string `yaml:"name" json:"name"`
+	Alias        string `yaml:"alias" json:"alias"`
+	ForceMapping bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+}
+
+func (m DeepAIModel) GetName() string        { return m.Name }
+func (m DeepAIModel) GetAlias() string       { return m.Alias }
+func (m DeepAIModel) GetDisplayName() string { return "" }
+func (m DeepAIModel) GetForceMapping() bool  { return m.ForceMapping }
+
 // XAIKey uses the Codex API key structure for native xAI execution.
 type XAIKey = CodexKey
 
@@ -1274,6 +1522,11 @@ type GeminiKey struct {
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
 
 	BillingClass BillingClass `yaml:"billing-class,omitempty" json:"billing-class,omitempty"`
+	// ConnectionPool configures upstream connection reuse for this credential.
+	// Omitted disables pooling (preserving the fresh-transport-per-request default);
+	// pools stay per credential, so opting in never shares connections with another key.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+
 	// Models defines upstream model names and aliases for request routing.
 	Models []GeminiModel `yaml:"models,omitempty" json:"models,omitempty"`
 
@@ -1363,6 +1616,10 @@ type OpenAICompatibility struct {
 	// APIKeyEntries defines API keys with optional per-key proxy configuration.
 	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
 
+	// ConnectionPool is the provider-group default for upstream connection reuse.
+	// A per-key connection-pool entry overrides it field by field; omitted disables pooling.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+
 	// Models defines the model configurations including aliases for routing.
 	Models []OpenAICompatibilityModel `yaml:"models" json:"models"`
 
@@ -1382,6 +1639,11 @@ type OpenAICompatibility struct {
 	// RequestRetry optionally overrides the global request-retry for this provider.
 	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+
+	// TLSFingerprint selects the TLS ClientHello used toward this provider.
+	// "chrome" mimics a Chrome browser for upstreams behind bot protection;
+	// empty keeps the standard Go transport.
+	TLSFingerprint string `yaml:"tls-fingerprint,omitempty" json:"tls-fingerprint,omitempty"`
 
 	// RejectModelSubstitution discards a response whose model differs from the requested
 	// model and retries the request up to two more times before failing it, so a
@@ -1406,6 +1668,11 @@ type OpenAICompatibilityAPIKey struct {
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ConnectionPool configures upstream connection reuse for this key, overriding
+	// the provider-group default field by field. Pools stay per credential, so
+	// opting in never shares connections with another key.
+	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
 }
 
 // OpenAICompatibilityModel represents a model configuration for OpenAI compatibility,
@@ -1422,6 +1689,12 @@ type OpenAICompatibilityModel struct {
 
 	// MaxContextLength overrides the context window advertised to Codex clients.
 	MaxContextLength int `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
+
+	// RoutingMaxContextLength caps the estimated input tokens routed to this model.
+	// When a request's estimate exceeds it, credential selection skips this
+	// provider and picks another one serving the same alias. It is never
+	// advertised to clients; 0 means unlimited.
+	RoutingMaxContextLength int `yaml:"routing-max-context-length,omitempty" json:"routing-max-context-length,omitempty"`
 
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
@@ -1463,6 +1736,7 @@ func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 
 func (m OpenAICompatibilityModel) GetDisplayName() string          { return m.DisplayName }
 func (m OpenAICompatibilityModel) GetMaxContextLength() int        { return m.MaxContextLength }
+func (m OpenAICompatibilityModel) GetRoutingMaxContextLength() int { return m.RoutingMaxContextLength }
 func (m OpenAICompatibilityModel) GetForceMapping() bool           { return m.ForceMapping }
 func (m OpenAICompatibilityModel) GetIsCompat() bool               { return m.IsCompat }
 func (m OpenAICompatibilityModel) GetUseMaxCompletionTokens() bool { return m.UseMaxCompletionTokens }
