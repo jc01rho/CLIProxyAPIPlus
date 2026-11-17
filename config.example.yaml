@@ -1337,7 +1337,16 @@ oauth:
 
     # Antigravity provider behavior.
     antigravity:
-      # Prefer the first registered Antigravity credential for primary routing.
+      # Managed Antigravity credentials carrying primary_info run primary/standby:
+      # exactly one managed credential is enabled and serves traffic, while other managed
+      # credentials are disabled standbys (legacy credentials without primary_info stay
+      # outside the scheme). Enabling a credential in the management UI demotes the
+      # previous primary even when primary-handoff is false.
+      # primary-handoff controls only the automatic switch: when true, 3 consecutive
+      # 401/403/502/503/504 failures (excluding 429 quota, MODEL_CAPACITY_EXHAUSTED, and
+      # Claude/GPT routes) on the primary demote it and promote the next standby by Order
+      # (wrapping around to the lowest Order). A demoted credential is skipped for its
+      # retry deadline or 5 minutes, and if no usable standby remains the primary stays enabled.
       primary-handoff: false
       # sensitive-words:              # optional: words to obfuscate with combining grapheme joiners (U+034F) in system instructions
       #   - "API"

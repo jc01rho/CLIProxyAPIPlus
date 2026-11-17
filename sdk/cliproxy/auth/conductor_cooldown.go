@@ -2012,7 +2012,19 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							}
 							m.antigravityHandoffStrikes[auth.ID]++
 							if m.antigravityHandoffStrikes[auth.ID] >= antigravityHandoffStrikeThreshold {
-								handoffSnapshots = m.promoteNextAntigravityPrimary(ctx, auth.ID)
+								var failureRetryAfter time.Time
+								if state != nil && state.NextRetryAfter.After(failureRetryAfter) {
+									failureRetryAfter = state.NextRetryAfter
+								}
+								if auth.NextRetryAfter.After(failureRetryAfter) {
+									failureRetryAfter = auth.NextRetryAfter
+								}
+								if result.RetryAfter != nil && *result.RetryAfter > 0 {
+									if candidate := now.Add(*result.RetryAfter); candidate.After(failureRetryAfter) {
+										failureRetryAfter = candidate
+									}
+								}
+								handoffSnapshots = m.promoteNextAntigravityPrimary(ctx, auth.ID, failureRetryAfter)
 							}
 						}
 					}
@@ -3704,10 +3716,17 @@ func isAntigravityCapacityExhausted(err *Error) bool {
 		strings.Contains(err.Message, "No capacity available for model")
 }
 
+// antigravityHandoffDefaultBlock is how long a demoted credential stays out of the
+// handoff rotation when its failure carries no longer retry deadline.
+const antigravityHandoffDefaultBlock = 5 * time.Minute
+
 // promoteNextAntigravityPrimary disables the current primary Antigravity credential
-// and promotes the next standby in ascending order.
+// and promotes the next usable standby: ascending Order after the current one, then
+// wrapping around to the lowest Order. A standby that was itself demoted by a handoff
+// failure and is still inside its block window is skipped. When no standby is usable
+// the current primary is left enabled instead of being disabled with no replacement.
 // Must be called with m.mu held.
-func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuthID string) []*Auth {
+func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuthID string, failureRetryAfter time.Time) []*Auth {
 	var allAntigravity []*Auth
 	for _, auth := range m.auths {
 		if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") && auth.PrimaryInfo != nil {
@@ -3740,9 +3759,15 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 		return nil
 	}
 
+	now := time.Now()
 	nextIdx := -1
-	for i := currentIdx + 1; i < len(allAntigravity); i++ {
-		if allAntigravity[i] == nil || allAntigravity[i].PrimaryInfo == nil {
+	for step := 1; step < len(allAntigravity); step++ {
+		i := (currentIdx + step) % len(allAntigravity)
+		candidate := allAntigravity[i]
+		if candidate == nil || candidate.PrimaryInfo == nil {
+			continue
+		}
+		if candidate.handoffBlockedUntil.After(now) {
 			continue
 		}
 		nextIdx = i
@@ -3753,8 +3778,18 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 	}
 
 	current := allAntigravity[currentIdx]
-	now := time.Now()
 	delete(m.antigravityHandoffStrikes, current.ID)
+	// Demotion wipes quota/cooldown state, so record how long this credential should
+	// stay out of rotation. Prefer the longer of the failure/auth retry deadline and
+	// the default block window.
+	blockUntil := now.Add(antigravityHandoffDefaultBlock)
+	if current.NextRetryAfter.After(blockUntil) {
+		blockUntil = current.NextRetryAfter
+	}
+	if failureRetryAfter.After(blockUntil) {
+		blockUntil = failureRetryAfter
+	}
+	current.handoffBlockedUntil = blockUntil
 	current.Disabled = true
 	current.Status = StatusDisabled
 	current.PrimaryInfo.IsPrimary = false
@@ -3763,6 +3798,8 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 	_ = m.persistLocked(ctx, current)
 
 	next := allAntigravity[nextIdx]
+	delete(m.antigravityHandoffStrikes, next.ID)
+	next.handoffBlockedUntil = time.Time{}
 	next.Disabled = false
 	next.Status = StatusActive
 	next.StatusMessage = ""
