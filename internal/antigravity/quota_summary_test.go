@@ -33,12 +33,7 @@ func TestFetchUserQuotaSummaryFallsBackPastForbiddenAndParsesBuckets(t *testing.
 		if r.URL.Path != "/v1internal:retrieveUserQuotaSummary" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
-		if got := r.Header.Get("User-Agent"); !strings.HasPrefix(got, "antigravity/cli/") {
-			t.Errorf("User-Agent = %q, want antigravity/cli/ harness", got)
-		}
-		if strings.Contains(r.Header.Get("User-Agent"), "GeminiCLI/") {
-			t.Errorf("User-Agent used the Gemini CLI form: %s", r.Header.Get("User-Agent"))
-		}
+		assertIdentityMeetsQuotaFloor(t, "retrieveUserQuotaSummary", r.Header.Get("User-Agent"))
 		body, errRead := io.ReadAll(r.Body)
 		if errRead != nil {
 			t.Errorf("read body: %v", errRead)

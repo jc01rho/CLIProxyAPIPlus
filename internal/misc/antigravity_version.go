@@ -153,6 +153,32 @@ func antigravityBaseUserAgent(userAgent string) string {
 	return userAgent
 }
 
+// AntigravityQuotaUserAgent returns the Antigravity runtime UA for quota and
+// model-discovery RPCs, enforcing the minimum Cloud Code version floor (2.23.0)
+// so a stale or rolled-back Hub manifest cannot hide the Gemini quota group.
+func AntigravityQuotaUserAgent() string {
+	const (
+		minMajor = 2
+		minMinor = 23
+	)
+	if antigravityMeetsVersionFloor(AntigravityLatestVersion(), minMajor, minMinor) {
+		return AntigravityRequestUserAgent("")
+	}
+	metadata := "aidev_client; " + antigravityHubPlatform
+	if changelist := antigravityHubChangelists[antigravityFallbackVersion]; changelist != "" {
+		metadata += "; cl=" + changelist
+	}
+	return fmt.Sprintf("antigravity/hub/%s (%s)", antigravityFallbackVersion, metadata)
+}
+
+func antigravityMeetsVersionFloor(version string, minMajor, minMinor int) bool {
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(strings.TrimSpace(version), "%d.%d.%d", &major, &minor, &patch); err != nil {
+		return false
+	}
+	return major > minMajor || (major == minMajor && minor >= minMinor)
+}
+
 // AntigravityRequestUserAgent returns the Antigravity runtime UA used by
 // generate/stream/model-list requests.
 func AntigravityRequestUserAgent(userAgent string) string {

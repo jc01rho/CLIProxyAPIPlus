@@ -173,3 +173,14 @@ func TestFetchAntigravityLatestVersionReturnsHubManifestError(t *testing.T) {
 		t.Fatal("fetchAntigravityLatestVersion() error = nil, want error")
 	}
 }
+
+func TestAntigravityQuotaUserAgentEnforcesMinimumVersionFloor(t *testing.T) {
+	restore := overrideAntigravityVersionCacheForTest(t, "2.22.9", time.Now().Add(time.Hour))
+	defer restore()
+
+	got := AntigravityQuotaUserAgent()
+	wantPrefix := "antigravity/hub/" + antigravityFallbackVersion + " "
+	if len(got) < len(wantPrefix) || got[:len(wantPrefix)] != wantPrefix {
+		t.Fatalf("AntigravityQuotaUserAgent() = %q, want prefix %q when cached version is below floor", got, wantPrefix)
+	}
+}
