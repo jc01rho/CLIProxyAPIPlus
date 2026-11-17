@@ -60,6 +60,23 @@ func TestCodexClientModelsModelsDevLimitsOverrideTemplateAndHomeMetadata(t *test
 	if alias["context_window"] != 1050000 || alias["max_tokens"] != 128000 {
 		t.Fatalf("explicit alias limits = %#v", alias)
 	}
+
+	explicitOverride := BuildResponseForClientWithCPACapabilities([]map[string]any{
+		{"id": modelID, "context_length": 265000, "max_context_length": 265000, "max_completion_tokens": 64000},
+	}, nil, nil, false, "cpa")["models"].([]map[string]any)[0]
+	if explicitOverride["context_window"] != 265000 || explicitOverride["max_context_window"] != 265000 {
+		t.Fatalf("explicit max_context_length overwritten = %#v", explicitOverride)
+	}
+	if explicitOverride["max_tokens"] != 128000 {
+		t.Fatalf("explicit max_tokens = %#v, want 128000", explicitOverride["max_tokens"])
+	}
+
+	templatedOverride := BuildResponseForClientWithCPACapabilities([]map[string]any{
+		{"id": "gpt-6-sol", "context_length": 265000, "max_context_length": 265000},
+	}, nil, nil, false, "cpa")["models"].([]map[string]any)[0]
+	if templatedOverride["context_window"] != 265000 || templatedOverride["max_context_window"] != 265000 {
+		t.Fatalf("templated explicit max_context_length overwritten = %#v", templatedOverride)
+	}
 }
 
 func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {

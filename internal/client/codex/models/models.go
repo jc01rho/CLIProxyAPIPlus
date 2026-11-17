@@ -182,7 +182,7 @@ func applyCodexClientModelsDevLimit(entry map[string]any, id string, model map[s
 	if !ok {
 		return
 	}
-	if limit.Context > 0 {
+	if intModelValue(model, "max_context_length") <= 0 && limit.Context > 0 {
 		entry["context_window"] = limit.Context
 		entry["max_context_window"] = limit.Context
 	}
