@@ -147,7 +147,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	}
 	headers.Set("OpenAI-Beta", betaHeader)
 	sessionFallback := ""
-	if strings.Contains(headers.Get("User-Agent"), "Mac OS") {
+	if codexUserAgentRequestsSessionFallback(headers.Get("User-Agent")) {
 		sessionFallback = uuid.NewString()
 	}
 	ensureCodexWebsocketSessionHeader(headers, ginHeaders, sessionFallback)

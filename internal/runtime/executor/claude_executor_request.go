@@ -2225,6 +2225,20 @@ func orderClaudeCodeBody(body []byte) []byte {
 	return ordered
 }
 
+// stripClaudeOAuthServiceTierDoc drops service_tier from an OAuth (subscription)
+// Messages request. Native Claude Code does not select a service tier on
+// subscription requests, and cortexkit/anthropic-auth enforces that in
+// orderClaudeCodeBody(body, {isOAuth: true}). API-key requests keep the field.
+func stripClaudeOAuthServiceTierDoc(doc *ojson.Doc) {
+	if doc == nil {
+		return
+	}
+	if !ojson.GetBytesNoCopy(doc.Bytes(), "service_tier").Exists() {
+		return
+	}
+	_ = doc.Delete("service_tier")
+}
+
 // prepareClaudeOAuthToolNamesForUpstream applies the Claude OAuth tool-name
 // transforms in the same order across request paths. Remap runs before prefixing
 // so any future non-empty prefix still composes correctly with the per-request

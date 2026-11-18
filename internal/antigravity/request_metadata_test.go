@@ -23,15 +23,26 @@ func TestFnv1a64Signed(t *testing.T) {
 }
 
 func TestBuildAntigravityHarnessUserAgentExact(t *testing.T) {
-	got := BuildAntigravityHarnessUserAgent("1.1.6", "darwin", "arm64")
-	want := "antigravity/cli/1.1.6 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"
+	got := BuildAntigravityHarnessUserAgent("1.5.8", "darwin", "arm64")
+	want := "antigravity/cli/1.5.8 (aidev_client; os_type=darwin; arch=arm64; cl=1020628950; auth_method=consumer)"
 	if got != want {
 		t.Fatalf("UA = %q, want %q", got, want)
 	}
-	gotX64 := BuildAntigravityHarnessUserAgent("1.1.6", "linux", "x64")
-	wantX64 := "antigravity/cli/1.1.6 (aidev_client; os_type=linux; arch=amd64; auth_method=consumer)"
+	gotX64 := BuildAntigravityHarnessUserAgent("1.5.8", "linux", "x64")
+	wantX64 := "antigravity/cli/1.5.8 (aidev_client; os_type=linux; arch=amd64; cl=1020628950; auth_method=consumer)"
 	if gotX64 != wantX64 {
 		t.Fatalf("UA x64 = %q, want %q", gotX64, wantX64)
+	}
+}
+
+// TestBuildAntigravityHarnessUserAgentOmitsChangeListForOtherVersions pins the
+// reference client rule: the cl= token identifies the pinned build, so a caller
+// that pins another version must not claim this build's changelist.
+func TestBuildAntigravityHarnessUserAgentOmitsChangeListForOtherVersions(t *testing.T) {
+	got := BuildAntigravityHarnessUserAgent("2.23.0", "darwin", "arm64")
+	want := "antigravity/cli/2.23.0 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"
+	if got != want {
+		t.Fatalf("UA = %q, want %q", got, want)
 	}
 }
 
@@ -40,7 +51,7 @@ func TestBuildAgyCLIHeaderPairsStreamExact(t *testing.T) {
 		"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 		AgyRequestInit{
 			Headers: map[string]string{
-				"User-Agent":    "antigravity/cli/1.1.6 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)",
+				"User-Agent":    "antigravity/cli/1.5.8 (aidev_client; os_type=darwin; arch=arm64; cl=1020628950; auth_method=consumer)",
 				"Authorization": "Bearer test-token",
 			},
 			Body: []byte(`{"project":"p"}`),
@@ -51,7 +62,7 @@ func TestBuildAgyCLIHeaderPairsStreamExact(t *testing.T) {
 	}
 	want := []HeaderPair{
 		{Key: "Host", Value: "daily-cloudcode-pa.googleapis.com"},
-		{Key: "User-Agent", Value: "antigravity/cli/1.1.6 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"},
+		{Key: "User-Agent", Value: "antigravity/cli/1.5.8 (aidev_client; os_type=darwin; arch=arm64; cl=1020628950; auth_method=consumer)"},
 		{Key: "Transfer-Encoding", Value: "chunked"},
 		{Key: "Authorization", Value: "Bearer test-token"},
 		{Key: "Content-Type", Value: "application/json"},
