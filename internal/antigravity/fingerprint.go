@@ -12,7 +12,12 @@ import (
 
 const (
 	// AgyCLIVersion is the captured agy CLI version used for content-request identity.
-	AgyCLIVersion = "1.1.6"
+	// Mirrors AGY_CLI_VERSION in cortexkit/antigravity-auth fingerprint.ts.
+	AgyCLIVersion = "1.5.8"
+
+	// AgyCLIChangeList is the agy CLI changelist the captured build reports in its
+	// User-Agent. Mirrors AGY_CLI_CHANGE_LIST in cortexkit/antigravity-auth.
+	AgyCLIChangeList = "1020628950"
 
 	antigravityAPIClient = "antigravity-cli"
 
@@ -79,12 +84,19 @@ func BuildAntigravityHarnessPlatformArch(platform, arch string) string {
 }
 
 // BuildAntigravityHarnessUserAgent returns the captured agy CLI User-Agent with
-// explicit client, OS, architecture, and auth metadata (agy CLI 1.1.6 form).
+// explicit client, OS, architecture, changelist, and auth metadata.
+// The changelist is reported only for the captured AgyCLIVersion, matching
+// cortexkit/antigravity-auth fingerprint.ts, so a caller pinning another version
+// still gets that version's unchangelisted form.
 func BuildAntigravityHarnessUserAgent(version, platform, arch string) string {
 	if version == "" {
 		version = AgyCLIVersion
 	}
-	return "antigravity/cli/" + version + " (aidev_client; os_type=" + normalizeHarnessPlatform(platform) + "; arch=" + normalizeHarnessArch(arch) + "; auth_method=consumer)"
+	changeList := ""
+	if version == AgyCLIVersion {
+		changeList = "; cl=" + AgyCLIChangeList
+	}
+	return "antigravity/cli/" + version + " (aidev_client; os_type=" + normalizeHarnessPlatform(platform) + "; arch=" + normalizeHarnessArch(arch) + changeList + "; auth_method=consumer)"
 }
 
 // BuildAntigravityHarnessLoadCodeAssistUserAgent returns the loadCodeAssist agy CLI User-Agent.

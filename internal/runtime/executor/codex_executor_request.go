@@ -29,8 +29,12 @@ import (
 )
 
 const (
-	codexUserAgent             = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
-	codexOriginator            = "codex-tui"
+	// codexVersion and codexUserAgent mirror cortexkit/openai-auth
+	// packages/opencode/src/codex-request.ts (CODEX_VERSION, CODEX_USER_AGENT).
+	// The reference client identifies itself as codex_exec, not codex-tui.
+	codexVersion               = "0.159.0"
+	codexUserAgent             = "codex_exec/" + codexVersion + " (Debian 12.0.0; aarch64) unknown (codex_exec; " + codexVersion + ")"
+	codexOriginator            = "codex_exec"
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
@@ -427,6 +431,14 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 	applyCodexHeadersWithSIWC(r, auth, codexUseSIWCForRequest(r.Context(), auth, ginHeaders), token, stream, cfg, ginHeaders)
 }
 
+// codexUserAgentRequestsSessionFallback reports whether a Codex User-Agent
+// describes a client that sends a generated session id when the caller supplied
+// none. Codex derives that session from the desktop-side OS identity in the
+// User-Agent: macOS and Windows clients send one, Linux hosts do not.
+func codexUserAgentRequestsSessionFallback(userAgent string) bool {
+	return strings.Contains(userAgent, "Mac OS") || strings.Contains(userAgent, "Windows")
+}
+
 // applyModelHeaderOverrides forces models.json config.override_header onto upstream headers.
 func applyModelHeaderOverrides(headers http.Header, modelName string) {
 	if headers == nil {
@@ -439,7 +451,7 @@ func applyModelHeaderOverrides(headers http.Header, modelName string) {
 	for key, value := range overrides {
 		headers.Set(key, value)
 	}
-	if strings.Contains(headers.Get("User-Agent"), "Mac OS") && codexSessionHeaderValue(headers) == "" {
+	if codexUserAgentRequestsSessionFallback(headers.Get("User-Agent")) && codexSessionHeaderValue(headers) == "" {
 		headers.Set("Session_id", uuid.NewString())
 	}
 }
