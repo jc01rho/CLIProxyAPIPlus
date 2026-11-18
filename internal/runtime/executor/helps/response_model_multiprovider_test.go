@@ -296,3 +296,72 @@ func TestStreamUsageBufferMultiProviderResponseModelPropagation(t *testing.T) {
 		t.Fatalf("claudeReporter.ResponseModel() = %q, want claude-3-5-haiku-20241022", got)
 	}
 }
+
+// Relies on the global logrus logger; do not add t.Parallel.
+func TestUsageReporterSkipsAntigravityWarningWhenServedModelIsRequestPrefix(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested string
+		served    string
+	}{
+		{name: "xhigh tier suffix", requested: "gemini-4-hydrogen-xhigh", served: "gemini-4-hydrogen"},
+		{name: "thinking variant suffix", requested: "claude-opus-4-6-thinking", served: "claude-opus-4-6"},
+		{name: "multi-segment tier suffix", requested: "gemini-3.5-flash-extra-low", served: "gemini-3.5-flash"},
+		{name: "provider prefix and mixed case", requested: "antigravity/Gemini-4-Hydrogen-XHigh", served: "gemini-4-hydrogen"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := setupResponseModelLoggerHook(t)
+			ctx := context.Background()
+			auth := &cliproxyauth.Auth{ID: "ag-auth-1", Index: "3633708f076a0f9d", Provider: "antigravity"}
+			reporter := newMultiProviderTestReporter(ctx, "antigravity", tt.requested, auth)
+
+			reporter.ObserveResponseModel([]byte(`{"modelVersion":"` + tt.served + `"}`))
+			reporter.Publish(ctx, usage.Detail{InputTokens: 5, OutputTokens: 7})
+
+			if got := reporter.ResponseModel(); got != tt.served {
+				t.Fatalf("reporter.ResponseModel() = %q, want %q", got, tt.served)
+			}
+			if gotServed, substituted := reporter.ModelSubstituted(); substituted || gotServed != "" {
+				t.Fatalf("reporter.ModelSubstituted() = (%q, %v), want empty/false", gotServed, substituted)
+			}
+			if warnings := substitutionWarnings(hook); len(warnings) != 0 {
+				t.Fatalf("expected no warning when served model is prefix of requested model, got %#v", warnings)
+			}
+		})
+	}
+}
+
+// Relies on the global logrus logger; do not add t.Parallel.
+func TestUsageReporterWarnsOnAntigravityModelSwap(t *testing.T) {
+	tests := []struct {
+		name      string
+		provider  string
+		requested string
+		served    string
+	}{
+		{name: "antigravity distinct model swap", provider: "antigravity", requested: "gemini-4-hydrogen-xhigh", served: "gemini-4-carbon"},
+		{name: "antigravity served longer than requested", provider: "antigravity", requested: "gemini-4-hydrogen", served: "gemini-4-hydrogen-lite"},
+		{name: "non-antigravity provider prefix swap still warns", provider: "gemini", requested: "gemini-4-hydrogen-xhigh", served: "gemini-4-hydrogen"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := setupResponseModelLoggerHook(t)
+			ctx := context.Background()
+			auth := &cliproxyauth.Auth{ID: "auth-1", Index: "3633708f076a0f9d", Provider: tt.provider}
+			reporter := newMultiProviderTestReporter(ctx, tt.provider, tt.requested, auth)
+
+			reporter.ObserveResponseModel([]byte(`{"modelVersion":"` + tt.served + `"}`))
+			reporter.Publish(ctx, usage.Detail{InputTokens: 5, OutputTokens: 7})
+
+			if gotServed, substituted := reporter.ModelSubstituted(); !substituted || gotServed != tt.served {
+				t.Fatalf("reporter.ModelSubstituted() = (%q, %v), want (%q, true)", gotServed, substituted, tt.served)
+			}
+			if warnings := substitutionWarnings(hook); len(warnings) != 1 {
+				t.Fatalf("expected 1 substitution warning, got %d: %#v", len(warnings), warnings)
+			}
+		})
+	}
+}
