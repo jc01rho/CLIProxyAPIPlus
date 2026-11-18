@@ -9193,6 +9193,29 @@ func TestStripClaudeFastSpeed(t *testing.T) {
 	}
 }
 
+// stripClaudeOAuthServiceTierDoc mirrors cortexkit/anthropic-auth
+// orderClaudeCodeBody(body, {isOAuth: true}): a subscription request carries no
+// service tier, while an API-key request keeps whatever the caller sent.
+func TestStripClaudeOAuthServiceTierDoc(t *testing.T) {
+	doc := ojson.NewDoc([]byte(`{"model":"claude-sonnet-5-5","service_tier":"priority"}`))
+	stripClaudeOAuthServiceTierDoc(doc)
+	if ojson.GetBytesNoCopy(doc.Bytes(), "service_tier").Exists() {
+		t.Fatalf("service_tier must be removed on OAuth requests: %s", string(doc.Bytes()))
+	}
+	if got := ojson.GetBytesNoCopy(doc.Bytes(), "model").String(); got != "claude-sonnet-5-5" {
+		t.Fatalf("model = %q, want claude-sonnet-5-5", got)
+	}
+
+	// A body without the field is left byte-identical.
+	none := ojson.NewDoc([]byte(`{"model":"claude-sonnet-5-5"}`))
+	stripClaudeOAuthServiceTierDoc(none)
+	if got := string(none.Bytes()); got != `{"model":"claude-sonnet-5-5"}` {
+		t.Fatalf("body without service_tier changed: %s", got)
+	}
+
+	stripClaudeOAuthServiceTierDoc(nil)
+}
+
 func TestClaudeMessagesHaveUserRole(t *testing.T) {
 	if !claudeMessagesHaveUserRole([]byte(`{"messages":[{"role":"assistant","content":"a"},{"role":"user","content":"u"}]}`)) {
 		t.Fatal("expected user role detected")

@@ -243,6 +243,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if from == to {
 		helps.TransformDocBytes(doc, orderClaudeCodeBody)
 	}
+	if isClaudeOAuthToken(apiKey) {
+		stripClaudeOAuthServiceTierDoc(doc)
+	}
 	if fp.ApplyCLIIdentity {
 		err = applyClaudeCLIIdentityDoc(doc, auth, apiKey, url, claudeSessionID, fp.SynthesizeIdentity)
 		if err != nil {

@@ -1097,15 +1097,17 @@ func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) 
 	if !strings.HasPrefix(codexUserAgent, codexOriginator+"/") {
 		t.Fatalf("default Codex User-Agent = %s, want prefix %s/", codexUserAgent, codexOriginator)
 	}
-	const wantUserAgent = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
+	const wantUserAgent = "codex_exec/0.159.0 (Debian 12.0.0; aarch64) unknown (codex_exec; 0.159.0)"
 	if codexUserAgent != wantUserAgent {
 		t.Fatalf("default Codex User-Agent = %q, want %q", codexUserAgent, wantUserAgent)
 	}
-	if codexOriginator != "codex-tui" {
-		t.Fatalf("default Codex Originator = %q, want codex-tui", codexOriginator)
+	if codexOriginator != "codex_exec" {
+		t.Fatalf("default Codex Originator = %q, want codex_exec", codexOriginator)
 	}
-	if _, err := uuid.Parse(codexSessionHeaderValue(headers)); err != nil {
-		t.Fatalf("default Mac OS session header must be a UUID: %v", err)
+	// The captured codex_exec identity is a Linux host, so no desktop session id
+	// fallback applies; a caller-supplied session value still passes through.
+	if got := codexSessionHeaderValue(headers); got != "" {
+		t.Fatalf("default codex_exec session header = %q, want empty", got)
 	}
 	if got := headers.Get("Originator"); got != codexOriginator {
 		t.Fatalf("Originator = %s, want %s", got, codexOriginator)
@@ -1809,6 +1811,24 @@ func TestApplyCodexWebsocketHeaders_EmptyAPIKey_OmitsAuthorizationAndOAuthHeader
 	}
 	if got := headers.Get("User-Agent"); got == "oauth-default-ua" {
 		t.Fatalf("User-Agent unexpectedly used OAuth default UA %q for API key auth_kind", got)
+	}
+}
+
+// codexUserAgentRequestsSessionFallback keeps the desktop-session fallback for
+// clients that identify a desktop host while excluding the Linux codex_exec
+// identity the proxy sends by default.
+func TestCodexUserAgentRequestsSessionFallback(t *testing.T) {
+	cases := map[string]bool{
+		"codex_exec/0.159.0 (Debian 12.0.0; aarch64) unknown (codex_exec; 0.159.0)":      false,
+		"codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)": true,
+		"codex_cli_rs/0.154.0 (Windows 11; x86_64) unknown (codex_cli_rs; 0.154.0)":      true,
+		"codex-tui/0.154.0 (X11; Linux x86_64) unknown (codex-tui; 0.154.0)":             false,
+		"": false,
+	}
+	for userAgent, want := range cases {
+		if got := codexUserAgentRequestsSessionFallback(userAgent); got != want {
+			t.Errorf("codexUserAgentRequestsSessionFallback(%q) = %v, want %v", userAgent, got, want)
+		}
 	}
 }
 
