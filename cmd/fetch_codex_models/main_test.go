@@ -7,8 +7,10 @@ import (
 )
 
 func TestDefaultClientVersionIncludesGPT6SolAndLuna(t *testing.T) {
-	if defaultClientVersion != "0.159.0" {
-		t.Fatalf("defaultClientVersion = %q, want %q", defaultClientVersion, "0.159.0")
+	// Pinned to the upstream catalog version that exposes the newest Codex
+	// models (GPT-6.2 Sol/Astra live at 0.169.0); an upstream bump moves this pin.
+	if defaultClientVersion != "0.169.0" {
+		t.Fatalf("defaultClientVersion = %q, want %q", defaultClientVersion, "0.169.0")
 	}
 }
 

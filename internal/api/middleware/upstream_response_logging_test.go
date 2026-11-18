@@ -21,6 +21,22 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
 )
 
+// splitForkLogPaths returns the normal and error-copy log files in logsDir.
+func splitForkLogPaths(logsDir string) (normal []string, errorCopies []string, err error) {
+	all, errGlob := filepath.Glob(filepath.Join(logsDir, "*.log"))
+	if errGlob != nil {
+		return nil, nil, errGlob
+	}
+	for _, path := range all {
+		if strings.HasPrefix(filepath.Base(path), "error-") {
+			errorCopies = append(errorCopies, path)
+			continue
+		}
+		normal = append(normal, path)
+	}
+	return normal, errorCopies, nil
+}
+
 func TestLocalErrorsAreSeparateFromUpstreamResponses(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, mode := range []string{"memory", "file", "deferred"} {
@@ -87,11 +103,23 @@ func TestLocalErrorsAreSeparateFromUpstreamResponses(t *testing.T) {
 					if errFinalize := wrapper.Finalize(c); errFinalize != nil {
 						t.Fatal(errFinalize)
 					}
-					paths, errGlob := filepath.Glob(filepath.Join(logsDir, "*.log"))
-					if errGlob != nil || len(paths) != 1 {
-						t.Fatalf("log files = %v, error = %v", paths, errGlob)
+					// Fork contract: a non-streaming error with request-log enabled writes
+					// an error-* copy beside the normal log; a streaming response has its
+					// status overridden by an actionable API error, so it is written to the
+					// error-* file only in both request-log modes.
+					paths, errorPaths, errGlob := splitForkLogPaths(logsDir)
+					wantNormal := 0
+					if fullLog && !streaming {
+						wantNormal = 1
 					}
-					data, errRead := os.ReadFile(paths[0])
+					if errGlob != nil || len(paths) != wantNormal || len(errorPaths) != 1 {
+						t.Fatalf("log files = %v (error copies %v), error = %v", paths, errorPaths, errGlob)
+					}
+					readPath := paths
+					if wantNormal == 0 {
+						readPath = errorPaths
+					}
+					data, errRead := os.ReadFile(readPath[0])
 					if errRead != nil {
 						t.Fatal(errRead)
 					}

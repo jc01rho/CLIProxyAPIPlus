@@ -16,6 +16,22 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
 )
 
+// splitForkLogPaths returns the normal and error-copy log files in logsDir.
+func splitForkLogPaths(logsDir string) (normal []string, errorCopies []string, err error) {
+	all, errGlob := filepath.Glob(filepath.Join(logsDir, "*.log"))
+	if errGlob != nil {
+		return nil, nil, errGlob
+	}
+	for _, path := range all {
+		if strings.HasPrefix(filepath.Base(path), "error-") {
+			errorCopies = append(errorCopies, path)
+			continue
+		}
+		normal = append(normal, path)
+	}
+	return normal, errorCopies, nil
+}
+
 func TestCodexSearchReadErrorDiagnosticInDownstreamLog(t *testing.T) {
 	for _, fullLog := range []bool{false, true} {
 		name := "deferred"
@@ -40,11 +56,22 @@ func TestCodexSearchReadErrorDiagnosticInDownstreamLog(t *testing.T) {
 			if recorder.Code != http.StatusBadGateway || recorder.Body.String() != `{"error":"Failed to read Codex search response"}` {
 				t.Fatalf("client response changed: status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
-			paths, errGlob := filepath.Glob(filepath.Join(logsDir, "*.log"))
-			if errGlob != nil || len(paths) != 1 {
-				t.Fatalf("logs = %v, error = %v", paths, errGlob)
+			// Fork contract: with request-log enabled an error also writes an error-*
+			// copy beside the normal log (pinned by request_logger_error_log_test.go),
+			// so the pair is expected here and only the primary file is read.
+			paths, errorPaths, errGlob := splitForkLogPaths(logsDir)
+			wantNormal := 0
+			if fullLog {
+				wantNormal = 1
 			}
-			data, errRead := os.ReadFile(paths[0])
+			if errGlob != nil || len(paths) != wantNormal || len(errorPaths) != 1 {
+				t.Fatalf("logs = %v (error copies %v), error = %v", paths, errorPaths, errGlob)
+			}
+			readPath := paths
+			if wantNormal == 0 {
+				readPath = errorPaths
+			}
+			data, errRead := os.ReadFile(readPath[0])
 			if errRead != nil {
 				t.Fatal(errRead)
 			}

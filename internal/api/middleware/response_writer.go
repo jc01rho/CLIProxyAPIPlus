@@ -500,11 +500,15 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	}
 
 	apiRequest := w.extractAPIRequest(c)
-	if forceLog && len(apiRequest) == 0 {
+	// Deferred capture only backs error-only logs. With the full log enabled the
+	// attempt capture above already holds the upstream response, and overriding it
+	// here would blank out a real upstream attempt on a locally failed request.
+	deferredLogFallback := forceLog && !w.logger.IsEnabled()
+	if deferredLogFallback && len(apiRequest) == 0 {
 		apiRequest = w.extractDeferredAPIRequest(c)
 	}
 	apiResponse := w.extractAPIResponse(c)
-	if forceLog {
+	if deferredLogFallback {
 		// An upstream attempt without a response must not fall back to a synthesized handler error.
 		if deferredResponse := w.extractDeferredAPIResponse(c); len(deferredResponse) > 0 || len(apiRequest) > 0 {
 			apiResponse = deferredResponse

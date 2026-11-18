@@ -444,7 +444,7 @@ func (m *Manager) resolveOAuthModelAliasStateKeyWithResult(auth *Auth, requested
 	if channel == "" {
 		return OAuthModelAliasResult{}
 	}
-	if result := resolveUpstreamModelFromAliases(OAuthModelAliasesFromAttributes(authAttributes(auth)), requestedModel); result.UpstreamModel != "" {
+	if result, _ := resolveUpstreamModelFromAliases(OAuthModelAliasesFromAttributes(authAttributes(auth)), requestedModel); result.UpstreamModel != "" {
 		return result
 	}
 	return resolveUpstreamModelFromAliasTableStateKey(m, auth, requestedModel, channel)
@@ -720,6 +720,12 @@ func (t *oauthModelAliasTable) computeTableOnly(channel, requestedModel string) 
 			continue
 		}
 		if _, ok := upstreamIdx[key]; ok {
+			// A case-only alias (alias differs from its target name only by
+			// case) must resolve to the configured target spelling instead of
+			// being preserved as-is here, so the alias phase below wins.
+			if entry, isAlias := rev[key]; isAlias && strings.EqualFold(strings.TrimSpace(entry.upstreamModel), key) {
+				continue
+			}
 			return oauthAliasCacheValue{
 				tailResult: OAuthModelAliasResult{UpstreamModel: preserveResolvedModelSuffix(candidate, requestResult)},
 			}

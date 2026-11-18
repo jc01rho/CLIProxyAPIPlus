@@ -298,8 +298,14 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		// no Antigravity credits fallback may run after it.
 		requestStopped := isRequestTerminatedError(lastErr) || isRequestStopError(lastErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
+		if requestStopped {
+			// A stop rule ends the request with its error, even when upstream
+			// wraps the stopped error. The pinned-Thread 404 rewrite and the
+			// Antigravity credits retry must not run on a stopped request.
+			return cliproxyexecutor.Response{}, lastErr
+		}
 		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, authSelectionModelFromOptions(opts, req.Model), opts)
-		if !requestStopped && !continuitySession.terminated && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized, req.Model) {
+		if !continuitySession.terminated && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized, req.Model) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
 			} else if ok {

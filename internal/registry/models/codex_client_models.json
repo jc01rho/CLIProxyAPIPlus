@@ -2345,7 +2345,7 @@
       "supports_search_tool": true,
       "supports_experimental_context": false,
       "default_service_tier": null,
-      "service_tiers": [],
+      "service_tiers": [{"id": "priority", "name": "Fast", "description": "2x speed, increased usage"}],
       "additional_speed_tiers": [],
       "supports_reasoning_summary_parameter": false,
       "supports_reasoning_summaries": true,

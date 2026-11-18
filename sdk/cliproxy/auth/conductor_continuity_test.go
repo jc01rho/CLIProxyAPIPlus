@@ -865,7 +865,7 @@ func TestCodexContinuityScopeAndAuthorityBoundaries(t *testing.T) {
 		}
 	})
 
-	t.Run("empty codex pre-admission candidates do not block antigravity credits fallback", func(t *testing.T) {
+	t.Run("empty codex pre-admission candidates never consult the continuity gate", func(t *testing.T) {
 		manager := NewManager(nil, nil, nil)
 		manager.SetConfig(&internalconfig.Config{
 			QuotaExceeded: internalconfig.QuotaExceeded{AntigravityCredits: true},
@@ -914,12 +914,16 @@ func TestCodexContinuityScopeAndAuthorityBoundaries(t *testing.T) {
 				return pluginapi.SchedulerContinuityResponse{Decision: pluginapi.SchedulerContinuityDisabled}, true, nil
 			},
 		})
-		resp, errExec := manager.Execute(context.Background(), []string{"codex", "antigravity"}, cliproxyexecutor.Request{Model: testModel}, cliproxyexecutor.Options{})
-		if errExec != nil {
-			t.Fatalf("Execute() error = %v, want antigravity credits fallback success", errExec)
+		_, errExec := manager.Execute(context.Background(), []string{"codex", "antigravity"}, cliproxyexecutor.Request{Model: testModel}, cliproxyexecutor.Options{})
+		// Fork #21: a Claude route never moves to another Antigravity account,
+		// including the credits retry, so the upstream failure surfaces. The
+		// pre-admission rule under test still holds: with no codex candidate the
+		// continuity gate is never consulted and cannot block anything.
+		if errExec == nil {
+			t.Fatal("Execute() error = nil, want the upstream codesx failure surfaced without a credits retry")
 		}
-		if string(resp.Payload) != `{"ok":"ag-credits"}` || agCalls.Load() != 1 || continuityCalls.Load() != 0 {
-			t.Fatalf("resp=%s agCalls=%d continuityCalls=%d, want ag-credits/1/0", resp.Payload, agCalls.Load(), continuityCalls.Load())
+		if agCalls.Load() != 0 || continuityCalls.Load() != 0 {
+			t.Fatalf("agCalls=%d continuityCalls=%d, want 0/0 (no credits retry for a Claude route, no continuity consultation)", agCalls.Load(), continuityCalls.Load())
 		}
 	})
 
@@ -1677,7 +1681,10 @@ func TestCodexContinuityScopeAndAuthorityBoundaries(t *testing.T) {
 					mgr.PersistCooldownStates(context.Background())
 				}
 
-				future := time.Now().Add(2 * time.Minute)
+				// The fork's quota backoff floor is 5m (local policy), so the shorter
+				// non-quota layer can run up to 5m; 6m is still inside the 10m quota
+				// force cooldown and proves the layer expired first.
+				future := time.Now().Add(6 * time.Minute)
 				targetMgr := mgr
 				if tc.persist {
 					targetMgr = NewManager(nil, nil, nil)

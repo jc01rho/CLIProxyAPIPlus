@@ -37,7 +37,7 @@ func (m *Manager) antigravityClaudeOrGPTRoute(auth *Auth, models ...string) bool
 		if requested == "" {
 			continue
 		}
-		if antigravityClaudeOrGPTModelName(resolveUpstreamModelFromAliases(aliases, requested).UpstreamModel) {
+		if aliasResult, _ := resolveUpstreamModelFromAliases(aliases, requested); antigravityClaudeOrGPTModelName(aliasResult.UpstreamModel) {
 			return true
 		}
 		if antigravityClaudeOrGPTModelName(m.antigravityAliasTableUpstreamModel(requested)) {
