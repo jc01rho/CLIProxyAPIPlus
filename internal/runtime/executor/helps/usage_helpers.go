@@ -367,6 +367,16 @@ func (r *UsageReporter) ModelSubstituted() (served string, substituted bool) {
 	if r.model != "" && !IsMaterialModelSubstitution(r.model, served) {
 		return "", false
 	}
+	// Antigravity wire IDs append variant suffixes ("-xhigh", "-thinking", "-extra-low",
+	// "-agent") while upstream echoes the base model id; when the served model is a
+	// prefix of the requested model, it is the expected base model rather than a swap.
+	if strings.EqualFold(strings.TrimSpace(r.provider), "antigravity") {
+		cleanReq := stripModelProviderPrefix(normalizeModelName(stripFreeTierTag(r.model)))
+		cleanSrv := stripModelProviderPrefix(normalizeModelName(stripFreeTierTag(served)))
+		if cleanSrv != "" && strings.HasPrefix(cleanReq, cleanSrv+"-") {
+			return "", false
+		}
+	}
 	return served, true
 }
 
