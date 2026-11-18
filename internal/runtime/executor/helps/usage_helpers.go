@@ -373,7 +373,7 @@ func (r *UsageReporter) ModelSubstituted() (served string, substituted bool) {
 	if strings.EqualFold(strings.TrimSpace(r.provider), "antigravity") {
 		cleanReq := stripModelProviderPrefix(normalizeModelName(stripFreeTierTag(r.model)))
 		cleanSrv := stripModelProviderPrefix(normalizeModelName(stripFreeTierTag(served)))
-		if cleanSrv != "" && strings.HasPrefix(cleanReq, cleanSrv) {
+		if cleanSrv != "" && strings.HasPrefix(cleanReq, cleanSrv+"-") {
 			return "", false
 		}
 	}

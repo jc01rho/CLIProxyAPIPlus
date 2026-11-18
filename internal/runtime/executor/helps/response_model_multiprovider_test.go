@@ -343,6 +343,7 @@ func TestUsageReporterWarnsOnAntigravityModelSwap(t *testing.T) {
 	}{
 		{name: "antigravity distinct model swap", provider: "antigravity", requested: "gemini-4-hydrogen-xhigh", served: "gemini-4-carbon"},
 		{name: "antigravity served longer than requested", provider: "antigravity", requested: "gemini-4-hydrogen", served: "gemini-4-hydrogen-lite"},
+		{name: "antigravity mid-token prefix still warns", provider: "antigravity", requested: "gemini-3.1-pro", served: "gemini-3"},
 		{name: "non-antigravity provider prefix swap still warns", provider: "gemini", requested: "gemini-4-hydrogen-xhigh", served: "gemini-4-hydrogen"},
 	}
 
