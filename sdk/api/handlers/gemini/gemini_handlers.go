@@ -237,6 +237,8 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 		return
 	}
 	upstreamHeaders = resolvedHeaders
+	waitKeepAliveC, canWriteWaitKeepAlive, stopWaitKeepAlive := h.StartContinuityWaitKeepAliveForPeek(c, keepAliveC)
+	defer stopWaitKeepAlive()
 
 	// Peek at the first chunk
 	for {
@@ -252,6 +254,7 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 			}
 			if committed {
 				stopKeepAlive()
+				stopWaitKeepAlive()
 				pendingErrors := make(chan *interfaces.ErrorMessage, 1)
 				pendingErrors <- errMsg
 				close(pendingErrors)
@@ -269,6 +272,7 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 		case chunk, ok := <-dataChan:
 			if !ok {
 				stopKeepAlive()
+				stopWaitKeepAlive()
 				if errMsg, hasPendingError := handlers.PendingStreamError(errChan); hasPendingError {
 					if committed {
 						pendingErrors := make(chan *interfaces.ErrorMessage, 1)
@@ -294,6 +298,7 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 
 			// Success! Set headers.
 			stopKeepAlive()
+			stopWaitKeepAlive()
 			commitHeaders()
 
 			// Write first chunk
@@ -309,8 +314,14 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 			// Continue
 			h.forwardGeminiStream(c, flusher, alt, func(err error) { cliCancel(err) }, dataChan, errChan)
 			return
+		case <-waitKeepAliveC:
+			if canWriteWaitKeepAlive() && !writeKeepAlive() {
+				return
+			}
 		case <-keepAliveC:
-			writeKeepAlive()
+			if !writeKeepAlive() {
+				return
+			}
 		}
 	}
 }

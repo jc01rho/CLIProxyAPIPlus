@@ -51,8 +51,30 @@ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) 
 	return nil
 }
 
+type upstreamAttemptProviderContextKey struct{}
+
+func withUpstreamAttemptProvider(ctx context.Context, provider string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, upstreamAttemptProviderContextKey{}, provider)
+}
+
+func upstreamAttemptProviderFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	provider, _ := ctx.Value(upstreamAttemptProviderContextKey{}).(string)
+	return strings.TrimSpace(provider)
+}
+
 type upstreamExecutionAttemptError struct {
-	cause error
+	cause    error
+	provider string
 }
 
 func (e *upstreamExecutionAttemptError) Error() string {
@@ -69,21 +91,51 @@ func (e *upstreamExecutionAttemptError) Unwrap() error {
 	return e.cause
 }
 
+func (e *upstreamExecutionAttemptError) Headers() http.Header {
+	if e == nil || e.cause == nil {
+		return nil
+	}
+	var he interface{ Headers() http.Header }
+	if errors.As(e.cause, &he) && he != nil {
+		return he.Headers()
+	}
+	return nil
+}
+
 func markUpstreamExecutionAttempt(err error) error {
+	return markUpstreamExecutionAttemptWithProvider(err, "")
+}
+
+func markUpstreamExecutionAttemptWithProvider(err error, provider string) error {
 	if err == nil {
 		return nil
 	}
-	if hasUpstreamExecutionAttempt(err) {
+	provider = strings.TrimSpace(provider)
+	if existingProvider := upstreamAttemptProviderFromError(err); existingProvider != "" || hasUpstreamExecutionAttempt(err) {
+		if provider != "" && existingProvider == "" {
+			var marked *upstreamExecutionAttemptError
+			if errors.As(err, &marked) && marked != nil {
+				marked.provider = provider
+			}
+		}
 		return err
 	}
-	return &upstreamExecutionAttemptError{cause: err}
+	return &upstreamExecutionAttemptError{cause: err, provider: provider}
 }
 
 func markUpstreamExecutionAttemptFromContext(ctx context.Context, err error) error {
 	if err == nil || !cliproxyexecutor.UpstreamAttempted(ctx) {
 		return err
 	}
-	return markUpstreamExecutionAttempt(err)
+	return markUpstreamExecutionAttemptWithProvider(err, upstreamAttemptProviderFromContext(ctx))
+}
+
+func upstreamAttemptProviderFromError(err error) string {
+	var marked *upstreamExecutionAttemptError
+	if errors.As(err, &marked) && marked != nil {
+		return strings.TrimSpace(marked.provider)
+	}
+	return ""
 }
 
 func hasUpstreamExecutionAttempt(err error) bool {
@@ -211,16 +263,27 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	opts, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
+	opts, pinnedThread, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
 	if errThread != nil {
 		return cliproxyexecutor.Response{}, errThread
 	}
 	if m.HomeEnabled() {
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, false)
+		if pinnedThread && errHome != nil && !isRequestStopError(errHome) {
+			return resp, claudeThreadReplayError(unwrapExecutionBoundaryError(errHome))
+		}
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
-	resp, lastErr := m.executeWithRouteFallback(ctx, normalized, req, opts, m.executeMixedOnce)
+	continuitySession := ensureContinuitySession(ctx, &opts)
+	if continuitySession.terminated {
+		termErr := continuitySession.terminalErr
+		if termErr == nil {
+			termErr = &Error{Code: "continuity_terminated", Message: "continuity terminated"}
+		}
+		return cliproxyexecutor.Response{}, markContinuityTerminatedError(termErr)
+	}
+	resp, lastErr := m.executeWithRouteFallback(withRetryContinuitySession(ctx, continuitySession), normalized, req, opts, m.executeMixedOnce)
 	if lastErr == nil {
 		return resp, nil
 	}
@@ -236,16 +299,27 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		requestStopped := isRequestTerminatedError(lastErr) || isRequestStopError(lastErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
 		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, authSelectionModelFromOptions(opts, req.Model), opts)
-		if !requestStopped && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized, req.Model) {
+		if !requestStopped && !continuitySession.terminated && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized, req.Model) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
 			} else if ok {
 				return resp, nil
 			}
 		}
+		if pinnedThread {
+			lastErr = claudeThreadReplayError(lastErr)
+		}
+		if continuitySession.terminated {
+			continuitySession.terminalErr = lastErr
+			lastErr = markContinuityTerminatedError(lastErr)
+		}
 		return cliproxyexecutor.Response{}, lastErr
 	}
-	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	errFinal := error(&Error{Code: "auth_not_found", Message: "no auth available"})
+	if pinnedThread {
+		errFinal = claudeThreadReplayError(errFinal)
+	}
+	return cliproxyexecutor.Response{}, errFinal
 }
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
@@ -308,12 +382,25 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	opts, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
+	opts, pinnedThread, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
 	if errThread != nil {
 		return nil, errThread
 	}
 
-	result, lastErr := m.executeStreamWithRouteFallback(ctx, normalized, req, opts, m.executeStreamMixedOnce)
+	continuitySession := ensureContinuitySession(ctx, &opts)
+	if continuitySession.terminated {
+		termErr := continuitySession.terminalErr
+		if termErr == nil {
+			termErr = &Error{Code: "continuity_terminated", Message: "continuity terminated"}
+		}
+		termErr = markContinuityTerminatedError(termErr)
+		var bootstrapErr *streamBootstrapError
+		if errors.As(termErr, &bootstrapErr) && bootstrapErr != nil {
+			return streamErrorResult(bootstrapErr.Headers(), termErr), nil
+		}
+		return nil, termErr
+	}
+	result, lastErr := m.executeStreamWithRouteFallback(withRetryContinuitySession(ctx, continuitySession), normalized, req, opts, m.executeStreamMixedOnce)
 	if lastErr == nil {
 		return result, nil
 	}
@@ -331,12 +418,15 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			return nil, lastErr
 		}
 		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, authSelectionModelFromOptions(opts, req.Model), opts)
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized, req.Model) {
+		if !continuitySession.terminated && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized, req.Model) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits
 			} else if ok {
 				return result, nil
 			}
+		}
+		if pinnedThread {
+			lastErr = claudeThreadReplayError(lastErr)
 		}
 		var bootstrapErr *streamBootstrapError
 		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
@@ -344,11 +434,24 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 				!isModelSupportError(bootstrapErr.cause) && !isInvalidGrantError(bootstrapErr.cause) {
 				return nil, bootstrapErr.cause
 			}
-			return streamErrorResult(bootstrapErr.Headers(), lastErr), nil
+			streamErr := lastErr
+			if continuitySession.terminated {
+				continuitySession.terminalErr = lastErr
+				streamErr = markContinuityTerminatedError(streamErr)
+			}
+			return streamErrorResult(bootstrapErr.Headers(), streamErr), nil
+		}
+		if continuitySession.terminated {
+			continuitySession.terminalErr = lastErr
+			lastErr = markContinuityTerminatedError(lastErr)
 		}
 		return nil, lastErr
 	}
-	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+	errFinal := error(&Error{Code: "auth_not_found", Message: "no auth available"})
+	if pinnedThread {
+		errFinal = claudeThreadReplayError(errFinal)
+	}
+	return nil, errFinal
 }
 
 type requestToFormatResolver interface {
@@ -801,7 +904,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				return cliproxyexecutor.Response{}, errIntercept
 			}
 			execReq = attachResolvedExecutionModelInfo(routing, execReq, auth, routeModel, upstreamModel, restoreExecutionModel)
-			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+			execCtx = withUpstreamAttemptProvider(syncMetadataSessionToContext(execCtx, execOpts.Metadata), provider)
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
@@ -818,7 +921,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers); okRefresh {
 					auth = refreshed
 					didRefreshOnUnauthorized = true
-					execCtx = m.newUpstreamAttemptContext(execCtx)
+					execCtx = withUpstreamAttemptProvider(m.newUpstreamAttemptContext(execCtx), provider)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
