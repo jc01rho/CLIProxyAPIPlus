@@ -140,6 +140,16 @@ type ClaudeConfig struct {
 	// straight to api.anthropic.com without a proxy, as Claude Code 2.1.302 does.
 	// Default false keeps uncompressed bodies.
 	RequestGzip bool `yaml:"request-gzip,omitempty" json:"request-gzip,omitempty"`
+	// OAuthIncludeCreateAPIKey controls whether new Claude OAuth authorization
+	// URLs request the org:create_api_key scope in addition to ClaudeOAuthScope.
+	// Nil defaults to true to match native Claude Code.
+	OAuthIncludeCreateAPIKey *bool `yaml:"oauth-include-create-api-key,omitempty" json:"oauth-include-create-api-key,omitempty"`
+}
+
+// OAuthIncludeCreateAPIKeyEnabled reports whether Claude OAuth authorization
+// requests should include the org:create_api_key scope.
+func (c *ClaudeConfig) OAuthIncludeCreateAPIKeyEnabled() bool {
+	return c == nil || c.OAuthIncludeCreateAPIKey == nil || *c.OAuthIncludeCreateAPIKey
 }
 
 // DefaultClaudeSessionDatePinDays is the session date pin retention applied

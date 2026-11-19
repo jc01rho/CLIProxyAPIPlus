@@ -254,6 +254,9 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 	if doc != nil {
 		rawJSON = doc.Bytes()
 	}
+	if errMarker := helps.ValidateCodexSessionInstructionMarker(rawJSON, from); errMarker != nil {
+		return nil, nil, errMarker
+	}
 	if errFormat := rejectInvalidCodexRequestFormat(rawJSON); errFormat != nil {
 		return nil, nil, errFormat
 	}

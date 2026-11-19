@@ -192,6 +192,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 	}
 	var exhausted *homeRetryRoundExhaustedError
 	if errors.As(fallback, &exhausted) && exhausted != nil {
+		upstreamProvider := upstreamAttemptProviderFromError(upstream)
 		upstream = unwrapUpstreamExecutionAttempt(upstream)
 		var previousRound *homeRetryRoundExhaustedError
 		if errors.As(upstream, &previousRound) && previousRound != nil && previousRound.cause != nil {
@@ -200,7 +201,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 		// Keep the current Home round marker because it owns authoritative retry timing.
 		preferred := *exhausted
 		preferred.cause = upstream
-		return markUpstreamExecutionAttempt(&preferred)
+		return markUpstreamExecutionAttemptWithProvider(&preferred, upstreamProvider)
 	}
 	return markUpstreamExecutionAttempt(upstream)
 }
@@ -410,6 +411,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	if lastErr == nil {
 		return result, nil
 	}
+	// upstream v8.0.79 keeps the retry loop inline here; this fork relocated it
+	// into executeStreamWithRetry (conductor_fallback.go), where the upstream
+	// changes to that loop were ported.
 	if lastErr != nil {
 		if ctx != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
@@ -1371,6 +1375,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				if homeMode {
+					if isSchedulerRejectError(errPick) {
+						preferredErr = roundPickFailureError(lastErr, upstreamErr, errPick)
+					}
 					return nil, markHomeRetryRoundExhausted(preferredErr, roundTiming.RetryAfter(), isHomeNextRoundImmediatelyAvailable(errPick))
 				}
 				return nil, roundPickFailureError(lastErr, upstreamErr, errPick)
@@ -1456,8 +1463,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		// Enrich before auth preparation so prepare-stage usage records observe the client request.
 		if homeMode {
-			clearSchedulerSelectionID(pickOpts.Metadata)
 			clearSchedulerSelectionID(opts.Metadata)
+			clearSchedulerSelectionID(pickOpts.Metadata)
+			if selection.SelectionID != "" {
+				pickOpts.Metadata[cliproxyexecutor.SelectionIDMetadataKey] = selection.SelectionID
+				opts.Metadata[cliproxyexecutor.SelectionIDMetadataKey] = selection.SelectionID
+			}
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, pickOpts, routeModel)
 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
