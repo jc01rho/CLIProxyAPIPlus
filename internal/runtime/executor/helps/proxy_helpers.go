@@ -776,7 +776,16 @@ func newBoundedTransport() http.RoundTripper {
 	}
 	clone := transport.Clone()
 	tuneHTTPTransport(clone)
-	return withStreamingIdleTimeout(clone)
+	return idleTimeoutRoundTripper{next: clone, idleTimeout: defaultStreamingIdleTimeout, processDefault: true}
+}
+
+// IsDefaultBoundedTransport reports whether rt is the process-default bounded
+// transport NewProxyAwareHTTPClient installs when no proxy, context RoundTripper,
+// or credential pool applies. Callers that substitute their own base transport in
+// that case (upstream leaves Transport nil there) use this to recognize it.
+func IsDefaultBoundedTransport(rt http.RoundTripper) bool {
+	wrapped, ok := rt.(idleTimeoutRoundTripper)
+	return ok && wrapped.processDefault
 }
 
 func tuneHTTPTransport(transport *http.Transport) {
@@ -842,6 +851,9 @@ func UnwrapStreamingIdleTimeout(rt http.RoundTripper) http.RoundTripper {
 type idleTimeoutRoundTripper struct {
 	next        http.RoundTripper
 	idleTimeout time.Duration
+	// processDefault marks the wrapper newBoundedTransport builds around the
+	// cloned http.DefaultTransport (no proxy, no context RoundTripper).
+	processDefault bool
 }
 
 func (rt idleTimeoutRoundTripper) Unwrap() http.RoundTripper {

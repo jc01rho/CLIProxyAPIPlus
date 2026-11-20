@@ -60,7 +60,7 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 	if errProject != nil {
 		return nil, nil, errProject
 	}
-	geminiToAntigravityDoc(doc, modelName, projectID, derivedSessionIDs...)
+	geminiToAntigravityDocForAuth(doc, modelName, projectID, antigravityAuthID(auth), derivedSessionIDs...)
 
 	// Local-only Antigravity execution-time payload hardening: cross-model sanitizer +
 	// Claude/Gemini transforms + function declaration normalization. These run BEFORE
@@ -750,7 +750,18 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 	return doc.Bytes()
 }
 
+func antigravityAuthID(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	return strings.TrimSpace(auth.ID)
+}
+
 func geminiToAntigravityDoc(doc *ojson.Doc, modelName string, projectID string, derivedSessionIDs ...string) {
+	geminiToAntigravityDocForAuth(doc, modelName, projectID, "", derivedSessionIDs...)
+}
+
+func geminiToAntigravityDocForAuth(doc *ojson.Doc, modelName string, projectID string, authID string, derivedSessionIDs ...string) {
 	if doc == nil {
 		return
 	}
@@ -782,7 +793,7 @@ func geminiToAntigravityDoc(doc *ojson.Doc, modelName string, projectID string, 
 		// turns) so conversationId/trajectoryId are reused, used_* accumulate, and
 		// the request timestamp stays monotonic — matching the reference session store.
 		// sessionId uses projectID as the stable workspace identity.
-		convKey := generateStableSessionIDDoc(doc)
+		convKey := generateStableSessionIDDocForAuth(doc, authID)
 		// Local fork extension: a caller-derived session id (e.g. from upstream
 		// request metadata) overrides the stable hash when present. This keeps the
 		// forked behavior compatible with the conductor's per-request id threading
@@ -827,6 +838,10 @@ func generateStableSessionID(payload []byte) string {
 }
 
 func generateStableSessionIDDoc(doc *ojson.Doc) string {
+	return generateStableSessionIDDocForAuth(doc, "")
+}
+
+func generateStableSessionIDDocForAuth(doc *ojson.Doc, authID string) string {
 	if doc == nil {
 		return antigravity.Fnv1a64Signed("")
 	}
@@ -834,16 +849,26 @@ func generateStableSessionIDDoc(doc *ojson.Doc) string {
 	if !contents.IsArray() {
 		contents = doc.Get("contents")
 	}
-	return generateStableSessionIDFromContents(contents)
+	return generateStableSessionIDFromContentsForAuth(contents, authID)
 }
 
 // generateStableSessionIDFromContents keys the agy conversation by the first user
 // message text so the id stays stable across turns.
 func generateStableSessionIDFromContents(contents ojson.Result) string {
+	return generateStableSessionIDFromContentsForAuth(contents, "")
+}
+
+// generateStableSessionIDFromContentsForAuth scopes the agy conversation key to the
+// credential when authID is set, so two accounts never share a synthesized session.
+func generateStableSessionIDFromContentsForAuth(contents ojson.Result, authID string) string {
+	authID = strings.TrimSpace(authID)
 	if contents.IsArray() {
 		for _, content := range contents.Array() {
 			if content.Get("role").String() == "user" {
 				if text := content.Get("parts.0.text").String(); text != "" {
+					if authID != "" {
+						return antigravity.Fnv1a64Signed("cli-proxy-api:antigravity:content-session\x00" + authID + "\x00" + text)
+					}
 					return antigravity.Fnv1a64Signed(text)
 				}
 			}
