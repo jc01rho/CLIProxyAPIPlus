@@ -685,6 +685,12 @@ func (m *Manager) executeWithRetry(
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, errExec
 		}
+		if isCredentialTerminatedError(errExec) {
+			if preferredUpstreamErr == nil {
+				return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
+			}
+			break
+		}
 		upstreamAttempted := hasUpstreamExecutionAttempt(errExec)
 		if continuity != nil && !continuity.priorAttemptSeen && lastErr == nil && preferredUpstreamErr == nil && !upstreamAttempted && isPreAdmissionContinuityError(errExec) {
 			outcome, errContinuity := m.runCodexContinuityGate(ctx, continuity, "pre_admission", providers, retryModel, opts, attempt, false, defaultRequestRetry)
@@ -717,7 +723,7 @@ func (m *Manager) executeWithRetry(
 		if upstreamAttempted {
 			preferredUpstreamErr = errExec
 		}
-		lastErr = errExec
+		lastErr = keepPreferredCandidateError(lastErr, errExec)
 		if !fallbackAllowed {
 			// The requested model is not on the fallback allowlist: the initial
 			// attempt above already ran, but no post-error retry round may
@@ -853,6 +859,12 @@ func (m *Manager) executeStreamWithRetry(
 		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
 			return nil, errStream
 		}
+		if isCredentialTerminatedError(errStream) {
+			if preferredUpstreamErr == nil {
+				return nil, unwrapExecutionBoundaryError(errStream)
+			}
+			break
+		}
 		if continuity != nil && !continuity.priorAttemptSeen && lastErr == nil && preferredUpstreamErr == nil && !upstreamAttempted && isPreAdmissionContinuityError(errStream) {
 			outcome, errContinuity := m.runCodexContinuityGate(ctx, continuity, "pre_admission", providers, retryModel, opts, attempt, false, defaultRequestRetry)
 			if errContinuity != nil {
@@ -872,7 +884,7 @@ func (m *Manager) executeStreamWithRetry(
 		if continuity != nil {
 			continuity.priorAttemptSeen = true
 		}
-		lastErr = errStream
+		lastErr = keepPreferredCandidateError(lastErr, errStream)
 		if continuity != nil && upstreamAttempted && m.isCodexAttemptFailure(errStream, roundAttempted) {
 			if _, okContinuity := m.canRunCodexContinuity(ctx, providers); okContinuity && isPositiveQuotaRejectionError(errStream) {
 				eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -932,6 +944,19 @@ func (m *Manager) executeStreamWithRetry(
 		lastErr = m.annotatePoolCooldownTerminalError(ctx, providers, retryModel, opts, lastErr, selectionCooldownDeadline)
 	}
 	return nil, lastErr
+}
+
+// withoutPoolCooldownAnnotation returns the failure underneath the pool
+// cooldown annotation. Upstream decides the Antigravity credits fallback before
+// it annotates the terminal error; this fork annotates inside the route-fallback
+// retry loop, so the credits decision must look past that annotation (its
+// Retry-After would otherwise read as a short rate-limit hint).
+func withoutPoolCooldownAnnotation(err error) error {
+	var annotated *poolCooldownTerminalError
+	if errors.As(err, &annotated) && annotated != nil && annotated.cause != nil {
+		return annotated.cause
+	}
+	return err
 }
 
 type retryContinuitySessionKey struct{}

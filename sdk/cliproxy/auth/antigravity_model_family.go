@@ -2,6 +2,16 @@ package auth
 
 import "strings"
 
+// SetAntigravityClaudeCreditsFallback restores the upstream behavior that lets a
+// Claude/GPT route enter the Antigravity credits retry on another account. The
+// fork keeps it disabled by default.
+func (m *Manager) SetAntigravityClaudeCreditsFallback(enabled bool) {
+	if m == nil {
+		return
+	}
+	m.antigravityClaudeCreditsFallback.Store(enabled)
+}
+
 // antigravityModelAliasChannel is the OAuth model alias channel that antigravity
 // credentials resolve their route models through.
 const antigravityModelAliasChannel = "antigravity"

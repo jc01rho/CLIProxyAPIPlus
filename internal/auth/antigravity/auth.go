@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,7 @@ type antigravityState struct {
 type HTTPStatusError struct {
 	StatusCodeValue int
 	Message         string
+	RetryAfterValue *time.Duration
 }
 
 func (e *HTTPStatusError) Error() string {
@@ -56,6 +58,15 @@ func (e *HTTPStatusError) StatusCode() int {
 		return 0
 	}
 	return e.StatusCodeValue
+}
+
+// RetryAfter exposes the upstream Retry-After hint so the conductor can record
+// the provider-supplied recovery deadline on the result.
+func (e *HTTPStatusError) RetryAfter() *time.Duration {
+	if e == nil {
+		return nil
+	}
+	return e.RetryAfterValue
 }
 
 // AntigravityAuth handles Antigravity OAuth authentication
@@ -328,6 +339,34 @@ func (o *AntigravityAuth) FetchUserInfo(ctx context.Context, accessToken string)
 	return email, nil
 }
 
+// retryAfterFromHeaders parses the Retry-After response header. It accepts both
+// the delta-seconds form and the absolute HTTP-date form, returning nil when the
+// header is absent or unparsable.
+func retryAfterFromHeaders(header http.Header) *time.Duration {
+	if len(header) == 0 {
+		return nil
+	}
+	raw := strings.TrimSpace(header.Get("Retry-After"))
+	if raw == "" {
+		return nil
+	}
+	if seconds, errParse := strconv.Atoi(raw); errParse == nil {
+		if seconds < 0 {
+			return nil
+		}
+		d := time.Duration(seconds) * time.Second
+		return &d
+	}
+	if when, errParse := http.ParseTime(raw); errParse == nil {
+		d := time.Until(when)
+		if d <= 0 {
+			return nil
+		}
+		return &d
+	}
+	return nil
+}
+
 // FetchProjectID retrieves the project ID for the authenticated user via loadCodeAssist
 func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string) (string, error) {
 	userAgent := o.shortUserAgent()
@@ -368,6 +407,7 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 		return "", &HTTPStatusError{
 			StatusCodeValue: resp.StatusCode,
 			Message:         fmt.Sprintf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes))),
+			RetryAfterValue: retryAfterFromHeaders(resp.Header),
 		}
 	}
 
@@ -481,6 +521,7 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 		return "", &HTTPStatusError{
 			StatusCodeValue: resp.StatusCode,
 			Message:         fmt.Sprintf("http %d: %s", resp.StatusCode, responseErr),
+			RetryAfterValue: retryAfterFromHeaders(resp.Header),
 		}
 	}
 
