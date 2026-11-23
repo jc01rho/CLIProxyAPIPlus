@@ -125,9 +125,7 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 
 	applyAntigravityNativeSignatureReplayIfNeededDoc(modelName, doc)
 	helps.FinalizePayloadDoc(ctx, doc)
-	// CCH billing signing runs AFTER schema sanitization on the final payload,
-	// matching 4ccff390's SignRequestBody(requestBody) placement.
-	finalPayload := []byte(antigravity.SignRequestBody(string(doc.Bytes())))
+	finalPayload := doc.Bytes()
 	var (
 		bodyReader io.Reader = bytes.NewReader(finalPayload)
 		payloadLog []byte

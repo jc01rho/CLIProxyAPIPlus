@@ -19,7 +19,9 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-func TestAntigravityBuildRequest_SignsBillingHeaderCCH(t *testing.T) {
+// cortexkit/antigravity-auth and upstream CLIProxyAPI never sign an Antigravity
+// request with a Claude Code billing header, so the body must reach the wire as built.
+func TestAntigravityBuildRequest_DoesNotSignBillingHeaderCCH(t *testing.T) {
 	executor := &AntigravityExecutor{}
 	auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "project-1"}}
 	payload := []byte(`{
@@ -33,13 +35,8 @@ func TestAntigravityBuildRequest_SignsBillingHeaderCCH(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequest error: %v", err)
 	}
-	raw := requestRawBody(t, req)
-
-	if strings.Contains(raw, "cch=00000;") {
-		t.Fatalf("billing header CCH placeholder was not signed: %s", raw)
-	}
-	if got := antigravity.ExtractBillingHeaderCCH(raw); got == "" {
-		t.Fatalf("signed billing header CCH missing: %s", raw)
+	if raw := requestRawBody(t, req); !strings.Contains(raw, "cch=00000;") {
+		t.Fatalf("Antigravity request must not rewrite the billing header placeholder: %s", raw)
 	}
 }
 
