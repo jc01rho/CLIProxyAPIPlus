@@ -15,13 +15,37 @@ import (
 
 const codexResponsesLiteHeaderName = "X-OpenAI-Internal-Codex-Responses-Lite"
 
+// codexResponsesLiteModelSet mirrors the reference client's explicit catalog
+// list (cortexkit/openai-auth packages/opencode/src/codex-request.ts
+// RESPONSES_LITE_MODELS). The fork previously matched any "gpt-6*" prefix,
+// which selects models the catalog does not carry. The discovery catalog below
+// still contributes because it is generated from the same Codex model catalog.
+var codexResponsesLiteModelSet = map[string]struct{}{
+	"gpt-5.6-sol":   {},
+	"gpt-5.6-terra": {},
+	"gpt-5.6-luna":  {},
+	"gpt-6-astra":   {},
+	"gpt-6-sol":     {},
+	"gpt-6-luna":    {},
+	"gpt-6.1-sol":   {},
+	"gpt-6.1-terra": {},
+	"gpt-6.2-sol":   {},
+	"gpt-6.2-astra": {},
+}
+
 // CodexModelUsesResponsesLite identifies models whose native Codex route uses Responses Lite.
 func CodexModelUsesResponsesLite(model string) bool {
 	slug := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
 	if idx := strings.LastIndex(slug, "/"); idx >= 0 {
 		slug = strings.TrimSpace(slug[idx+1:])
 	}
-	return slug != "" && (strings.HasPrefix(slug, "gpt-6") || registry.CodexClientModelUsesResponsesLite(slug))
+	if slug == "" {
+		return false
+	}
+	if _, ok := codexResponsesLiteModelSet[slug]; ok {
+		return true
+	}
+	return registry.CodexClientModelUsesResponsesLite(slug)
 }
 
 // CodexResponsesLiteRequestDoc reads the route hints without changing the payload.

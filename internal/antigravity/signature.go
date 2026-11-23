@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/cespare/xxhash/v2"
 )
 
 // CCH constants from anthropic-auth reference
 const (
-	// CCHSeed is the fixed seed used by Claude Code for xxHash64
-	CCHSeed uint64 = 0x6e52736ac806831e
+	// CCHSeed is the fixed seed used by Claude Code for xxHash64.
+	// cortexkit/anthropic-auth packages/core/src/cch.ts CCH_SEED.
+	CCHSeed uint64 = 0x4d659218e32a3268
 
 	// CCHPlaceholder is the placeholder value used in billing header before signing
 	CCHPlaceholder = "cch=00000;"
@@ -27,11 +29,7 @@ const (
 
 	// DefaultClaudeCodeVersion is the version used by Claude Code.
 	// Mirrors cortexkit/anthropic-auth constants.ts CLAUDE_CODE_VERSION.
-	DefaultClaudeCodeVersion = "2.1.177"
-
-	// DefaultClaudeCodeBuildHash is the build hash for the default version.
-	// Mirrors cortexkit/anthropic-auth constants.ts CLAUDE_CODE_BUILD_HASH.
-	DefaultClaudeCodeBuildHash = "3bf"
+	DefaultClaudeCodeVersion = "2.1.302"
 
 	// DefaultClaudeCodeEntrypoint is the entrypoint used by Claude Code.
 	// Mirrors cortexkit/anthropic-auth constants.ts CLAUDE_CODE_ENTRYPOINT.
@@ -95,27 +93,44 @@ func SignRequestBody(bodyString string) string {
 	return billingHeaderCCHPlaceholderRe.ReplaceAllString(unsignedBodyString, "${1}cch="+token+";")
 }
 
-// ComputeVersionSuffix computes a stable 3-character suffix for cc_version.
-// For the default version, it returns the build hash.
-// For other versions, it computes a deterministic SHA256-based suffix.
-func ComputeVersionSuffix(version string) string {
-	if version == DefaultClaudeCodeVersion {
-		return DefaultClaudeCodeBuildHash
+// CCHSalt is the salt Claude Code mixes into the cc_version build suffix
+// (anthropic-auth constants.ts CCH_SALT).
+const CCHSalt = "59cf53e54c78"
+
+// cchPositions are the UTF-16 code-unit indices Claude Code samples from the
+// first user message (anthropic-auth constants.ts CCH_POSITIONS).
+var cchPositions = [...]int{4, 7, 20}
+
+// ComputeVersionSuffix computes the 3-character cc_version build suffix:
+// sha256(CCHSalt + firstUserText[4],[7],[20] + version)[:3].
+// JavaScript indexes UTF-16 code units and substitutes '0' for a missing index.
+func ComputeVersionSuffix(firstUserText, version string) string {
+	if version == "" {
+		version = DefaultClaudeCodeVersion
 	}
-	// Compute SHA256 hash of version and take first 3 hex characters
-	hash := sha256.Sum256([]byte(version))
+	units := utf16.Encode([]rune(firstUserText))
+	sampled := make([]uint16, 0, len(cchPositions))
+	for _, position := range cchPositions {
+		unit := uint16('0')
+		if position < len(units) {
+			unit = units[position]
+		}
+		sampled = append(sampled, unit)
+	}
+	input := CCHSalt + string(utf16.Decode(sampled)) + version
+	hash := sha256.Sum256([]byte(input))
 	return hex.EncodeToString(hash[:])[:3]
 }
 
 // BuildBillingHeaderValue builds the billing header value with a CCH placeholder.
 // The placeholder must be replaced by SignRequestBody() after final serialization.
-func BuildBillingHeaderValue(version, entrypoint string) string {
-	suffix := ComputeVersionSuffix(version)
+func BuildBillingHeaderValue(firstUserText, version, entrypoint string) string {
+	suffix := ComputeVersionSuffix(firstUserText, version)
 	return fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=%s; %s",
 		version, suffix, entrypoint, CCHPlaceholder)
 }
 
 // BuildDefaultBillingHeaderValue builds the billing header with default values.
-func BuildDefaultBillingHeaderValue() string {
-	return BuildBillingHeaderValue(DefaultClaudeCodeVersion, DefaultClaudeCodeEntrypoint)
+func BuildDefaultBillingHeaderValue(firstUserText string) string {
+	return BuildBillingHeaderValue(firstUserText, DefaultClaudeCodeVersion, DefaultClaudeCodeEntrypoint)
 }

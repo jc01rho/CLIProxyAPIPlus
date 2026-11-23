@@ -1097,7 +1097,7 @@ func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) 
 	if !strings.HasPrefix(codexUserAgent, codexOriginator+"/") {
 		t.Fatalf("default Codex User-Agent = %s, want prefix %s/", codexUserAgent, codexOriginator)
 	}
-	const wantUserAgent = "codex_exec/0.159.0 (Debian 12.0.0; aarch64) unknown (codex_exec; 0.159.0)"
+	const wantUserAgent = "codex_exec/0.166.0 (Debian 12.0.0; aarch64) unknown (codex_exec; 0.166.0)"
 	if codexUserAgent != wantUserAgent {
 		t.Fatalf("default Codex User-Agent = %q, want %q", codexUserAgent, wantUserAgent)
 	}
@@ -1697,8 +1697,8 @@ func TestApplyCodexHeadersUsesConfigUserAgentForOAuth(t *testing.T) {
 	if got := req.Header.Get("User-Agent"); got != "config-ua" {
 		t.Fatalf("User-Agent = %s, want %s", got, "config-ua")
 	}
-	if got := req.Header.Get("x-codex-beta-features"); got != "" {
-		t.Fatalf("x-codex-beta-features = %q, want empty", got)
+	if got := req.Header.Get("x-codex-beta-features"); got != "config-beta" {
+		t.Fatalf("x-codex-beta-features = %q, want %q", got, "config-beta")
 	}
 }
 
@@ -1934,7 +1934,7 @@ func TestApplyCodexHeadersPassesThroughClientIdentityHeaders(t *testing.T) {
 	}
 }
 
-func TestApplyCodexHeadersDoesNotInjectClientOnlyHeadersByDefault(t *testing.T) {
+func TestApplyCodexHeadersInjectsReferenceClientIdentityWhenCallerSendsNone(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
@@ -1942,17 +1942,46 @@ func TestApplyCodexHeadersDoesNotInjectClientOnlyHeadersByDefault(t *testing.T) 
 
 	applyCodexHeaders(req, nil, "oauth-token", true, nil)
 
-	if got := req.Header.Get("Version"); got != "" {
-		t.Fatalf("Version = %q, want empty", got)
+	// A translated request carries no client identity, so the executor supplies
+	// the one cortexkit/openai-auth codex-request.ts prepareCodexRequest builds.
+	if got := req.Header.Get("Version"); got != codexVersion {
+		t.Fatalf("Version = %q, want %q", got, codexVersion)
 	}
-	if got := req.Header.Get("X-Codex-Turn-Metadata"); got != "" {
-		t.Fatalf("X-Codex-Turn-Metadata = %q, want empty", got)
+	if got := req.Header.Get("Originator"); got != codexOriginator {
+		t.Fatalf("Originator = %q, want %q", got, codexOriginator)
 	}
-	if got := req.Header.Get("X-Codex-Turn-State"); got != "" {
-		t.Fatalf("X-Codex-Turn-State = %q, want empty", got)
+	if got := req.Header.Get("X-Codex-Beta-Features"); got != codexBetaFeatures {
+		t.Fatalf("X-Codex-Beta-Features = %q, want %q", got, codexBetaFeatures)
 	}
-	if got := req.Header.Get("X-Client-Request-Id"); got != "" {
-		t.Fatalf("X-Client-Request-Id = %q, want empty", got)
+	threadID := req.Header.Get("Session-Id")
+	if threadID == "" {
+		t.Fatal("Session-Id is empty, want a synthesized thread id")
+	}
+	for _, key := range []string{"Thread-Id", "X-Client-Request-Id"} {
+		if got := req.Header.Get(key); got != threadID {
+			t.Fatalf("%s = %q, want the thread id %q", key, got, threadID)
+		}
+	}
+	if got := req.Header.Get("X-Codex-Window-Id"); got == "" {
+		t.Fatal("X-Codex-Window-Id is empty, want a synthesized window id")
+	}
+	turnMetadata := req.Header.Get("X-Codex-Turn-Metadata")
+	if turnMetadata == "" {
+		t.Fatal("X-Codex-Turn-Metadata is empty, want the synthesized turn block")
+	}
+	const wantKeyOrder = `"session_id","thread_id","thread_source","turn_id","sandbox","turn_started_at_unix_ms","request_kind","window_id"`
+	lastIndex := -1
+	for _, key := range strings.Split(wantKeyOrder, ",") {
+		index := strings.Index(turnMetadata, key+":")
+		if index < 0 || index <= lastIndex {
+			t.Fatalf("X-Codex-Turn-Metadata key %s out of reference order: %s", key, turnMetadata)
+		}
+		lastIndex = index
+	}
+	for _, fragment := range []string{`"thread_source":"user"`, `"sandbox":"seccomp"`, `"request_kind":"turn"`} {
+		if !strings.Contains(turnMetadata, fragment) {
+			t.Fatalf("X-Codex-Turn-Metadata = %s, want %s", turnMetadata, fragment)
+		}
 	}
 }
 

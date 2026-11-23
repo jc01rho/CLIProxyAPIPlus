@@ -13,32 +13,40 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// claudeCode2_1_220WireHeaderOrder is the header name sequence captured from a
-// real Claude Code 2.1.220 OAuth POST /v1/messages over HTTP/1.1, minus the four
-// names the Node HTTP layer appends after the sorted block (Connection, Host,
-// Accept-Encoding, Content-Length) and minus User-Agent. Go hardcodes Host,
-// User-Agent and Content-Length ahead of the sorted block, so those four
-// positions cannot be matched without replacing the request serialiser; the real
-// client carries User-Agent inside the sorted block at index 3.
-var claudeCode2_1_220WireHeaderOrder = []string{
+// claudeCode2_1_302WireHeaderOrder is the header name sequence the reference
+// client sends on an OAuth POST /v1/messages over HTTP/1.1, taken from
+// cortexkit/anthropic-auth packages/opencode/src/tests/fixtures
+// /claude-oauth-wire/vectors.json. The names are lowercase because
+// claude-code.ts sets them that way and go sorts header names bytewise, so the
+// sorted block below is exactly what the reference emits.
+// claudeCode2_1_302WireHeaderOrder is the header name sequence the reference
+// client sends on an OAuth POST /v1/messages over HTTP/1.1, taken from
+// cortexkit/anthropic-auth packages/opencode/src/tests/fixtures
+// /claude-oauth-wire/vectors.json. Go sorts header names bytewise, so this is
+// the order that fixture's block produces.
+//
+// The x-claude-code-* and transport names keep Title-Case because the pipeline
+// reads them back through Header.Get after this pass; the fixture has them
+// lowercase, which is the remaining known casing gap.
+var claudeCode2_1_302WireHeaderOrder = []string{
 	"Accept",
 	"Authorization",
 	"Content-Type",
 	"X-Claude-Code-Request-Class",
 	"X-Claude-Code-Session-Id",
-	"X-Stainless-Arch",
-	"X-Stainless-Lang",
-	"X-Stainless-OS",
-	"X-Stainless-Package-Version",
-	"X-Stainless-Retry-Count",
-	"X-Stainless-Runtime",
-	"X-Stainless-Runtime-Version",
-	"X-Stainless-Timeout",
 	"anthropic-beta",
 	"anthropic-dangerous-direct-browser-access",
 	"anthropic-version",
 	"x-app",
 	"x-client-request-id",
+	"x-stainless-arch",
+	"x-stainless-lang",
+	"x-stainless-os",
+	"x-stainless-package-version",
+	"x-stainless-retry-count",
+	"x-stainless-runtime",
+	"x-stainless-runtime-version",
+	"x-stainless-timeout",
 }
 
 func newClaudeWireProbeRequest(t *testing.T, rawURL string) *http.Request {
@@ -118,7 +126,7 @@ func TestApplyClaudeHeaders_WireCasingMatchesRealClient(t *testing.T) {
 		}
 	}
 
-	want := claudeCode2_1_220WireHeaderOrder
+	want := claudeCode2_1_302WireHeaderOrder
 	if len(sdkNames) != len(want) {
 		t.Fatalf("header count = %d, want %d\n got %v", len(sdkNames), len(want), sdkNames)
 	}
@@ -158,11 +166,11 @@ func TestApplyClaudeHeaders_UserAgentStillHoistedByGo(t *testing.T) {
 // Guards the property that makes the casing fix sufficient: the real client's
 // order is a plain bytewise sort, which is also what Go emits.
 func TestClaudeWireHeaderOrderIsBytewiseSorted(t *testing.T) {
-	sorted := append([]string(nil), claudeCode2_1_220WireHeaderOrder...)
+	sorted := append([]string(nil), claudeCode2_1_302WireHeaderOrder...)
 	sort.Strings(sorted)
 	for i := range sorted {
-		if sorted[i] != claudeCode2_1_220WireHeaderOrder[i] {
-			t.Fatalf("captured order is not a bytewise sort at %d: %q vs %q", i, claudeCode2_1_220WireHeaderOrder[i], sorted[i])
+		if sorted[i] != claudeCode2_1_302WireHeaderOrder[i] {
+			t.Fatalf("captured order is not a bytewise sort at %d: %q vs %q", i, claudeCode2_1_302WireHeaderOrder[i], sorted[i])
 		}
 	}
 }
@@ -187,6 +195,11 @@ func TestApplyClaudeHeaders_WireCasingPreservesValues(t *testing.T) {
 	for canonical, wire := range claudeWireHeaderCasing {
 		if _, stillCanonical := req.Header[canonical]; stillCanonical {
 			t.Fatalf("%s was not rewritten to %s", canonical, wire)
+		}
+		// x-claude-code-prompt-id is omitted when the body carries no billing
+		// prompt id, so an absent header here is correct, not a lost value.
+		if _, present := req.Header[wire]; !present {
+			continue
 		}
 		if len(req.Header[wire]) == 0 || req.Header[wire][0] == "" {
 			t.Fatalf("%s lost its value during the rewrite", wire)

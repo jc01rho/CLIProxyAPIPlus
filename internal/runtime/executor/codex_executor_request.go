@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
@@ -32,13 +34,18 @@ const (
 	// codexVersion and codexUserAgent mirror cortexkit/openai-auth
 	// packages/opencode/src/codex-request.ts (CODEX_VERSION, CODEX_USER_AGENT).
 	// The reference client identifies itself as codex_exec, not codex-tui.
-	codexVersion               = "0.159.0"
+	codexVersion               = "0.166.0"
 	codexUserAgent             = "codex_exec/" + codexVersion + " (Debian 12.0.0; aarch64) unknown (codex_exec; " + codexVersion + ")"
 	codexOriginator            = "codex_exec"
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
 	codexWSStreamStartMetadata = "client_metadata.x-codex-ws-stream-request-start-ms"
+	// codexBetaFeatures is the constant the reference client sends in
+	// x-codex-beta-features (cortexkit/openai-auth codex-request.ts
+	// CODEX_BETA_FEATURES); the fork previously forwarded the client value only.
+	codexBetaFeatures = "terminal_resize_reflow"
+	codexSandbox      = "seccomp"
 )
 
 var dataTag = []byte("data:")
@@ -630,17 +637,32 @@ func applyCodexHeadersWithSIWC(r *http.Request, auth *cliproxyauth.Auth, useSIWC
 	if ginHeaders != nil && ginHeaders.Get("X-Codex-Beta-Features") != "" {
 		r.Header.Set("X-Codex-Beta-Features", ginHeaders.Get("X-Codex-Beta-Features"))
 	}
-	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
+	// A native Codex client already carries the identity cortexkit/openai-auth
+	// builds (codex-request.ts prepareCodexRequest), so its own values are kept;
+	// a translated request carries none and gets the reference identity so the
+	// upstream sees the same client either way. API-key credentials are not the
+	// Codex client at all, so only their caller-supplied values survive.
+	threadID := codexThreadIdentity(r.Header, ginHeaders)
+	windowID := codexWindowIdentity(r.Header, ginHeaders, threadID)
+	r.Header.Del("X-Session-Id")
+	r.Header.Del("X-Session-Affinity")
+	r.Header.Del("Content-Length")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-State", "")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Window-Id", "")
-	misc.EnsureHeader(r.Header, ginHeaders, "Thread-Id", "")
-	misc.EnsureHeader(r.Header, ginHeaders, "Session-Id", "")
+	ensureHeaderWithPriority(r.Header, ginHeaders, "X-Client-Request-Id", threadID, "")
+	ensureHeaderWithPriority(r.Header, ginHeaders, "X-Codex-Window-Id", windowID, "")
+	ensureHeaderWithPriority(r.Header, ginHeaders, "Thread-Id", threadID, "")
+	ensureHeaderWithPriority(r.Header, ginHeaders, "Session-Id", threadID, "")
+	ensureHeaderWithPriority(r.Header, ginHeaders, "Version", codexVersion, "")
+	ensureHeaderWithPriority(r.Header, ginHeaders, "X-Codex-Turn-Metadata", codexTurnMetadata(threadID, windowID), "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Openai-Internal-Codex-Responses-Lite", "")
 
-	cfgUserAgent, _ := codexHeaderDefaults(cfg, auth)
+	cfgUserAgent, cfgBetaFeatures := codexHeaderDefaults(cfg, auth)
 	ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+	betaFeatures := strings.TrimSpace(cfgBetaFeatures)
+	if betaFeatures == "" {
+		betaFeatures = codexBetaFeatures
+	}
+	ensureHeaderWithPriority(r.Header, ginHeaders, "X-Codex-Beta-Features", betaFeatures, "")
 
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
@@ -649,18 +671,15 @@ func applyCodexHeadersWithSIWC(r *http.Request, auth *cliproxyauth.Auth, useSIWC
 	}
 	r.Header.Set("Connection", "Keep-Alive")
 
-	isAPIKey := codexAuthUsesAPIKey(auth)
-	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" {
-		r.Header.Set("Originator", originator)
-	} else if !isAPIKey {
-		r.Header.Set("Originator", codexOriginator)
-	}
-	if !isAPIKey {
+	if !codexAuthUsesAPIKey(auth) {
+		ensureHeaderWithPriority(r.Header, ginHeaders, "Originator", codexOriginator, "")
 		if auth != nil && auth.Metadata != nil {
 			if accountID, ok := auth.Metadata["account_id"].(string); ok {
 				r.Header.Set("Chatgpt-Account-Id", accountID)
 			}
 		}
+	} else {
+		ensureHeaderWithPriority(r.Header, ginHeaders, "Originator", "", "")
 	}
 	var attrs map[string]string
 	if auth != nil {
@@ -675,6 +694,73 @@ func applyCodexHeadersWithSIWC(r *http.Request, auth *cliproxyauth.Auth, useSIWC
 }
 
 const codexRoutingHintHeader = "X-Codex-Routing-Hint"
+
+// codexThreadIdentity resolves the thread UUID the reference client reuses as
+// session-id, thread-id, x-client-request-id and x-codex-window-id
+// (cortexkit/openai-auth codex-request.ts:180-186). A caller-supplied thread id
+// wins; anything else derives from the session, then from a fresh UUID.
+func codexThreadIdentity(target http.Header, client http.Header) string {
+	for _, key := range []string{"thread-id", "session-id", "x-client-request-id"} {
+		if value := strings.TrimSpace(headerValueCaseInsensitive(target, key)); value != "" {
+			return value
+		}
+		if value := strings.TrimSpace(headerValueCaseInsensitive(client, key)); value != "" {
+			return value
+		}
+	}
+	return uuid.NewString()
+}
+
+// codexWindowIdentity keeps a caller-supplied window id so a resumed client
+// window stays attributable, and otherwise derives one from the thread.
+func codexWindowIdentity(target http.Header, client http.Header, threadID string) string {
+	for _, source := range []http.Header{target, client} {
+		if value := strings.TrimSpace(headerValueCaseInsensitive(source, "x-codex-window-id")); value != "" {
+			return value
+		}
+	}
+	cacheID := strings.TrimSpace(headerValueCaseInsensitive(target, "session-id"))
+	if cacheID == "" {
+		cacheID = threadID
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:window:"+cacheID)).String()
+}
+
+// codexTurnMetadata builds the fixed-order JSON the reference attaches to
+// every request (cortexkit/openai-auth codex-request.ts:159-172). The key order
+// is wire-visible, so the struct fields stay in that exact order.
+type codexTurnMetadataPayload struct {
+	SessionID          string `json:"session_id"`
+	ThreadID           string `json:"thread_id"`
+	ThreadSource       string `json:"thread_source"`
+	TurnID             string `json:"turn_id"`
+	Sandbox            string `json:"sandbox"`
+	TurnStartedAtMilli int64  `json:"turn_started_at_unix_ms"`
+	RequestKind        string `json:"request_kind"`
+	WindowID           string `json:"window_id"`
+}
+
+func codexTurnMetadata(threadID, windowID string) string {
+	if strings.TrimSpace(threadID) == "" {
+		return ""
+	}
+	startedAt := time.Now().UnixMilli()
+	payload := codexTurnMetadataPayload{
+		SessionID:          threadID,
+		ThreadID:           threadID,
+		ThreadSource:       "user",
+		TurnID:             uuid.NewString(),
+		Sandbox:            codexSandbox,
+		TurnStartedAtMilli: startedAt,
+		RequestKind:        "turn",
+		WindowID:           windowID,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
 
 // applyCodexRoutingHint sends the routing hint native Codex attaches to every
 // ChatGPT-backend Responses request: "model=<slug>" plus ";tier=<service_tier>"
