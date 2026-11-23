@@ -44,8 +44,74 @@ func TestNewProxyAwareHTTPClientHasBoundedTransportWithoutGlobalTimeout(t *testi
 	if transport.IdleConnTimeout <= 0 {
 		t.Fatal("IdleConnTimeout is not bounded")
 	}
-	if transport.TLSHandshakeTimeout > time.Minute || transport.ResponseHeaderTimeout > time.Minute {
+	if transport.TLSHandshakeTimeout > time.Minute || transport.ResponseHeaderTimeout > config.DefaultResponseHeaderTimeout {
 		t.Fatalf("transport timeouts too large: TLS=%v ResponseHeader=%v", transport.TLSHandshakeTimeout, transport.ResponseHeaderTimeout)
+	}
+}
+
+func TestResponseHeaderTimeoutDefaultsTo120Seconds(t *testing.T) {
+	t.Parallel()
+
+	if config.DefaultResponseHeaderTimeout != 120*time.Second {
+		t.Fatalf("DefaultResponseHeaderTimeout = %v, want 120s", config.DefaultResponseHeaderTimeout)
+	}
+	cases := map[string]*config.Config{
+		"nil config":   nil,
+		"unset":        {},
+		"zero":         {SDKConfig: sdkconfig.SDKConfig{ResponseHeaderTimeoutSeconds: 0}},
+		"non-positive": {SDKConfig: sdkconfig.SDKConfig{ResponseHeaderTimeoutSeconds: -1}},
+	}
+	for name, cfg := range cases {
+		client := NewProxyAwareHTTPClient(context.Background(), cfg, nil, 0)
+		if got := requireHTTPTransport(t, client.Transport).ResponseHeaderTimeout; got != 120*time.Second {
+			t.Fatalf("%s: ResponseHeaderTimeout = %v, want 120s", name, got)
+		}
+	}
+}
+
+func TestResponseHeaderTimeoutFollowsConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{SDKConfig: sdkconfig.SDKConfig{ResponseHeaderTimeoutSeconds: 7}}
+	direct := NewProxyAwareHTTPClient(context.Background(), cfg, nil, 0)
+	if got := requireHTTPTransport(t, direct.Transport).ResponseHeaderTimeout; got != 7*time.Second {
+		t.Fatalf("direct ResponseHeaderTimeout = %v, want 7s", got)
+	}
+
+	cfg.ProxyURL = "http://global-proxy.example:8080"
+	proxied := NewProxyAwareHTTPClient(context.Background(), cfg, nil, 0)
+	if got := requireHTTPTransport(t, proxied.Transport).ResponseHeaderTimeout; got != 7*time.Second {
+		t.Fatalf("proxied ResponseHeaderTimeout = %v, want 7s", got)
+	}
+
+	// A later reload hands executors a new config snapshot; a client built from
+	// it must carry the new value rather than a cached older one.
+	reloaded := &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: cfg.ProxyURL, ResponseHeaderTimeoutSeconds: 200}}
+	after := NewProxyAwareHTTPClient(context.Background(), reloaded, nil, 0)
+	if got := requireHTTPTransport(t, after.Transport).ResponseHeaderTimeout; got != 200*time.Second {
+		t.Fatalf("reloaded ResponseHeaderTimeout = %v, want 200s", got)
+	}
+}
+
+func TestCachedTransportsRebuildWhenResponseHeaderTimeoutChanges(t *testing.T) {
+	proxyURL := "http://rht-cache.example:8080"
+	for _, seconds := range []int{11, 22} {
+		cfg := &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: proxyURL, ResponseHeaderTimeoutSeconds: seconds}}
+		want := time.Duration(seconds) * time.Second
+
+		devin := NewDevinHTTPClient(context.Background(), cfg, nil, 0)
+		if got := requireHTTPTransport(t, devin.Transport).ResponseHeaderTimeout; got != want {
+			t.Fatalf("devin ResponseHeaderTimeout = %v, want %v", got, want)
+		}
+
+		kiro := NewKiroProxyChainHTTPClient(cfg, 0, []string{proxyURL})
+		chain, ok := kiro.Transport.(kiroProxyChainRoundTripper)
+		if !ok || len(chain.transports) != 1 {
+			t.Fatalf("kiro transport = %T, want a one-proxy chain", kiro.Transport)
+		}
+		if got := requireHTTPTransport(t, chain.transports[0].transport).ResponseHeaderTimeout; got != want {
+			t.Fatalf("kiro ResponseHeaderTimeout = %v, want %v", got, want)
+		}
 	}
 }
 

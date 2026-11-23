@@ -323,6 +323,13 @@ requests:
   # Set to 0 to disable (default).
   tls-handshake-timeout-seconds: 0
 
+  # Maximum time in seconds to wait for upstream response headers after a request is sent.
+  # It applies to the shared upstream HTTP clients (direct, proxy-url, Kiro proxy chain)
+  # and does not limit the response body, so long streams are unaffected. Slow upstreams that need longer before the first byte
+  # (for example reasoning models) can raise it. Omit it, or set 0 or a negative value,
+  # to use the default of 120 seconds. Changes apply to new connections after a reload.
+  response-header-timeout-seconds: 120
+
   # When true, forward filtered upstream response headers to downstream clients.
   # Default is false (disabled).
   passthrough-headers: false
