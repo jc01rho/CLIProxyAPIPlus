@@ -507,7 +507,7 @@ func TestManagerExecuteStream_LiveDerivedForceMapping_AllProviders(t *testing.T)
 // even when the alias resolves upstream to a Gemini model.
 func TestManagerExecute_ClaudeRouteSkipsAntigravityCreditsRetry(t *testing.T) {
 	const (
-		upstreamModel = "gemini-3-flash-preview"
+		upstreamModel = "claude-sonnet-4-6"
 		aliasModel    = "claude-haiku-4-5-20251001"
 	)
 
@@ -531,7 +531,7 @@ func TestManagerExecute_ClaudeRouteSkipsAntigravityCreditsRetry(t *testing.T) {
 // streaming sibling of TestManagerExecute_ClaudeRouteSkipsAntigravityCreditsRetry.
 func TestManagerExecuteStream_ClaudeRouteSkipsAntigravityCreditsRetry(t *testing.T) {
 	const (
-		upstreamModel = "gemini-3-flash-preview"
+		upstreamModel = "claude-sonnet-4-6"
 		aliasModel    = "claude-haiku-4-5-20251001"
 	)
 

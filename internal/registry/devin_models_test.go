@@ -342,7 +342,7 @@ func TestFetchDevinModelsFromRemote_ContextNotCanceledBeforeRead_Issue6095(t *te
 }
 
 func TestDevinSWE16Slow_Issue6111(t *testing.T) {
-	// Verify that devin/swe-1-6-slow is present in GetDevinModels
+	// Verify that swe-1-6-slow is present in GetDevinModels
 	models := GetDevinModels()
 	var found *ModelInfo
 	for _, m := range models {
@@ -421,7 +421,7 @@ func TestWithDevinBuiltins(t *testing.T) {
 
 	// Test WithDevinBuiltins preserves existing models and injects swe-1-6-slow
 	existing := []*ModelInfo{
-		{ID: "devin/swe-2", DisplayName: "SWE-2"},
+		{ID: "swe-2", DisplayName: "SWE-2"},
 	}
 	merged := WithDevinBuiltins(existing)
 	if len(merged) != 2 {
@@ -453,7 +453,7 @@ func TestEmbeddedDevinModels_NoThinkingSuffixes_Issue6141(t *testing.T) {
 	}
 	var exposedThinkingVariants []string
 	for _, m := range models {
-		cleanID := strings.TrimPrefix(m.ID, "devin/")
+		cleanID := m.ID
 		for _, s := range disallowedSuffixes {
 			if strings.HasSuffix(cleanID, s) {
 				exposedThinkingVariants = append(exposedThinkingVariants, m.ID)

@@ -134,7 +134,7 @@ func ValidateConfigWithContext(ctx context.Context, config ThinkingConfig, model
 			// When converting Budget -> Level for level-only models, clamp the derived standard level
 			// to the nearest supported level. Special values (none/auto) are preserved.
 			config.Mode = ModeLevel
-			config.Level = clampLevel(ThinkingLevel(level), modelInfo, toFormat)
+			config.Level = ClampLevel(ThinkingLevel(level), modelInfo, toFormat)
 			config.Budget = 0
 		}
 	case CapabilityHybrid:
@@ -161,7 +161,7 @@ func ValidateConfigWithContext(ctx context.Context, config ThinkingConfig, model
 		}
 		if !isLevelSupported(string(config.Level), support.Levels) {
 			if allowClampUnsupported {
-				config.Level = clampLevel(config.Level, modelInfo, toFormat)
+				config.Level = ClampLevel(config.Level, modelInfo, toFormat)
 			}
 			if !isLevelSupported(string(config.Level), support.Levels) {
 				// User explicitly specified an unsupported level - return error
@@ -191,7 +191,7 @@ func ValidateConfigWithContext(ctx context.Context, config ThinkingConfig, model
 		// fallback just like a budget-derived level so providers never receive an
 		// unsupported value.
 		if config.Mode == ModeLevel && len(support.Levels) > 0 && !isLevelSupported(string(config.Level), support.Levels) {
-			config.Level = clampLevel(config.Level, modelInfo, toFormat)
+			config.Level = ClampLevel(config.Level, modelInfo, toFormat)
 		}
 	}
 
@@ -301,9 +301,9 @@ func lowestSupportedLevel(supported []string) (ThinkingLevel, bool) {
 	return "", false
 }
 
-// clampLevel clamps the given level to the nearest supported level.
+// ClampLevel clamps the given level to the nearest supported level.
 // On tie, prefers the lower level.
-func clampLevel(level ThinkingLevel, modelInfo *registry.ModelInfo, provider string) ThinkingLevel {
+func ClampLevel(level ThinkingLevel, modelInfo *registry.ModelInfo, provider string) ThinkingLevel {
 	model := "unknown"
 	var supported []string
 	if modelInfo != nil {

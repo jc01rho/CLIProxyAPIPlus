@@ -30,6 +30,7 @@ func newAuthManager() *sdkAuth.Manager {
 		sdkAuth.NewWorkBuddyAuthenticator(),
 		sdkAuth.NewCursorAuthenticator(),
 		sdkAuth.NewClineAuthenticator(),
+		sdkAuth.CopilotAuthenticator{},
 		sdkAuth.NewDevinAuthenticator(),
 		sdkAuth.NewMetaAuthenticator(),
 	)

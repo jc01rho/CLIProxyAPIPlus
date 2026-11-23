@@ -62,20 +62,45 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		out := make(chan cliproxyexecutor.StreamChunk)
 		go func(in <-chan cliproxyexecutor.StreamChunk) {
 			defer close(out)
-			select {
-			case out <- first:
-			case <-ctx.Done():
+			if !relayAntigravityStreamChunk(ctx, out, first) {
+				for range in {
+				}
 				return
 			}
 			for chunk := range in {
-				select {
-				case out <- chunk:
-				case <-ctx.Done():
+				if !relayAntigravityStreamChunk(ctx, out, chunk) {
+					for range in {
+					}
 					return
 				}
 			}
 		}(result.Chunks)
 		return &cliproxyexecutor.StreamResult{Headers: result.Headers, Chunks: out}, nil
+	}
+}
+
+// antigravityStreamRelayGrace bounds how long the empty-stream retry relay keeps
+// offering an already produced chunk after the client context ended.
+const antigravityStreamRelayGrace = 250 * time.Millisecond
+
+// relayAntigravityStreamChunk forwards one chunk produced by the inner stream. A
+// select on ctx.Done alone would drop chunks at random once the context is
+// canceled, including the terminal chunk the inner stream already delivered
+// before the disconnect (upstream issue 7881), so a canceled context still gets a
+// short grace period before the relay gives up.
+func relayAntigravityStreamChunk(ctx context.Context, out chan<- cliproxyexecutor.StreamChunk, chunk cliproxyexecutor.StreamChunk) bool {
+	select {
+	case out <- chunk:
+		return true
+	case <-ctx.Done():
+	}
+	timer := time.NewTimer(antigravityStreamRelayGrace)
+	defer timer.Stop()
+	select {
+	case out <- chunk:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -104,7 +129,7 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	if antigravityInTOSPause(e.cfg, auth) {
-		return nil, statusErr{code: http.StatusServiceUnavailable, msg: "antigravity pool paused after TOS_VIOLATION"}
+		return nil, newAntigravityTOSPauseStatusErr()
 	}
 	ctx = context.WithValue(ctx, "alt", "")
 	if !antigravityCoolingDisabled(auth, e.cfg) {
@@ -230,48 +255,15 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 			err = errRead
 			return nil, err
 		}
-		helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
 		antigravityAttemptSessionRecovery(ctx, auth, bodyBytes)
-		if httpResp.StatusCode == http.StatusTooManyRequests {
-			decision := decideAntigravity429(bodyBytes)
-
-			switch decision.kind {
-			case antigravity429DecisionShortCooldownSwitchAuth:
-				closeAntigravityAuthIdleTransports(auth)
-				if decision.retryAfter != nil && *decision.retryAfter > 0 && !antigravityCoolingDisabled(auth, e.cfg) {
-					if errMarkCooldown := markAntigravityShortCooldownRequired(ctx, auth, baseModel, time.Now(), *decision.retryAfter); errMarkCooldown != nil {
-						err = homeKVUnavailableStatusErr(errMarkCooldown)
-						return nil, err
-					}
-					log.Debugf("antigravity executor: short quota cooldown (%s) for model %s recorded", *decision.retryAfter, baseModel)
-				}
-			case antigravity429DecisionFullQuotaExhausted:
-				closeAntigravityAuthIdleTransports(auth)
-				if useCredits && antigravityHasExplicitCreditsBalanceExhaustedReason(bodyBytes) && !antigravityCoolingDisabled(auth, e.cfg) {
-					markAntigravityCreditsPermanentlyDisabled(auth)
-				}
-				// No credits logic - just fall through to error return below
-			}
-		}
-
-		if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, bodyBytes); errClear != nil {
-			// Report the upstream failure rather than the cleanup failure.
-			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
-		}
-		if httpResp.StatusCode == http.StatusForbidden {
-			e.applyAntigravityTOSState(e.cfg, auth, bodyBytes)
-		}
+		err = e.applyAntigravityUpstreamError(ctx, auth, baseModel, useCredits, replayScope, httpResp.StatusCode, httpResp.Header, bodyBytes)
 		antigravityRecordRequestOutcome(auth, httpResp.StatusCode, bodyBytes, nil)
-		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
 		return nil, err
 	}
 
 	// Stream success
 	antigravityRecordRequestOutcome(auth, httpResp.StatusCode, nil, nil)
 	antigravityConsumeRequestTokens(e.cfg, auth, requestPayload, e.configGen)
-	if useCredits {
-		clearAntigravityCreditsFailureState(auth)
-	}
 	if len(replayRequestPayload) == 0 {
 		replayRequestPayload = requestPayload
 	}
@@ -292,7 +284,7 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 		var streamErr error
 		var translatedClaudeErr error
 		var translatedErrorStopped bool
-		var pendingJSON []byte
+		sseJSON := helps.NewSSEJSONAssembler(streamScannerBuffer)
 		var replayCommitted bool
 		var terminalDelivered bool
 		var param any
@@ -301,7 +293,8 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 		terminalFinishReason := ""
 		emptyAbandoned := false
 		commitReplay := func() {
-			if !replayCommitted && replayAccumulator != nil && replayAccumulator.terminal && streamErr == nil && translatedClaudeErr == nil && helps.ApplyPatchTranslationError(param) == nil {
+			streamOK := streamErr == nil || (terminalDelivered && errors.Is(streamErr, context.Canceled) && errors.Is(ctx.Err(), context.Canceled))
+			if !replayCommitted && replayAccumulator != nil && replayAccumulator.terminal && streamOK && !translatedErrorStopped && translatedClaudeErr == nil && helps.ApplyPatchTranslationError(param) == nil {
 				replayAccumulator.Commit(ctx)
 				replayCommitted = true
 			}
@@ -316,6 +309,9 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 			// for the HTTP consumer, which may need EOF to acknowledge delivery.
 			if terminalDelivered {
 				commitReplay()
+				if useCredits && !translatedErrorStopped && translatedClaudeErr == nil && helps.ApplyPatchTranslationError(param) == nil && (streamErr == nil || errors.Is(streamErr, context.Canceled)) {
+					clearAntigravityCreditsFailureState(auth)
+				}
 			}
 			close(out)
 			if emptyAbandoned || translatedErrorStopped {
@@ -365,46 +361,20 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if replayAccumulator != nil {
-				replayAccumulator.ObserveSSELine(line)
-			}
 
-			// Capture accounting before the client-facing filter renames usage.
-			streamUsage.ObserveAntigravityStream(line)
-
-			payload := helps.JSONPayload(line)
-			if len(pendingJSON) > 0 {
-				trimmedLine := bytes.TrimSpace(line)
-				if bytes.HasPrefix(trimmedLine, []byte("data:")) {
-					trimmedLine = bytes.TrimSpace(trimmedLine[len("data:"):])
-				}
-				if len(trimmedLine) > 0 {
-					pendingJSON = append(pendingJSON, '\n')
-					pendingJSON = append(pendingJSON, trimmedLine...)
-				}
-				if !ojson.ValidBytes(pendingJSON) {
-					continue
-				}
-				payload = pendingJSON
-				pendingJSON = nil
-			} else if payload != nil && !ojson.ValidBytes(payload) {
-				pendingJSON = append([]byte(nil), payload...)
-				continue
-			}
+			payload := sseJSON.Push(line)
 			if payload == nil {
 				continue
 			}
+
+			// Capture accounting before the client-facing filter renames usage.
+			streamUsage.ObserveAntigravityStream(payload)
+
 			if embeddedErr := antigravityEmbeddedStreamError(payload); embeddedErr != nil {
 				streamErr = embeddedErr
-				if errorResult := ojson.GetBytesNoCopy(payload, "error"); errorResult.Exists() {
-					statusCode := int(errorResult.Get("code").Int())
-					if statusCode < http.StatusBadRequest || statusCode > 599 {
-						statusCode = http.StatusBadGateway
-					}
-					if statusCode == http.StatusForbidden {
-						e.applyAntigravityTOSState(e.cfg, auth, payload)
-					}
-					streamErr = newAntigravityStatusErr(statusCode, payload)
+				if errorResult := ojson.GetBytesNoCopy(payload, "error"); errorResult.Exists() && errorResult.Type != ojson.Null {
+					statusCode := antigravityInBandErrorStatusCode(errorResult)
+					streamErr = e.applyAntigravityUpstreamError(ctx, auth, baseModel, useCredits, replayScope, statusCode, nil, payload)
 				}
 				stopDeliverySupport()
 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
@@ -422,6 +392,9 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 				if antigravityCandidateHasContent(candidate) {
 					contentSeen = true
 				}
+			}
+			if replayAccumulator != nil {
+				replayAccumulator.ObserveSSELine(payload)
 			}
 			emitTranslatedPayload := func(p []byte) bool {
 				// Filter usage metadata for all models after block classification
@@ -683,7 +656,7 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 
 func antigravityEmbeddedStreamError(payload []byte) error {
 	root := ojson.ParseBytes(payload)
-	if errNode := root.Get("error"); errNode.Exists() {
+	if errNode := root.Get("error"); errNode.Exists() && errNode.Type != ojson.Null {
 		status := strings.TrimSpace(errNode.Get("status").String())
 		message := strings.TrimSpace(errNode.Get("message").String())
 		code := strings.TrimSpace(errNode.Get("code").String())

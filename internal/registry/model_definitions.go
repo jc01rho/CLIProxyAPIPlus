@@ -28,6 +28,7 @@ const (
 
 // staticModelsJSON mirrors the top-level structure of models.json.
 type staticModelsJSON struct {
+	Copilot     []*ModelInfo `json:"copilot"`
 	Claude      []*ModelInfo `json:"claude"`
 	Gemini      []*ModelInfo `json:"gemini"`
 	GeminiCLI   []*ModelInfo `json:"gemini-cli"`
@@ -48,6 +49,11 @@ type staticModelsJSON struct {
 // GetClaudeModels returns the standard Claude model definitions.
 func GetClaudeModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Claude)
+}
+
+// GetCopilotModels returns the Copilot presets from the active model catalog.
+func GetCopilotModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Copilot)
 }
 
 // GetGeminiModels returns the standard Gemini model definitions.
@@ -829,10 +835,24 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - antigravity (returns static overrides only)
 //   - xai
 //   - devin
+//   - copilot
 //   - meta
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
-	key := strings.ToLower(strings.TrimSpace(channel))
-	switch key {
+	models := staticModelDefinitionsByChannel(strings.ToLower(strings.TrimSpace(channel)))
+	if models != nil && len(models) == 0 {
+		// A known channel with an empty static catalog (e.g. Cline) stays non-nil.
+		return []*ModelInfo{}
+	}
+	return cloneModelInfos(models)
+}
+
+// staticModelDefinitionsByChannel returns read-only catalog entries for a normalized channel.
+func staticModelDefinitionsByChannel(channel string) []*ModelInfo {
+	data := getModels()
+	if data == nil {
+		data = &staticModelsJSON{}
+	}
+	switch channel {
 	case "claude":
 		return GetClaudeModels()
 	case "gemini":
@@ -842,11 +862,11 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	case "gemini-interactions":
 		return GetGeminiModels()
 	case "vertex":
-		return GetGeminiVertexModels()
+		return data.Vertex
 	case "aistudio":
-		return GetAIStudioModels()
+		return data.AIStudio
 	case "codex":
-		return GetCodexProModels()
+		return WithCodexBuiltins(data.CodexPro)
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		return GetKimiModels()
 	case "github-copilot":
@@ -871,7 +891,9 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		// Cline is known, but all of its model definitions are fetched live.
 		return []*ModelInfo{}
 	case "xai", "x-ai", "grok":
-		return GetXAIModels()
+		return WithXAIBuiltins(data.XAI)
+	case "copilot":
+		return data.Copilot
 	case "devin":
 		return GetDevinModels()
 	case "mistral":
@@ -885,7 +907,7 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	case "deepai":
 		return GetDeepAIModels()
 	case "meta", "muse":
-		return GetMetaModels()
+		return data.Meta
 	default:
 		return nil
 	}
@@ -911,24 +933,33 @@ func GetCursorModels() []*ModelInfo {
 }
 
 // LookupStaticModelInfoByChannel searches one provider-specific static section.
+// A channel-qualified query can also match a bare catalog ID.
 // It does not fall back across providers, so callers can preserve provenance.
 func LookupStaticModelInfoByChannel(modelID, channel string) *ModelInfo {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
 		return nil
 	}
-	models := GetStaticModelDefinitionsByChannel(channel)
-	for _, model := range models {
-		if model != nil && model.ID == modelID {
-			return cloneModelInfo(model)
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	models := staticModelDefinitionsByChannel(channel)
+	if model := findStaticModel(models, modelID); model != nil {
+		return cloneModelInfo(model)
+	}
+	if prefix, nativeID, qualified := strings.Cut(modelID, "/"); qualified && nativeID != "" && strings.EqualFold(prefix, channel) {
+		model := findStaticModel(models, nativeID)
+		if lowerID := strings.ToLower(nativeID); model == nil && lowerID != nativeID {
+			model = findStaticModel(models, lowerID)
+		}
+		if model != nil {
+			info := cloneModelInfo(model)
+			info.ID = channel + "/" + info.ID
+			return info
 		}
 	}
-	if strings.EqualFold(strings.TrimSpace(channel), "claude") {
+	if channel == "claude" {
 		for _, familyID := range claudeFamilyModelIDs(modelID) {
-			for _, model := range models {
-				if model != nil && model.ID == familyID {
-					return cloneModelInfo(model)
-				}
+			if model := findStaticModel(models, familyID); model != nil {
+				return cloneModelInfo(model)
 			}
 		}
 	}
@@ -943,12 +974,25 @@ func GetMetaModels() []*ModelInfo {
 // LookupStaticModelInfo searches all static model definitions for a model by ID.
 // Returns nil if no matching model is found.
 func LookupStaticModelInfo(modelID string) *ModelInfo {
+	return lookupStaticModelInfo(modelID, devinModelDefinitions())
+}
+
+func lookupStaticModelInfo(modelID string, additionalCatalog []*ModelInfo) *ModelInfo {
+	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
 		return nil
 	}
+	if channel, _, qualified := strings.Cut(modelID, "/"); qualified {
+		if info := LookupStaticModelInfoByChannel(modelID, channel); info != nil {
+			return info
+		}
+	}
 
 	data := getModels()
-	allModels := [][]*ModelInfo{
+	if data == nil {
+		data = &staticModelsJSON{}
+	}
+	for _, models := range [][]*ModelInfo{
 		data.Claude,
 		data.Gemini,
 		data.GeminiCLI,
@@ -969,25 +1013,26 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		staticDevinModels,
 		GetDevinModels(),
 		data.Meta,
-	}
-	for _, models := range allModels {
-		for _, m := range models {
-			if m != nil && m.ID == modelID {
-				return cloneModelInfo(m)
-			}
+		data.Copilot,
+		// Keep the existing lookup order for bare IDs shared with independent catalogs.
+		additionalCatalog,
+	} {
+		if model := findStaticModel(models, modelID); model != nil {
+			return cloneModelInfo(model)
 		}
 	}
+	if strings.HasPrefix(modelID, "claude-") {
+		return LookupStaticModelInfoByChannel(modelID, "claude")
+	}
+	return nil
+}
 
-	// Dated and bracketed Claude variants (claude-sonnet-5-5-20261001,
-	// claude-opus-5-5[1m]) share the capabilities of their catalog entry.
-	for _, familyID := range claudeFamilyModelIDs(modelID) {
-		for _, m := range data.Claude {
-			if m != nil && m.ID == familyID {
-				return cloneModelInfo(m)
-			}
+func findStaticModel(models []*ModelInfo, modelID string) *ModelInfo {
+	for _, model := range models {
+		if model != nil && model.ID == modelID {
+			return model
 		}
 	}
-
 	return nil
 }
 

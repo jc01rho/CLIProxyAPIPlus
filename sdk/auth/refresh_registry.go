@@ -21,6 +21,7 @@ func init() {
 	registerRefreshLead("workbuddy", func() Authenticator { return NewWorkBuddyAuthenticator() })
 	registerRefreshLead("cursor", func() Authenticator { return NewCursorAuthenticator() })
 	registerRefreshLead("cline", func() Authenticator { return NewClineAuthenticator() })
+	registerRefreshLead("copilot", func() Authenticator { return CopilotAuthenticator{} })
 	registerRefreshLead("devin", func() Authenticator { return NewDevinAuthenticator() })
 	registerRefreshLead("meta", func() Authenticator { return NewMetaAuthenticator() })
 }

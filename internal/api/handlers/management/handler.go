@@ -39,6 +39,7 @@ const attemptMaxIdleTime = 2 * time.Hour
 type Handler struct {
 	cfg                     *config.Config
 	configFilePath          string
+	savedConfigData         []byte // bytes of the last management save; guarded by mu
 	mu                      sync.Mutex
 	authStatusMu            sync.Mutex
 	reloadMu                sync.Mutex
@@ -255,11 +256,18 @@ func (h *Handler) isStaleConfigFileSnapshotLocked(cfg *config.Config) bool {
 	if cfg == nil || cfg.SourceHash == "" || h.configFilePath == "" {
 		return false
 	}
-	data, errRead := os.ReadFile(h.configFilePath)
+	data, errRead := config.ReadConfigFile(h.configFilePath)
 	if errRead != nil {
 		return false
 	}
-	return config.ComputeSourceHash(data) != cfg.SourceHash
+	if config.ComputeSourceHash(data) == cfg.SourceHash {
+		return false
+	}
+	// A startup load may add only its automatic rewrites (server identity, hashed
+	// management secret) to the bytes this handler saved. That is not an external
+	// edit, and the next save preserves those rewrites.
+	saved := h.savedConfigData
+	return len(saved) == 0 || config.ComputeSourceHash(saved) != cfg.SourceHash || !config.IsPreparedConfigFromSeed(saved, data)
 }
 
 // rejectStaleConfigLocked answers 409 config_conflict and reports true when h.cfg
@@ -282,6 +290,7 @@ func (h *Handler) recordConfigFileSavedLocked() {
 	}
 	if data, errRead := os.ReadFile(h.configFilePath); errRead == nil {
 		h.cfg.SourceHash = config.ComputeSourceHash(data)
+		h.savedConfigData = data
 	}
 }
 
@@ -491,7 +500,8 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			provided = c.GetHeader("X-Management-Key")
 		}
 
-		allowed, statusCode, errMsg := h.AuthenticateManagementKey(clientIP, localClient, provided)
+		snapshot := h.managementAuthSnapshot()
+		allowed, statusCode, errMsg := h.authenticateManagementKey(snapshot, clientIP, localClient, provided)
 		if !allowed {
 			var secretHash, envSecret string
 			if h.cfg != nil {
@@ -503,34 +513,52 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
 			return
 		}
+		if c.Request.Method != http.MethodOptions {
+			setHeader := func(id string) { c.Header(ServerIDHeader, id) }
+			setHeader(snapshot.serverID)
+			c.Set(managementIdentityKey, managementIdentity{id: snapshot.serverID, setHeader: setHeader})
+		}
 		c.Next()
+	}
+}
+
+type managementAuthConfig struct {
+	allowRemote bool
+	secretHash  string
+	serverID    string
+}
+
+func (h *Handler) managementAuthSnapshot() managementAuthConfig {
+	if h == nil {
+		return managementAuthConfig{}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return managementAuthConfig{}
+	}
+	return managementAuthConfig{
+		allowRemote: h.cfg.RemoteManagement.AllowRemote,
+		secretHash:  h.cfg.RemoteManagement.SecretKey,
+		serverID:    h.cfg.ServerID,
 	}
 }
 
 // AuthenticateManagementKey verifies the provided management key for the given client.
 // It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
+	return h.authenticateManagementKey(h.managementAuthSnapshot(), clientIP, localClient, provided)
+}
+
+func (h *Handler) authenticateManagementKey(cfg managementAuthConfig, clientIP string, localClient bool, provided string) (bool, int, string) {
 	const maxFailures = 5
 	const banDuration = 30 * time.Minute
 
 	if h == nil {
 		return false, http.StatusForbidden, "remote management disabled"
 	}
-
-	h.mu.Lock()
-	cfg := h.cfg
-	var (
-		allowRemote bool
-		secretHash  string
-	)
-	if cfg != nil {
-		allowRemote = cfg.RemoteManagement.AllowRemote
-		secretHash = cfg.RemoteManagement.SecretKey
-	}
-	h.mu.Unlock()
-	if h.allowRemoteOverride {
-		allowRemote = true
-	}
+	allowRemote := cfg.allowRemote || h.allowRemoteOverride
+	secretHash := cfg.secretHash
 	envSecret := h.envSecret
 
 	now := time.Now()

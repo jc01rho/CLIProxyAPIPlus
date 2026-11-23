@@ -1,6 +1,7 @@
 package management
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,7 +25,13 @@ const (
 )
 
 func (h *Handler) GetConfig(c *gin.Context) {
-	if h == nil || h.cfg == nil {
+	if h == nil {
+		c.JSON(200, gin.H{})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
 		c.JSON(200, gin.H{})
 		return
 	}
@@ -99,23 +106,30 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 }
 
 func WriteConfig(path string, data []byte) error {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	doc, err := config.DecodeFirstConfigDocument(data)
+	if err != nil {
 		return err
 	}
 	var commented []config.ArchivedV8Section
-	if len(doc.Content) > 0 && config.IsV8ConfigLayout(doc.Content[0]) {
-		var errNorm error
-		data, _, commented, errNorm = config.NormalizeConfigLayoutSilent(data, true)
+	if config.IsV8ConfigLayout(doc.Content[0]) {
+		normalized, _, sections, errNorm := config.NormalizeConfigLayoutSilent(data, true)
 		if errNorm != nil {
 			return errNorm
 		}
+		if errValidate := config.ValidateConfigSave(data, normalized); errValidate != nil {
+			return errValidate
+		}
+		data, commented = normalized, sections
 	}
-	data = config.NormalizeCommentIndentation(data)
-	// Share the config file lock with LoadConfig's rewrites so neither can tear
-	// or roll back the other's write.
-	if errWrite := config.WriteConfigFile(path, data, 0644); errWrite != nil {
-		return errWrite
+	onDisk, err := config.ReadConfigFileSnapshot(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		err = config.CreateConfigFile(path, data)
+	case err == nil:
+		_, err = config.WriteConfigFileCAS(path, onDisk, data)
+	}
+	if err != nil {
+		return err
 	}
 	config.WarnUnrecognizedV8Sections(commented)
 	return nil
@@ -181,7 +195,7 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 // GetConfigYAML returns the raw config.yaml file bytes without re-encoding.
 // It preserves comments and original formatting/styles.
 func (h *Handler) GetConfigYAML(c *gin.Context) {
-	data, err := os.ReadFile(h.configFilePath)
+	data, err := config.ReadConfigFile(h.configFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "message": "config file not found"})

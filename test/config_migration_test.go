@@ -26,7 +26,12 @@ amp-restrict-management-to-localhost: false
 amp-model-mappings:
   - from: "old-model"
     to: "new-model"
+server:
+  server-id: "6d1f3a52-9b0e-4c1d-8f2a-5e7b9c0d1a23"
 `)
+		// Upstream v8.1 persists a missing server.server-id on load, also into legacy
+		// layouts. The explicit identity keeps this guarding the fork rule: no v8
+		// layout migration before an explicit v8 write.
 		original := readFile(t, path)
 		cfg, err := config.LoadConfig(path)
 		if err != nil {
