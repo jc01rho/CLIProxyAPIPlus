@@ -8,16 +8,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 )
 
 const (
 	// AgyCLIVersion is the captured agy CLI version used for content-request identity.
 	// Mirrors AGY_CLI_VERSION in cortexkit/antigravity-auth fingerprint.ts.
-	AgyCLIVersion = "1.5.8"
+	AgyCLIVersion = misc.AntigravityCLIVersion
 
 	// AgyCLIChangeList is the agy CLI changelist the captured build reports in its
 	// User-Agent. Mirrors AGY_CLI_CHANGE_LIST in cortexkit/antigravity-auth.
-	AgyCLIChangeList = "1020628950"
+	AgyCLIChangeList = misc.AntigravityCLIChangeList
 
 	antigravityAPIClient = "antigravity-cli"
 

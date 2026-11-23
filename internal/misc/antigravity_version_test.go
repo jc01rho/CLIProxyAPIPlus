@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,7 +47,26 @@ func TestAntigravityFallbackVersionMeetsBackendFloor(t *testing.T) {
 	}
 }
 
-func TestAntigravityUserAgentUsesHubFamily(t *testing.T) {
+// wantAntigravityCLIUserAgent spells the cortexkit/antigravity-auth fingerprint.ts
+// buildAntigravityHarnessUserAgent output out in the test, so it does not reuse
+// the constants it checks.
+func wantAntigravityCLIUserAgent() string {
+	return fmt.Sprintf("antigravity/cli/1.5.8 (aidev_client; os_type=%s; arch=%s; cl=1020628950; auth_method=consumer)", runtime.GOOS, runtime.GOARCH)
+}
+
+func TestAntigravityUserAgentIsAgyCLIIdentity(t *testing.T) {
+	for _, version := range []string{"", "2.23.0", "2.34.0", "2.35.0"} {
+		t.Run("hub manifest "+version, func(t *testing.T) {
+			restore := overrideAntigravityVersionCacheForTest(t, version, time.Now().Add(time.Hour))
+			defer restore()
+			if got, want := AntigravityUserAgent(), wantAntigravityCLIUserAgent(); got != want {
+				t.Fatalf("AntigravityUserAgent() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestAntigravityHubUserAgentUsesHubFamily(t *testing.T) {
 	for _, tc := range []struct {
 		version string
 		want    string
@@ -64,14 +84,14 @@ func TestAntigravityUserAgentUsesHubFamily(t *testing.T) {
 		t.Run(tc.version, func(t *testing.T) {
 			restore := overrideAntigravityVersionCacheForTest(t, tc.version, time.Now().Add(time.Hour))
 			defer restore()
-			if got := AntigravityUserAgent(); got != tc.want {
-				t.Fatalf("AntigravityUserAgent() = %q, want %q", got, tc.want)
+			if got := AntigravityHubUserAgent(); got != tc.want {
+				t.Fatalf("AntigravityHubUserAgent() = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestAntigravityUserAgentPinsUnmappedVersionUsingNumericSemverOrder(t *testing.T) {
+func TestAntigravityHubUserAgentPinsUnmappedVersionUsingNumericSemverOrder(t *testing.T) {
 	antigravityHubChangelists["2.100.0"] = "1099999999"
 	defer delete(antigravityHubChangelists, "2.100.0")
 
@@ -79,8 +99,8 @@ func TestAntigravityUserAgentPinsUnmappedVersionUsingNumericSemverOrder(t *testi
 	defer restore()
 
 	want := "antigravity/hub/2.100.0 (aidev_client; os_type=darwin; arch=arm64; cl=1099999999)"
-	if got := AntigravityUserAgent(); got != want {
-		t.Fatalf("AntigravityUserAgent() = %q, want %q", got, want)
+	if got := AntigravityHubUserAgent(); got != want {
+		t.Fatalf("AntigravityHubUserAgent() = %q, want %q", got, want)
 	}
 }
 
@@ -122,26 +142,19 @@ func TestAntigravityVersionFromUserAgentFallbackMatchesPinnedHubVersion(t *testi
 	}
 }
 
-func TestAntigravityLoadCodeAssistUserAgentUsesShortUA(t *testing.T) {
-	restore := overrideAntigravityVersionCacheForTest(t, "2.34.0", time.Now().Add(time.Hour))
-	defer restore()
-
-	want := "antigravity/hub/2.34.0 (aidev_client; os_type=darwin; arch=arm64; cl=1026637980)"
-	if got := AntigravityLoadCodeAssistUserAgent(""); got != want {
-		t.Fatalf("AntigravityLoadCodeAssistUserAgent() = %q, want %q", got, want)
+func TestAntigravityBootstrapUserAgentsUseAgyCLIIdentity(t *testing.T) {
+	want := wantAntigravityCLIUserAgent()
+	for name, got := range map[string]string{
+		"loadCodeAssist": AntigravityLoadCodeAssistUserAgent(""),
+		"onboardUser":    AntigravityOnboardUserUserAgent(""),
+	} {
+		if got != want {
+			t.Fatalf("%s User-Agent = %q, want %q", name, got, want)
+		}
 	}
-	if got := AntigravityLoadCodeAssistUserAgent(want); got != want {
-		t.Fatalf("AntigravityLoadCodeAssistUserAgent(configured) = %q, want %q", got, want)
-	}
-}
-
-func TestAntigravityOnboardUserUserAgentUsesLongUA(t *testing.T) {
-	restore := overrideAntigravityVersionCacheForTest(t, "2.34.0", time.Now().Add(time.Hour))
-	defer restore()
-
-	want := "antigravity/hub/2.34.0 (aidev_client; os_type=darwin; arch=arm64; cl=1026637980) google-api-nodejs-client/10.3.0"
-	if got := AntigravityOnboardUserUserAgent(""); got != want {
-		t.Fatalf("AntigravityOnboardUserUserAgent() = %q, want %q", got, want)
+	const configured = "antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64)"
+	if got := AntigravityLoadCodeAssistUserAgent(configured); got != configured {
+		t.Fatalf("a per-auth User-Agent must be honored, got %q", got)
 	}
 }
 

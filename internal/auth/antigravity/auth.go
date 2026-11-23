@@ -209,14 +209,6 @@ func antigravityLoadCodeAssistMetadata() map[string]string {
 	}
 }
 
-func antigravityControlPlaneMetadata(userAgent string) map[string]string {
-	return map[string]string{
-		"ide_type":    "ANTIGRAVITY",
-		"ide_version": misc.AntigravityVersionFromUserAgent(userAgent),
-		"ide_name":    "antigravity",
-	}
-}
-
 func extractCloudaicompanionProject(data map[string]any) string {
 	if data == nil {
 		return ""
@@ -525,10 +517,7 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 	}
 	log.Infof("Antigravity: onboarding user with tier: %s", tierID)
 	userAgent := o.nodeUserAgent()
-	requestBody := map[string]any{
-		"tier_id":  tierID,
-		"metadata": antigravityControlPlaneMetadata(userAgent),
-	}
+	requestBody := map[string]any{"tierId": tierID}
 
 	rawBody, errMarshal := json.Marshal(requestBody)
 	if errMarshal != nil {
@@ -548,10 +537,8 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 			return "", fmt.Errorf("create request: %w", errRequest)
 		}
 		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("Accept", "*/*")
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", userAgent)
-		req.Header.Set("X-Goog-Api-Client", misc.AntigravityGoogAPIClientUA)
 
 		resp, errDo := o.httpClient.Do(req)
 		if errDo != nil {

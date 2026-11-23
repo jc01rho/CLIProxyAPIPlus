@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,11 @@ const (
 	// newer models for clients below 2.23.0, so this floor must stay at or above
 	// that version.
 	antigravityFallbackVersion = "2.34.0"
+	// AntigravityCLIVersion and AntigravityCLIChangeList are the agy CLI build the
+	// reference client (cortexkit/antigravity-auth fingerprint.ts AGY_CLI_VERSION,
+	// AGY_CLI_CHANGE_LIST) reports in every User-Agent.
+	AntigravityCLIVersion      = "1.5.8"
+	AntigravityCLIChangeList   = "1020628950"
 	antigravityHubPlatform     = "os_type=darwin; arch=arm64"
 	antigravityVersionCacheTTL = 6 * time.Hour
 	antigravityFetchTimeout    = 10 * time.Second
@@ -222,8 +228,40 @@ func antigravityEffectiveVersion() string {
 	return version
 }
 
-// AntigravityUserAgent returns the User-Agent string used by the Antigravity Hub family.
+// antigravityCLIPlatform and antigravityCLIArch spell the host the way
+// fingerprint.ts normalizeHarnessPlatform/normalizeHarnessArch do: win32 becomes
+// windows, x64 amd64 and ia32 386, and Go's GOOS/GOARCH already use those names.
+func antigravityCLIPlatform() string {
+	if runtime.GOOS == "" {
+		return "unknown"
+	}
+	return runtime.GOOS
+}
+
+func antigravityCLIArch() string {
+	if runtime.GOARCH == "" {
+		return "unknown"
+	}
+	return runtime.GOARCH
+}
+
+// AntigravityCLIUserAgent returns the agy CLI User-Agent the reference client
+// sends on every request, including the host OS and architecture.
+func AntigravityCLIUserAgent() string {
+	return "antigravity/cli/" + AntigravityCLIVersion + " (aidev_client; os_type=" + antigravityCLIPlatform() +
+		"; arch=" + antigravityCLIArch() + "; cl=" + AntigravityCLIChangeList + "; auth_method=consumer)"
+}
+
+// AntigravityUserAgent returns the User-Agent string Antigravity requests default to.
 func AntigravityUserAgent() string {
+	return AntigravityCLIUserAgent()
+}
+
+// AntigravityHubUserAgent returns the Antigravity Hub identity, which model
+// discovery and quota RPCs keep: Cloud Code hides the Gemini Models group and the
+// newest model ids from a client reporting below 2.23.0 (measured against the
+// agy CLI 1.1.6 identity), and the CLI build is below that floor.
+func AntigravityHubUserAgent() string {
 	version, changelist := resolveAntigravityHubVersionAndChangelist(AntigravityLatestVersion())
 	metadata := "aidev_client; " + antigravityHubPlatform
 	if changelist != "" {
@@ -236,6 +274,10 @@ func isAntigravityFamilyUserAgent(lower string) bool {
 	return strings.HasPrefix(lower, "antigravity/hub/") || strings.HasPrefix(lower, "antigravity/")
 }
 
+// antigravityBaseUserAgent resolves the User-Agent a request sends: an
+// operator-configured per-auth value is honored (minus a trailing
+// google-api-nodejs-client suffix on the Antigravity family), and an empty one
+// defaults to the agy CLI identity.
 func antigravityBaseUserAgent(userAgent string) string {
 	userAgent = strings.TrimSpace(userAgent)
 	if userAgent == "" {
@@ -244,8 +286,7 @@ func antigravityBaseUserAgent(userAgent string) string {
 	lower := strings.ToLower(userAgent)
 	if isAntigravityFamilyUserAgent(lower) {
 		if idx := strings.Index(lower, " google-api-nodejs-client/"); idx >= 0 {
-			trimmed := strings.TrimSpace(userAgent[:idx])
-			if trimmed != "" {
+			if trimmed := strings.TrimSpace(userAgent[:idx]); trimmed != "" {
 				return trimmed
 			}
 		}
@@ -253,7 +294,7 @@ func antigravityBaseUserAgent(userAgent string) string {
 	return userAgent
 }
 
-// AntigravityQuotaUserAgent returns the Antigravity runtime UA for quota and
+// AntigravityQuotaUserAgent returns the Antigravity Hub UA for quota and
 // model-discovery RPCs, enforcing the minimum Cloud Code version floor (2.23.0)
 // so a stale or rolled-back Hub manifest cannot hide the Gemini quota group.
 func AntigravityQuotaUserAgent() string {
@@ -262,7 +303,7 @@ func AntigravityQuotaUserAgent() string {
 		minMinor = 23
 	)
 	if antigravityMeetsVersionFloor(AntigravityLatestVersion(), minMajor, minMinor) {
-		return AntigravityRequestUserAgent("")
+		return AntigravityHubUserAgent()
 	}
 	metadata := "aidev_client; " + antigravityHubPlatform
 	if changelist := antigravityHubChangelists[antigravityFallbackVersion]; changelist != "" {
@@ -291,26 +332,18 @@ func AntigravityLoadCodeAssistUserAgent(userAgent string) string {
 	return AntigravityRequestUserAgent(userAgent)
 }
 
-// AntigravityOnboardUserUserAgent returns the long Antigravity control-plane UA
-// used by onboardUser requests.
+// AntigravityOnboardUserUserAgent returns the User-Agent for onboardUser requests,
+// which carry the same bootstrap identity as loadCodeAssist.
 func AntigravityOnboardUserUserAgent(userAgent string) string {
-	userAgent = strings.TrimSpace(userAgent)
-	if userAgent == "" {
-		return AntigravityUserAgent() + " " + AntigravityNodeAPIClientUA
-	}
-	lower := strings.ToLower(userAgent)
-	if !isAntigravityFamilyUserAgent(lower) {
-		return userAgent
-	}
-	if strings.Contains(lower, "google-api-nodejs-client/") {
-		return userAgent
-	}
-	return antigravityBaseUserAgent(userAgent) + " " + AntigravityNodeAPIClientUA
+	return AntigravityRequestUserAgent(userAgent)
 }
 
 // AntigravityVersionFromUserAgent extracts the Antigravity version prefix from
 // either the short or long Antigravity UA forms.
 func AntigravityVersionFromUserAgent(userAgent string) string {
+	if strings.TrimSpace(userAgent) == "" {
+		return antigravityEffectiveVersion()
+	}
 	base := antigravityBaseUserAgent(userAgent)
 	lower := strings.ToLower(base)
 	if strings.HasPrefix(lower, "antigravity/hub/") {

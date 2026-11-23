@@ -558,7 +558,7 @@ func AntigravityDefaultCallbackURI() string {
 
 // AntigravityUserAgent returns the canonical User-Agent string used by the Antigravity Hub family.
 func AntigravityUserAgent() string {
-	return misc.AntigravityUserAgent()
+	return misc.AntigravityHubUserAgent()
 }
 
 // StartAntigravityVersionUpdater starts background refresh for the Antigravity Hub version
