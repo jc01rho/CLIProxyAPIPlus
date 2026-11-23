@@ -299,14 +299,9 @@ func generateBillingHeader(cchSigning bool, version, messageText, entrypoint, wo
 	if cchSigning {
 		b.WriteString(" cch=00000;")
 	}
-	if workload != "" {
-		b.WriteString(" cc_workload=")
-		b.WriteString(workload)
-		b.WriteByte(';')
-	}
-	if isSubagent {
-		b.WriteString(" cc_is_subagent=true;")
-	}
+	// cortexkit/anthropic-auth buildBillingHeaderValue never emits cc_workload or
+	// cc_is_subagent, so neither is written; workload and isSubagent stay in the
+	// signature because every caller still threads them through.
 	if cchSigning {
 		if prevReq != "" {
 			b.WriteString(" cc_prev_req=")
@@ -318,13 +313,11 @@ func generateBillingHeader(cchSigning bool, version, messageText, entrypoint, wo
 			b.WriteString(promptID)
 			b.WriteByte(';')
 		}
-		if len(turnOrigin) > 0 && turnOrigin[0] == "human" {
-			b.WriteString(" cc_turn_origin=human;")
-			// Claude Code 2.1.302 follows cc_prompt_id with the prompt position.
-			if promptID != "" && promptIndex > 0 {
-				index := strconv.Itoa(promptIndex)
-				b.WriteString(" cc_prompt_index=" + index + "; cc_turn_index=" + index + ";")
-			}
+		// Claude Code 2.1.302 follows every cc_prompt_id with these three fields and
+		// never sends them without one (anthropic-auth cch.ts buildBillingHeaderValue).
+		if len(turnOrigin) > 0 && turnOrigin[0] == "human" && promptID != "" && promptIndex > 0 {
+			index := strconv.Itoa(promptIndex)
+			b.WriteString(" cc_turn_origin=human; cc_prompt_index=" + index + "; cc_turn_index=" + index + ";")
 		}
 	}
 	return b.String()

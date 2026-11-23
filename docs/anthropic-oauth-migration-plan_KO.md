@@ -48,7 +48,7 @@
 - User-Agent: `claude-cli/2.1.280 (external, cli)` (`helps/claude_device_profile.go:24` `DefaultClaudeCodeVersion = "2.1.280"`). bootstrap 조회는 `claude-code/2.1.177` (`helps/claude_code_identity.go:148`).
 - anthropic-beta: 본문 형태에 따라 요청마다 조립(`claudeCodeCLIBetas`, 주석 표 `claude_executor_request.go:132-172`, 29개 위치). 관리 대상 beta는 미확인 클라이언트에서 제거하고, 모르는 beta는 통과(`isManagedClaudeBeta`). 운영자 설정 `anthropic-beta-strip`/`anthropic-beta-append`가 마지막에 적용된다. `helps/claude_code_betas.go:SelectClaudeCodeBetas`는 운영 호출자가 없는 옛 목록이다.
 - 위장(cloaking): `resolveClaudeWirePolicy`(기본 auto: OAuth이면 위장). system 첫 블록에 billing header(`cc_version=<ver>.<fp3>; cc_entrypoint=cli; cch=00000;` + `cc_prompt_id`/`cc_turn_*` 등), 그다음 `You are Claude Code, Anthropic's official CLI for Claude.` (`claude_executor_cloaking.go`).
-- cch 서명: xxHash64 seed `0x4D659218E32A3268`, `& 0xFFFFF`, 5자리 hex. `max_tokens`·`fallbacks`·`fallback_credit_token` 제외, `model` 문자열을 비움(`claude_signing.go:signAnthropicMessagesBody`). payload 설정 뒤 마지막에 서명한다.
+- cch 서명: xxHash64 seed `0x4D659218E32A3268`, `& 0xFFFFF`, 5자리 hex. 최상위 `max_tokens`만 제외하고 최상위 `model` 문자열을 비움. `fallbacks`·`fallback_credit_token`·중첩 필드는 해시에 포함(`claude_signing.go:signAnthropicMessagesBody`, anthropic-auth `signRequestBody`와 동일). payload 설정 뒤 마지막에 서명한다.
 - metadata.user_id: `{"account_uuid","device_id","session_id"}` JSON 문자열. Go map 직렬화라 키가 알파벳 순서다(`helps/claude_code_identity.go:BuildClaudeCodeMetadataUserID`).
 - 도구 이름: `mcp_` 접두사 + BIP39 별칭(`remapOAuthToolNamesWithOptions`, 응답 역변환 `reverseRemapOAuthToolNames*`).
 - 캐시: `ensureCacheControl`, 4개 제한, OAuth+CLI 프로필은 ttl `1h`로 승격.
@@ -105,7 +105,7 @@
 | 12 | per-turn-control 대상 | Opus 5.5, Fable 5.1 | Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Haiku 5.5는 `claude-code-20250219` 위치도 다름) | 의미 다름 | 가져옴(11과 함께) | Sonnet/Haiku 5.5 400 가능성. 모델별 테스트 필요 |
 | 13 | 메시지 단위 effort | 지시문/옵션 처리(`claude_effort_directive_test.go` 범위) | Opus 5.5·Sonnet 5.5만 메시지 단위, Fable 5.1은 상단 고정(`38627af02`) | 의미 다름 | 변형해서 가져옴(모델 표만 맞춤) | thinking 서명 replay와 상호작용 |
 | 14 | billing header | `cc_version=<ver>.<fp3>; cc_entrypoint=cli; cch=00000;` + `cc_prev_req`/`cc_prompt_id`/`cc_turn_*` | 같은 구조, 버전 2.1.302 | 같음(구조) | 버전만 갱신 | 낮음 |
-| 15 | cch 서명 | xxHash64 seed 동일, `max_tokens`·`fallbacks`·`fallback_credit_token` 제외, `model` 비움 | 동일 seed, `max_tokens` 삭제, `model=""`, 재직렬화 객체 해시 | 같음(핵심)/의미 다름(제외 필드) | 유지. 저쪽 벡터로 교차 검증 테스트만 추가 | 낮음 |
+| 15 | cch 서명 | xxHash64 seed 동일, `max_tokens`·`fallbacks`·`fallback_credit_token` 제외, `model` 비움 | 동일 seed, `max_tokens` 삭제, `model=""`, 재직렬화 객체 해시 | 같음(2026-11-23 정합 완료) | 벡터 전 케이스 cch 일치 테스트로 고정 | 낮음 |
 | 16 | metadata.user_id | JSON 키 알파벳 순서(`account_uuid,device_id,session_id`) | `device_id,account_uuid,session_id` 순서 | 의미 다름 | 가져옴(필드 순서 고정 구조체로) | 낮음. 단 캐시 키 변동 가능 |
 | 17 | 요청 본문 gzip | 없음 | 4096자 이상, api.anthropic.com 직결만, 프록시/mTLS/사용자 CA면 생략, cch를 `00000`으로 되돌리고 0~256개 공백 패딩, level 6, 거절 시 비압축 재전송 + 프로세스 latch(프록시 거절이면 7일) | 저쪽만 | 변형해서 가져옴(설정 키로 기본 꺼짐) | 높음: payload 설정이 최종 의미 경계라는 규칙과 cch 재설정 순서가 충돌할 수 있음. 압축은 전송 프레이밍으로만 다뤄야 함 |
 | 18 | 본문 필드 순서 | 번역기 출력 순서 그대로 | `orderClaudeCodeBody`(model, messages, system, tools, tool_choice, metadata, max_tokens, temperature, thinking, context_management, output_config, diagnostics, stream, speed) | 저쪽만 | 검토(실측과 비교 후 결정) | cch 값이 바뀜(직렬화 기준이 다르면) |
@@ -200,7 +200,7 @@ GOTOOLCHAIN=auto go test ./internal/auth/claude/ ./internal/runtime/executor/...
 
 ### 의도적으로 남긴 차이
 - server-side fallback beta: 우리는 배열 `fallbacks` 본문과 `server-side-fallback-2026-06-01`(실측)을 유지한다. 벡터는 `fallbacks:"default"`와 `-2026-07-01`.
-- cch 해시 범위: 우리는 `fallbacks`를 해시에서 제외한다(2.1.220 실측). fallbacks가 있는 벡터 3개는 cch가 다르고, 테스트가 그 차이를 명시적으로 고정한다.
+- cch 해시 범위: 2026-11-23부터 `fallbacks`도 해시에 포함한다(anthropic-auth 2.1.302 기준). fallbacks가 있는 벡터도 cch가 일치한다.
 - fast mode beta: 프록시 요청에는 계속 붙이지 않는다.
 - 구형 Haiku(4.5)와 thinking disabled 요청에서는 effort/thinking-display-updates beta를 계속 빼는다(2.1.302 벡터에 해당 사례 없음).
 - 본문 필드 순서(표 18), 토큰 목적지 api.anthropic.com 고정, 갱신 재시도 정책은 바꾸지 않았다.

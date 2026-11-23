@@ -1905,16 +1905,15 @@ func classifyClaudeGzipResponse(resp *http.Response) (string, error) {
 }
 
 // claudeWireHeaderCasing maps Go's canonical header name to the exact casing
-// the reference client puts on the wire. cortexkit/anthropic-auth
-// packages/core/src/claude-code.ts sets these lowercase, and the CI-enforced
-// fixture in packages/opencode/src/tests/fixtures/claude-oauth-wire/vectors.json
-// carries the same lowercase names.
+// the reference client puts on the wire. The vendored cortexkit/anthropic-auth
+// vectors.json (headers_wire_order) keeps Accept, Authorization, Content-Type
+// and User-Agent in Title-Case and sends every other name lowercase, which is
+// also how claude-code.ts sets them. Go canonicalises on Header.Set, so the
+// lowercase names must be written into the map directly.
 //
-// Only the x-stainless-* block is rewritten. Those names are written once per
-// request and never read back, whereas x-claude-code-session-id and
-// x-claude-code-prompt-id are read through Header.Get by client detection and
-// session recovery, and accept/authorization/content-type by the transport and
-// retry paths, so lowercasing those breaks the pipeline.
+// This pass only runs at the send boundary (doClaudeUpstreamRequest), after
+// every Header.Get in the pipeline has already happened. A caller that reads
+// the request's headers after sending must look them up case-insensitively.
 var claudeWireHeaderCasing = map[string]string{
 	"X-Stainless-Os":                            "x-stainless-os",
 	"X-Stainless-Arch":                          "x-stainless-arch",
@@ -1924,11 +1923,14 @@ var claudeWireHeaderCasing = map[string]string{
 	"X-Stainless-Runtime":                       "x-stainless-runtime",
 	"X-Stainless-Runtime-Version":               "x-stainless-runtime-version",
 	"X-Stainless-Timeout":                       "x-stainless-timeout",
+	"X-Claude-Code-Session-Id":                  "x-claude-code-session-id",
+	"X-Claude-Code-Request-Class":               "x-claude-code-request-class",
+	"X-Claude-Code-Prompt-Id":                   "x-claude-code-prompt-id",
 	"Anthropic-Beta":                            "anthropic-beta",
 	"Anthropic-Version":                         "anthropic-version",
-	"X-App":                                     "x-app",
-	"X-Client-Request-Id":                       "x-client-request-id",
 	"Anthropic-Dangerous-Direct-Browser-Access": "anthropic-dangerous-direct-browser-access",
+	"X-App":               "x-app",
+	"X-Client-Request-Id": "x-client-request-id",
 }
 
 // applyClaudeWireHeaderCasing restores the header name casing of the real client.

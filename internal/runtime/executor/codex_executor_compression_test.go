@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -77,7 +78,9 @@ func TestCodexUpstreamCompression_EligibleCompressed(t *testing.T) {
 			if got := req.Header.Get("Accept-Encoding"); got != "gzip, deflate, br, zstd" {
 				t.Fatalf("Accept-Encoding=%q", got)
 			}
-			if !bytes.Equal(upstreamBody, payload) {
+			// The body also carries the reference client_metadata block, so it is no
+			// longer byte-equal to the input; it must still be plain JSON, not zstd.
+			if !json.Valid(upstreamBody) || !bytes.Contains(upstreamBody, []byte("compressible input")) {
 				t.Fatal("returned upstreamBody must stay uncompressed")
 			}
 		})
@@ -103,7 +106,7 @@ func TestCodexUpstreamCompression_Gates(t *testing.T) {
 			case "wrong-path":
 				target = "https://chatgpt.com/backend-api/codex-other/responses"
 			case "below-min":
-				cfg.Codex.UpstreamRequestCompressionMinBytes = len(payload) + 1
+				cfg.Codex.UpstreamRequestCompressionMinBytes = len(payload) + 4096
 			case "nil-auth":
 				auth = nil
 			case "no-size-benefit":

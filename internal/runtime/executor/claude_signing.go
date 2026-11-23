@@ -309,8 +309,9 @@ func claudeCCHSigningEnabled(apiKey string, kind claudeCCHUpstreamKind, cliFinge
 	return kind == claudeCCHUpstreamAnthropic && isAnthropicUpstreamBase(origin)
 }
 
-// signAnthropicMessagesBody reproduces Claude Code 2.1.220's final-body CCH.
-// It changes only the five CCH digits in the outgoing body.
+// signAnthropicMessagesBody computes the final-body CCH the way
+// cortexkit/anthropic-auth signRequestBody does for Claude Code 2.1.302. It
+// changes only the five CCH digits in the outgoing body.
 func signAnthropicMessagesBody(body []byte) ([]byte, error) {
 	cchOffset, ok := claudeBillingCCHDigitsOffset(body)
 	if !ok {
@@ -387,7 +388,10 @@ func isLowerHex(value []byte) bool {
 }
 
 // normalizeClaudeCCHInput builds the hash view without reserializing JSON.
-// Model string values are emptied, while dispatch-only members are omitted.
+// Only the top-level "model" string is emptied and the top-level "max_tokens"
+// member omitted, which is what anthropic-auth cch.ts signRequestBody does with
+// JSON.parse, delete and JSON.stringify. Nested members, fallbacks and
+// fallback_credit_token stay in the hash.
 func normalizeClaudeCCHInput(body []byte) ([]byte, error) {
 	if !json.Valid(body) {
 		return nil, fmt.Errorf("invalid JSON body")
@@ -485,7 +489,7 @@ func (scanner *claudeCCHJSONScanner) parseObject(collect bool) error {
 				return errString
 			}
 			scanner.addEdit(valueStart+1, valueEnd-1)
-		} else if err = scanner.parseValue(collect && !excluded); err != nil {
+		} else if err = scanner.parseValue(false); err != nil {
 			return err
 		}
 		memberEnd := scanner.pos
@@ -575,10 +579,6 @@ func (scanner *claudeCCHJSONScanner) addExcludedMemberEdits(members []claudeCCHJ
 		switch {
 		case end+1 < len(members):
 			scanner.addEdit(members[start].start, members[end].commaAfter+1)
-		case start > 0 && end > start:
-			// Claude Code 2.1.220 leaves the preceding comma in its hash view
-			// when an object ends with multiple consecutive dispatch members.
-			scanner.addEdit(members[start].start, members[end].end)
 		case start > 0:
 			scanner.addEdit(members[start].commaBefore, members[end].end)
 		default:
@@ -616,7 +616,7 @@ func (scanner *claudeCCHJSONScanner) consume(character byte) bool {
 
 func isClaudeCCHExcludedKey(key []byte) bool {
 	switch string(key) {
-	case `"max_tokens"`, `"fallbacks"`, `"fallback_credit_token"`:
+	case `"max_tokens"`:
 		return true
 	default:
 		return false

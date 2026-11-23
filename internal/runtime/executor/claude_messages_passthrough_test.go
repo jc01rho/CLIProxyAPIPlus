@@ -204,7 +204,9 @@ func TestClaudeExecutor_PreserveCallerFingerprintAlignsSessionIDWithBody(t *test
 		t.Fatalf("Execute() error = %v", err)
 	}
 
-	headerSession := seenHeaders.Get("X-Claude-Code-Session-Id")
+	// The send boundary writes this name lowercase, as the reference client does,
+	// so a captured clone must be read case-insensitively.
+	headerSession := claudeFingerprintHeaderValue(seenHeaders, "X-Claude-Code-Session-Id")
 	if headerSession == "forged-session-a" {
 		t.Fatalf("X-Claude-Code-Session-Id forwarded forged unconfirmed session %q", headerSession)
 	}
@@ -224,7 +226,7 @@ func TestClaudeExecutor_PreserveCallerFingerprintAlignsSessionIDWithBody(t *test
 
 	// The unconfirmed caller's forged X-Claude-Code-Request-Class is replaced by
 	// the class the cloak derives from the body.
-	if got := seenHeaders.Get("X-Claude-Code-Request-Class"); got != "main" {
+	if got := claudeFingerprintHeaderValue(seenHeaders, "X-Claude-Code-Request-Class"); got != "main" {
 		t.Fatalf("X-Claude-Code-Request-Class = %q, want derived main for unconfirmed caller", got)
 	}
 }
