@@ -240,8 +240,10 @@ func TestClaudeExecutorContinuityAdvancesRequestIDAndPromptIDInBillingHeader(t *
 
 	// Verify Turn 4 (subagent):
 	hSubagent := capturedBillingHeaders[4]
-	if !strings.Contains(hSubagent, "cc_is_subagent=true;") {
-		t.Fatalf("hSubagent must contain cc_is_subagent=true;, got: %s", hSubagent)
+	// The reference billing block never carries cc_is_subagent (anthropic-auth
+	// cch.ts buildBillingHeaderValue), so a subagent is told apart by headers only.
+	if strings.Contains(hSubagent, "cc_is_subagent=") {
+		t.Fatalf("hSubagent must not contain cc_is_subagent, got: %s", hSubagent)
 	}
 	if !strings.Contains(hSubagent, "cc_prompt_id=") {
 		t.Fatalf("hSubagent must contain cc_prompt_id: %s", hSubagent)
