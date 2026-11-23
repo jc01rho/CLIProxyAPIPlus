@@ -6583,7 +6583,7 @@ func TestApplyCloaking_FableInjectsFallbacksAndDisplayUpdates(t *testing.T) {
 	}
 
 	betas := claudeCodeCLIBetas(out, nil, true)
-	if !strings.Contains(betas, "server-side-fallback-2026-06-01") {
+	if !strings.Contains(betas, claudeServerSideFallbackBeta) {
 		t.Fatalf("expected server-side-fallback beta in betas, got: %s", betas)
 	}
 	if !strings.Contains(betas, "thinking-display-updates-2026-08-18") {
@@ -9678,7 +9678,7 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 			want:  oauthMain + ",structured-outputs-2025-12-15,cache-diagnosis-2026-04-07,fast-mode-2026-02-01",
 		},
 		{name: "cache-diagnosis needs a diagnostics body", body: `{"model":"claude-opus-5","diagnostics":{}}`, oauth: true, want: oauthMain + ",cache-diagnosis-2026-04-07"},
-		{name: "fallbacks add server-side-fallback and fallback-credit", body: `{"model":"claude-fable-5-1","fallbacks":[{"model":"claude-opus-5"}]}`, oauth: true, want: oauthPerTurn + ",server-side-fallback-2026-06-01,fallback-credit-2026-06-01"},
+		{name: "fallbacks add server-side-fallback and fallback-credit", body: `{"model":"claude-fable-5-1","fallbacks":[{"model":"claude-opus-5"}]}`, oauth: true, want: oauthPerTurn + ",server-side-fallback-2026-07-01,fallback-credit-2026-06-01"},
 		{name: "fallback credit token adds fallback-credit", body: `{"model":"claude-opus-5","fallback_credit_token":"fct_1"}`, oauth: true, want: oauthMain + ",fallback-credit-2026-06-01"},
 		{
 			name:  "subagent omits extended-cache-ttl",

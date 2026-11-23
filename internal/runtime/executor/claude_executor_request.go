@@ -30,33 +30,38 @@ import (
 )
 
 const (
-	claudeTokenCountingBeta          = "token-counting-2024-11-01"
-	claudeFastModeBeta               = "fast-mode-2026-02-01"
-	claudeOAuthBeta                  = "oauth-2025-04-20"
-	claudeCodeBeta                   = "claude-code-20250219"
-	claudeContext1MBeta              = "context-1m-2025-08-07"
-	claudeMidConvSystemBeta          = "mid-conversation-system-2026-04-07"
-	claudePerTurnControlBeta         = "per-turn-control-2026-07-01"
-	claudePerTurnTimingBeta          = "timing-2026-09-09"
-	claudeMidConvToolChangesBeta     = "mid-conversation-tool-changes-2026-07-01"
-	claudeInlineToolsBeta            = "inline-tools-2026-09-15"
-	claudeMidConvSystemClearAtBeta   = "mid-conversation-system-clear-at-2026-08-21"
-	claudeDangerousToolUseBeta       = "dangerous-tool-use-2026-09-03"
-	claudeAdvisorToolBeta            = "advisor-tool-2026-03-01"
-	claudeAdvancedToolUseBeta        = "advanced-tool-use-2025-11-20"
-	claudeEffortBeta                 = "effort-2025-11-24"
-	claudeServerSideFallbackBeta     = "server-side-fallback-2026-06-01"
-	claudeFallbackCreditBeta         = "fallback-credit-2026-06-01"
-	claudeStructuredOutputsBeta      = "structured-outputs-2025-12-15"
-	claudeThinkingDisplayUpdatesBeta = "thinking-display-updates-2026-08-18"
-	claudeThinkingBindingBeta        = "thinking-binding-controls-2026-08-01"
-	claudeThinkingResumptionBeta     = "thinking-resumption-2026-07-17"
-	claudeExtendedCacheTTLBeta       = "extended-cache-ttl-2025-04-11"
-	claudePromptCachingEvictBeta     = "prompt-caching-evict-2026-05-12"
-	claudeCacheDiagnosisBeta         = "cache-diagnosis-2026-04-07"
-	claudeRedactThinkingBeta         = "redact-thinking-2026-02-12"
-	claudePromptCachingScopeBeta     = "prompt-caching-scope-2026-01-05"
-	claudeAFKModeBeta                = "afk-mode-2026-01-31"
+	claudeTokenCountingBeta        = "token-counting-2024-11-01"
+	claudeFastModeBeta             = "fast-mode-2026-02-01"
+	claudeOAuthBeta                = "oauth-2025-04-20"
+	claudeCodeBeta                 = "claude-code-20250219"
+	claudeContext1MBeta            = "context-1m-2025-08-07"
+	claudeMidConvSystemBeta        = "mid-conversation-system-2026-04-07"
+	claudePerTurnControlBeta       = "per-turn-control-2026-07-01"
+	claudePerTurnTimingBeta        = "timing-2026-09-09"
+	claudeMidConvToolChangesBeta   = "mid-conversation-tool-changes-2026-07-01"
+	claudeInlineToolsBeta          = "inline-tools-2026-09-15"
+	claudeMidConvSystemClearAtBeta = "mid-conversation-system-clear-at-2026-08-21"
+	claudeDangerousToolUseBeta     = "dangerous-tool-use-2026-09-03"
+	claudeAdvisorToolBeta          = "advisor-tool-2026-03-01"
+	claudeAdvancedToolUseBeta      = "advanced-tool-use-2025-11-20"
+	claudeEffortBeta               = "effort-2025-11-24"
+	claudeServerSideFallbackBeta   = "server-side-fallback-2026-07-01"
+	// claudeServerSideFallbackLegacyBeta is the date CPA used before the
+	// reference client settled on 07-01 (anthropic-auth server-fallback.ts
+	// SERVER_SIDE_FALLBACK_BETA). A caller still sending it is not native Claude
+	// Code, so probe and helper paths strip it like the current value.
+	claudeServerSideFallbackLegacyBeta = "server-side-fallback-2026-06-01"
+	claudeFallbackCreditBeta           = "fallback-credit-2026-06-01"
+	claudeStructuredOutputsBeta        = "structured-outputs-2025-12-15"
+	claudeThinkingDisplayUpdatesBeta   = "thinking-display-updates-2026-08-18"
+	claudeThinkingBindingBeta          = "thinking-binding-controls-2026-08-01"
+	claudeThinkingResumptionBeta       = "thinking-resumption-2026-07-17"
+	claudeExtendedCacheTTLBeta         = "extended-cache-ttl-2025-04-11"
+	claudePromptCachingEvictBeta       = "prompt-caching-evict-2026-05-12"
+	claudeCacheDiagnosisBeta           = "cache-diagnosis-2026-04-07"
+	claudeRedactThinkingBeta           = "redact-thinking-2026-02-12"
+	claudePromptCachingScopeBeta       = "prompt-caching-scope-2026-01-05"
+	claudeAFKModeBeta                  = "afk-mode-2026-01-31"
 )
 
 // claudeCodeMainBetas is the anthropic-beta list Claude Code 2.1.302 sends on
@@ -1505,6 +1510,7 @@ func applyClaudeHeadersWithNativeProfile(
 		}
 		if reqProbeOrHelper && !helperProfile {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeServerSideFallbackBeta)
+			baseBetas = withoutClaudeBeta(baseBetas, claudeServerSideFallbackLegacyBeta)
 			baseBetas = withoutClaudeBeta(baseBetas, claudeThinkingDisplayUpdatesBeta)
 			baseBetas = withoutClaudeBeta(baseBetas, claudeExtendedCacheTTLBeta)
 		}
@@ -1796,6 +1802,7 @@ func withClaude280BetaGating(betas string, body []byte, helperProfile bool) stri
 	reqModel := strings.ToLower(strings.TrimSpace(ojson.GetBytes(body, "model").String()))
 	if isClaudeHaikuModel(reqModel) && !ojson.GetBytes(body, "fallbacks").Exists() && !helperProfile {
 		betas = withoutClaudeBeta(betas, claudeServerSideFallbackBeta)
+		betas = withoutClaudeBeta(betas, claudeServerSideFallbackLegacyBeta)
 	}
 	return betas
 }
@@ -1898,15 +1905,29 @@ func classifyClaudeGzipResponse(resp *http.Response) (string, error) {
 }
 
 // claudeWireHeaderCasing maps Go's canonical header name to the exact casing
-// Claude Code 2.1.280 puts on the wire. Only the names that differ are listed;
-// the other twelve already survive canonicalisation unchanged.
+// the reference client puts on the wire. cortexkit/anthropic-auth
+// packages/core/src/claude-code.ts sets these lowercase, and the CI-enforced
+// fixture in packages/opencode/src/tests/fixtures/claude-oauth-wire/vectors.json
+// carries the same lowercase names.
+//
+// Only the x-stainless-* block is rewritten. Those names are written once per
+// request and never read back, whereas x-claude-code-session-id and
+// x-claude-code-prompt-id are read through Header.Get by client detection and
+// session recovery, and accept/authorization/content-type by the transport and
+// retry paths, so lowercasing those breaks the pipeline.
 var claudeWireHeaderCasing = map[string]string{
-	"X-Stainless-Os":      "X-Stainless-OS",
-	"Anthropic-Beta":      "anthropic-beta",
-	"Anthropic-Version":   "anthropic-version",
-	"X-App":               "x-app",
-	"X-Client-Request-Id": "x-client-request-id",
-
+	"X-Stainless-Os":                            "x-stainless-os",
+	"X-Stainless-Arch":                          "x-stainless-arch",
+	"X-Stainless-Lang":                          "x-stainless-lang",
+	"X-Stainless-Package-Version":               "x-stainless-package-version",
+	"X-Stainless-Retry-Count":                   "x-stainless-retry-count",
+	"X-Stainless-Runtime":                       "x-stainless-runtime",
+	"X-Stainless-Runtime-Version":               "x-stainless-runtime-version",
+	"X-Stainless-Timeout":                       "x-stainless-timeout",
+	"Anthropic-Beta":                            "anthropic-beta",
+	"Anthropic-Version":                         "anthropic-version",
+	"X-App":                                     "x-app",
+	"X-Client-Request-Id":                       "x-client-request-id",
 	"Anthropic-Dangerous-Direct-Browser-Access": "anthropic-dangerous-direct-browser-access",
 }
 
