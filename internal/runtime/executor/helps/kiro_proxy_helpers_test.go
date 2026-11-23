@@ -24,7 +24,7 @@ func TestKiroProxyChainFallsBackAfterTransportFailure(t *testing.T) {
 	kiroProxyCooling = make(map[string]time.Time)
 	kiroProxyChainMu.Unlock()
 
-	client := NewKiroProxyChainHTTPClient(0, []string{"http://127.0.0.1:1", proxy.URL})
+	client := NewKiroProxyChainHTTPClient(nil, 0, []string{"http://127.0.0.1:1", proxy.URL})
 	req, err := http.NewRequest(http.MethodPost, "http://upstream.example/generate", http.NoBody)
 	if err != nil {
 		t.Fatal(err)

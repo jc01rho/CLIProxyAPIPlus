@@ -365,13 +365,13 @@ func newKiroHTTPClientWithPooling(ctx context.Context, cfg *config.Config, auth 
 		proxyURL = strings.TrimSpace(auth.ProxyURL)
 	}
 	if proxyURL == "" && cfg != nil && len(cfg.KiroProxyURLs) > 0 {
-		return helps.NewKiroProxyChainHTTPClient(timeout, cfg.KiroProxyURLs)
+		return helps.NewKiroProxyChainHTTPClient(cfg, timeout, cfg.KiroProxyURLs)
 	}
 	if proxyURL == "" && cfg != nil {
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 	}
 	if proxyURL != "" {
-		return helps.NewKiroProxyChainHTTPClient(timeout, []string{proxyURL})
+		return helps.NewKiroProxyChainHTTPClient(cfg, timeout, []string{proxyURL})
 	}
 	if ctx != nil {
 		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {

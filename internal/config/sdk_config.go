@@ -58,6 +58,15 @@ type SDKConfig struct {
 	// 0, and values beyond the representable duration range saturate.
 	TLSHandshakeTimeoutSeconds int `yaml:"tls-handshake-timeout-seconds" json:"tls-handshake-timeout-seconds"`
 
+	// ResponseHeaderTimeoutSeconds bounds how long a request waits for the
+	// upstream response headers after the request has been written, in seconds.
+	// It applies to the shared upstream HTTP clients built by the executor
+	// helpers (direct, proxy-url and the Kiro proxy chain) and not to the
+	// response body, so long-running streams are unaffected. A value <= 0 (or
+	// omitted) uses DefaultResponseHeaderTimeout; values beyond the
+	// representable duration range saturate.
+	ResponseHeaderTimeoutSeconds int `yaml:"response-header-timeout-seconds" json:"response-header-timeout-seconds"`
+
 	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
 	//
 	// Supported values:
@@ -141,6 +150,24 @@ func (c *SDKConfig) TLSHandshakeTimeout() time.Duration {
 		return time.Duration(math.MaxInt64)
 	}
 	return time.Duration(c.TLSHandshakeTimeoutSeconds) * time.Second
+}
+
+// DefaultResponseHeaderTimeout is the upstream response-header wait used when
+// requests.response-header-timeout-seconds is unset or not positive.
+const DefaultResponseHeaderTimeout = 120 * time.Second
+
+// ResponseHeaderTimeout returns the configured upstream response-header wait.
+// A nil receiver or a non-positive configured value yields
+// DefaultResponseHeaderTimeout; oversized values saturate.
+func (c *SDKConfig) ResponseHeaderTimeout() time.Duration {
+	if c == nil || c.ResponseHeaderTimeoutSeconds <= 0 {
+		return DefaultResponseHeaderTimeout
+	}
+	const maxResponseHeaderTimeoutSeconds = math.MaxInt64 / int64(time.Second)
+	if int64(c.ResponseHeaderTimeoutSeconds) > maxResponseHeaderTimeoutSeconds {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(c.ResponseHeaderTimeoutSeconds) * time.Second
 }
 
 // ClientConfig configures client-facing compatibility behavior.

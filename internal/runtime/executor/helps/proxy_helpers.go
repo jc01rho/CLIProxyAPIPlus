@@ -32,9 +32,8 @@ var (
 )
 
 const (
-	defaultTLSHandshakeTimeout   = 30 * time.Second
-	defaultResponseHeaderTimeout = 45 * time.Second
-	defaultStreamingIdleTimeout  = 5 * time.Minute
+	defaultTLSHandshakeTimeout  = 30 * time.Second
+	defaultStreamingIdleTimeout = 5 * time.Minute
 )
 
 // NewProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
@@ -73,7 +72,7 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 
 	// Create new client
 	httpClient := &http.Client{}
-	if bounded := newBoundedTransport(); bounded != nil {
+	if bounded := newBoundedTransport(cfg); bounded != nil {
 		httpClient.Transport = bounded
 	}
 	if timeout > 0 {
@@ -111,7 +110,8 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 // NewKiroProxyChainHTTPClient builds a Kiro-only ordered proxy chain. A
 // transport failure cools that proxy for 60 seconds and the next ready proxy
 // is attempted. Ported from kiro-lb src/upstream/http.rs (1581af9).
-func NewKiroProxyChainHTTPClient(timeout time.Duration, proxyURLs []string) *http.Client {
+func NewKiroProxyChainHTTPClient(cfg *config.Config, timeout time.Duration, proxyURLs []string) *http.Client {
+	headerTimeout := responseHeaderTimeout(cfg)
 	transports := make([]kiroProxyTransport, 0, len(proxyURLs))
 	seen := make(map[string]struct{}, len(proxyURLs))
 	for _, raw := range proxyURLs {
@@ -123,12 +123,14 @@ func NewKiroProxyChainHTTPClient(timeout time.Duration, proxyURLs []string) *htt
 			continue
 		}
 		seen[raw] = struct{}{}
-		transport, err := kiroProxyTransports.Get(raw, func() (*http.Transport, error) {
+		// The cached transport carries the header timeout, so a changed
+		// setting must miss the cache and build a fresh transport.
+		transport, err := kiroProxyTransports.Get(raw+"\x00"+headerTimeout.String(), func() (*http.Transport, error) {
 			transport, _, err := proxyutil.BuildHTTPTransport(raw)
 			if err != nil {
 				return nil, fmt.Errorf("kiro proxy-urls (%s): %w", proxyutil.Redact(raw), err)
 			}
-			tuneHTTPTransport(transport)
+			tuneHTTPTransport(transport, cfg)
 			if err := configureKiroProxyHTTP2(transport); err != nil {
 				return nil, err
 			}
@@ -379,7 +381,7 @@ func pooledProxyTransport(proxyURL string, cfg *config.Config, auth *cliproxyaut
 	// deliberately no global switch: pooling one api key must never change the
 	// transport lifecycle of another provider or OAuth identity. Without the
 	// block every request keeps the historical behavior of a fresh transport.
-	return buildProxyTransport(proxyURL)
+	return buildProxyTransport(proxyURL, cfg)
 }
 
 // pooledTransport resolves one credential's pool for a transport kind. pooled is
@@ -700,10 +702,12 @@ func NewDevinHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxya
 
 	proxyURL := effectiveProxyURL(ctx, cfg, auth)
 
-	tr, err := devinTransportCache.Get(proxyURL, func() (*http.Transport, error) {
+	// The cached transport carries the header timeout, so a changed setting
+	// must miss the cache and build a fresh transport.
+	tr, err := devinTransportCache.Get(proxyURL+"\x00"+responseHeaderTimeout(cfg).String(), func() (*http.Transport, error) {
 		var base *http.Transport
 		if proxyURL != "" {
-			base = buildProxyTransport(proxyURL)
+			base = buildProxyTransport(proxyURL, cfg)
 		}
 		if base == nil {
 			if dt, ok := http.DefaultTransport.(*http.Transport); ok {
@@ -759,23 +763,23 @@ func effectiveProxyURL(ctx context.Context, cfg *config.Config, auth *cliproxyau
 //
 // Returns:
 //   - *http.Transport: A configured transport, or nil if the proxy URL is invalid
-func buildProxyTransport(proxyURL string) *http.Transport {
+func buildProxyTransport(proxyURL string, cfg *config.Config) *http.Transport {
 	transport, _, errBuild := proxyutil.BuildHTTPTransport(proxyURL)
 	if errBuild != nil {
 		log.Errorf("%v", errBuild)
 		return nil
 	}
-	tuneHTTPTransport(transport)
+	tuneHTTPTransport(transport, cfg)
 	return transport
 }
 
-func newBoundedTransport() http.RoundTripper {
+func newBoundedTransport(cfg *config.Config) http.RoundTripper {
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok || transport == nil {
 		return nil
 	}
 	clone := transport.Clone()
-	tuneHTTPTransport(clone)
+	tuneHTTPTransport(clone, cfg)
 	return idleTimeoutRoundTripper{next: clone, idleTimeout: defaultStreamingIdleTimeout, processDefault: true}
 }
 
@@ -788,12 +792,21 @@ func IsDefaultBoundedTransport(rt http.RoundTripper) bool {
 	return ok && wrapped.processDefault
 }
 
-func tuneHTTPTransport(transport *http.Transport) {
+// responseHeaderTimeout resolves the upstream response-header wait for cfg,
+// falling back to the default when cfg is nil.
+func responseHeaderTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return config.DefaultResponseHeaderTimeout
+	}
+	return cfg.ResponseHeaderTimeout()
+}
+
+func tuneHTTPTransport(transport *http.Transport, cfg *config.Config) {
 	if transport == nil {
 		return
 	}
 	if transport.ResponseHeaderTimeout == 0 {
-		transport.ResponseHeaderTimeout = defaultResponseHeaderTimeout
+		transport.ResponseHeaderTimeout = responseHeaderTimeout(cfg)
 	}
 	if transport.TLSHandshakeTimeout == 0 {
 		transport.TLSHandshakeTimeout = defaultTLSHandshakeTimeout
