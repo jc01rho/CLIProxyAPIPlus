@@ -682,7 +682,7 @@ func (m *Manager) executeWithRetry(
 		if errExec == nil {
 			return resp, nil
 		}
-		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
+		if isTerminalRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, errExec
 		}
 		if isCredentialTerminatedError(errExec) {
@@ -825,12 +825,21 @@ func (m *Manager) executeStreamWithRetry(
 		if errStream == nil {
 			return result, nil
 		}
+		if isTerminalRequestStopError(errStream) {
+			// Return the stop still marked so route fallback and ExecuteStream see
+			// it; ExecuteStream converts it with unwrapStoppedStreamError.
+			return nil, errStream
+		}
 		if !m.HomeEnabled() {
 			observeSelectionCooldownDeadline(&selectionCooldownDeadline, errStream, time.Now())
 		}
 		upstreamAttempted := hasUpstreamExecutionAttempt(errStream)
 		if upstreamAttempted {
-			preferredUpstreamErr = errStream
+			if isDirectStreamTerminalError(errStream) {
+				preferredUpstreamErr = errStream
+			} else {
+				syncPreferredUpstreamError(&preferredUpstreamErr, errStream)
+			}
 		}
 		if !fallbackAllowed {
 			// The requested model is not on the fallback allowlist: the initial
@@ -856,9 +865,6 @@ func (m *Manager) executeStreamWithRetry(
 		}
 		retryRoundPending = false
 		retryRoundWaited = false
-		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
-			return nil, errStream
-		}
 		if isCredentialTerminatedError(errStream) {
 			if preferredUpstreamErr == nil {
 				return nil, unwrapExecutionBoundaryError(errStream)
@@ -937,7 +943,7 @@ func (m *Manager) executeStreamWithRetry(
 	// the earlier upstream error as the visible cause (upstream
 	// preferredUpstreamErr semantics preserved through the route-fallback
 	// wrapper).
-	if preferredUpstreamErr != nil && (!m.HomeEnabled() || isHomeRetryRoundExhausted(lastErr)) {
+	if preferredUpstreamErr != nil && !isDirectStreamTerminalError(lastErr) && (!m.HomeEnabled() || isHomeRetryRoundExhausted(lastErr)) {
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 	}
 	if !m.HomeEnabled() {

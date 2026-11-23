@@ -522,7 +522,7 @@ func applyThinkingDocCore(ctx context.Context, doc *ojson.Doc, docValid bool, so
 	if errApply != nil {
 		return modified, errApply
 	}
-	if thinkingIsFullyDisabled(*validated) || nativeResponses {
+	if thinkingIsFullyDisabled(*validated) || nativeResponses || (!isPluginApplier && thinkingConfigRemovedByApplierDoc(providerFormat, doc, docValid)) {
 		return modified, nil
 	}
 	if providerFormat == "claude" && thinkingRequestedOff(config) {
@@ -560,6 +560,16 @@ func invokeProviderApplierOnDoc(applier ProviderApplier, doc *ojson.Doc, docVali
 
 func thinkingIsFullyDisabled(config ThinkingConfig) bool {
 	return config.Mode == ModeNone && config.Budget == 0 && config.Level == ""
+}
+
+func thinkingConfigRemovedByApplierDoc(providerFormat string, doc *ojson.Doc, docValid bool) bool {
+	if doc == nil || !docValid {
+		return false
+	}
+	if providerFormat == "antigravity" {
+		return !doc.Get("request.generationConfig.thinkingConfig").Exists()
+	}
+	return false
 }
 
 func thinkingRequestedOff(config ThinkingConfig) bool {
@@ -703,7 +713,7 @@ func applyUserDefinedModelDoc(doc *ojson.Doc, docValid bool, modelInfo *registry
 	// "xhigh" on a low/medium/high model like minimax-m3) would otherwise reach
 	// the upstream verbatim and be rejected as an invalid reasoning enum.
 	if config.Mode == ModeLevel && modelInfo != nil && modelInfo.Thinking != nil && len(modelInfo.Thinking.Levels) > 0 {
-		config.Level = clampLevel(config.Level, modelInfo, toFormat)
+		config.Level = ClampLevel(config.Level, modelInfo, toFormat)
 	}
 	log.WithFields(log.Fields{
 		"provider": toFormat,
@@ -716,7 +726,7 @@ func applyUserDefinedModelDoc(doc *ojson.Doc, docValid bool, modelInfo *registry
 	if err != nil {
 		return modified, err
 	}
-	if thinkingIsFullyDisabled(config) || nativeResponses {
+	if thinkingIsFullyDisabled(config) || nativeResponses || (!isPluginApplier && thinkingConfigRemovedByApplierDoc(toFormat, doc, docValid)) {
 		return modified, nil
 	}
 	if applySummaryConfigForProviderDoc(doc, docValid, toFormat, modelID, providerKey, modelInfo, summaryConfig) {

@@ -238,7 +238,7 @@ func TestIsAuthBlockedForModel_ClaudeWithCreditsStillBlockedDuringCooldown(t *te
 		Known:     true,
 		Available: true,
 		UpdatedAt: time.Now(),
-	})
+	}, auth.RegistrationEpoch)
 
 	blocked, reason, _ := isAuthBlockedForModel(auth, "claude-sonnet-4-6", time.Now())
 	if !blocked || reason != blockReasonCooldown {
@@ -266,7 +266,7 @@ func TestIsAuthBlockedForModel_KeepsGeminiBlockedWithoutCreditsBypass(t *testing
 		Known:     true,
 		Available: true,
 		UpdatedAt: time.Now(),
-	})
+	}, auth.RegistrationEpoch)
 
 	blocked, reason, _ := isAuthBlockedForModel(auth, "gemini-3-flash", time.Now())
 	if !blocked || reason != blockReasonCooldown {
@@ -314,11 +314,15 @@ func TestManagerExecuteAndStream_ClaudeRouteNeverEntersCreditsFallbackDuringMode
 			}
 
 			// A fresh negative hint must suppress the credits retry.
+			registered, errGet := manager.GetByID(authID)
+			if !errGet {
+				t.Fatal("registered auth not found")
+			}
 			SetAntigravityCreditsHint(authID, AntigravityCreditsHint{
 				Known:     true,
 				Available: false,
 				UpdatedAt: time.Now(),
-			})
+			}, registered.RegistrationEpoch)
 			assertClaudeRouteSkipsCreditsFallback(t, manager, model, stream)
 
 			// An expired negative hint must not reopen the retry either: the Claude
@@ -327,7 +331,7 @@ func TestManagerExecuteAndStream_ClaudeRouteNeverEntersCreditsFallbackDuringMode
 				Known:     true,
 				Available: false,
 				UpdatedAt: time.Now().Add(-AntigravityCreditsHintRefreshInterval - time.Second),
-			})
+			}, registered.RegistrationEpoch)
 			assertClaudeRouteSkipsCreditsFallback(t, manager, model, stream)
 
 			if len(executor.executeCreditsRequested) != 0 || len(executor.streamCreditsRequested) != 0 {

@@ -148,6 +148,10 @@ type pluginSchedulerState interface {
 	HasScheduler() bool
 }
 
+type pluginSchedulerPriorityPool interface {
+	SchedulerWantsAllPriorityCandidates() bool
+}
+
 // StoppableSelector is an optional interface for selectors that hold resources.
 // Selectors that implement this interface will have Stop called during shutdown.
 type StoppableSelector interface {
@@ -209,7 +213,7 @@ type Manager struct {
 	// another account's credits; see antigravityClaudeOrGPTRoute.
 	antigravityClaudeCreditsFallback atomic.Bool
 	selector                         Selector
-	hook                             Hook
+	hook                             *hookChain
 	resultPolicy                     atomic.Pointer[resultPolicyHolder]
 	mu                               sync.RWMutex
 	selectorMu                       sync.Mutex
@@ -315,7 +319,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		executors:             make(map[string]ProviderExecutor),
 		executorRevisions:     make(map[string]uint64),
 		selector:              selector,
-		hook:                  hook,
+		hook:                  &hookChain{primary: hook},
 		auths:                 make(map[string]*Auth),
 		authEpochs:            make(map[string]uint64),
 		homeRuntimeAuths:      make(map[string]map[string]*Auth),
