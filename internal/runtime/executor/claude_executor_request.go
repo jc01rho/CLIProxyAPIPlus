@@ -181,7 +181,7 @@ func isManagedClaudeBeta(beta string) bool {
 // The values follow cortexkit/anthropic-auth b9a8bd928 and its wire vectors
 // (testdata/claude_oauth_wire/vectors.json), which are reconstructed, not
 // captured from Claude Code.
-func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool) string {
+func claudeCodeCLIBetas(body []byte, requested map[string]bool, callerOrder []string, oauthToken bool) string {
 	model := ojson.GetBytes(body, "model").String()
 	auxiliary := len(body) > 0 && helps.IsClaudeProbeOrHelperRequest(body)
 	baseline := claudeCodeMainBetas
@@ -195,7 +195,15 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 	structured := claudeHasJSONSchemaOutput(body)
 
 	betas := make([]string, 0, len(baseline)+12)
-	add := func(beta string) { betas = append(betas, beta) }
+	seen := make(map[string]bool, len(baseline)+12)
+	add := func(beta string) {
+		if beta == "" || seen[beta] {
+			return
+		}
+		seen[beta] = true
+		betas = append(betas, beta)
+	}
+
 	for _, beta := range baseline {
 		switch beta {
 		case claudeCodeBeta:
@@ -203,15 +211,7 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 				continue
 			}
 		case claudeOAuthBeta:
-			if oauthToken {
-				add(beta)
-			}
-			if requested[claudeContext1MBeta] {
-				add(claudeContext1MBeta)
-			}
-			continue
-		case claudeRedactThinkingBeta:
-			if claudeThinkingDisplaySet(body) {
+			if !oauthToken {
 				continue
 			}
 		case claudeExtendedCacheTTLBeta:
@@ -220,30 +220,6 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 				helps.ClaudePayloadHas1hTTL(body)
 			if !includeExtended {
 				continue
-			}
-		case claudeCacheDiagnosisBeta:
-			if structured {
-				add(claudeStructuredOutputsBeta)
-			}
-			if requested[claudeThinkingResumptionBeta] {
-				add(claudeThinkingResumptionBeta)
-			}
-			// The beta announces the diagnostics body field; requests without one
-			// (diagnostics injection disabled, helpers) do not claim it.
-			if !ojson.GetBytes(body, "diagnostics").IsObject() {
-				continue
-			}
-		case claudeEffortBeta:
-			if requested[claudeDangerousToolUseBeta] || ojson.GetBytes(body, "safeguards").Exists() {
-				add(claudeDangerousToolUseBeta)
-			}
-		case claudeAdvancedToolUseBeta:
-			if requested[claudeAdvisorToolBeta] || claudeBodyHasAdvisorTool(body) {
-				add(claudeAdvisorToolBeta)
-			}
-		case claudeMidConvToolChangesBeta:
-			if claudeIncludePerTurnTiming(body, requested) {
-				add(claudePerTurnTimingBeta)
 			}
 		}
 		add(beta)
@@ -255,35 +231,101 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 				add(claudePerTurnControlBeta)
 			}
 		}
-		if beta == claudeMidConvToolChangesBeta && claudeIncludeInlineTools(body, requested) {
-			add(claudeInlineToolsBeta)
+	}
+
+	// structured-outputs sits immediately before cache-diagnosis, which ends the
+	// main and title lists; a list without it (the quota list) appends instead.
+	// This mirrors the splice in cortexkit selectClaudeCodeBetas.
+	if structured && !seen[claudeStructuredOutputsBeta] {
+		index := -1
+		for i, beta := range betas {
+			if beta == claudeCacheDiagnosisBeta {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			add(claudeStructuredOutputsBeta)
+		} else {
+			betas = append(betas, "")
+			copy(betas[index+1:], betas[index:])
+			betas[index] = claudeStructuredOutputsBeta
+			seen[claudeStructuredOutputsBeta] = true
 		}
 	}
-	if structured && !containsString(betas, claudeStructuredOutputsBeta) {
-		add(claudeStructuredOutputsBeta)
-	}
+
 	if claudeRequestUsesFastMode(body, requested) {
 		add(claudeFastModeBeta)
 	}
-	for _, beta := range []string{claudeAFKModeBeta, claudeThinkingResumptionBeta} {
-		if requested[beta] && !containsString(betas, beta) {
+
+	// Betas selected by the body follow the baseline, in this fixed order.
+	for _, beta := range claudeBodyAssembledBetas {
+		if claudeBetaFromBody(beta, body, auxiliary, oauthToken) {
 			add(beta)
 		}
 	}
-	if requested[claudePromptCachingEvictBeta] || bytes.Contains(body, []byte(`"evict_on_complete"`)) {
-		add(claudePromptCachingEvictBeta)
-	}
-	if !auxiliary && (requested[claudeServerSideFallbackBeta] || ojson.GetBytes(body, "fallbacks").Exists()) {
-		add(claudeServerSideFallbackBeta)
-	}
-	if requested[claudeFallbackCreditBeta] || ojson.GetBytes(body, "fallback_credit_token").Exists() ||
-		(oauthToken && ojson.GetBytes(body, "fallbacks").Exists()) {
-		add(claudeFallbackCreditBeta)
-	}
-	if requested[claudeStructuredOutputsBeta] && !containsString(betas, claudeStructuredOutputsBeta) {
-		add(claudeStructuredOutputsBeta)
+
+	// Caller-requested betas trail everything, in the order the caller sent
+	// them, which is where cortexkit selectClaudeCodeBetas appends extraBetas.
+	// Each keeps the inclusion rule it had when it was spliced mid-list.
+	for _, beta := range callerOrder {
+		beta = strings.TrimSpace(beta)
+		if beta == "" || seen[beta] || !requested[beta] || !claudeBetaCallerEmittable(beta, auxiliary) {
+			continue
+		}
+		add(beta)
 	}
 	return strings.Join(betas, ",")
+}
+
+// claudeBodyAssembledBetas are the betas this fork derives from the request
+// body instead of from Claude Code's per-request-class lists. They follow the
+// baseline.
+var claudeBodyAssembledBetas = []string{
+	claudeAdvisorToolBeta,
+	claudeInlineToolsBeta,
+	claudePerTurnTimingBeta,
+	claudeDangerousToolUseBeta,
+	claudeServerSideFallbackBeta,
+	claudeFallbackCreditBeta,
+	claudeStructuredOutputsBeta,
+}
+
+// claudeBetaCallerEmittable reports whether a caller-requested beta is emitted
+// on this request class. context-1m needs OAuth; server-side-fallback is not a
+// helper-only feature.
+func claudeBetaCallerEmittable(beta string, auxiliary bool) bool {
+	switch beta {
+	case claudeContext1MBeta:
+		return true
+	case claudeServerSideFallbackBeta:
+		return !auxiliary
+	case claudeThinkingResumptionBeta, claudeAFKModeBeta, claudePromptCachingEvictBeta:
+		return true
+	}
+	return containsString(claudeBodyAssembledBetas, beta)
+}
+
+// claudeBetaFromBody reports whether the body alone selects beta.
+func claudeBetaFromBody(beta string, body []byte, auxiliary, oauthToken bool) bool {
+	switch beta {
+	case claudeAdvisorToolBeta:
+		return claudeBodyHasAdvisorTool(body)
+	case claudeInlineToolsBeta:
+		return claudeIncludeInlineTools(body, nil)
+	case claudePerTurnTimingBeta:
+		return claudeIncludePerTurnTiming(body, nil)
+	case claudeDangerousToolUseBeta:
+		return ojson.GetBytes(body, "safeguards").Exists()
+	case claudeServerSideFallbackBeta:
+		return !auxiliary && ojson.GetBytes(body, "fallbacks").Exists()
+	case claudeFallbackCreditBeta:
+		return ojson.GetBytes(body, "fallback_credit_token").Exists() ||
+			(oauthToken && ojson.GetBytes(body, "fallbacks").Exists())
+	case claudeStructuredOutputsBeta:
+		return claudeHasJSONSchemaOutput(body)
+	}
+	return false
 }
 
 // claudeIsQuotaProbe reports a one-token auxiliary probe, which Claude Code
@@ -942,6 +984,23 @@ func claudeBodyIndicatesFastModeCredits(body []byte) bool {
 
 // claudeRequestedBetas collects every beta the caller asked for, from the
 // Anthropic-Beta header and from betas lifted out of the request body.
+// claudeCallerBetaOrder lists the betas the caller asked for, header first and
+// then the extras, so the emitted header can append them in caller order.
+func claudeCallerBetaOrder(incomingBetas string, extraBetas []string) []string {
+	order := make([]string, 0, len(extraBetas)+4)
+	for _, beta := range strings.Split(incomingBetas, ",") {
+		if beta = strings.TrimSpace(beta); beta != "" {
+			order = append(order, beta)
+		}
+	}
+	for _, beta := range extraBetas {
+		if beta = strings.TrimSpace(beta); beta != "" {
+			order = append(order, beta)
+		}
+	}
+	return order
+}
+
 func claudeRequestedBetas(incomingBetas string, extraBetas []string) map[string]bool {
 	requested := make(map[string]bool)
 	for _, beta := range strings.Split(incomingBetas, ",") {
@@ -1350,7 +1409,7 @@ func applyClaudeHeadersWithNativeProfile(
 	// removals below apply only to caller-supplied lists.
 	builtBaseline := !preserveCallerFingerprint && !(confirmedClaudeCode && incomingBetas != "") && !countTokens
 	if !preserveCallerFingerprint {
-		baseBetas = claudeCodeCLIBetas(body, requestedMap, useOAuthBetas)
+		baseBetas = claudeCodeCLIBetas(body, requestedMap, claudeCallerBetaOrder(incomingBetas, extraBetas), useOAuthBetas)
 		if countTokens {
 			baseBetas = claudeCountTokensBetasForCredential(useOAuthBetas)
 			if advisorNeeded {

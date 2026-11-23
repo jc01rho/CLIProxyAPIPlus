@@ -22,7 +22,7 @@ func TestIssue6193_Sonnet55ToolChangeBeta(t *testing.T) {
 		"claude-sonnet-5-5[1m]",
 	}
 	for _, model := range sonnet55Variants {
-		betas := claudeCodeCLIBetas([]byte(`{"model":"`+model+`"}`), nil, false)
+		betas := claudeCodeCLIBetas([]byte(`{"model":"`+model+`"}`), nil, nil, false)
 		if !strings.Contains(betas, "mid-conversation-tool-changes-2026-07-01") {
 			t.Fatalf("claudeCodeCLIBetas for %s missing mid-conversation-tool-changes-2026-07-01, got: %s", model, betas)
 		}
@@ -45,7 +45,7 @@ func TestIssue6193_Sonnet55ToolChangeBeta(t *testing.T) {
 	for _, model := range sonnet5Variants {
 		// Claude Code 2.1.302 sends one main-turn list for every model row
 		// without its own adjustments, Sonnet 5 included.
-		betas := claudeCodeCLIBetas([]byte(`{"model":"`+model+`"}`), nil, false)
+		betas := claudeCodeCLIBetas([]byte(`{"model":"`+model+`"}`), nil, nil, false)
 		if !strings.Contains(betas, "mid-conversation-tool-changes-2026-07-01") {
 			t.Fatalf("claudeCodeCLIBetas for %s missing mid-conversation-tool-changes-2026-07-01, got: %s", model, betas)
 		}
