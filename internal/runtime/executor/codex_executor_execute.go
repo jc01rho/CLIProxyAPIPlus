@@ -152,7 +152,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		originalTranslated = helps.PreserveCodexOpenAIResponsesInclude(originalTranslated, originalPayload, from)
 		helps.PreserveCodexOpenAIResponsesIncludeDoc(doc, req.Payload, from)
 	}
-	normalizeCodexOutputBudgetDoc(doc)
+	applyCodexOutputBudgetDoc(ctx, auth, opts.Headers, baseURL, doc)
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
 	if err = helps.ApplyRequestThinkingWithContextDoc(ctx, doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
@@ -208,7 +208,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, errSession
 	}
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, upstreamBody, err := e.cacheHelperDoc(ctx, from, url, req, doc, auth, opts.Headers)
+	httpReq, upstreamBody, err := e.cacheHelperDocMovingInstructions(ctx, from, url, req, doc, auth, !sessionInstructions.Managed(), opts.Headers)
 	if err != nil {
 		return resp, err
 	}

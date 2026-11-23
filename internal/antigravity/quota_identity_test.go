@@ -5,59 +5,25 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 )
 
-// quotaIdentityFloorMajor/Minor is the Cloud Code client version below which the
-// upstream hides the "Gemini Models" quota group and the newest model ids. Measured
-// 2026-10-16 on daily-cloudcode-pa.googleapis.com: antigravity/cli/1.1.6 -> Claude/GPT
-// group only, antigravity/cli/2.23.0 and antigravity/hub/2.23.0 -> both groups.
-const (
-	quotaIdentityFloorMajor = 2
-	quotaIdentityFloorMinor = 23
-)
-
-func antigravityIdentityVersion(t *testing.T, userAgent string) (int, int) {
-	t.Helper()
-	rest := strings.TrimPrefix(userAgent, "antigravity/")
-	rest = strings.TrimPrefix(rest, "hub/")
-	rest = strings.TrimPrefix(rest, "cli/")
-	if idx := strings.IndexAny(rest, " (;\t"); idx >= 0 {
-		rest = rest[:idx]
-	}
-	parts := strings.SplitN(strings.TrimSpace(rest), ".", 3)
-	if len(parts) < 2 {
-		t.Fatalf("User-Agent %q has no major.minor version", userAgent)
-	}
-	major, errMajor := strconv.Atoi(parts[0])
-	minor, errMinor := strconv.Atoi(parts[1])
-	if errMajor != nil || errMinor != nil {
-		t.Fatalf("User-Agent %q version unparsable: %v %v", userAgent, errMajor, errMinor)
-	}
-	return major, minor
-}
-
-func assertIdentityMeetsQuotaFloor(t *testing.T, label, userAgent string) {
+// assertAgyCLIQuotaIdentity checks the identity quota and model-discovery RPCs
+// send: the agy CLI harness identity cortexkit/antigravity-auth quota-manager.ts
+// uses for fetchAvailableModels and retrieveUserQuotaSummary.
+func assertAgyCLIQuotaIdentity(t *testing.T, label, userAgent string) {
 	t.Helper()
 	if strings.Contains(userAgent, "GeminiCLI/") {
 		t.Fatalf("%s used the Gemini CLI identity: %s", label, userAgent)
 	}
-	if !strings.HasPrefix(userAgent, "antigravity/") {
-		t.Fatalf("%s User-Agent = %q, want an antigravity/* identity", label, userAgent)
-	}
-	major, minor := antigravityIdentityVersion(t, userAgent)
-	if major < quotaIdentityFloorMajor || (major == quotaIdentityFloorMajor && minor < quotaIdentityFloorMinor) {
-		t.Fatalf("%s User-Agent = %q is below the %d.%d Cloud Code floor, so the Gemini quota group and newest models are hidden",
-			label, userAgent, quotaIdentityFloorMajor, quotaIdentityFloorMinor)
+	if !strings.HasPrefix(userAgent, "antigravity/cli/1.5.8 (aidev_client; os_type=") ||
+		!strings.HasSuffix(userAgent, "; cl=1020628950; auth_method=consumer)") {
+		t.Fatalf("%s User-Agent = %q, want the agy CLI 1.5.8 identity", label, userAgent)
 	}
 }
 
-// TestQuotaRequestsUseIdentityAboveTheGeminiQuotaFloor pins the identity used by the
-// quota and model-discovery RPCs: the legacy agy harness identity silently drops the
-// Gemini Models group upstream, so these calls must use the floor-guarded runtime identity.
-func TestQuotaRequestsUseIdentityAboveTheGeminiQuotaFloor(t *testing.T) {
+func TestQuotaRequestsUseAgyCLIIdentity(t *testing.T) {
 	seen := map[string][]string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen[r.URL.Path] = append(seen[r.URL.Path], r.Header.Get("User-Agent"))
@@ -84,7 +50,7 @@ func TestQuotaRequestsUseIdentityAboveTheGeminiQuotaFloor(t *testing.T) {
 			t.Fatalf("%s was never called", path)
 		}
 		for _, ua := range agents {
-			assertIdentityMeetsQuotaFloor(t, path, ua)
+			assertAgyCLIQuotaIdentity(t, path, ua)
 		}
 	}
 }

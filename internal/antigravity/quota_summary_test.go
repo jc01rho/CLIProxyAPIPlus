@@ -33,7 +33,7 @@ func TestFetchUserQuotaSummaryFallsBackPastForbiddenAndParsesBuckets(t *testing.
 		if r.URL.Path != "/v1internal:retrieveUserQuotaSummary" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
-		assertIdentityMeetsQuotaFloor(t, "retrieveUserQuotaSummary", r.Header.Get("User-Agent"))
+		assertAgyCLIQuotaIdentity(t, "retrieveUserQuotaSummary", r.Header.Get("User-Agent"))
 		body, errRead := io.ReadAll(r.Body)
 		if errRead != nil {
 			t.Errorf("read body: %v", errRead)

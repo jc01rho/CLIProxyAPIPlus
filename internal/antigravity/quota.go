@@ -499,10 +499,8 @@ func FetchAvailableModels(ctx context.Context, client *http.Client, accessToken,
 	if len(endpoints) == 0 {
 		endpoints = FetchAvailableModelsEndpointFallbacks
 	}
-	// Cloud Code only returns the "Gemini Models" quota group and the newest
-	// model ids (gemini-3.8-flash-*, gemini-4-argon-*) to clients reporting at
-	// least 2.23.0; the legacy agy CLI harness identity (1.1.6) is served the
-	// Claude/GPT group only. Use the floor-enforced Hub runtime identity.
+	// cortexkit/antigravity-auth quota-manager.ts sends the agy CLI harness
+	// identity on fetchAvailableModels, so the quota RPCs do the same.
 	ua := misc.AntigravityQuotaUserAgent()
 	errs := []string{}
 	for _, endpoint := range endpoints {

@@ -222,7 +222,7 @@ func antigravityFailureNextRetryLocked(cacheKey, tokenFailureKey string) time.Ti
 
 var (
 	antigravityNowFunc          = time.Now
-	antigravityModelUserAgent   = misc.AntigravityHubUserAgent
+	antigravityModelUserAgent   = misc.AntigravityCLIUserAgent
 	antigravityCapabilityMu     sync.RWMutex
 	antigravityCapabilityCache  = make(map[string]antigravityCapabilityCacheEntry)
 	antigravityAuthFailureCache = make(map[string]antigravityFailureState)

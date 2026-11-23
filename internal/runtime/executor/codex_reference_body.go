@@ -126,6 +126,68 @@ func applyCodexReferenceBodyDoc(doc *ojson.Doc, installationID, windowID string,
 	}
 }
 
+// codexBaseInstructionsMessageID mirrors baseInstructionsId in cortexkit/openai-auth
+// codex-instructions.ts: a v5 UUID of the instructions text inside a v5 UUID of
+// the thread id, both under the OID namespace.
+func codexBaseInstructionsMessageID(threadID, text string) string {
+	thread := uuid.NewSHA1(uuid.NameSpaceOID, []byte(threadID))
+	return "msg_" + uuid.NewSHA1(thread, []byte(text)).String()
+}
+
+func codexJSONString(text string) string {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(text)
+	return strings.TrimSuffix(buf.String(), "\n")
+}
+
+// moveCodexInstructionsToDeveloperMessageDoc mirrors moveInstructionsToDeveloperMessage:
+// non-empty string instructions become a developer message at the front of the
+// input (after a leading additional_tools item), carrying the base-instructions
+// content kind, and the top-level field is removed. A string input becomes a user
+// message first. The message id is derived from prompt_cache_key when it is a string.
+func moveCodexInstructionsToDeveloperMessageDoc(doc *ojson.Doc) {
+	if doc == nil {
+		return
+	}
+	instructions := doc.Get("instructions")
+	if !instructions.Exists() || instructions.Type != ojson.String || instructions.String() == "" {
+		return
+	}
+	text := instructions.String()
+	var items []string
+	input := doc.Get("input")
+	switch {
+	case input.IsArray():
+		input.ForEach(func(_, item ojson.Result) bool {
+			items = append(items, item.Raw)
+			return true
+		})
+	case input.Type == ojson.String:
+		items = append(items, `{"type":"message","role":"user","content":[{"type":"input_text","text":`+codexJSONString(input.String())+`}]}`)
+	}
+	at := 0
+	if len(items) > 0 && ojson.GetBytes([]byte(items[0]), "type").String() == "additional_tools" {
+		at = 1
+	}
+	var message strings.Builder
+	message.WriteString(`{"type":"message",`)
+	if threadID := doc.Get("prompt_cache_key"); threadID.Type == ojson.String {
+		message.WriteString(`"id":` + codexJSONString(codexBaseInstructionsMessageID(threadID.String(), text)) + `,`)
+	}
+	message.WriteString(`"role":"developer","content":[{"type":"input_text","text":` + codexJSONString(text) + `}],`)
+	message.WriteString(`"internal_chat_message_metadata_passthrough":{"content_item_kinds":["model.base_instructions"]}}`)
+	merged := make([]string, 0, len(items)+1)
+	merged = append(merged, items[:at]...)
+	merged = append(merged, message.String())
+	merged = append(merged, items[at:]...)
+	if doc.SetRaw("input", "["+strings.Join(merged, ",")+"]") != nil {
+		return
+	}
+	_ = doc.Delete("instructions")
+}
+
 // codexUsesReferenceBody limits the reference body shape to ChatGPT-backend
 // OAuth requests: API-key, SIWC and non-ChatGPT upstreams reject or ignore the
 // Codex-only fields, and the compact endpoint takes a different body.

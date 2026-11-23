@@ -251,7 +251,7 @@ func fetchModelsFromBaseURLs(ctx context.Context, auth *coreauth.Auth, baseURLs 
 			httpReq.Close = true
 			httpReq.Header.Set("Content-Type", "application/json")
 			httpReq.Header.Set("Authorization", "Bearer "+accessToken)
-			httpReq.Header.Set("User-Agent", misc.AntigravityHubUserAgent())
+			httpReq.Header.Set("User-Agent", misc.AntigravityCLIUserAgent())
 
 			httpClient := client
 			if httpClient == nil {

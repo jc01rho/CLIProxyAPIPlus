@@ -73,7 +73,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		originalTranslated = helps.PreserveCodexOpenAIResponsesInclude(originalTranslated, originalPayload, from)
 		helps.PreserveCodexOpenAIResponsesIncludeDoc(doc, req.Payload, from)
 	}
-	normalizeCodexOutputBudgetDoc(doc)
+	applyCodexOutputBudgetDoc(ctx, auth, opts.Headers, baseURL, doc)
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
 	if err = helps.ApplyRequestThinkingWithContextDoc(ctx, doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {

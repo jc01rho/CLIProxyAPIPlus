@@ -48,6 +48,46 @@ func TestApplyCodexReferenceBodyDoc(t *testing.T) {
 	}
 }
 
+// The wanted bodies are what cortexkit/openai-auth moveInstructionsToDeveloperMessage
+// produced for the same input when run under bun (message ids included).
+func TestMoveCodexInstructionsToDeveloperMessageDoc(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "array input gets an id derived from prompt_cache_key",
+			body: `{"model":"gpt-5.6-sol","instructions":"You are <Codex> & \"helper\".","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"prompt_cache_key":"thread-1"}`,
+			want: `{"model":"gpt-5.6-sol","input":[{"type":"message","id":"msg_045e077c-31f8-51b4-9216-7264862c360c","role":"developer","content":[{"type":"input_text","text":"You are <Codex> & \"helper\"."}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["model.base_instructions"]}},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"prompt_cache_key":"thread-1"}`,
+		},
+		{
+			name: "string input becomes a user message",
+			body: `{"model":"m","instructions":"Be brief","input":"hello","prompt_cache_key":"t2"}`,
+			want: `{"model":"m","input":[{"type":"message","id":"msg_ee04e793-4f0e-544e-ba02-f7a39fc47498","role":"developer","content":[{"type":"input_text","text":"Be brief"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["model.base_instructions"]}},{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"prompt_cache_key":"t2"}`,
+		},
+		{
+			name: "leading additional_tools stays first and no id without prompt_cache_key",
+			body: `{"model":"m","instructions":"X","input":[{"type":"additional_tools","tools":[]},{"type":"message","role":"user","content":[]}]}`,
+			want: `{"model":"m","input":[{"type":"additional_tools","tools":[]},{"type":"message","role":"developer","content":[{"type":"input_text","text":"X"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["model.base_instructions"]}},{"type":"message","role":"user","content":[]}]}`,
+		},
+		{
+			name: "empty instructions are left alone",
+			body: `{"model":"m","instructions":"","input":[]}`,
+			want: `{"model":"m","instructions":"","input":[]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := ojson.NewDoc([]byte(tt.body))
+			moveCodexInstructionsToDeveloperMessageDoc(doc)
+			if got := string(doc.Bytes()); got != tt.want {
+				t.Fatalf("body\n got %s\nwant %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCodexUsesReferenceBodyGates(t *testing.T) {
 	oauth := &cliproxyauth.Auth{ID: "a", Metadata: map[string]any{"access_token": "tok"}}
 	apiKey := &cliproxyauth.Auth{ID: "b", Attributes: map[string]string{"api_key": "key"}}
