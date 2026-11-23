@@ -23,11 +23,6 @@ jobs:
         run: |
           go build -o test-output ./cmd/server
           rm -f test-output
-      - name: Cross-build for Solaris
-        env:
-          GOOS: solaris
-          GOARCH: amd64
-          CGO_ENABLED: 0
-        run: |
-          go build -o test-output-solaris ./cmd/server
-          rm -f test-output-solaris
+      # Fork: no Solaris cross-build. The fork's Kiro credentials import and the
+      # keeper export outbox use modernc.org/sqlite, whose libc has no solaris
+      # port, and Solaris is not a release target (goreleaser builds no solaris).
