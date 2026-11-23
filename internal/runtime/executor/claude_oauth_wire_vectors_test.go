@@ -124,10 +124,8 @@ func TestClaudeOAuthWireVectors_MetadataUserIDFieldOrder(t *testing.T) {
 }
 
 // Every vector's canonical body hashes to its cch with our xxHash64 seed and
-// mask. Our signer reproduces the full cch except where the body carries
-// fallbacks: CPA leaves fallbacks out of the hashed view (measured on 2.1.220),
-// cortexkit hashes them. That difference is kept on purpose and listed in
-// docs/anthropic-oauth-migration-plan_KO.md.
+// mask, and our signer reproduces that cch for every vector, including the ones
+// whose body carries fallbacks: cortexkit hashes them, so CPA does too.
 func TestClaudeOAuthWireVectors_CCHSignature(t *testing.T) {
 	vectors := loadClaudeOAuthWireVectors(t)
 	for _, tc := range vectors.Cases {
@@ -148,8 +146,8 @@ func TestClaudeOAuthWireVectors_CCHSignature(t *testing.T) {
 			if len(signedCCH) != 2 {
 				t.Fatalf("signed body has no cch: %s", signed)
 			}
-			if sameView := !gjson.GetBytes(body, "fallbacks").Exists(); sameView != (signedCCH[1] == tc.Output.CCH) {
-				t.Fatalf("signed cch = %s, vector %s, fallbacks present = %t", signedCCH[1], tc.Output.CCH, !sameView)
+			if signedCCH[1] != tc.Output.CCH {
+				t.Fatalf("signed cch = %s, vector %s, fallbacks present = %t", signedCCH[1], tc.Output.CCH, gjson.GetBytes(body, "fallbacks").Exists())
 			}
 		})
 	}
