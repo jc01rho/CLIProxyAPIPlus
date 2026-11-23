@@ -13,31 +13,23 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// claudeCode2_1_302WireHeaderOrder is the header name sequence the reference
-// client sends on an OAuth POST /v1/messages over HTTP/1.1, taken from
-// cortexkit/anthropic-auth packages/opencode/src/tests/fixtures
-// /claude-oauth-wire/vectors.json. The names are lowercase because
-// claude-code.ts sets them that way and go sorts header names bytewise, so the
-// sorted block below is exactly what the reference emits.
-// claudeCode2_1_302WireHeaderOrder is the header name sequence the reference
-// client sends on an OAuth POST /v1/messages over HTTP/1.1, taken from
-// cortexkit/anthropic-auth packages/opencode/src/tests/fixtures
-// /claude-oauth-wire/vectors.json. Go sorts header names bytewise, so this is
-// the order that fixture's block produces.
-//
-// The x-claude-code-* and transport names keep Title-Case because the pipeline
-// reads them back through Header.Get after this pass; the fixture has them
-// lowercase, which is the remaining known casing gap.
+// claudeCode2_1_302WireHeaderOrder is the application header name sequence the
+// reference client sends on an OAuth POST /v1/messages over HTTP/1.1, from the
+// vendored cortexkit/anthropic-auth vectors.json (headers_wire_order) with the
+// transport-owned names (Connection, Host, Accept-Encoding, Content-Length) and
+// User-Agent removed; the probe body carries no billing prompt id, so
+// x-claude-code-prompt-id is absent here and checked per vector below. Go sorts
+// header names bytewise, which is exactly the reference order.
 var claudeCode2_1_302WireHeaderOrder = []string{
 	"Accept",
 	"Authorization",
 	"Content-Type",
-	"X-Claude-Code-Request-Class",
-	"X-Claude-Code-Session-Id",
 	"anthropic-beta",
 	"anthropic-dangerous-direct-browser-access",
 	"anthropic-version",
 	"x-app",
+	"x-claude-code-request-class",
+	"x-claude-code-session-id",
 	"x-client-request-id",
 	"x-stainless-arch",
 	"x-stainless-lang",
@@ -76,6 +68,9 @@ func TestApplyClaudeHeaders_LeavesHeadersCanonicalForThePipeline(t *testing.T) {
 		t.Fatalf("applyClaudeHeaders: %v", err)
 	}
 	for canonical := range claudeWireHeaderCasing {
+		if canonical == "X-Claude-Code-Prompt-Id" {
+			continue // only sent when the body carries a billing cc_prompt_id
+		}
 		if req.Header.Get(canonical) == "" {
 			t.Fatalf("%s is unreadable through Header.Get right after applyClaudeHeaders", canonical)
 		}
