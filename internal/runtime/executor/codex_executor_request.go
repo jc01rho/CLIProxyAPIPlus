@@ -266,6 +266,13 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 	if cache.ID != "" {
 		helps.SetStringIfDifferentDoc(doc, "prompt_cache_key", cache.ID)
 	}
+	if codexUsesReferenceBody(ctx, auth, headers, url) {
+		windowID := ""
+		if cache.ID != "" {
+			windowID = codexWindowIdentity(http.Header{"Session-Id": {cache.ID}}, headers, cache.ID)
+		}
+		applyCodexReferenceBodyDoc(doc, codexInstallationID(auth.ID), windowID, isCodexResponsesLiteRequest(doc.Bytes(), headers))
+	}
 	helps.SanitizeCodexInputItemIDsDoc(doc)
 	helps.FinalizePayloadDoc(ctx, doc)
 	var rawJSON []byte
