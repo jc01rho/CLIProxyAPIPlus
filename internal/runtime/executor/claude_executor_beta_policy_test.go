@@ -211,8 +211,8 @@ func TestApplyClaudeHeaders_FastModeBetaDroppedAcrossStreamModes(t *testing.T) {
 	}
 }
 
-// Dropping the fast-mode beta on the OAuth CLI profile keeps the
-// extended-cache-ttl trailer last.
+// Dropping the fast-mode beta on the OAuth CLI profile leaves the baseline
+// untouched; cache-diagnosis is part of it, as in cortexkit's list.
 func TestApplyClaudeHeaders_FastModeDroppedKeepsOAuthTrailer(t *testing.T) {
 	req := newClaudeHeaderTestRequest(t, nil)
 	if err := applyClaudeHeaders(req, claudeOAuthAuthForBetaPolicy(), claudeRaceProbeOAuthKey, true, []string{claudeFastModeBeta},
@@ -220,15 +220,14 @@ func TestApplyClaudeHeaders_FastModeDroppedKeepsOAuthTrailer(t *testing.T) {
 		t.Fatalf("applyClaudeHeaders() error = %v", err)
 	}
 	got := req.Header.Get("Anthropic-Beta")
-	parts := strings.Split(got, ",")
-	if parts[len(parts)-1] != claudeExtendedCacheTTLBeta {
-		t.Fatalf("Anthropic-Beta = %q, want %s last", got, claudeExtendedCacheTTLBeta)
-	}
 	if strings.Contains(got, claudeFastModeBeta) {
 		t.Fatalf("Anthropic-Beta = %q, must not contain %s", got, claudeFastModeBeta)
 	}
-	if strings.Contains(got, claudeCacheDiagnosisBeta) {
-		t.Fatalf("Anthropic-Beta = %q, contains %s without a diagnostics body", got, claudeCacheDiagnosisBeta)
+	if !strings.HasSuffix(got, claudeCacheDiagnosisBeta) {
+		t.Fatalf("Anthropic-Beta = %q, want the session list to end with %s", got, claudeCacheDiagnosisBeta)
+	}
+	if !strings.Contains(got, claudeExtendedCacheTTLBeta) {
+		t.Fatalf("Anthropic-Beta = %q, want %s in the session list", got, claudeExtendedCacheTTLBeta)
 	}
 }
 
@@ -339,11 +338,13 @@ func TestApplyClaudeHeaders_AdvisorToolBetaPreservedWhenRequested(t *testing.T) 
 		if advIdx == -1 {
 			t.Fatalf("stream=%v: advisor-tool-2026-03-01 missing from %q", stream, got)
 		}
+		// cortexkit appends caller-requested betas after the whole baseline, so
+		// advisor-tool now trails mid-conversation-system and advanced-tool-use.
 		if midIdx != -1 && advIdx < midIdx {
 			t.Fatalf("stream=%v: advisor-tool at %d should follow mid-conversation-system at %d in %q", stream, advIdx, midIdx, got)
 		}
-		if toolIdx != -1 && advIdx > toolIdx {
-			t.Fatalf("stream=%v: advisor-tool at %d should precede advanced-tool-use at %d in %q", stream, advIdx, toolIdx, got)
+		if toolIdx != -1 && advIdx < toolIdx {
+			t.Fatalf("stream=%v: advisor-tool at %d should follow advanced-tool-use at %d in %q", stream, advIdx, toolIdx, got)
 		}
 	}
 }
@@ -471,7 +472,7 @@ func TestApplyClaudeHeaders_AdvisorToolBetaPreservedWhenCountTokens(t *testing.T
 	}
 }
 
-func TestApplyClaudeHeaders_AdvisorToolBetaRepositionedWhenOutOfOrder(t *testing.T) {
+func TestApplyClaudeHeaders_AdvisorToolBetaKeepsCallerOrderWhenOutOfOrder(t *testing.T) {
 	// Incoming header has advisor-tool at trailing position after effort
 	incoming := http.Header{}
 	incoming.Set("Anthropic-Beta", "claude-code-20250219,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,advisor-tool-2026-03-01")
@@ -504,11 +505,13 @@ func TestApplyClaudeHeaders_AdvisorToolBetaRepositionedWhenOutOfOrder(t *testing
 		if advIdx == -1 {
 			t.Fatalf("confirmed=%v: advisor-tool missing from %q", confirmed, got)
 		}
+		// A confirmed client's own beta order is kept as sent; an unconfirmed one
+		// gets the body-derived beta after the baseline.
 		if midIdx != -1 && advIdx < midIdx {
 			t.Fatalf("confirmed=%v: advisor-tool at %d should follow mid-conversation-system at %d in %q", confirmed, advIdx, midIdx, got)
 		}
-		if toolIdx != -1 && advIdx > toolIdx {
-			t.Fatalf("confirmed=%v: advisor-tool at %d should precede advanced-tool-use at %d in %q", confirmed, advIdx, toolIdx, got)
+		if toolIdx != -1 && !confirmed && advIdx < toolIdx {
+			t.Fatalf("confirmed=%v: advisor-tool at %d should follow advanced-tool-use at %d in %q", confirmed, advIdx, toolIdx, got)
 		}
 	}
 }

@@ -86,7 +86,7 @@ func assertClaudeFingerprint(t *testing.T, headers http.Header, userAgent, pkgVe
 }
 
 func TestApplyClaudeHeaders_FastModeBetaIsNeverSent(t *testing.T) {
-	betasWithoutFastMode := claudeCodeCLIBetas([]byte(`{"model":"claude-opus-5"}`), nil, false)
+	betasWithoutFastMode := claudeCodeCLIBetas([]byte(`{"model":"claude-opus-5"}`), nil, nil, false)
 
 	tests := []struct {
 		name string
@@ -822,7 +822,7 @@ func TestClaudeExecutor_NonClaudeRequestUsesPinnedVersionWithMessageFingerprint(
 	if got := seenHeaders.Get("X-App"); got != "cli" {
 		t.Fatalf("X-App = %q, want cli", got)
 	}
-	if want := claudeCodeCLIBetas(payload, nil, false); seenHeaders.Get("Anthropic-Beta") != want {
+	if want := claudeCodeCLIBetas(payload, nil, nil, false); seenHeaders.Get("Anthropic-Beta") != want {
 		t.Fatalf("Anthropic-Beta = %q, want %q", seenHeaders.Get("Anthropic-Beta"), want)
 	}
 
@@ -6582,7 +6582,7 @@ func TestApplyCloaking_FableInjectsFallbacksAndDisplayUpdates(t *testing.T) {
 		t.Fatalf("expected thinking.display=updates, got: %q", display)
 	}
 
-	betas := claudeCodeCLIBetas(out, nil, true)
+	betas := claudeCodeCLIBetas(out, nil, nil, true)
 	if !strings.Contains(betas, claudeServerSideFallbackBeta) {
 		t.Fatalf("expected server-side-fallback beta in betas, got: %s", betas)
 	}
@@ -9416,7 +9416,7 @@ func TestClaudeExecutor_ExecuteOAuthCustomToolMCPAliasRoundTrip(t *testing.T) {
 	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.302 (external, cli)" {
 		t.Fatalf("Messages User-Agent = %q, want CLI identity", got)
 	}
-	wantBetas := claudeCodeCLIBetas(payload, nil, true)
+	wantBetas := claudeCodeCLIBetas(payload, nil, nil, true)
 	if got := upstreamHeaders.Get("Anthropic-Beta"); got != wantBetas {
 		t.Fatalf("Messages Anthropic-Beta = %q, want %q", got, wantBetas)
 	}
@@ -9496,7 +9496,7 @@ func TestClaudeExecutor_ExecuteStreamOAuthCustomToolMCPAliasRoundTrip(t *testing
 	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.302 (external, cli)" {
 		t.Fatalf("streaming User-Agent = %q, want CLI identity", got)
 	}
-	wantBetas := claudeCodeCLIBetas(payload, nil, true)
+	wantBetas := claudeCodeCLIBetas(payload, nil, nil, true)
 	if got := upstreamHeaders.Get("Anthropic-Beta"); got != wantBetas {
 		t.Fatalf("streaming Anthropic-Beta = %q, want %q", got, wantBetas)
 	}
@@ -9632,23 +9632,26 @@ func TestInsertClaudeMidConversationSystemMessages_IsIdempotent(t *testing.T) {
 }
 
 // TestClaudeCodeCLIBetas_MatchesObservedClientMatrix pins the Anthropic-Beta
-// baseline to Claude Code 2.1.220 behavior captured against api.anthropic.com.
-// TestClaudeCodeCLIBetas_MatchesObservedClientMatrix pins the Anthropic-Beta
 // baseline to the Claude Code 2.1.302 request-class lists in
-// cortexkit/anthropic-auth b9a8bd928 (model-capabilities.ts). Those lists are
-// reconstructed, not captured; testdata/claude_oauth_wire holds the vectors.
+// cortexkit/anthropic-auth (model-capabilities.ts), and pins every beta this
+// fork derives from the body or from the caller to the position cortexkit's
+// selectClaudeCodeBetas gives it: after the whole session list, body-derived
+// betas first and caller-requested ones last in the order the caller sent them.
+// testdata/claude_oauth_wire holds the wire vectors for the same identity.
 func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 	const head = "claude-code-20250219"
 	const core = "interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
 	const tail = "mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18"
-	main := head + "," + core + "," + tail
-	oauthMain := head + ",oauth-2025-04-20," + core + "," + tail + ",extended-cache-ttl-2025-04-11"
-	oauthPerTurn := head + ",oauth-2025-04-20," + core + ",per-turn-control-2026-07-01," + tail + ",extended-cache-ttl-2025-04-11"
+	const diagnosis = "cache-diagnosis-2026-04-07"
+	main := head + "," + core + "," + tail + "," + diagnosis
+	oauthMain := head + ",oauth-2025-04-20," + core + "," + tail + ",extended-cache-ttl-2025-04-11," + diagnosis
+	oauthPerTurn := head + ",oauth-2025-04-20," + core + ",per-turn-control-2026-07-01," + tail + ",extended-cache-ttl-2025-04-11," + diagnosis
 
 	tests := []struct {
 		name      string
 		body      string
 		requested map[string]bool
+		caller    []string
 		oauth     bool
 		want      string
 	}{
@@ -9662,29 +9665,30 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 			name:  "haiku 5.5 moves claude-code after prompt-caching-scope",
 			body:  `{"model":"claude-haiku-5-5"}`,
 			oauth: true,
-			want:  "oauth-2025-04-20," + core + ",claude-code-20250219,per-turn-control-2026-07-01," + tail + ",extended-cache-ttl-2025-04-11",
+			want:  "oauth-2025-04-20," + core + ",claude-code-20250219,per-turn-control-2026-07-01," + tail + ",extended-cache-ttl-2025-04-11," + diagnosis,
 		},
 		{
-			name:      "context 1m follows oauth",
+			name:      "context 1m trails the session list",
 			body:      `{"model":"claude-opus-5"}`,
 			oauth:     true,
 			requested: map[string]bool{claudeContext1MBeta: true},
-			want:      head + ",oauth-2025-04-20,context-1m-2025-08-07," + core + "," + tail + ",extended-cache-ttl-2025-04-11",
+			caller:    []string{claudeContext1MBeta},
+			want:      oauthMain + ",context-1m-2025-08-07",
 		},
 		{
 			name:  "structured output sits before cache-diagnosis, fast mode trails",
 			body:  `{"model":"claude-opus-4-8","speed":"fast","diagnostics":{"previous_message_id":null},"output_config":{"format":{"type":"json_schema","schema":{}}}}`,
 			oauth: true,
-			want:  oauthMain + ",structured-outputs-2025-12-15,cache-diagnosis-2026-04-07,fast-mode-2026-02-01",
+			want:  head + ",oauth-2025-04-20," + core + "," + tail + ",extended-cache-ttl-2025-04-11,structured-outputs-2025-12-15," + diagnosis + ",fast-mode-2026-02-01",
 		},
-		{name: "cache-diagnosis needs a diagnostics body", body: `{"model":"claude-opus-5","diagnostics":{}}`, oauth: true, want: oauthMain + ",cache-diagnosis-2026-04-07"},
+		{name: "cache-diagnosis is part of the session list", body: `{"model":"claude-opus-5","diagnostics":{}}`, oauth: true, want: oauthMain},
 		{name: "fallbacks add server-side-fallback and fallback-credit", body: `{"model":"claude-fable-5-1","fallbacks":[{"model":"claude-opus-5"}]}`, oauth: true, want: oauthPerTurn + ",server-side-fallback-2026-07-01,fallback-credit-2026-06-01"},
 		{name: "fallback credit token adds fallback-credit", body: `{"model":"claude-opus-5","fallback_credit_token":"fct_1"}`, oauth: true, want: oauthMain + ",fallback-credit-2026-06-01"},
 		{
 			name:  "subagent omits extended-cache-ttl",
 			body:  `{"model":"claude-sonnet-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.302.0ab; cc_is_subagent=true;"}]}`,
 			oauth: true,
-			want:  head + ",oauth-2025-04-20," + core + "," + tail,
+			want:  head + ",oauth-2025-04-20," + core + "," + tail + "," + diagnosis,
 		},
 		{
 			name:  "quota probe uses the quota list",
@@ -9693,24 +9697,23 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 			want:  "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05",
 		},
 		{
-			name: "advisor tool precedes advanced-tool-use",
+			name: "advisor tool trails the session list",
 			body: `{"model":"claude-opus-5","tools":[{"type":"advisor_20260301","name":"advisor"}]}`,
-			want: head + "," + core + ",mid-conversation-tool-changes-2026-07-01,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18",
+			want: main + ",advisor-tool-2026-03-01",
 		},
 		{
-			name:      "on-demand betas keep wire order",
+			name:      "on-demand betas trail the session list",
 			body:      `{"model":"claude-opus-5-5","safeguards":[{}],"messages":[{"role":"system","clear_at":"next_user_message","content":[{"type":"tool_addition","tool":{"definition":{"name":"bash"}}}]},{"role":"user","content":"x","output_config":{"timing":{"now":"2026-09-23T00:00:00Z"}}}],"cache_control":{"type":"ephemeral","evict_on_complete":true}}`,
-			requested: map[string]bool{claudeThinkingResumptionBeta: true, claudeAFKModeBeta: true},
-			want: head + "," + core + ",per-turn-control-2026-07-01,timing-2026-09-09,mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15," +
-				"advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,dangerous-tool-use-2026-09-03,effort-2025-11-24," +
-				"thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,thinking-resumption-2026-07-17,afk-mode-2026-01-31,prompt-caching-evict-2026-05-12",
+			requested: map[string]bool{claudeThinkingResumptionBeta: true, claudeAFKModeBeta: true, claudePromptCachingEvictBeta: true},
+			caller:    []string{claudeThinkingResumptionBeta, claudeAFKModeBeta, claudePromptCachingEvictBeta},
+			want:      head + "," + core + ",per-turn-control-2026-07-01," + tail + "," + diagnosis + ",inline-tools-2026-09-15,timing-2026-09-09,dangerous-tool-use-2026-09-03,thinking-resumption-2026-07-17,afk-mode-2026-01-31,prompt-caching-evict-2026-05-12",
 		},
-		{name: "unknown caller beta is not smuggled into the baseline", body: `{"model":"claude-opus-4-6"}`, requested: map[string]bool{"totally-made-up-2030-01-01": true}, want: main},
+		{name: "unknown caller beta is not smuggled into the baseline", body: `{"model":"claude-opus-4-6"}`, requested: map[string]bool{"totally-made-up-2030-01-01": true}, caller: []string{"totally-made-up-2030-01-01"}, want: main},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := claudeCodeCLIBetas([]byte(tt.body), tt.requested, tt.oauth); got != tt.want {
+			if got := claudeCodeCLIBetas([]byte(tt.body), tt.requested, tt.caller, tt.oauth); got != tt.want {
 				t.Fatalf("claudeCodeCLIBetas() = %q, want %q", got, tt.want)
 			}
 		})

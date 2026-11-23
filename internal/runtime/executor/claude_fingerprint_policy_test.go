@@ -246,7 +246,7 @@ func TestApplyClaudeHeaders_ClaudeCodeCLIProfileUsesOAuthBetasWithoutPretendingT
 		t.Fatalf("x-api-key = %q, want empty on third-party gateway", got)
 	}
 	betas := req.Header.Get("Anthropic-Beta")
-	if want := claudeCodeCLIBetas(payload, nil, true); betas != want {
+	if want := claudeCodeCLIBetas(payload, nil, nil, true); betas != want {
 		t.Fatalf("Anthropic-Beta = %q, want %q", betas, want)
 	}
 }
@@ -359,7 +359,7 @@ func TestClaudeExecutor_ClaudeCodeCLIFingerprintOnThirdPartyGateway(t *testing.T
 	if got := seenHeaders.Get("Authorization"); got != "Bearer key-claude-code-cli-fp" {
 		t.Fatalf("Authorization = %q, want API key bearer", got)
 	}
-	wantBetas := claudeCodeCLIBetas(payload, nil, true)
+	wantBetas := claudeCodeCLIBetas(payload, nil, nil, true)
 	if got := seenHeaders.Get("Anthropic-Beta"); got != wantBetas {
 		t.Fatalf("Anthropic-Beta = %q, want %q", got, wantBetas)
 	}

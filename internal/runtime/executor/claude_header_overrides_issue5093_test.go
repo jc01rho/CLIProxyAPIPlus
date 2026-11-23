@@ -187,7 +187,10 @@ func TestApplyClaudeHeaders_OperatorBetaStripAllRemovesHeader(t *testing.T) {
 
 // inject-diagnostics=false keeps the cloaked body free of the CPA-injected
 // diagnostics field, so cache-diagnosis-2026-04-07 is no longer derived from it.
-func TestClaudeExecutor_InjectDiagnosticsDisabledOmitsDiagnosticsAndCacheDiagnosis(t *testing.T) {
+// cache-diagnosis belongs to cortexkit's Claude Code session list, so the
+// inject-diagnostics switch no longer removes it from the beta header; the
+// switch still governs the diagnostics field in the body.
+func TestClaudeExecutor_InjectDiagnosticsDisabledOmitsDiagnosticsBody(t *testing.T) {
 	disabled := parseIssue5093Config(t, "upstream: {claude: {header-defaults: {inject-diagnostics: false}}}\n")
 	for _, tc := range []struct {
 		name   string
@@ -255,8 +258,8 @@ func TestClaudeExecutor_InjectDiagnosticsDisabledOmitsDiagnosticsAndCacheDiagnos
 		if got := ojson.GetBytes(upstreamBody, "diagnostics").Exists(); got != tc.inject {
 			t.Fatalf("%s: diagnostics present = %v, want %v; body = %s", tc.name, got, tc.inject, upstreamBody)
 		}
-		if got := strings.Contains(upstreamBetas, claudeCacheDiagnosisBeta); got != tc.inject {
-			t.Fatalf("%s: Anthropic-Beta = %q, %s present = %v, want %v", tc.name, upstreamBetas, claudeCacheDiagnosisBeta, got, tc.inject)
+		if !strings.Contains(upstreamBetas, claudeCacheDiagnosisBeta) {
+			t.Fatalf("%s: Anthropic-Beta = %q, want %s in cortexkit's session list regardless of inject-diagnostics", tc.name, upstreamBetas, claudeCacheDiagnosisBeta)
 		}
 	}
 	if resolveClaudeFingerprintPolicy(disabled, nil, claudeRaceProbeOAuthKey).InjectDiagnostics {
