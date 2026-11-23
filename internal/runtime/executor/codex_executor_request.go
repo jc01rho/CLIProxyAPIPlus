@@ -169,6 +169,18 @@ func normalizeCodexOutputBudgetDoc(doc *ojson.Doc) {
 	_ = doc.Set("max_output_tokens", codexMinOutputTokens)
 }
 
+// applyCodexOutputBudgetDoc drops max_output_tokens on ChatGPT-backend OAuth
+// requests, where cortexkit/openai-auth deletes it because Codex does not accept
+// output caps (codex-wire.ts rewriteCodexHttpRequest and rewriteCodexFrame).
+// Every other upstream keeps the budget with its minimum normalized.
+func applyCodexOutputBudgetDoc(ctx context.Context, auth *cliproxyauth.Auth, headers http.Header, baseURL string, doc *ojson.Doc) {
+	if doc != nil && codexUsesReferenceBody(ctx, auth, headers, strings.TrimSuffix(baseURL, "/")+"/responses") {
+		_ = doc.Delete("max_output_tokens")
+		return
+	}
+	normalizeCodexOutputBudgetDoc(doc)
+}
+
 // PrepareRequest injects Codex credentials into the outgoing HTTP request.
 func (e *CodexExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
 	if req == nil {
@@ -221,6 +233,15 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 }
 
 func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, doc *ojson.Doc, auth *cliproxyauth.Auth, headerSets ...http.Header) (*http.Request, []byte, error) {
+	return e.cacheHelperDocMovingInstructions(ctx, from, url, req, doc, auth, false, headerSets...)
+}
+
+// cacheHelperDocMovingInstructions builds the upstream request. With
+// moveInstructions set, a ChatGPT-backend OAuth body that is not Responses Lite
+// has its top-level instructions moved into a developer input message the way
+// cortexkit/openai-auth moveInstructionsToDeveloperMessage does, after payload
+// rules ran so rules on instructions still apply.
+func (e *CodexExecutor) cacheHelperDocMovingInstructions(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, doc *ojson.Doc, auth *cliproxyauth.Auth, moveInstructions bool, headerSets ...http.Header) (*http.Request, []byte, error) {
 	var headers http.Header
 	if len(headerSets) > 0 {
 		headers = headerSets[0]
@@ -266,7 +287,8 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 	if cache.ID != "" {
 		helps.SetStringIfDifferentDoc(doc, "prompt_cache_key", cache.ID)
 	}
-	if codexUsesReferenceBody(ctx, auth, headers, url) {
+	referenceBody := codexUsesReferenceBody(ctx, auth, headers, url)
+	if referenceBody {
 		windowID := ""
 		if cache.ID != "" {
 			windowID = codexWindowIdentity(http.Header{"Session-Id": {cache.ID}}, headers, cache.ID)
@@ -275,6 +297,9 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 	}
 	helps.SanitizeCodexInputItemIDsDoc(doc)
 	helps.FinalizePayloadDoc(ctx, doc)
+	if moveInstructions && referenceBody && doc != nil && !isCodexResponsesLiteRequest(doc.Bytes(), headers) {
+		moveCodexInstructionsToDeveloperMessageDoc(doc)
+	}
 	var rawJSON []byte
 	if doc != nil {
 		rawJSON = doc.Bytes()

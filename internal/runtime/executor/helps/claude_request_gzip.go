@@ -56,9 +56,10 @@ func ClaudeRequestGzipLatched() bool { return claudeRequestGzipLatched.Load() }
 // ResetClaudeRequestGzipLatchForTest clears the process latch.
 func ResetClaudeRequestGzipLatchForTest() { claudeRequestGzipLatched.Store(false) }
 
-// ClaudeRequestGzipEnabled reports the upstream.claude.request-gzip setting.
+// ClaudeRequestGzipEnabled reports the upstream.claude.request-gzip setting,
+// which defaults to on like Claude Code 2.1.302.
 func ClaudeRequestGzipEnabled(cfg *config.Config) bool {
-	return cfg != nil && cfg.Claude.RequestGzip
+	return cfg != nil && cfg.Claude.RequestGzipEnabled()
 }
 
 // ClaudeRequestUsesProxy reports whether the request leaves through a

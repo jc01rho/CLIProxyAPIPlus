@@ -138,13 +138,20 @@ type ClaudeConfig struct {
 	// session-date-pin-days is ignored.
 	SessionDatePinDays *int `yaml:"session-date-pin-days" json:"session-date-pin-days"`
 	// RequestGzip gzips OAuth request bodies of at least 4096 characters sent
-	// straight to api.anthropic.com without a proxy, as Claude Code 2.1.302 does.
-	// Default false keeps uncompressed bodies.
-	RequestGzip bool `yaml:"request-gzip,omitempty" json:"request-gzip,omitempty"`
+	// straight to api.anthropic.com without a proxy, as Claude Code 2.1.302 does
+	// (cortexkit/anthropic-auth CLAUDE_CODE_GZIPS_REQUEST_BODIES). Nil defaults to
+	// true; an explicit false keeps uncompressed bodies.
+	RequestGzip *bool `yaml:"request-gzip,omitempty" json:"request-gzip,omitempty"`
 	// OAuthIncludeCreateAPIKey controls whether new Claude OAuth authorization
 	// URLs request the org:create_api_key scope in addition to ClaudeOAuthScope.
 	// Nil defaults to true to match native Claude Code.
 	OAuthIncludeCreateAPIKey *bool `yaml:"oauth-include-create-api-key,omitempty" json:"oauth-include-create-api-key,omitempty"`
+}
+
+// RequestGzipEnabled reports whether large OAuth request bodies are gzipped.
+// An unset value follows Claude Code and compresses.
+func (c *ClaudeConfig) RequestGzipEnabled() bool {
+	return c == nil || c.RequestGzip == nil || *c.RequestGzip
 }
 
 // OAuthIncludeCreateAPIKeyEnabled reports whether Claude OAuth authorization

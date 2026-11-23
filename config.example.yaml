@@ -590,12 +590,12 @@ upstream:
     # Default false keeps the translation and catalog behavior that predate tool_search support.
     tool-search: false
 
-    # When true, gzip Claude OAuth request bodies of 4096 characters or more that go straight to
+    # Default true. When true, gzip Claude OAuth request bodies of 4096 characters or more that go straight to
     # api.anthropic.com without a proxy, the way Claude Code 2.1.302 sends them (cch reset to
     # 00000, whitespace padding). Request logs keep the uncompressed body. A rejected gzip body
     # is resent uncompressed once and gzip stays off for the rest of the process.
-    # Default false keeps uncompressed bodies.
-    request-gzip: false
+    # Set false to keep uncompressed bodies.
+    request-gzip: true
     # When true, inject Anthropic server-side refusal fallbacks on cloaked Claude requests
     # when the request body does not already specify fallbacks (claude-opus-5-5 -> claude-opus-4-8,
     # claude-fable-5-1 -> claude-opus-5). Default false never opts requests into cross-model

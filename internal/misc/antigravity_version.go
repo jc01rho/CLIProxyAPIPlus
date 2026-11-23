@@ -257,10 +257,10 @@ func AntigravityUserAgent() string {
 	return AntigravityCLIUserAgent()
 }
 
-// AntigravityHubUserAgent returns the Antigravity Hub identity, which model
-// discovery and quota RPCs keep: Cloud Code hides the Gemini Models group and the
-// newest model ids from a client reporting below 2.23.0 (measured against the
-// agy CLI 1.1.6 identity), and the CLI build is below that floor.
+// AntigravityHubUserAgent returns the Antigravity Hub identity. No request path
+// sends it by default any more: every Antigravity request, model discovery and
+// quota RPCs included, carries the agy CLI identity cortexkit/antigravity-auth
+// sends. It stays for operators who pin a Hub identity per auth.
 func AntigravityHubUserAgent() string {
 	version, changelist := resolveAntigravityHubVersionAndChangelist(AntigravityLatestVersion())
 	metadata := "aidev_client; " + antigravityHubPlatform
@@ -294,30 +294,13 @@ func antigravityBaseUserAgent(userAgent string) string {
 	return userAgent
 }
 
-// AntigravityQuotaUserAgent returns the Antigravity Hub UA for quota and
-// model-discovery RPCs, enforcing the minimum Cloud Code version floor (2.23.0)
-// so a stale or rolled-back Hub manifest cannot hide the Gemini quota group.
+// AntigravityQuotaUserAgent returns the User-Agent for quota and model-discovery
+// RPCs. cortexkit/antigravity-auth sends the agy CLI identity there too
+// (quota-manager.ts uses buildAntigravityHarnessUserAgent for fetchAvailableModels
+// and retrieveUserQuotaSummary), so the CLI identity is used and no Hub version
+// floor applies.
 func AntigravityQuotaUserAgent() string {
-	const (
-		minMajor = 2
-		minMinor = 23
-	)
-	if antigravityMeetsVersionFloor(AntigravityLatestVersion(), minMajor, minMinor) {
-		return AntigravityHubUserAgent()
-	}
-	metadata := "aidev_client; " + antigravityHubPlatform
-	if changelist := antigravityHubChangelists[antigravityFallbackVersion]; changelist != "" {
-		metadata += "; cl=" + changelist
-	}
-	return fmt.Sprintf("antigravity/hub/%s (%s)", antigravityFallbackVersion, metadata)
-}
-
-func antigravityMeetsVersionFloor(version string, minMajor, minMinor int) bool {
-	var major, minor, patch int
-	if _, err := fmt.Sscanf(strings.TrimSpace(version), "%d.%d.%d", &major, &minor, &patch); err != nil {
-		return false
-	}
-	return major > minMajor || (major == minMajor && minor >= minMinor)
+	return AntigravityCLIUserAgent()
 }
 
 // AntigravityRequestUserAgent returns the Antigravity runtime UA used by

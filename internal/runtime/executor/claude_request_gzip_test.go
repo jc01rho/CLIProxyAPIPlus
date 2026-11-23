@@ -49,7 +49,7 @@ func (rt *claudeGzipTransport) RoundTrip(req *http.Request) (*http.Response, err
 func runClaudeGzipRequest(t *testing.T, gzipEnabled bool, transport *claudeGzipTransport, prompt string) {
 	t.Helper()
 	cfg := &config.Config{}
-	cfg.Claude.RequestGzip = gzipEnabled
+	cfg.Claude.RequestGzip = &gzipEnabled
 	auth := &cliproxyauth.Auth{ID: "gzip-oauth", Provider: "claude", Metadata: claudeOAuthTestMetadata(), Attributes: map[string]string{"api_key": "sk-ant-oat-gzip"}}
 	payload := []byte(`{"model":"claude-opus-5","max_tokens":64,"messages":[{"role":"user","content":` + quoteJSON(prompt) + `}]}`)
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
@@ -80,7 +80,19 @@ func gunzipClaudeBody(t *testing.T, body []byte) []byte {
 	return out
 }
 
-func TestClaudeRequestGzip_OffByDefault(t *testing.T) {
+func TestClaudeRequestGzip_DefaultsOn(t *testing.T) {
+	disabled := false
+	if !helps.ClaudeRequestGzipEnabled(&config.Config{}) {
+		t.Fatal("unset request-gzip must follow Claude Code and compress")
+	}
+	cfg := &config.Config{}
+	cfg.Claude.RequestGzip = &disabled
+	if helps.ClaudeRequestGzipEnabled(cfg) {
+		t.Fatal("explicit request-gzip: false must keep identity bodies")
+	}
+}
+
+func TestClaudeRequestGzip_ExplicitFalseKeepsIdentity(t *testing.T) {
 	helps.ResetClaudeRequestGzipLatchForTest()
 	transport := &claudeGzipTransport{}
 	runClaudeGzipRequest(t, false, transport, strings.Repeat("a", 6000))
