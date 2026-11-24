@@ -54,7 +54,7 @@ func WithRequestLogMetadata(ctx context.Context, requestID, apiKey string) conte
 // Auto-conversion behavior:
 //   - Budget-only model + Level config → Level converted to Budget
 //   - Level-only model + Budget config → Budget converted to Level
-//   - Hybrid model → preserve original format
+//   - Hybrid model → preserve original format when the target protocol accepts it
 func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFormat, toFormat string, fromSuffix bool) (*ThinkingConfig, error) {
 	return ValidateConfigWithContext(context.Background(), config, modelInfo, fromFormat, toFormat, fromSuffix)
 }
@@ -81,15 +81,15 @@ func ValidateConfigWithContext(ctx context.Context, config ThinkingConfig, model
 
 	// allowClampUnsupported determines whether to clamp unsupported levels instead of returning an error.
 	// This applies when crossing provider families (e.g., openai→gemini, claude→gemini) and the target
-	// model supports discrete levels. Same-family conversions require strict validation.
+	// model supports discrete levels. Same-family explicit levels require strict validation.
 	//
 	// modelFamilyMismatch covers providers that reuse another protocol on the wire
 	// (e.g. Kimi serving Claude-compatible /v1/messages). In that path fromFormat and
 	// toFormat both look like "claude", but the model itself is not Claude-family, so
 	// unsupported levels such as "max" should clamp to the nearest supported level
 	// (typically "high") instead of failing validation.
-	toCapability := detectModelCapability(modelInfo)
-	toHasLevelSupport := toCapability == CapabilityLevelOnly || toCapability == CapabilityHybrid
+	capability := detectModelCapability(modelInfo)
+	toHasLevelSupport := capability == CapabilityLevelOnly || capability == CapabilityHybrid
 	modelFamilyMismatch := false
 	if modelInfo != nil {
 		modelType := strings.ToLower(strings.TrimSpace(modelInfo.Type))
@@ -100,16 +100,17 @@ func ValidateConfigWithContext(ctx context.Context, config ThinkingConfig, model
 			}
 		}
 	}
-	allowClampUnsupported := toHasLevelSupport && (!isSameProviderFamily(fromFormat, toFormat) || modelFamilyMismatch)
+	userDefined := modelInfo.UserDefined
+	sameFamily := isSameProviderFamily(fromFormat, toFormat)
+	allowClampUnsupported := !sameFamily || (modelFamilyMismatch && !userDefined)
 
 	// strictBudget determines whether to enforce strict budget range validation.
 	// This applies when: (1) config comes from request body (not suffix), (2) source format is known,
 	// and (3) source and target are in the same provider family. Cross-family or suffix-based configs
 	// are clamped instead of rejected to improve interoperability.
-	strictBudget := !fromSuffix && fromFormat != "" && isSameProviderFamily(fromFormat, toFormat) && !modelFamilyMismatch
-	budgetDerivedFromLevel := false
+	strictBudget := !userDefined && !fromSuffix && fromFormat != "" && sameFamily && !modelFamilyMismatch
+	originalMode := config.Mode
 
-	capability := detectModelCapability(modelInfo)
 	switch capability {
 	case CapabilityBudgetOnly:
 		if config.Mode == ModeLevel {
@@ -123,21 +124,33 @@ func ValidateConfigWithContext(ctx context.Context, config ThinkingConfig, model
 			config.Mode = ModeBudget
 			config.Budget = budget
 			config.Level = ""
-			budgetDerivedFromLevel = true
 		}
-	case CapabilityLevelOnly:
-		if config.Mode == ModeBudget {
+	case CapabilityLevelOnly, CapabilityHybrid:
+		// Interactions sends levels on the wire. Claude hybrid models still
+		// accept native budgets, but translated budgets use adaptive effort.
+		if config.Mode == ModeBudget && (capability == CapabilityLevelOnly || toFormat == "interactions" || (toFormat == "claude" && fromFormat != "claude")) {
 			level, ok := ConvertBudgetToLevel(config.Budget)
 			if !ok {
 				return nil, NewThinkingError(ErrUnknownLevel, fmt.Sprintf("budget %d cannot be converted to a valid level", config.Budget))
 			}
-			// When converting Budget -> Level for level-only models, clamp the derived standard level
-			// to the nearest supported level. Special values (none/auto) are preserved.
 			config.Mode = ModeLevel
-			config.Level = ClampLevel(ThinkingLevel(level), modelInfo, toFormat)
+			config.Level = ThinkingLevel(level)
 			config.Budget = 0
 		}
-	case CapabilityHybrid:
+	}
+
+	if config.Mode == ModeLevel && toHasLevelSupport && (originalMode == ModeBudget || allowClampUnsupported) {
+		config.Level = ClampLevel(config.Level, modelInfo, toFormat)
+	}
+
+	budgetDerivedFromLevel := config.Mode == ModeBudget && originalMode == ModeLevel
+	if userDefined {
+		// Preserve custom settings outside of capability-based conversion. An
+		// OpenAI-family body can carry an effort that was translated to a budget.
+		translatedBudget := config.Mode == ModeBudget && capability == CapabilityBudgetOnly && !fromSuffix && isOpenAIFamily(fromFormat)
+		if !budgetDerivedFromLevel && !translatedBudget {
+			return &config, nil
+		}
 	}
 
 	if config.Mode == ModeLevel && config.Level == LevelNone {
@@ -159,17 +172,13 @@ func ValidateConfigWithContext(ctx context.Context, config ThinkingConfig, model
 		if typeLevel, ok := fallbackOpenAIThinkingTypeLevel(config.Level, toFormat, support.Levels); ok {
 			config.Level = typeLevel
 		}
+		if !isLevelSupported(string(config.Level), support.Levels) && allowClampUnsupported {
+			config.Level = ClampLevel(config.Level, modelInfo, toFormat)
+		}
 		if !isLevelSupported(string(config.Level), support.Levels) {
-			if allowClampUnsupported {
-				config.Level = ClampLevel(config.Level, modelInfo, toFormat)
-			}
-			if !isLevelSupported(string(config.Level), support.Levels) {
-				// User explicitly specified an unsupported level - return error
-				// (budget-derived levels may be clamped based on source format)
-				validLevels := normalizeLevels(support.Levels)
-				message := fmt.Sprintf("level %q not supported, valid levels: %s", strings.ToLower(string(config.Level)), strings.Join(validLevels, ", "))
-				return nil, NewThinkingError(ErrLevelNotSupported, message)
-			}
+			validLevels := normalizeLevels(support.Levels)
+			message := fmt.Sprintf("level %q not supported, valid levels: %s", strings.ToLower(string(config.Level)), strings.Join(validLevels, ", "))
+			return nil, NewThinkingError(ErrLevelNotSupported, message)
 		}
 	}
 
