@@ -360,6 +360,14 @@ func applyThinkingDocCore(ctx context.Context, doc *ojson.Doc, docValid bool, so
 	}
 
 	// 3. Model capability check
+	if (isOpenAIFamily(providerFormat) || providerFormat == "xai") && !isPluginApplier && detectModelCapability(modelInfo) == CapabilityHybrid {
+		// OpenAI Chat/Responses and xAI appliers accept effort levels only.
+		// Keep the original budget range in the model catalog.
+		levelModel, levelSupport := *modelInfo, *modelInfo.Thinking
+		levelSupport.Min, levelSupport.Max = 0, 0
+		levelModel.Thinking = &levelSupport
+		modelInfo = &levelModel
+	}
 	if nativeResponses {
 		normalized, errNormalize := normalizeNativeResponsesEffortDoc(doc, docValid, modelInfo, applier, fromFormat, providerFormat, HasThinkingSuffix(model))
 		modified = modified || normalized
@@ -630,7 +638,7 @@ func parseSuffixToConfig(rawSuffix, provider, model string) ThinkingConfig {
 		}
 	}
 
-	// 2. Try level parsing (minimal, low, medium, high, xhigh)
+	// 2. Try level parsing (minimal, low, medium, high, xhigh, max)
 	if level, ok := ParseLevelSuffix(rawSuffix); ok {
 		return ThinkingConfig{Mode: ModeLevel, Level: level}
 	}
@@ -706,6 +714,11 @@ func applyUserDefinedModelDoc(doc *ojson.Doc, docValid bool, modelInfo *registry
 	}
 
 	if !isPluginApplier {
+		if modelInfo != nil && modelInfo.Thinking != nil {
+			if normalized, errValidate := ValidateConfig(config, modelInfo, fromFormat, toFormat, suffixResult.HasSuffix); errValidate == nil {
+				config = *normalized
+			}
+		}
 		config = normalizeUserDefinedConfig(config, modelInfo, fromFormat, toFormat)
 	}
 	// Clamp level-mode configs to the model's declared supported levels. The
@@ -798,6 +811,48 @@ func extractThinkingConfigFromGetter(get func(string) ojson.Result, provider str
 
 func hasThinkingConfig(config ThinkingConfig) bool {
 	return config.Mode != ModeBudget || config.Budget != 0 || config.Level != ""
+}
+
+// RequestedAntigravityThinkingLevel returns the explicit discrete thinking intent before
+// applying model defaults, validation, or clamping. Numeric budgets use the
+// canonical budget conversion. An explicit suffix always takes precedence.
+func RequestedAntigravityThinkingLevel(body []byte, provider, model string) ThinkingLevel {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	var config ThinkingConfig
+	if suffix := ParseSuffix(model); suffix.HasSuffix {
+		config = parseSuffixToConfig(strings.TrimSpace(suffix.RawSuffix), provider, model)
+		if !hasThinkingConfig(config) {
+			// A catalog may advertise a discrete level the static parser does not know yet.
+			config = ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(suffix.RawSuffix)}
+		}
+	} else {
+		switch provider {
+		case "openai":
+			config = extractAntigravityOpenAIThinking(body)
+		case "interactions":
+			config = extractAntigravityInteractionsThinking(body)
+		default:
+			config = extractThinkingConfigForUsage(body, provider)
+			if !hasThinkingConfig(config) && (provider == "gemini" || provider == "antigravity") {
+				config = extractGeminiConfigFromGetter(func(path string) ojson.Result {
+					return ojson.GetBytesNoCopy(body, strings.Replace(path, ".thinkingConfig.", ".thinking_config.", 1))
+				}, provider)
+			}
+		}
+	}
+	switch config.Mode {
+	case ModeLevel:
+		level := ThinkingLevel(strings.ToLower(strings.TrimSpace(string(config.Level))))
+		if level != LevelAuto && level != LevelNone {
+			return level
+		}
+	case ModeBudget:
+		if config.Budget > 0 {
+			level, _ := ConvertBudgetToLevel(config.Budget)
+			return ThinkingLevel(level)
+		}
+	}
+	return ""
 }
 
 // ExtractReasoningEffort returns the source request's thinking setting as a
@@ -990,40 +1045,44 @@ func extractGeminiConfigFromGetter(get func(string) ojson.Result, provider strin
 	}
 
 	for _, prefix := range prefixes {
-		// Check thinkingLevel first (Gemini 3 format takes precedence)
+		// Google official Gemini Python SDK sends snake_case field names.
 		level := get(prefix + ".thinkingLevel")
 		if !level.Exists() {
-			// Google official Gemini Python SDK sends snake_case field names
 			level = get(prefix + ".thinking_level")
 		}
-		if level.Exists() {
-			value := level.String()
-			switch value {
-			case "none":
-				return ThinkingConfig{Mode: ModeNone, Budget: 0}
-			case "auto":
-				return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-			default:
-				return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
-			}
-		}
-
-		// Check thinkingBudget (Gemini 2.5 format)
 		budget := get(prefix + ".thinkingBudget")
 		if !budget.Exists() {
-			// Google official Gemini Python SDK sends snake_case field names
 			budget = get(prefix + ".thinking_budget")
 		}
-		if budget.Exists() {
-			value := int(budget.Int())
-			switch value {
-			case 0:
-				return ThinkingConfig{Mode: ModeNone, Budget: 0}
-			case -1:
-				return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-			default:
-				return ThinkingConfig{Mode: ModeBudget, Budget: value}
-			}
+		// The first prefix carrying either field wins; thinkingLevel (Gemini 3) takes precedence.
+		if level.Exists() || budget.Exists() {
+			return geminiThinkingConfigFromValues(level, budget)
+		}
+	}
+	return ThinkingConfig{}
+}
+
+func geminiThinkingConfigFromValues(level, budget ojson.Result) ThinkingConfig {
+	if level.Exists() {
+		value := level.String()
+		switch value {
+		case "none":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "auto":
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		default:
+			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+		}
+	}
+	if budget.Exists() {
+		value := int(budget.Int())
+		switch value {
+		case 0:
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case -1:
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		default:
+			return ThinkingConfig{Mode: ModeBudget, Budget: value}
 		}
 	}
 
