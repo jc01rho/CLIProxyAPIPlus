@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/zcode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -53,9 +54,9 @@ const ZCodeStartPlanBaseURL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
 
 // zcodeDefaultAppVersion mirrors the ZCode desktop release used for source
 // headers and the balance probe. Keep it aligned with a real published release
-// so the gateway treats the client as a current ZCode build (3.11.2 linux-x64).
+// so the gateway treats the client as a current ZCode build (4.0.0).
 // ZCODE_APP_VERSION overrides it, matching the extension's zcodeAppVersion().
-const zcodeDefaultAppVersion = "3.11.2"
+const zcodeDefaultAppVersion = "4.0.0"
 
 // zcodeDefaultReleaseChannel is the release channel used in the ZCode source
 // headers. ZCODE_RELEASE_CHANNEL overrides it.
@@ -146,7 +147,19 @@ func NewZcodeExecutor(cfg *config.Config) *ZcodeExecutor {
 	base := NewClaudeExecutor(cfg)
 	base.upstreamMaxTokensCap = zcodeMaxTokensCap
 	base.maxTokensCapProvider = "zcode"
+	base.upstreamModelNormalizer = zcodeUpstreamModel
 	return &ZcodeExecutor{ClaudeExecutor: base}
+}
+
+// zcodeUpstreamModel returns the model spelling the ZCode app puts on the wire
+// (GLM-5.3-Flash, not glm-5.3-flash). Responses are restored to the caller's
+// model name by ClaudeExecutor.restoreResponseModel.
+func zcodeUpstreamModel(model string) string {
+	displayName := ""
+	if info := registry.GetGlobalRegistry().GetModelInfo(model, "zcode"); info != nil {
+		displayName = info.DisplayName
+	}
+	return zcode.OfficialModelID(model, displayName)
 }
 
 // Identifier returns the executor identifier.
@@ -564,10 +577,13 @@ type zcodeSignGate struct {
 	checkedAt time.Time
 }
 
-// zcodeSigningEnabled reports whether the upstream signing feature gate is on
-// for the credential. Any failure reads as "disabled" (send unsigned). The
-// answer is cached per credential for one hour; negatives are never cached,
-// mirroring the extension's per-API-key states map (signing.ts signingEnabled).
+// zcodeSigningEnabled reports whether requests should be signed. Signing
+// proceeds unless the agent-configs gate explicitly answers
+// codingPlanSignature.enable=false: an absent flag, a non-boolean flag, a
+// non-200 response, a non-zero code, malformed JSON or a failed probe is no
+// answer and the request is still signed (ZCode 4.0.0 has no gate at all).
+// Only a code-0 answer that allows signing is cached, per credential for one
+// hour, mirroring the extension's per-API-key states map (signing.ts).
 func zcodeSigningEnabled(ctx context.Context, credential string) bool {
 	if ctx == nil {
 		ctx = context.Background()
@@ -580,16 +596,20 @@ func zcodeSigningEnabled(ctx context.Context, credential string) bool {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ZCodeSigningGateURL, nil)
 	if err != nil {
-		return false
+		return true
 	}
+	// The gate only receives the app's source headers, never X-ZCode-Agent.
 	for name, value := range buildZCodeSourceHeaders() {
+		if name == "X-Zcode-Agent" {
+			continue
+		}
 		req.Header.Set(name, value[0])
 	}
 	req.Header.Set("x-api-key", credential)
 	resp, err := zcodeHTTPClient.Do(req)
 	if err != nil {
-		log.Debugf("zcode signing gate: request failed: %v", err)
-		return false
+		log.Debugf("zcode signing gate: request failed, signing anyway: %v", err)
+		return true
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -597,27 +617,45 @@ func zcodeSigningEnabled(ctx context.Context, credential string) bool {
 		}
 	}()
 	if resp.StatusCode != http.StatusOK {
-		return false
+		return true
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
-		return false
+		return true
 	}
-	var envelope struct {
-		Code int `json:"code"`
-		Data struct {
-			CodingPlanSignature struct {
-				Enable bool `json:"enable"`
-			} `json:"codingPlanSignature"`
-		} `json:"data"`
-	}
-	if json.Unmarshal(raw, &envelope) != nil || envelope.Code != 0 || !envelope.Data.CodingPlanSignature.Enable {
-		return false
-	}
+	sign, cache := zcodeParseSigningGate(raw)
 	zcodeSigningMu.Lock()
-	zcodeGateStates[credential] = zcodeSignGate{enabled: true, checkedAt: time.Now()}
+	if cache {
+		zcodeGateStates[credential] = zcodeSignGate{enabled: true, checkedAt: time.Now()}
+	} else {
+		delete(zcodeGateStates, credential)
+	}
 	zcodeSigningMu.Unlock()
-	return true
+	return sign
+}
+
+// zcodeParseSigningGate maps an agent-configs body to (sign, cache). Only an
+// explicit boolean false turns signing off; a code-0 answer that allows
+// signing is cacheable, anything unusable is not.
+func zcodeParseSigningGate(raw []byte) (sign, cache bool) {
+	if !ojson.ValidBytes(raw) {
+		return true, false
+	}
+	if code := ojson.GetBytesNoCopy(raw, "code"); code.Type != ojson.Number || code.Int() != 0 {
+		return true, false
+	}
+	enable := ojson.GetBytesNoCopy(raw, "data.codingPlanSignature.enable")
+	switch enable.Type {
+	case ojson.False:
+		return false, false
+	case ojson.True:
+		return true, true
+	case ojson.Null:
+		if !enable.Exists() {
+			return true, true
+		}
+	}
+	return true, false
 }
 
 // zcodeHandshakeFor returns the cached Ed25519 private key for the credential,

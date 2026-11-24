@@ -40,7 +40,7 @@
 // Per-request headers (signing requires an X-Session-Id header to exist):
 //
 //	X-Client-Ts      = String(Date.now())  (milliseconds)
-//	X-Client-Version = "3.11.2"
+//	X-Client-Version = "4.0.0"
 //	X-App-Id         = "zcode"
 //	X-Client-Nonce   = 32 hex random (16 bytes)
 //	X-Client-Pow     = 32 hex (24-hex random prefix + 8-hex counter hex)
@@ -85,8 +85,8 @@ const (
 	SignHandshakePath = "/api/paas/c1f3a7e2/v2/client"
 	// SignAppID is the X-App-Id value.
 	SignAppID = "zcode"
-	// SignClientVersion is the X-Client-Version value (desktop 3.11.2).
-	SignClientVersion = "3.11.2"
+	// SignClientVersion is the X-Client-Version value (desktop 4.0.0).
+	SignClientVersion = "4.0.0"
 	// SignNonceBytes is the byte length of handshakes and request nonces; the
 	// desktop encodes them as 32 lowercase hex chars (ERt=16).
 	SignNonceBytes = 16

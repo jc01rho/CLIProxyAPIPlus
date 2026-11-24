@@ -59,7 +59,7 @@ func zcodeLocalGatewayPayload() []byte {
 }
 
 // assertZcodeDesktopIdentity verifies the request carries the identity a stock
-// ZCode 3.11.2 desktop sends: the source headers, the per-account session id,
+// ZCode 4.0.0 desktop sends: the source headers, the per-account session id,
 // and the provisioned key in the credential slot the gateway reads.
 func assertZcodeDesktopIdentity(t *testing.T, seen *capturedZcodeRequest, deviceID string) {
 	t.Helper()
@@ -80,7 +80,7 @@ func assertZcodeDesktopIdentity(t *testing.T, seen *capturedZcodeRequest, device
 		"Http-Referer":        "https://zcode.z.ai",
 		"X-Title":             "Z Code@electron",
 		"X-Zcode-Agent":       "glm",
-		"X-Zcode-App-Version": "3.11.2",
+		"X-Zcode-App-Version": "4.0.0",
 		"X-Release-Channel":   "production",
 	} {
 		if got := seen.header.Get(k); got != want {
@@ -105,12 +105,16 @@ func assertZcodeDesktopIdentity(t *testing.T, seen *capturedZcodeRequest, device
 	}
 
 	var payload struct {
+		Model    string `json:"model"`
 		Metadata struct {
 			UserID string `json:"user_id"`
 		} `json:"metadata"`
 	}
 	if err := json.Unmarshal(seen.body, &payload); err != nil {
 		t.Fatalf("decode request body: %v (%s)", err, seen.body)
+	}
+	if payload.Model != "GLM-5.3" {
+		t.Errorf("wire model = %q, want the official ZCode spelling GLM-5.3", payload.Model)
 	}
 	var identity struct {
 		DeviceID  string `json:"device_id"`
@@ -248,8 +252,8 @@ func TestZcodeSignedRequestVerifiesAgainstPublicKey(t *testing.T) {
 	if got := attr("X-App-Id"); got != "zcode" {
 		t.Errorf("X-App-Id = %q, want zcode", got)
 	}
-	if got := attr("X-Client-Version"); got != "3.11.2" {
-		t.Errorf("X-Client-Version = %q, want 3.11.2", got)
+	if got := attr("X-Client-Version"); got != "4.0.0" {
+		t.Errorf("X-Client-Version = %q, want 4.0.0", got)
 	}
 	if n := len(attr("X-Client-Nonce")); n != 32 {
 		t.Errorf("X-Client-Nonce length = %d, want 32 hex chars", n)

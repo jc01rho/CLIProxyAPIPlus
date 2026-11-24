@@ -21,7 +21,7 @@ func TestBuildZCodeSourceHeaders(t *testing.T) {
 		"HTTP-Referer":        "https://zcode.z.ai",
 		"X-Title":             "Z Code@electron",
 		"X-ZCode-Agent":       "glm",
-		"X-ZCode-App-Version": "3.11.2",
+		"X-ZCode-App-Version": "4.0.0",
 		"X-Release-Channel":   "production",
 	}
 	for k, want := range checks {
@@ -30,7 +30,7 @@ func TestBuildZCodeSourceHeaders(t *testing.T) {
 		}
 	}
 	// The desktop bundle appends the AI SDK layers to the app id.
-	wantUA := "ZCode/3.11.2 ai-sdk/provider-utils/4.0.27 runtime/node.js/"
+	wantUA := "ZCode/4.0.0 ai-sdk/provider-utils/4.0.27 runtime/node.js/"
 	if ua := h.Get("User-Agent"); !strings.HasPrefix(ua, wantUA) {
 		t.Errorf("User-Agent = %q, want prefix %q", ua, wantUA)
 	}
