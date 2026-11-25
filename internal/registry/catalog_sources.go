@@ -239,12 +239,6 @@ func (u *catalogUpdater) refreshOnDemand(ctx context.Context, fallbackSource str
 }
 
 func readCatalogSource(ctx context.Context, source string) ([]byte, error) {
-	return readCatalogSourceWithClient(ctx, http.DefaultClient, source)
-}
-
-// readCatalogSourceWithClient lets callers inject the HTTP client (tests use a
-// transport that holds the body open to prove the context outlives the read).
-func readCatalogSourceWithClient(ctx context.Context, client *http.Client, source string) ([]byte, error) {
 	var reader io.ReadCloser
 	if filepath.IsAbs(source) {
 		file, errOpen := os.Open(source)
@@ -257,7 +251,7 @@ func readCatalogSourceWithClient(ctx context.Context, client *http.Client, sourc
 		if errRequest != nil {
 			return nil, errRequest
 		}
-		resp, errDo := client.Do(req)
+		resp, errDo := http.DefaultClient.Do(req)
 		if errDo != nil {
 			return nil, errDo
 		}

@@ -335,29 +335,14 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 		}
 		models = applyExcludedModels(models, excluded)
-	case constant.Devin:
-		entry := s.resolveConfigDevinKey(a)
-		switch {
-		case entry != nil && len(entry.Models) > 0:
-			models = buildDevinConfigModels(entry)
-			excluded = entry.ExcludedModels
-		default:
-			// Live catalog discovery lived in the removed local
-			// executor/devin_models.go; the embedded registry catalog
-			// (devin_models.go) is now the source of truth.
+	case "copilot", "devin":
+		if provider == "copilot" {
+			for _, route := range a.ActiveCopilotCatalog(time.Now()).Routes() {
+				setCopilotModelDisplayName(route.Info, route.Info.ID)
+				models = append(models, route.Info)
+			}
+		} else {
 			models = registry.GetDevinModels()
-			if len(models) == 0 {
-				models = registry.GetDevinModels()
-			}
-			if entry != nil {
-				excluded = entry.ExcludedModels
-			}
-		}
-		models = applyExcludedModels(models, excluded)
-	case "copilot":
-		for _, route := range a.ActiveCopilotCatalog(time.Now()).Routes() {
-			setCopilotModelDisplayName(route.Info, route.Info.ID)
-			models = append(models, route.Info)
 		}
 		for _, model := range models {
 			if model != nil {

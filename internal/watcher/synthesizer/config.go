@@ -111,8 +111,6 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeKiroKeys(ctx)...)
 	// CommandCode API Keys
 	out = append(out, s.synthesizeCommandCodeKeys(ctx)...)
-	// Devin API Keys
-	out = append(out, s.synthesizeDevinKeys(ctx)...)
 	// Mistral API Keys
 	out = append(out, s.synthesizeMistralKeys(ctx)...)
 	// OpenCode API Keys
@@ -787,68 +785,6 @@ func cloneHeadersWithMimocodeDefault(headers map[string]string) map[string]strin
 	}
 	if !hasSource {
 		out["X-Mimo-Source"] = "mimocode-cli"
-	}
-	return out
-}
-
-// synthesizeDevinKeys creates Auth entries for Devin (Cognition) API keys.
-// Devin speaks Connect RPC against a per-account API server URL; BaseURL
-// overrides the api_server_url the credential was issued for.
-func (s *ConfigSynthesizer) synthesizeDevinKeys(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-	out := make([]*coreauth.Auth, 0, len(cfg.DevinKey))
-	for i := range cfg.DevinKey {
-		dk := cfg.DevinKey[i]
-		key := strings.TrimSpace(dk.APIKey)
-		if key == "" {
-			continue
-		}
-		proxyURL := strings.TrimSpace(dk.ProxyURL)
-		id, token := idGen.Next("devin:apikey", key, dk.BaseURL, proxyURL)
-		attrs := map[string]string{
-			"source":       fmt.Sprintf("config:devin[%s]", token),
-			"api_key":      key,
-			"config_index": strconv.Itoa(i),
-		}
-		if comment := strings.TrimSpace(dk.Comment); comment != "" {
-			attrs["comment"] = comment
-		}
-		if dk.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(dk.Priority)
-		}
-		if dk.BillingClass != "" {
-			attrs["billing_class"] = string(dk.BillingClass)
-		}
-		if strings.TrimSpace(dk.BaseURL) != "" {
-			attrs["base_url"] = strings.TrimSpace(dk.BaseURL)
-		}
-		if hash := diff.ComputeDevinModelsHash(dk.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(dk.Headers, attrs)
-		metadata := map[string]any{}
-		if dk.DisableCooling {
-			metadata["disable_cooling"] = true
-		}
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "devin",
-			Label:      "devin-apikey",
-			Prefix:     strings.TrimSpace(dk.Prefix),
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			Attributes: attrs,
-			Metadata:   metadata,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, dk.ExcludedModels, "apikey")
-		if len(a.Metadata) == 0 {
-			a.Metadata = nil
-		}
-		out = append(out, a)
 	}
 	return out
 }

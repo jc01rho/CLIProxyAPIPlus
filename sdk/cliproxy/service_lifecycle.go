@@ -114,6 +114,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	if !homeEnabled {
+		s.anonymousAuthsEnabled.Store(true)
 		s.ensureAnonymousAuths(coreauth.WithSkipPersist(ctx))
 		s.startCopilotCatalogRefresh(ctx)
 		tokenResult, err := s.tokenProvider.Load(ctx, cfg)
@@ -434,6 +435,13 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
+		if s.coreManager != nil {
+			for _, id := range []string{executor.KiloAnonymousAuthID, executor.KiloGatewayAnonymousAuthID} {
+				if _, exists := s.coreManager.GetByID(id); exists {
+					GlobalModelRegistry().UnregisterClient(id)
+				}
+			}
+		}
 		helps.RetireProxyPoolPublisher(s.proxyPoolPublisher)
 		usage.StopDefault()
 	})

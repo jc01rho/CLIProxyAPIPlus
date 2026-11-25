@@ -52,6 +52,9 @@ type Service struct {
 	// here never retires config snapshots served by another service.
 	proxyPoolPublisher uint64
 
+	// anonymousAuthsEnabled is set when Run starts local anonymous provider auths.
+	anonymousAuthsEnabled atomic.Bool
+
 	// configPath is the path to the configuration file.
 	configPath string
 

@@ -1107,8 +1107,7 @@ func (e *DevinExecutor) streamDevinFramesForAuth(
 					_ = failedDoc.Set("error.code", fmt.Sprintf("%d", code))
 					_ = emitInteractionsEvent(failedDoc.Bytes())
 				}
-				emitStreamError(devinQuotaScopedStatusError(devinTrailerStatusErrClass(code, errTrailer.Error()), auth, time.Now()))
-				devinDumpRejectedRequest(payload, errTrailer)
+				emitStreamError(trailerErr)
 				return
 			}
 			sawEOS = true
@@ -1600,7 +1599,7 @@ func consumeDevinFramesToInteractionsForAuth(body io.Reader, model, chatModelUID
 					UnknownFields:         unknownFields,
 					ApplyPatchDiagnostics: patchDiagnostics,
 				}
-				return nil, respLog, devinQuotaScopedStatusError(devinTrailerStatusErrClass(code, errTrailer.Error()), auth, time.Now())
+				return nil, respLog, devinTrailerStatusError(code, errTrailer.Error(), auth)
 			}
 			sawEOS = true
 			break
@@ -2271,7 +2270,7 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 	return
 }
 
-func devinParseDataURL(raw string) (mimeType string, data string, ok bool) {
+func parseDataURL(raw string) (mimeType string, data string, ok bool) {
 	raw = strings.TrimSpace(raw)
 	if !strings.HasPrefix(raw, "data:") {
 		return "", "", false
@@ -2321,7 +2320,7 @@ func extractDevinImage(part ojson.Result) (helps.DevinImage, bool) {
 	if base64Data == "" {
 		// uri and file_uri are Interactions spellings of url; only a data URL is usable.
 		url := firstNonEmpty(part.Get("image_url.url").String(), part.Get("image_url").String(), part.Get("url").String(), part.Get("uri").String(), part.Get("file_uri").String(), part.Get("fileUri").String())
-		if m, d, ok := devinParseDataURL(url); ok {
+		if m, d, ok := parseDataURL(url); ok {
 			base64Data = d
 			if mimeType == "" {
 				mimeType = m
@@ -3241,30 +3240,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-// devinRequestScopedConnectCodes lists Connect error codes that mark the
-// REQUEST as faulty rather than the credential. invalid_argument in
-// particular arrives intermittently for request shapes reproduced as
-// working; treating it as a credential fault rotates the only devin
-// credential out and every request during the cooldown fails with
-// auth_unavailable. Mapping these to HTTP 400 keeps the cooldown path from
-// claiming the credential.
-var devinRequestScopedConnectCodes = map[int]bool{
-	3:  true, // invalid_argument
-	9:  true, // failed_precondition
-	11: true, // out_of_range
-}
-
-// devinTrailerStatusErrClass maps a Connect trailer code onto statusErr so
-// the cooldown logic can classify the failure: request-scoped codes become
-// HTTP 400; everything else keeps the raw code.
-func devinTrailerStatusErrClass(code int, msg string) statusErr {
-	mapped := int(code)
-	if devinRequestScopedConnectCodes[code] {
-		mapped = http.StatusBadRequest
-	}
-	return statusErr{code: mapped, msg: msg}
 }
 
 func setDevinStringWithoutHTMLEscapeDoc(doc *ojson.Doc, path, value string) error {

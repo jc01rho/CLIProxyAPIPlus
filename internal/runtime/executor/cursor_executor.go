@@ -1652,7 +1652,7 @@ func cursorImageFromContentPart(part gjson.Result) *cursorproto.ImageData {
 	}
 
 	if strings.HasPrefix(dataURL, "data:") {
-		return parseDataURL(dataURL)
+		return cursorParseDataURL(dataURL)
 	}
 	if encoded == "" {
 		return nil
@@ -1667,7 +1667,7 @@ func cursorImageFromContentPart(part gjson.Result) *cursorproto.ImageData {
 	return &cursorproto.ImageData{MimeType: mimeType, Data: data}
 }
 
-func parseDataURL(url string) *cursorproto.ImageData {
+func cursorParseDataURL(url string) *cursorproto.ImageData {
 	if !strings.HasPrefix(url, "data:") {
 		return nil
 	}
@@ -1883,7 +1883,7 @@ func cursorRootImageReference(part gjson.Result) (image, mimeType string) {
 		}
 	}
 	if strings.HasPrefix(image, "data:") {
-		if parsed := parseDataURL(image); parsed != nil {
+		if parsed := cursorParseDataURL(image); parsed != nil {
 			mimeType = parsed.MimeType
 		}
 	}

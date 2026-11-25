@@ -128,7 +128,6 @@ func (a *DevinAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		_ = oauthServer.Stop(stopCtx)
 	}()
 
-	_ = authSvc
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", actualPort)
 	authURL := authSvc.BuildAuthorizationURL(redirectURI, pkceCodes.CodeChallenge, state)
 
@@ -261,108 +260,7 @@ waitForResult:
 		return nil, fmt.Errorf("no authorization code or token received")
 	}
 
-	userName, userID, orgID, errSelf := authSvc.FetchSelfProfile(ctx, sessionToken)
-	if errSelf != nil {
-		log.Warnf("failed to fetch devin user profile: %v", errSelf)
-	}
-
-	userStatus, errStatus := authSvc.FetchUserStatus(ctx, sessionToken, "")
-	if errStatus != nil {
-		log.Warnf("failed to fetch devin user status and quota: %v", errStatus)
-	}
-
-	var email, plan string
-	if userStatus != nil {
-		if userName == "" && userStatus.UserName != "" {
-			userName = userStatus.UserName
-		}
-		if userID == "" && userStatus.UserID != "" {
-			userID = userStatus.UserID
-		}
-		if orgID == "" && userStatus.OrgID != "" {
-			orgID = userStatus.OrgID
-		}
-		email = userStatus.Email
-		plan = userStatus.Plan
-	}
-
-	identifier := userName
-	if identifier == "" {
-		identifier = userID
-	}
-	if identifier == "" {
-		identifier = "user"
-	}
-
-	fileName := fmt.Sprintf("devin-%s.json", identifier)
-	label := fmt.Sprintf("Devin (%s)", identifier)
-	if email != "" {
-		label = fmt.Sprintf("Devin (%s - %s)", identifier, email)
-	}
-
-	attributes := map[string]string{
-		"api_key":       sessionToken,
-		"session_token": sessionToken,
-		"user_name":     userName,
-		"user_id":       userID,
-		"org_id":        orgID,
-		"base_url":      devinauth.DefaultServerURL,
-		"auth_kind":     "oauth",
-	}
-	metadata := map[string]any{
-		"type":          "devin",
-		"api_key":       sessionToken,
-		"session_token": sessionToken,
-		"user_name":     userName,
-		"user_id":       userID,
-		"org_id":        orgID,
-		"auth_kind":     "oauth",
-	}
-	if email != "" {
-		attributes["email"] = email
-		metadata["email"] = email
-	}
-	if plan != "" {
-		attributes["plan"] = plan
-		metadata["plan"] = plan
-	}
-
-	quotaSignals := make(map[string]string)
-	if plan != "" {
-		quotaSignals["plan"] = plan
-	}
-	if userStatus != nil {
-		quotaSignals["daily_quota_remaining_percent"] = fmt.Sprintf("%d%%", userStatus.DailyQuotaRemainingPercent)
-		quotaSignals["weekly_quota_remaining_percent"] = fmt.Sprintf("%d%%", userStatus.WeeklyQuotaRemainingPercent)
-		if !userStatus.DailyQuotaResetAt.IsZero() {
-			quotaSignals["daily_quota_reset_at"] = userStatus.DailyQuotaResetAt.Format(time.RFC3339)
-		}
-		if !userStatus.WeeklyQuotaResetAt.IsZero() {
-			quotaSignals["weekly_quota_reset_at"] = userStatus.WeeklyQuotaResetAt.Format(time.RFC3339)
-		}
-		if !userStatus.PlanStart.IsZero() {
-			quotaSignals["plan_start"] = userStatus.PlanStart.Format(time.RFC3339)
-		}
-		if !userStatus.PlanEnd.IsZero() {
-			quotaSignals["plan_end"] = userStatus.PlanEnd.Format(time.RFC3339)
-		}
-	}
-
-	authRecord := &coreauth.Auth{
-		ID:         fileName,
-		Provider:   "devin",
-		FileName:   fileName,
-		Label:      label,
-		Status:     coreauth.StatusActive,
-		Attributes: attributes,
-		Metadata:   metadata,
-		Quota: coreauth.QuotaState{
-			ObservedAt: time.Now(),
-			Signals:    quotaSignals,
-		},
-	}
-
-	return authRecord, nil
+	return authSvc.CreateAuthRecord(ctx, sessionToken)
 }
 
 var errDevinUnrecognizedPaste = errors.New("unrecognized devin authorization code or token format")

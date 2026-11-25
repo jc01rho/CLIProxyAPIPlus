@@ -163,13 +163,6 @@ func (s *Service) resolveConfigMistralKey(auth *coreauth.Auth) *config.MistralKe
 	return resolveNativeAPIKeyConfig(s.cfg.MistralKey, auth)
 }
 
-func (s *Service) resolveConfigDevinKey(auth *coreauth.Auth) *config.DevinKey {
-	if s == nil || s.cfg == nil {
-		return nil
-	}
-	return resolveNativeAPIKeyConfig(s.cfg.DevinKey, auth)
-}
-
 func buildCommandCodeConfigModels(entry *config.CommandCodeKey) []*ModelInfo {
 	if entry == nil {
 		return nil
@@ -249,19 +242,4 @@ func buildMistralConfigModels(entry *config.MistralKey) []*ModelInfo {
 		return nil
 	}
 	return buildNativeConfigModels(entry.Models, "mistral", "mistral")
-}
-
-func buildDevinConfigModels(entry *config.DevinKey) []*ModelInfo {
-	if entry == nil {
-		return nil
-	}
-	models := buildNativeConfigModels(entry.Models, "devin", "devin")
-	// Devin speaks a Connect chat RPC only; /v1/responses requests must be
-	// converted to the chat completions shape before execution.
-	for _, m := range models {
-		if m != nil {
-			m.SupportedEndpoints = []string{"/chat/completions"}
-		}
-	}
-	return models
 }

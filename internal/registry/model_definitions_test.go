@@ -96,37 +96,7 @@ func TestEmbeddedCodexTierModelsExposeGPT6Astra(t *testing.T) {
 func TestGetStaticModelDefinitionsByChannelSupportsGeminiInteractions(t *testing.T) {
 	models := GetStaticModelDefinitionsByChannel("gemini-interactions")
 	if len(models) == 0 {
-		t.Fatal("GetStaticModelDefinitionsByChannel(\"devin\") returned empty list")
-	}
-}
-
-func TestGetStaticModelDefinitionsByChannelSupportsDevin(t *testing.T) {
-	models := GetStaticModelDefinitionsByChannel("devin")
-	if len(models) == 0 {
-		t.Fatal("GetStaticModelDefinitionsByChannel(\"devin\") returned empty list")
-	}
-	// The static catalog is only the SWE-2 seed: it keeps a configured Devin
-	// provider usable when GetCliModelConfigs discovery fails. Every other
-	// family (SWE-1.x, Claude, GPT, Gemini, GLM, Kimi, Fusion) comes from that
-	// live catalog, so asserting them here would pin names the seed no longer
-	// owns.
-	expected := map[string]bool{
-		"swe-2": false,
-	}
-	for _, m := range models {
-		if _, ok := expected[m.ID]; ok {
-			expected[m.ID] = true
-		}
-	}
-	for id, found := range expected {
-		if !found {
-			t.Errorf("expected Devin model %s not found in GetDevinModels", id)
-		}
-	}
-
-	info := LookupStaticModelInfo("swe-2")
-	if info == nil {
-		t.Fatal("LookupStaticModelInfo(\"swe-2\") = nil, want valid model")
+		t.Fatal("GetStaticModelDefinitionsByChannel(gemini-interactions) returned no models")
 	}
 }
 
@@ -439,31 +409,64 @@ func TestGetDevinModelsFallback(t *testing.T) {
 		t.Fatal("GetDevinModels() returned empty list")
 	}
 
-	// The static catalog is only the SWE-2 seed; every other family comes from
-	// the live Devin CLI catalog, so this pins the seed rather than the
-	// discovered catalog.
-	expected := map[string]bool{
-		"swe-2": false,
-	}
+	foundSWE2 := false
+	foundFable := false
+	foundGemini38 := false
+	foundGrok46 := false
+	foundDeepSeekV4Flash := false
+	foundDeepSeekV41Flash := false
 	for _, m := range devinModels {
-		if m == nil {
-			continue
+		if m != nil && m.ID == "swe-2" {
+			foundSWE2 = true
+			if m.Type != "devin" {
+				t.Errorf("swe-2 Type = %q, want devin", m.Type)
+			}
 		}
-		if _, ok := expected[m.ID]; !ok {
-			continue
+		if m != nil && m.ID == "claude-fable-5-1" {
+			foundFable = true
 		}
-		expected[m.ID] = true
-		if m.Type != "devin" {
-			t.Errorf("%s Type = %q, want devin", m.ID, m.Type)
+		if m != nil && m.ID == "gemini-3-8-flash" {
+			foundGemini38 = true
+			if m.OwnedBy != "google" {
+				t.Errorf("gemini-3-8-flash OwnedBy = %q, want google", m.OwnedBy)
+			}
 		}
-		if m.ContextLength != 262000 {
-			t.Errorf("%s ContextLength = %d, want 262000", m.ID, m.ContextLength)
+		if m != nil && m.ID == "grok-4-6" {
+			foundGrok46 = true
+			if m.OwnedBy != "xai" {
+				t.Errorf("grok-4-6 OwnedBy = %q, want xai", m.OwnedBy)
+			}
+		}
+		if m != nil && m.ID == "deepseek-v4-flash" {
+			foundDeepSeekV4Flash = true
+			if m.OwnedBy != "deepseek" {
+				t.Errorf("deepseek-v4-flash OwnedBy = %q, want deepseek", m.OwnedBy)
+			}
+		}
+		if m != nil && m.ID == "deepseek-v4-1-flash-1017" {
+			foundDeepSeekV41Flash = true
+			if m.OwnedBy != "deepseek" {
+				t.Errorf("deepseek-v4-1-flash-1017 OwnedBy = %q, want deepseek", m.OwnedBy)
+			}
 		}
 	}
-	for id, found := range expected {
-		if !found {
-			t.Errorf("expected %s in GetDevinModels()", id)
-		}
+	if !foundSWE2 {
+		t.Error("expected swe-2 in GetDevinModels()")
+	}
+	if !foundFable {
+		t.Error("expected claude-fable-5-1 in GetDevinModels()")
+	}
+	if !foundGemini38 {
+		t.Error("expected gemini-3-8-flash in GetDevinModels()")
+	}
+	if !foundGrok46 {
+		t.Error("expected grok-4-6 in GetDevinModels()")
+	}
+	if !foundDeepSeekV4Flash {
+		t.Error("expected deepseek-v4-flash in GetDevinModels()")
+	}
+	if !foundDeepSeekV41Flash {
+		t.Error("expected deepseek-v4-1-flash-1017 in GetDevinModels()")
 	}
 
 	byChannel := GetStaticModelDefinitionsByChannel("devin")
@@ -471,8 +474,11 @@ func TestGetDevinModelsFallback(t *testing.T) {
 		t.Fatal("GetStaticModelDefinitionsByChannel(\"devin\") returned empty list")
 	}
 
-	info := LookupStaticModelInfo("swe-2")
+	info := LookupStaticModelInfo("devin/swe-2")
 	if info == nil {
-		t.Fatal("LookupStaticModelInfo(\"swe-2\") = nil, want valid model")
+		t.Fatal("LookupStaticModelInfo(\"devin/swe-2\") = nil, want valid model")
+	}
+	if info.DisplayName != "SWE-2" {
+		t.Errorf("info.DisplayName = %q, want SWE-2", info.DisplayName)
 	}
 }
