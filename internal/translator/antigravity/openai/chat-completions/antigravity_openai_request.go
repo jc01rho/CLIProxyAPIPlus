@@ -169,6 +169,7 @@ func buildAntigravityOpenAIWebSearchRequest(model string, payload []byte) ([]byt
 	if toolConfig := outDoc.Get("request.toolConfig"); toolConfig.IsObject() && len(toolConfig.Map()) == 0 {
 		_ = outDoc.Delete("request.toolConfig")
 	}
+	gemini.NormalizeAntigravityRequestDoc(outDoc)
 	return outDoc.Bytes(), errConvert
 }
 
@@ -204,6 +205,9 @@ func convertOpenAIRequestToAntigravityChat(modelName string, inputRawJSON []byte
 		}
 	}
 	normalizeAntigravityOpenAIThinkingConfigDoc(outDoc)
+	if thinkingPath := "request.generationConfig.thinkingConfig"; !outDoc.Get(thinkingPath+".thinkingLevel").Exists() && !outDoc.Get(thinkingPath+".thinkingBudget").Exists() {
+		thinking.ApplyOpenAIGoogleThinkingConfigDoc(outDoc, rawJSON, thinkingPath)
+	}
 
 	// Temperature/top_p/top_k/max_tokens/max_completion_tokens
 	if tr := ojson.GetBytesNoCopy(rawJSON, "temperature"); tr.Exists() && tr.Type == ojson.Number {
@@ -566,7 +570,9 @@ func convertOpenAIRequestToAntigravityChat(modelName string, inputRawJSON []byte
 	if strings.Contains(strings.ToLower(modelName), "claude") {
 		out = gemini.SanitizeAntigravityClaudeGeminiRequestSignatures(modelName, out)
 	}
-	return out, drops.Err()
+	finalDoc := ojson.NewDoc(out)
+	gemini.NormalizeAntigravityRequestDoc(finalDoc)
+	return finalDoc.Bytes(), drops.Err()
 }
 
 func antigravityOpenAITextPart(text string) []byte {

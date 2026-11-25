@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	antigravitygemini "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/antigravity/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -197,21 +198,29 @@ func (e *AntigravityExecutor) buildRequestForModelDoc(ctx context.Context, auth 
 	structuredCandidate := restoreAntigravityRequestRaw(payload, "request.toolConfig", toolConfigBefore)
 	structuredCandidate = restoreAntigravityRequestRaw(structuredCandidate, "request.tool_config", toolConfigSnakeBefore)
 	structuredDoc := ojson.NewDoc(structuredCandidate)
+	// Upstream v8.1.3 native wire normalization merges systemInstruction parts and rewrites
+	// functionResponse.result. It runs before the Claude output prompt is appended so client
+	// text keeps its own part, and it stamps role=user, which the agy 1.1.6 agent wire only
+	// carries when the client, the Claude transforms, or the prompt path set one.
+	hadSystemRole := strings.TrimSpace(structuredDoc.Get("request.systemInstruction.role").String()) != ""
+	antigravitygemini.NormalizeAntigravityRequestDoc(structuredDoc)
 	promptStructuredOutput := helps.PrepareAntigravityClaudeStructuredOutputDoc(modelName, structuredDoc)
-	if promptStructuredOutput {
-		*doc = *structuredDoc
-	} else {
-		// Keep the client's original tool config here too; the Claude VALIDATED
-		// default is applied below unless the client asked for NONE (upstream 7792).
-		*doc = *ojson.NewDoc(structuredCandidate)
+	if promptStructuredOutput && strings.TrimSpace(structuredDoc.Get("request.systemInstruction.role").String()) == "" {
+		_ = structuredDoc.Set("request.systemInstruction.role", "user")
 	}
+	if !hadSystemRole && !promptStructuredOutput && strings.TrimSpace(structuredDoc.Get("requestType").String()) == "agent" {
+		_ = structuredDoc.Delete("request.systemInstruction.role")
+	}
+	// The client's original tool config stays in place for both paths; the Claude VALIDATED
+	// default is applied below unless the client asked for NONE (upstream 7792).
+	*doc = *structuredDoc
 
 	lowerModel := strings.ToLower(modelName)
 	useAntigravitySchema, isClaudeModel := antigravitySchemaSanitizationFlags(modelName)
 
-	// A matched variant uses the output limit from the same catalog as its ID and enum.
+	// A matched variant limits output using the same catalog as its ID and enum.
 	if selection.MaxOutputTokens > 0 {
-		_ = doc.Set("request.generationConfig.maxOutputTokens", selection.MaxOutputTokens)
+		helps.CapAntigravityMaxOutputTokensDoc(doc, selection.MaxOutputTokens, isClaudeModel)
 	} else if maxOut := doc.Get("request.generationConfig.maxOutputTokens"); maxOut.Exists() && maxOut.Type == ojson.Number {
 		modelInfo := registry.LookupModelInfo(modelName, "antigravity")
 		if modelInfo == nil && lowerModel != modelName {
@@ -219,17 +228,7 @@ func (e *AntigravityExecutor) buildRequestForModelDoc(ctx context.Context, auth 
 		}
 		if modelInfo != nil && modelInfo.MaxCompletionTokens > 0 {
 			if int(maxOut.Int()) > modelInfo.MaxCompletionTokens {
-				_ = doc.Set("request.generationConfig.maxOutputTokens", modelInfo.MaxCompletionTokens)
-				if isClaudeModel {
-					for _, budgetPath := range []string{
-						"request.generationConfig.thinkingConfig.thinkingBudget",
-						"request.generationConfig.thinkingConfig.thinking_budget",
-					} {
-						if budget := doc.Get(budgetPath); budget.Exists() && budget.Int() >= int64(modelInfo.MaxCompletionTokens) {
-							_ = doc.Set(budgetPath, modelInfo.MaxCompletionTokens-1)
-						}
-					}
-				}
+				helps.CapAntigravityMaxOutputTokensDoc(doc, modelInfo.MaxCompletionTokens, isClaudeModel)
 			}
 		}
 	}
@@ -725,11 +724,12 @@ const antigravitySchemaWrapperKey = "schema"
 // cleaning always saw tool schemas nested inside the request, so nesting is reproduced here to keep
 // the emitted schema byte-identical to the previous behaviour.
 func cleanNestedSchema(clean func(string) string, schemaRaw string) string {
-	wrapped, errWrap := ojson.SetRaw("{}", antigravitySchemaWrapperKey, schemaRaw)
-	if errWrap != nil {
+	schemaRaw = util.NormalizeJSONSchemaNumericConstraints(schemaRaw)
+	wrappedDoc := ojson.NewDocString("{}")
+	if errWrap := wrappedDoc.SetRaw(antigravitySchemaWrapperKey, schemaRaw); errWrap != nil {
 		return clean(schemaRaw)
 	}
-	if unwrapped := ojson.Get(clean(wrapped), antigravitySchemaWrapperKey); unwrapped.Exists() {
+	if unwrapped := ojson.Get(clean(wrappedDoc.String()), antigravitySchemaWrapperKey); unwrapped.Exists() {
 		return unwrapped.Raw
 	}
 	return clean(schemaRaw)
@@ -1013,18 +1013,19 @@ func geminiToAntigravityDocForAuth(doc *ojson.Doc, selection cliproxyauth.Antigr
 		derivedSessionID = strings.TrimSpace(derivedSessionIDs[0])
 	}
 
-	if isImageModel {
-		_ = doc.Set("requestId", generateImageGenRequestID())
-		// Scope a client sessionId per credential and subagent (upstream); never
-		// synthesize one when the client sent none.
+	switch {
+	case isImageModel:
+		if strings.TrimSpace(doc.Get("requestId").String()) == "" {
+			_ = doc.Set("requestId", generateImageGenRequestID())
+		}
 		if incomingSessionID != "" && authID != "" {
 			_ = doc.Set("request.sessionId", scopeIncomingAntigravitySessionID(authID, incomingSessionID, derivedSessionID))
 		}
-	} else if reqType == "web_search" {
+	case reqType == "web_search":
 		if incomingSessionID != "" && authID != "" {
 			_ = doc.Set("request.sessionId", scopeIncomingAntigravitySessionID(authID, incomingSessionID, derivedSessionID))
 		}
-	} else if reqType == "agent" {
+	case reqType == "agent":
 		// agy CLI 1.1.5/1.1.6 agent wire: requestId/sessionId/labels + field order.
 		// Conversation identity is keyed by the first user message (stable across
 		// turns) so conversationId/trajectoryId are reused, used_* accumulate, and
@@ -1046,6 +1047,11 @@ func geminiToAntigravityDocForAuth(doc *ojson.Doc, selection cliproxyauth.Antigr
 		// routing) outranks the fork's static wire-model table.
 		if selection.Enum != "" {
 			_ = doc.Set("request.labels.model_enum", selection.Enum)
+		}
+	default:
+		// Upstream v8.1.3: non-agent request types carry a slash-delimited fallback id.
+		if strings.TrimSpace(doc.Get("requestId").String()) == "" {
+			_ = doc.Set("requestId", reqType+"/"+antigravityNewUUID())
 		}
 	}
 

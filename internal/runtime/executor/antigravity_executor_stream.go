@@ -29,11 +29,18 @@ import (
 const antigravityEmptyStreamRetries = 2
 
 // antigravityEmptyStreamError marks an upstream stream that ended with no content and no terminal
-// candidate. It is only surfaced when every attempt came back empty.
+// candidate. It is retried before the client sees a byte, and surfaced as a transient 502 when
+// every attempt came back empty.
 type antigravityEmptyStreamError struct{}
 
 func (antigravityEmptyStreamError) Error() string {
 	return "antigravity stream ended without a terminal candidate response"
+}
+
+func (antigravityEmptyStreamError) StatusCode() int { return http.StatusBadGateway }
+
+func (antigravityEmptyStreamError) ErrorCode() string {
+	return cliproxyauth.ErrorCodeTransientTransport
 }
 
 // ExecuteStream performs a streaming request to the Antigravity API. An upstream stream that ends
@@ -325,7 +332,26 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 		}()
 		var pendingFilterPayload []byte
 		var pendingFilterMsg string
+		var sawUpstreamJSON bool
 		zeroOutputGuard := helps.NewGeminiZeroOutputStreamGuard(true, responseFormat)
+		failEmptyUpstreamStream := func() {
+			translatedClaudeErr = nil
+			streamErr = antigravityEmptyStreamError{}
+			stopDeliverySupport()
+			switch {
+			case allowEmptyRetry && !zeroOutputGuard.Emitted():
+				emptyAbandoned = true
+			case !streamUsage.PublishFailure(ctx, reporter, streamErr):
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
+			default:
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+			case <-ctx.Done():
+			}
+		}
 		failZeroOutput := func(finishReason string) bool {
 			translatedClaudeErr = nil
 			streamErr = newGeminiZeroOutputStatusErr(helps.GeminiZeroOutputErrorMessage(responseFormat, finishReason))
@@ -349,7 +375,7 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 			if payload == nil {
 				continue
 			}
-
+			sawUpstreamJSON = true
 			// Capture accounting before the client-facing filter renames usage.
 			streamUsage.ObserveAntigravityStream(payload)
 
@@ -500,6 +526,10 @@ func (e *AntigravityExecutor) executeStreamOnce(ctx context.Context, auth *clipr
 			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 			case <-ctx.Done():
 			}
+			return
+		}
+		if scanner.Err() == nil && ctx.Err() == nil && !sawUpstreamJSON {
+			failEmptyUpstreamStream()
 			return
 		}
 		if scanner.Err() == nil && ctx.Err() == nil && zeroOutputGuard.HasAbnormalFinish() {

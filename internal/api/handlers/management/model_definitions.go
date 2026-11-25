@@ -75,11 +75,27 @@ func (h *Handler) GetStaticModelDefinitions(c *gin.Context) {
 	// Plugin-declared static models win for plugin channels; otherwise the fork
 	// prefers runtime registry models over the static catalog.
 	models := h.pluginStaticModelDefinitionsByChannel(normalizedChannel)
+	fromPluginStatic := len(models) > 0
 	if len(models) == 0 {
 		models = sortedRegistryModelDefinitions(normalizedChannel)
 	}
+	fromStatic := false
 	if len(models) == 0 {
 		models = registry.GetStaticModelDefinitionsByChannel(normalizedChannel)
+		fromStatic = len(models) > 0
+	}
+	if (fromStatic || fromPluginStatic) && c.GetBool(ConfigV8ContextKey) && (normalizedChannel == "copilot" || normalizedChannel == "devin") {
+		// Expose the same IDs used for OAuth rules before aliases and credential prefixes.
+		prefix := normalizedChannel + "/"
+		for _, model := range models {
+			if model == nil {
+				continue
+			}
+			id := strings.TrimSpace(model.ID)
+			if id != "" && !strings.HasPrefix(id, prefix) {
+				model.ID = prefix + id
+			}
+		}
 	}
 	if len(models) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown channel", "channel": channel})

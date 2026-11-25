@@ -233,12 +233,28 @@ func ApplyAgyAgentWireMetadata(body []byte, session *AgyRequestSessionContext, m
 
 	meta := BuildAgyAgentRequestMetadata(session, requestBytes, model, timestampMs)
 
-	labelsJSON := OrderAgyLabels(meta.Labels)
+	// Caller supplied label values win: the client (or an upstream normalizer) already
+	// correlated this request, and only missing keys are filled from the session store.
+	labels := make(map[string]string, len(meta.Labels))
+	if existing := gjson.GetBytes(requestBytes, "labels"); existing.IsObject() {
+		existing.ForEach(func(key, value gjson.Result) bool {
+			labels[key.String()] = value.String()
+			return true
+		})
+	}
+	for key, value := range meta.Labels {
+		if _, ok := labels[key]; !ok {
+			labels[key] = value
+		}
+	}
+	labelsJSON := OrderAgyLabels(labels)
 	requestBytes, _ = sjson.SetRawBytes(requestBytes, "labels", labelsJSON)
 	requestBytes, _ = sjson.SetBytes(requestBytes, "sessionId", meta.SessionID)
 	requestBytes = OrderAgyRequestPayload(requestBytes)
 
-	body, _ = sjson.SetBytes(body, "requestId", meta.RequestID)
+	if strings.TrimSpace(gjson.GetBytes(body, "requestId").String()) == "" {
+		body, _ = sjson.SetBytes(body, "requestId", meta.RequestID)
+	}
 	body, _ = sjson.SetRawBytes(body, "request", requestBytes)
 	// Compact + reorder top-level envelope for stable wire string equality.
 	return OrderAgyEnvelope(compactJSON(body))

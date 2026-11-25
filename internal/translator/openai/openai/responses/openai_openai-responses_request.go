@@ -382,7 +382,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					latestReasoningContent = rc
 				}
 				// Buffer consecutive function calls and emit them as one assistant message.
-				toolCallDoc := ojson.NewDocString(`{"id":"","type":"function","function":{"name":"","arguments":""}}`)
+				toolCallDoc := ojson.NewDocString(`{"id":"","type":"function","function":{"name":"","arguments":"{}"}}`)
 
 				if callId := translatorcommon.ExtractResponsesCallID(item); callId != "" {
 					_ = toolCallDoc.Set("id", callId)
@@ -401,8 +401,8 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				if arguments := item.Get("arguments"); arguments.Exists() {
 					if arguments.IsObject() {
 						_ = toolCallDoc.SetRaw("function.arguments", arguments.Raw)
-					} else {
-						_ = toolCallDoc.Set("function.arguments", arguments.String())
+					} else if rawArguments := arguments.String(); strings.TrimSpace(rawArguments) != "" {
+						_ = toolCallDoc.Set("function.arguments", rawArguments)
 					}
 				}
 				pendingToolCalls = append(pendingToolCalls, util.ParseGJSONBytesNoCopy(toolCallDoc.Bytes()).Value())
