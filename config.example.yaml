@@ -1138,11 +1138,6 @@ upstream:
 #       models: [{name: "command-model", alias: "command-latest"}]
 #       keys: [{api-key: "replace-with-commandcode-key", weight: 5}]
 #       # weight: 0 explicitly excludes this key under weighted-round-robin.
-#   devin:
-#     - name: devin-1
-#       base-url: "https://devin.example.com"
-#       models: [{name: "swe-1-6-fast", alias: "devin-fast"}]
-#       keys: [{api-key: "replace-with-devin-key"}]
 #   mistral:
 #     - name: mistral-1
 #       models: [{name: "mistral-large-latest", alias: "mistral-large"}]

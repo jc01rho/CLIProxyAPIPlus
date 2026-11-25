@@ -230,7 +230,6 @@ type Config struct {
 	VertexCompatAPIKey []VertexCompatKey `yaml:"vertex-api-key" json:"vertex-api-key"`
 
 	CommandCodeKey []CommandCodeKey `yaml:"commandcode-api-key" json:"commandcode-api-key"`
-	DevinKey       []DevinKey       `yaml:"devin-api-key" json:"devin-api-key"`
 	MistralKey     []MistralKey     `yaml:"mistral-api-key" json:"mistral-api-key"`
 	OpenCodeKey    []OpenCodeKey    `yaml:"opencode-api-key" json:"opencode-api-key"`
 	MimocodeKey    []MimocodeKey    `yaml:"mimocode-api-key" json:"mimocode-api-key"`

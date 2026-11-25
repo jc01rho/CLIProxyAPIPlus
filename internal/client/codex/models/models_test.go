@@ -546,10 +546,14 @@ func TestApplyCodexClientModelMetadataPreservesMultiAgentVersionWhenDisabled(t *
 
 func TestCodexClientModelsResponseAppliesMaxContextLengthOverride(t *testing.T) {
 	const wantOverride = 1048576
-	// deepseek-v4-pro has no per-request override here, so it resolves from
-	// the Devin static catalog (context_length 1048576) instead of the
-	// catalog default template.
-	const wantDevinCatalogContext = 1048576
+	// Non-template models inherit context windows from the catalog's
+	// default template (currently the gpt-5.5 entry).
+	_, defaultTemplate, errLoadTemplates := loadCodexClientModelTemplates()
+	if errLoadTemplates != nil || defaultTemplate == nil {
+		t.Fatalf("load codex client model templates: %v", errLoadTemplates)
+	}
+	wantDefaultContext := intModelValue(defaultTemplate, "context_window")
+	wantDefaultMaxContext := intModelValue(defaultTemplate, "max_context_window")
 
 	resp := BuildResponse([]map[string]any{
 		{"id": "deepseek-v4-flash", "max_context_length": wantOverride},
@@ -572,7 +576,7 @@ func TestCodexClientModelsResponseAppliesMaxContextLengthOverride(t *testing.T) 
 		wantMaxContext int
 	}{
 		{slug: "deepseek-v4-flash", wantContext: wantOverride, wantMaxContext: wantOverride},
-		{slug: "deepseek-v4-pro", wantContext: wantDevinCatalogContext, wantMaxContext: wantDevinCatalogContext},
+		{slug: "deepseek-v4-pro", wantContext: wantDefaultContext, wantMaxContext: wantDefaultMaxContext},
 		{slug: "gpt-5.5", wantContext: wantOverride, wantMaxContext: wantOverride},
 	} {
 		entry := bySlug[testCase.slug]
@@ -1750,55 +1754,6 @@ func TestCodexClientModelsResponse_DevinDisplayName(t *testing.T) {
 		if got != tc.wantDisplayName {
 			t.Errorf("model %q display_name = %q, want %q", tc.slug, got, tc.wantDisplayName)
 		}
-	}
-}
-
-func TestCodexClientModelsResponse_DevinBindingFallbackPrecedence(t *testing.T) {
-	// Case A: Exact model has explicit non-devin provider binding -> must NOT receive (Devin)
-	// Case B: Exact model has NO binding, but base "swe-2" is Devin in registry -> receives (Devin)
-	// Case C: Exact model has NO binding, and base provider lookup returns "devin" -> receives (Devin)
-	availableModels := []map[string]any{
-		{"id": "channel/swe-2", "display_name": "Channel SWE-2"},
-		{"id": "prefix/swe-2", "display_name": "Prefix SWE-2"},
-		{"id": "prefix/custom-devin-base", "display_name": "Prefix Custom"},
-	}
-
-	providerLookup := func(id string) []string {
-		switch id {
-		case "channel/swe-2":
-			// Explicit non-devin binding for the exact ID
-			return []string{"openai"}
-		case "custom-devin-base":
-			// Base provider is devin (when exact ID has no binding)
-			return []string{"devin"}
-		default:
-			return nil
-		}
-	}
-
-	resp := BuildResponseForClient(availableModels, providerLookup, false, "0.153.4")
-	models, ok := resp["models"].([]map[string]any)
-	if !ok {
-		t.Fatalf("resp models type = %T, want []map[string]any", resp["models"])
-	}
-	bySlug := make(map[string]map[string]any, len(models))
-	for _, m := range models {
-		bySlug[stringModelValue(m, "slug")] = m
-	}
-
-	// channel/swe-2 has explicit non-devin binding -> no suffix
-	if got := stringModelValue(bySlug["channel/swe-2"], "display_name"); got != "Channel SWE-2" {
-		t.Errorf("channel/swe-2 display_name = %q, want %q", got, "Channel SWE-2")
-	}
-
-	// prefix/swe-2 has NO exact binding, but registry base "swe-2" is Devin -> receives suffix
-	if got := stringModelValue(bySlug["prefix/swe-2"], "display_name"); got != "Prefix SWE-2 (Devin)" {
-		t.Errorf("prefix/swe-2 display_name = %q, want %q", got, "Prefix SWE-2 (Devin)")
-	}
-
-	// prefix/custom-devin-base has NO exact binding, but base provider is devin -> receives suffix
-	if got := stringModelValue(bySlug["prefix/custom-devin-base"], "display_name"); got != "Prefix Custom (Devin)" {
-		t.Errorf("prefix/custom-devin-base display_name = %q, want %q", got, "Prefix Custom (Devin)")
 	}
 }
 

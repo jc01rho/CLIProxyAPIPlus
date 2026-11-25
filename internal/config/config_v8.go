@@ -73,7 +73,7 @@ var v8KeyFamilies = []configPath{
 	{"claude-api-key", "claude"}, {"xai-api-key", "xai"}, {"meta-api-key", "meta"},
 	{"openai-compatibility", "openai-compatibility"},
 	{"commandcode-api-key", "commandcode"},
-	{"devin-api-key", "devin"}, {"mistral-api-key", "mistral"},
+	{"mistral-api-key", "mistral"},
 	{"opencode-api-key", "opencode"}, {"mimocode-api-key", "mimocode"}, {"deepai-api-key", "deepai"},
 	{"kiro", "kiro"},
 }

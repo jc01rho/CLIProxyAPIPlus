@@ -1,13 +1,11 @@
 package registry
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -28,7 +26,6 @@ func TestValidateDevinModelsJSONAggregatesLightning(t *testing.T) {
 		t.Fatalf("expected 3 lightning UIDs to aggregate into 1 model, got %d: %+v", len(models), models)
 	}
 	m := models[0]
-	// Fork policy: Devin model IDs stay bare (no forced "devin/" prefix).
 	if m.ID != "swe-2-lightning" {
 		t.Errorf("aggregated ID = %q, want swe-2-lightning", m.ID)
 	}
@@ -49,7 +46,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		data := []byte(`{
 			"devin": [
 				{
-					"id": "swe-2",
+					"id": "devin/swe-2",
 					"display_name": "SWE-2",
 					"owned_by": "cognition",
 					"context_length": 262000
@@ -72,7 +69,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		data := []byte(`{
 			"models": [
 				{
-					"id": "glm-5-2",
+					"id": "devin/glm-5-2",
 					"display_name": "GLM-5.2"
 				}
 			]
@@ -89,7 +86,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 	t.Run("valid direct array", func(t *testing.T) {
 		data := []byte(`[
 			{
-				"id": "deepseek-v4-flash",
+				"id": "devin/deepseek-v4-flash",
 				"display_name": "DeepSeek V4 Flash"
 			}
 		]`)
@@ -102,7 +99,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		}
 	})
 
-	t.Run("clean id without devin prefix kept bare", func(t *testing.T) {
+	t.Run("bare id stays bare", func(t *testing.T) {
 		data := []byte(`{
 			"devin": [
 				{
@@ -116,7 +113,7 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 			t.Fatalf("expected valid, got error: %v", err)
 		}
 		if len(models) != 1 || models[0].ID != "swe-2" {
-			t.Fatalf("expected bare id swe-2 preserved, got: %q", models[0].ID)
+			t.Fatalf("expected swe-2, got: %q", models[0].ID)
 		}
 	})
 
@@ -135,13 +132,18 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate model id", func(t *testing.T) {
-		data := []byte(`{"devin": [{"id": "swe-2"}, {"id": "swe-2"}]}`)
-		_, err := ValidateDevinModelsJSON(data)
-		if err == nil {
-			t.Fatal("expected error on duplicate model id, got nil")
-		}
-	})
+	for name, data := range map[string][]byte{
+		"exact duplicate":    []byte(`{"devin": [{"id": "devin/swe-2"}, {"id": "devin/swe-2"}]}`),
+		"case duplicate":     []byte(`{"devin": [{"id": "devin/SWE-2"}, {"id": "devin/swe-2"}]}`),
+		"bare and qualified": []byte(`{"devin": [{"id": "swe-2"}, {"id": "Devin/SWE-2"}]}`),
+	} {
+		t.Run("duplicate model id/"+name, func(t *testing.T) {
+			_, err := ValidateDevinModelsJSON(data)
+			if err == nil {
+				t.Fatal("expected error on duplicate model id, got nil")
+			}
+		})
+	}
 }
 
 func TestEmbeddedDevinModelsLoadedOnStartup(t *testing.T) {
@@ -157,6 +159,7 @@ func TestEmbeddedDevinModelsLoadedOnStartup(t *testing.T) {
 
 	expectedIDs := []string{
 		"swe-2",
+		"swe-2-lightning",
 		"swe-1-6-slow",
 		"glm-5-2",
 		"glm-5-3",
@@ -174,6 +177,7 @@ func TestEmbeddedDevinModelsLoadedOnStartup(t *testing.T) {
 		}
 	}
 }
+
 func TestDevinModelsRemoteFetchFallback(t *testing.T) {
 	// Test remote failure maintains existing embedded data
 	origURLs := devinModelsURLs
@@ -225,8 +229,6 @@ func TestDevinModelsRemoteFetchFallback(t *testing.T) {
 	foundBuiltinSlow := false
 	for _, m := range updatedModels {
 		if m != nil && m.ID == "custom-test-model" {
-			// The catalog normalizes any `devin/` prefix away, so a prefixed
-			// remote payload surfaces under its bare ID.
 			foundCustom = true
 		}
 		if m != nil && m.ID == "swe-1-6-slow" {
@@ -244,100 +246,44 @@ func TestDevinModelsRemoteFetchFallback(t *testing.T) {
 	_, _ = loadDevinModelsFromBytes(embeddedDevinModelsJSON, "restore-embed")
 }
 
-type devinFetchTestRoundTripper func(*http.Request) (*http.Response, error)
-
-func (f devinFetchTestRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
-type devinFetchTestBody struct {
-	ctx             context.Context
-	readStarted     chan struct{}
-	releaseBody     chan struct{}
-	data            *bytes.Reader
-	readStartedOnce sync.Once
-}
-
-func (b *devinFetchTestBody) Read(p []byte) (int, error) {
-	b.readStartedOnce.Do(func() { close(b.readStarted) })
-	if err := b.ctx.Err(); err != nil {
-		return 0, err
-	}
-	select {
-	case <-b.ctx.Done():
-		return 0, b.ctx.Err()
-	case <-b.releaseBody:
-	}
-	if err := b.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return b.data.Read(p)
-}
-
-func (*devinFetchTestBody) Close() error { return nil }
-
 func TestFetchDevinModelsFromRemote_ContextNotCanceledBeforeRead_Issue6095(t *testing.T) {
 	origURLs := devinModelsURLs
 	defer func() { devinModelsURLs = origURLs }()
 
-	readStarted := make(chan struct{})
-	releaseBody := make(chan struct{})
-	devinModelsURLs = []string{"https://models.example.test/devin_models.json"}
-	client := &http.Client{
-		Timeout: modelsFetchTimeout,
-		Transport: devinFetchTestRoundTripper(func(req *http.Request) (*http.Response, error) {
-			body := &devinFetchTestBody{
-				ctx:         req.Context(),
-				readStarted: readStarted,
-				releaseBody: releaseBody,
-				data:        bytes.NewReader([]byte(`{"devin": [{"id": "devin/swe-2"}]}`)),
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       body,
-				Request:    req,
-			}, nil
-		}),
-	}
-	result := make(chan struct {
-		body   []byte
-		source string
-	}, 1)
+	headerFlushed := make(chan struct{})
+	sendBody := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		close(headerFlushed)
+		<-sendBody
+		_, _ = w.Write([]byte(`{"devin": [{"id": "devin/swe-2"}]}`))
+	}))
+	defer ts.Close()
+
 	go func() {
-		body, source := fetchDevinModelsFromRemoteWithClient(context.Background(), client)
-		result <- struct {
-			body   []byte
-			source string
-		}{body: body, source: source}
+		<-headerFlushed
+		// Yield briefly to let client.Do return and advance to body reading before streaming body chunks.
+		time.Sleep(20 * time.Millisecond)
+		close(sendBody)
 	}()
 
-	select {
-	case <-readStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("fetch did not begin reading the response body")
-	}
-	close(releaseBody)
+	devinModelsURLs = []string{ts.URL + "/devin_models.json"}
 
-	var fetched struct {
-		body   []byte
-		source string
-	}
-	select {
-	case fetched = <-result:
-	case <-time.After(5 * time.Second):
-		t.Fatal("fetch did not finish reading the response body")
-	}
-	if fetched.body == nil || fetched.source == "" {
-		t.Fatalf("expected successful fetch of Devin models, got nil body (source=%q)", fetched.source)
+	body, source := fetchDevinModelsFromRemote(context.Background())
+	if body == nil || source == "" {
+		t.Fatalf("expected successful fetch of devin models, got nil body (source=%q)", source)
 	}
 	expectedBody := `{"devin": [{"id": "devin/swe-2"}]}`
-	if string(fetched.body) != expectedBody {
-		t.Fatalf("expected body %q, got %q", expectedBody, string(fetched.body))
+	if string(body) != expectedBody {
+		t.Fatalf("expected body %q, got %q", expectedBody, string(body))
 	}
-	expectedSource := "https://models.example.test/devin_models.json"
-	if fetched.source != expectedSource {
-		t.Fatalf("expected source %q, got %q", expectedSource, fetched.source)
+	expectedSource := ts.URL + "/devin_models.json"
+	if source != expectedSource {
+		t.Fatalf("expected source %q, got %q", expectedSource, source)
 	}
 }
 

@@ -2,16 +2,11 @@ package registry
 
 import (
 	"context"
-	"net/http"
-	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
 const maxDevinModelsSize = 8 << 20
-
-// modelsFetchTimeout bounds one remote catalog request made through an injected client.
-const modelsFetchTimeout = 30 * time.Second
 
 var devinModelsURLs = []string{
 	"https://raw.githubusercontent.com/router-for-me/models/refs/heads/main/devin_models.json",
@@ -45,12 +40,8 @@ func tryRefreshDevinModels(ctx context.Context, label string) {
 }
 
 func fetchDevinModelsFromRemote(ctx context.Context) ([]byte, string) {
-	return fetchDevinModelsFromRemoteWithClient(ctx, http.DefaultClient)
-}
-
-func fetchDevinModelsFromRemoteWithClient(ctx context.Context, client *http.Client) ([]byte, string) {
 	for _, source := range devinModelsURLs {
-		data, errRead := readCatalogSourceWithClient(ctx, client, source)
+		data, errRead := readCatalogSource(ctx, source)
 		if errRead == nil && validateDevinCatalogBytes(data) == nil {
 			return data, source
 		}

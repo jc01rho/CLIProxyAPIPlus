@@ -52,7 +52,6 @@ func devinBuiltinSWE16SlowModelInfo() *ModelInfo {
 		SupportedInputModalities:   []string{"text", "image"},
 		SupportedOutputModalities:  []string{"text"},
 		SupportedGenerationMethods: []string{"generateContent", "countTokens"},
-		SupportedEndpoints:         []string{"/chat/completions"},
 	}
 }
 
@@ -335,13 +334,12 @@ func aggregateDevinModels(models []*ModelInfo) []*ModelInfo {
 		if baseID == "" {
 			baseID = cleanID
 		}
-		baseKey := baseID
 		isBase := (baseID == cleanID)
 
-		entry, exists := aggregated[baseKey]
+		entry, exists := aggregated[baseID]
 		if !exists {
 			clone := *m
-			clone.ID = baseKey
+			clone.ID = baseID
 			clone.DisplayName = cleanDevinDisplayName(m.DisplayName)
 			if clone.DisplayName == "" {
 				clone.DisplayName = m.DisplayName
@@ -350,8 +348,8 @@ func aggregateDevinModels(models []*ModelInfo) []*ModelInfo {
 				model:  &clone,
 				levels: make(map[string]struct{}),
 			}
-			aggregated[baseKey] = entry
-			order = append(order, baseKey)
+			aggregated[baseID] = entry
+			order = append(order, baseID)
 		}
 
 		if isBase {
@@ -460,12 +458,7 @@ func aggregateDevinModels(models []*ModelInfo) []*ModelInfo {
 		if len(m.SupportedGenerationMethods) == 0 {
 			m.SupportedGenerationMethods = []string{"generateContent", "countTokens"}
 		}
-		if len(m.SupportedEndpoints) == 0 {
-			// Devin is a chat-only provider upstream; every catalog entry
-			// must declare /chat/completions so management UI and the
-			// endpoint compat guard agree on the surface.
-			m.SupportedEndpoints = []string{"/chat/completions"}
-		}
+
 		out = append(out, m)
 	}
 
@@ -483,9 +476,6 @@ func sanitizeAndValidateDevinModels(models []*ModelInfo) ([]*ModelInfo, error) {
 		if id == "" {
 			return nil, fmt.Errorf("model at index %d has empty id", i)
 		}
-		// Keep Devin model IDs bare: the fork intentionally does not force a
-		// `devin/` prefix (already-prefixed IDs are preserved as written).
-		id = strings.ToLower(id)
 		m.ID = id
 		if _, exists := seenExact[id]; exists {
 			return nil, fmt.Errorf("duplicate model id: %q", id)

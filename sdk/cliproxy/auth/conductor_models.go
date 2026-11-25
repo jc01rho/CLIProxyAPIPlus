@@ -914,10 +914,6 @@ func configuredModelAliasEntries(cfg *internalconfig.Config, auth *Auth) []model
 		if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
 			models = asModelAliasEntries(entry.Models)
 		}
-	case "devin":
-		if entry := resolveDevinAPIKeyConfig(cfg, auth); entry != nil {
-			models = asModelAliasEntries(entry.Models)
-		}
 	case "mistral":
 		if entry := resolveMistralAPIKeyConfig(cfg, auth); entry != nil {
 			models = asModelAliasEntries(entry.Models)
@@ -1086,10 +1082,6 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 			if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
-		case "devin":
-			if entry := resolveDevinAPIKeyConfig(cfg, auth); entry != nil {
-				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
-			}
 		case "mistral":
 			if entry := resolveMistralAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
@@ -1220,8 +1212,6 @@ func (m *Manager) applyAPIKeyModelAliasWithRouting(routing *apiKeyModelRoutingSn
 		upstreamModel = resolveUpstreamModelForVertexAPIKey(cfg, auth, requestedModel)
 	case "commandcode":
 		upstreamModel = resolveUpstreamModelForCommandCodeAPIKey(cfg, auth, requestedModel)
-	case "devin":
-		upstreamModel = resolveUpstreamModelForDevinAPIKey(cfg, auth, requestedModel)
 	case "mistral":
 		upstreamModel = resolveUpstreamModelForMistralAPIKey(cfg, auth, requestedModel)
 	case "meta":
@@ -1426,48 +1416,6 @@ func resolveUpstreamModelForCommandCodeAPIKey(cfg *internalconfig.Config, auth *
 
 func resolveUpstreamModelForMistralAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
 	entry := resolveMistralAPIKeyConfig(cfg, auth)
-	if entry == nil {
-		return ""
-	}
-	return resolveModelAliasFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
-}
-
-func resolveDevinAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.DevinKey {
-	if cfg == nil {
-		return nil
-	}
-	if auth == nil {
-		return nil
-	}
-	attrKey, attrBase := "", ""
-	if auth.Attributes != nil {
-		attrKey = strings.TrimSpace(auth.Attributes[AttributeAPIKey])
-		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
-	}
-	if rawIndex := strings.TrimSpace(auth.Attributes[AttributeConfigIndex]); rawIndex != "" {
-		if index, err := strconv.Atoi(rawIndex); err == nil && index >= 0 && index < len(cfg.DevinKey) {
-			entry := &cfg.DevinKey[index]
-			if entry.MatchesCredential(attrKey, auth.ProxyURL) &&
-				(attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase)) {
-				return entry
-			}
-			return nil
-		}
-	}
-	for i := range cfg.DevinKey {
-		entry := &cfg.DevinKey[i]
-		if !entry.MatchesCredential(attrKey, auth.ProxyURL) {
-			continue
-		}
-		if attrBase == "" || strings.EqualFold(strings.TrimSpace(entry.BaseURL), attrBase) {
-			return entry
-		}
-	}
-	return nil
-}
-
-func resolveUpstreamModelForDevinAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
-	entry := resolveDevinAPIKeyConfig(cfg, auth)
 	if entry == nil {
 		return ""
 	}

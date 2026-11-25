@@ -455,7 +455,7 @@ func BuildDevinGetChatMessageRequest(
 			tBytes = protowire.AppendTag(tBytes, 1, protowire.BytesType)
 			tBytes = protowire.AppendString(tBytes, tool.Name)
 		}
-		desc := TruncateDevinToolDesc(tool.Description)
+		desc := tool.Description
 		// Claude Code subagent tool descriptions hardcode snake_case "task_id", but Devin's
 		// upstream tool execution environment strictly expects camelCase "taskId". Normalizing
 		// the prompt description prevents the model from generating incompatible parameter names.
@@ -1259,31 +1259,4 @@ func BuildDevinUpstreamResponseLogBody(respLog *DevinUpstreamResponseLog, intera
 		}
 	}
 	return buf.Bytes()
-}
-
-// devinMaxToolDescLen caps a tool description at the cloud-side limit.
-const devinMaxToolDescLen = 1024
-
-// devinToolDescSuffix marks a description the cloud limit forced us to cut.
-const devinToolDescSuffix = "\n…(truncated for cloud)"
-
-// TruncateDevinToolDesc cuts a tool description to the cloud limit on the
-// last rune boundary at or before the cut point, so the cut never lands
-// inside a multi-byte sequence.
-func TruncateDevinToolDesc(desc string) string {
-	if len(desc) <= devinMaxToolDescLen {
-		return desc
-	}
-	limit := devinMaxToolDescLen - len(devinToolDescSuffix)
-	if limit <= 0 {
-		return devinToolDescSuffix
-	}
-	cut := 0
-	for idx := range desc {
-		if idx > limit {
-			break
-		}
-		cut = idx
-	}
-	return desc[:cut] + devinToolDescSuffix
 }

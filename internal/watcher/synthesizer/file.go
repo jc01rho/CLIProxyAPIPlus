@@ -359,28 +359,6 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	applyVertexOpenAPISettingsAttribute(a, metadata)
 	ApplyAuthExcludedModelsMeta(a, perAccountExcluded, authKind)
 	applyFingerprintProfileAttribute(a, metadata)
-	if provider == "devin" {
-		for _, field := range []string{"api_key", "session_token", "windsurf_api_key", "token", "access_token"} {
-			if val, ok := metadata[field].(string); ok && strings.TrimSpace(val) != "" {
-				a.Attributes["api_key"] = strings.TrimSpace(val)
-				break
-			}
-		}
-		apiServer := ""
-		if v, ok := metadata["api_server_url"].(string); ok && strings.TrimSpace(v) != "" {
-			apiServer = strings.TrimSpace(v)
-		}
-		if apiServer == "" || strings.Contains(apiServer, "devin.ai") {
-			apiServer = "https://server.codeium.com"
-		}
-		if !strings.HasPrefix(apiServer, "http://") && !strings.HasPrefix(apiServer, "https://") {
-			apiServer = "https://" + apiServer
-		}
-		a.Attributes["base_url"] = strings.TrimRight(apiServer, "/")
-		if devinAPIURL, ok := metadata["devin_api_url"].(string); ok && strings.TrimSpace(devinAPIURL) != "" {
-			a.Attributes["devin_api_url"] = strings.TrimSpace(devinAPIURL)
-		}
-	}
 	// For Kimi auth files, preserve domain and base_url attributes.
 	if provider == "kimi" || provider == "kimi-ai" || provider == "kimi.ai" || provider == "kimi.com" {
 		if bu, ok := metadata["base_url"].(string); ok && strings.TrimSpace(bu) != "" {

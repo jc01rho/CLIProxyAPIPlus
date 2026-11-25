@@ -131,7 +131,6 @@ usage-export:
   delivery: {max-batch-events: 17, max-batch-bytes: 65536, flush-interval-ms: 1000, request-timeout-ms: 15000, initial-backoff-ms: 1000, max-backoff-ms: 60000}
   metadata: {enabled: false, interval-ms: 60000, categories: []}
 commandcode-api-key: [{api-key: command, base-url: 'https://command.example.invalid', models: [{name: model-1, alias: command-alias}]}]
-devin-api-key: [{api-key: devin, base-url: 'https://devin.example.invalid', models: [{name: model-1, alias: devin-alias}]}]
 mistral-api-key: [{api-key: mistral, models: [{name: model-1, alias: mistral-alias}]}]
 opencode-api-key: [{api-key: public, models: [{name: big-pickle, alias: big-pickle}]}]
 mimocode-api-key: [{api-key: mimo, base-url: 'https://mimo.example.invalid', models: [{name: model-1, alias: mimo-alias}]}]
@@ -149,7 +148,7 @@ ampcode: {upstream-url: 'https://amp.example.invalid', upstream-api-key: amp-sec
 	if err = ValidateV8Config(migrated); err != nil {
 		t.Fatalf("migrated fork settings rejected: %v", err)
 	}
-	for _, field := range []string{"commandcode-api-key", "devin-api-key", "mistral-api-key", "opencode-api-key", "mimocode-api-key", "kiro", "usage-export", "ampcode", "kiro-preferred-endpoint"} {
+	for _, field := range []string{"commandcode-api-key", "mistral-api-key", "opencode-api-key", "mimocode-api-key", "kiro", "usage-export", "ampcode", "kiro-preferred-endpoint"} {
 		var node yaml.Node
 		if err = yaml.Unmarshal(migrated, &node); err != nil {
 			t.Fatal(err)
@@ -192,7 +191,7 @@ ampcode: {upstream-url: 'https://amp.example.invalid', upstream-api-key: amp-sec
 		t.Fatal(err)
 	}
 	if reloaded.RequestLogSuccessBody || reloaded.Routing.ModelTimeGates[0].Name != "after-v0-save" ||
-		len(reloaded.CommandCodeKey) != 1 || len(reloaded.DevinKey) != 1 ||
+		len(reloaded.CommandCodeKey) != 1 ||
 		len(reloaded.MistralKey) != 1 || len(reloaded.OpenCodeKey) != 1 || len(reloaded.MimocodeKey) != 1 ||
 		len(reloaded.KiroKey) != 1 || reloaded.UsageExport.Keeper.TokenEnv != "CPA_KEEPER_TOKEN" ||
 		reloaded.AmpCode.UpstreamAPIKey != "amp-secret" || !reloaded.ClineFreeModelsOnly {
@@ -305,7 +304,7 @@ func TestV8ForkCredentialGroupExamplesDecode(t *testing.T) {
 	}
 	cfg, err := ParseConfigBytes(data)
 	if err != nil || len(cfg.CommandCodeKey) != 1 ||
-		len(cfg.DevinKey) != 1 || len(cfg.MistralKey) != 1 || len(cfg.OpenCodeKey) != 1 ||
+		len(cfg.MistralKey) != 1 || len(cfg.OpenCodeKey) != 1 ||
 		len(cfg.MimocodeKey) != 1 || len(cfg.KiroKey) != 1 {
 		t.Fatalf("fork provider examples did not decode: %v", err)
 	}

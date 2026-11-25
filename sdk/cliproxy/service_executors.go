@@ -435,8 +435,6 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.registerExecutor(executor.NewMimocodeExecutor(cfg))
 	case constant.DeepAI:
 		s.registerExecutor(executor.NewDeepAIExecutor(cfg))
-	case constant.Devin:
-		s.registerExecutor(executor.NewDevinExecutor(cfg))
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		s.registerExecutor(executor.NewKimiExecutor(cfg))
 	case "kiro":
@@ -476,6 +474,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 			}
 		}
 		s.registerExecutor(executor.NewCopilotExecutor(cfg))
+	case "devin":
+		s.registerExecutor(executor.NewDevinExecutor(cfg))
 	case "meta":
 		s.registerExecutor(executor.NewMetaExecutor(cfg))
 	default:

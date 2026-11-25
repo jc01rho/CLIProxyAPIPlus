@@ -245,7 +245,9 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
-	s.ensureAnonymousAuths(registrationCtx)
+	if s.anonymousAuthsEnabled.Load() {
+		s.ensureAnonymousAuths(registrationCtx)
+	}
 	var auths []*coreauth.Auth
 	if s.coreManager != nil {
 		auths = s.coreManager.List()
