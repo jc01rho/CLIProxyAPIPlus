@@ -126,6 +126,110 @@ func TestConvertOpenAIResponsesRequestToClaude_NonThinkingBlocksSeparateReasonin
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToClaude_DropsThinkingBlockAfterLostSeparator(t *testing.T) {
+	reasoningRaw, reasoningSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-5-reasoning")
+	updateRaw, _ := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-5-update")
+
+	// The model emitted thinking(0), text, thinking(2), tool_use. The client kept
+	// both reasoning items but replayed them ahead of the text, so the blocks the
+	// model separated with text are adjacent. Anthropic binds each thinking block
+	// to its original position in the latest assistant message and rejects the
+	// request ("blocks in the latest assistant message cannot be modified"), and
+	// the separating text is not replayable, so only the first run may stay.
+	raw := responsesRequestFromItems(
+		responsesReasoningItemWithID("rs_msg_01Gap_0", reasoningRaw, "primary reasoning"),
+		responsesReasoningItemWithID("rs_msg_01Gap_2", updateRaw, "progress update"),
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"status note"}]}`,
+		responsesFunctionCallItem("call_gap", "gap_tool"),
+		responsesFunctionCallOutputItem("call_gap", "done"),
+	)
+
+	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	content := ojson.GetBytesNoCopy(out, "messages.0.content").Array()
+	wantTypes := []string{"thinking", "text", "tool_use"}
+	if len(content) != len(wantTypes) {
+		t.Fatalf("assistant content count = %d, want %d. Output: %s", len(content), len(wantTypes), out)
+	}
+	for index, wantType := range wantTypes {
+		if got := content[index].Get("type").String(); got != wantType {
+			t.Fatalf("assistant content[%d].type = %q, want %q. Output: %s", index, got, wantType, out)
+		}
+	}
+	if got := content[0].Get("signature").String(); got != reasoningSignature {
+		t.Fatalf("thinking signature = %q, want %q", got, reasoningSignature)
+	}
+	if got := content[1].Get("text").String(); got != "status note" {
+		t.Fatalf("text = %q, want status note", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_DropsRemainingThinkingRunAfterLostSeparator(t *testing.T) {
+	firstRaw, firstSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-5-first")
+	secondRaw, _ := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-5-second")
+	updateRaw, _ := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-5-update")
+
+	// The model emitted thinking(0), text, thinking(2), thinking(3), tool_use. The
+	// replayed history lost the text, so blocks 2 and 3 no longer sit where the
+	// model put them. The whole run after the gap is unrecoverable and is dropped,
+	// leaving the untouched first block and the tool call.
+	raw := responsesRequestFromItems(
+		responsesReasoningItemWithID("rs_msg_01Keep_0", firstRaw, "first reasoning"),
+		responsesReasoningItemWithID("rs_msg_01Keep_2", secondRaw, "second reasoning"),
+		responsesReasoningItemWithID("rs_msg_01Keep_3", updateRaw, "progress update"),
+		responsesFunctionCallItem("call_keep", "keep_tool"),
+		responsesFunctionCallOutputItem("call_keep", "done"),
+	)
+
+	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	content := ojson.GetBytesNoCopy(out, "messages.0.content").Array()
+	wantTypes := []string{"thinking", "tool_use"}
+	if len(content) != len(wantTypes) {
+		t.Fatalf("assistant content count = %d, want %d. Output: %s", len(content), len(wantTypes), out)
+	}
+	for index, wantType := range wantTypes {
+		if got := content[index].Get("type").String(); got != wantType {
+			t.Fatalf("assistant content[%d].type = %q, want %q. Output: %s", index, got, wantType, out)
+		}
+	}
+	if got := content[0].Get("signature").String(); got != firstSignature {
+		t.Fatalf("thinking signature = %q, want %q", got, firstSignature)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_KeepsSeparatedThinkingBlocks(t *testing.T) {
+	firstRaw, firstSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-5-first")
+	secondRaw, secondSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-5-second")
+
+	// The model emitted thinking(0), text, thinking(2) and the client replayed
+	// them in the original order, so the text that separates the blocks survived
+	// and the index jump is legitimate.
+	raw := responsesRequestFromItems(
+		responsesReasoningItemWithID("rs_msg_01Sep_0", firstRaw, "first reasoning"),
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"status note"}]}`,
+		responsesReasoningItemWithID("rs_msg_01Sep_2", secondRaw, "second reasoning"),
+		responsesFunctionCallItem("call_sep", "sep_tool"),
+		responsesFunctionCallOutputItem("call_sep", "done"),
+	)
+
+	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	content := ojson.GetBytesNoCopy(out, "messages.0.content").Array()
+	wantTypes := []string{"thinking", "text", "thinking", "tool_use"}
+	if len(content) != len(wantTypes) {
+		t.Fatalf("assistant content count = %d, want %d. Output: %s", len(content), len(wantTypes), out)
+	}
+	for index, wantType := range wantTypes {
+		if got := content[index].Get("type").String(); got != wantType {
+			t.Fatalf("assistant content[%d].type = %q, want %q. Output: %s", index, got, wantType, out)
+		}
+	}
+	if got := content[0].Get("signature").String(); got != firstSignature {
+		t.Fatalf("first thinking signature = %q, want %q", got, firstSignature)
+	}
+	if got := content[2].Get("signature").String(); got != secondSignature {
+		t.Fatalf("second thinking signature = %q, want %q", got, secondSignature)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToClaude_KeepsSameResponseThinkingBlocks(t *testing.T) {
 	reasoningRaw, reasoningSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-5-reasoning")
 	updateRaw, updateSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-5-update")

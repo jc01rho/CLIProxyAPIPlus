@@ -328,6 +328,24 @@ func convertOpenAIResponsesRequestToClaude(ctx context.Context, modelName string
 		// a progress-update block, are replayed unchanged as Anthropic requires.
 		currentType := ojson.GetBytesNoCopy(reasoningPart, "type").String()
 		sameResponse := hasOrigin && responseID == pendingThinkingResponseID
+		// Clients group the reasoning items of one assistant turn ahead of that
+		// turn's text and tool calls, so blocks the model emitted apart replay as
+		// neighbours. Anthropic binds every thinking block of the latest assistant
+		// message to the position it held in the original response and rejects the
+		// request with "`thinking` or `redacted_thinking` blocks in the latest
+		// assistant message cannot be modified" once a block moved. A jumped block
+		// index means content the client no longer holds sat between two blocks,
+		// and that spacing cannot be rebuilt, so the block after the gap is skipped
+		// and the replayed prefix keeps the positions it originally had. A part
+		// still standing between the blocks means the separator survived and the
+		// jump is legitimate.
+		if currentType == "thinking" && sameResponse && blockIndex > pendingThinkingBlockIndex+1 {
+			separatorLost := len(pendingParts) == 0 || ojson.GetBytesNoCopy(pendingParts[len(pendingParts)-1], "type").String() == "thinking"
+			if separatorLost {
+				log.Debugf("responses->claude: skipped thinking block %d of response %s because the replay lost the content that separated it from block %d", blockIndex, responseID, pendingThinkingBlockIndex)
+				return
+			}
+		}
 		if currentType == "thinking" {
 			if sameResponse && blockIndex == pendingThinkingBlockIndex && len(pendingParts) > 0 && ojson.GetBytesNoCopy(pendingParts[len(pendingParts)-1], "type").String() == "thinking" {
 				// Replaying the same trailing block index replaces only that block.
