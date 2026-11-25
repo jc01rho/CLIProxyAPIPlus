@@ -198,13 +198,13 @@ func (e *AntigravityExecutor) buildRequestForModelDoc(ctx context.Context, auth 
 	structuredCandidate := restoreAntigravityRequestRaw(payload, "request.toolConfig", toolConfigBefore)
 	structuredCandidate = restoreAntigravityRequestRaw(structuredCandidate, "request.tool_config", toolConfigSnakeBefore)
 	structuredDoc := ojson.NewDoc(structuredCandidate)
-	// Upstream v8.1.3 native wire normalization merges systemInstruction parts and rewrites
-	// functionResponse.result. It runs before the Claude output prompt is appended so client
-	// text keeps its own part, and it stamps role=user, which the agy 1.1.6 agent wire only
+	// The output prompt is appended before the upstream v8.1.3 native wire normalization, which
+	// merges systemInstruction parts into one (fork Issue7000 contract). The normalization also
+	// rewrites functionResponse.result and stamps role=user, which the agy 1.1.6 agent wire only
 	// carries when the client, the Claude transforms, or the prompt path set one.
 	hadSystemRole := strings.TrimSpace(structuredDoc.Get("request.systemInstruction.role").String()) != ""
-	antigravitygemini.NormalizeAntigravityRequestDoc(structuredDoc)
 	promptStructuredOutput := helps.PrepareAntigravityClaudeStructuredOutputDoc(modelName, structuredDoc)
+	antigravitygemini.NormalizeAntigravityRequestDoc(structuredDoc)
 	if promptStructuredOutput && strings.TrimSpace(structuredDoc.Get("request.systemInstruction.role").String()) == "" {
 		_ = structuredDoc.Set("request.systemInstruction.role", "user")
 	}

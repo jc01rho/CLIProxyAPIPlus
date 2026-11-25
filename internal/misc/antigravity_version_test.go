@@ -78,8 +78,10 @@ func TestAntigravityHubUserAgentUsesHubFamily(t *testing.T) {
 		{"2.32.2", "antigravity/hub/2.32.2 (aidev_client; os_type=darwin; arch=arm64; cl=1022991777)"},
 		{"2.33.0", "antigravity/hub/2.33.0 (aidev_client; os_type=darwin; arch=arm64; cl=1023160026)"},
 		{"2.34.0", "antigravity/hub/2.34.0 (aidev_client; os_type=darwin; arch=arm64; cl=1026637980)"},
-		{"2.30.0", "antigravity/hub/2.34.0 (aidev_client; os_type=darwin; arch=arm64; cl=1026637980)"},
-		{"2.35.0", "antigravity/hub/2.34.0 (aidev_client; os_type=darwin; arch=arm64; cl=1026637980)"},
+		{"2.35.0", "antigravity/hub/2.35.0 (aidev_client; os_type=darwin; arch=arm64; cl=1028447422)"},
+		{"2.35.1", "antigravity/hub/2.35.1 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)"},
+		{"2.30.0", "antigravity/hub/2.35.1 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)"},
+		{"2.36.0", "antigravity/hub/2.35.1 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)"},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			restore := overrideAntigravityVersionCacheForTest(t, tc.version, time.Now().Add(time.Hour))
@@ -105,8 +107,8 @@ func TestAntigravityHubUserAgentPinsUnmappedVersionUsingNumericSemverOrder(t *te
 }
 
 func TestAntigravityFallbackVersionHasMatchingChangelist(t *testing.T) {
-	if antigravityFallbackVersion != "2.34.0" {
-		t.Fatalf("antigravityFallbackVersion = %q, want %q", antigravityFallbackVersion, "2.34.0")
+	if antigravityFallbackVersion != "2.35.1" {
+		t.Fatalf("antigravityFallbackVersion = %q, want %q", antigravityFallbackVersion, "2.35.1")
 	}
 	if antigravityHubChangelists[antigravityFallbackVersion] == "" {
 		t.Fatal("fallback version must be updated together with its verified changelist")
@@ -132,12 +134,12 @@ func TestAntigravityVersionFromUserAgentParsesLegacyFamily(t *testing.T) {
 }
 
 func TestAntigravityVersionFromUserAgentFallbackMatchesPinnedHubVersion(t *testing.T) {
-	restore := overrideAntigravityVersionCacheForTest(t, "2.35.0", time.Now().Add(time.Hour))
+	restore := overrideAntigravityVersionCacheForTest(t, "2.36.0", time.Now().Add(time.Hour))
 	defer restore()
 
 	for _, ua := range []string{"", "custom-client/1.0", "antigravity/hub/ "} {
-		if got := AntigravityVersionFromUserAgent(ua); got != "2.34.0" {
-			t.Fatalf("AntigravityVersionFromUserAgent(%q) = %q, want %q", ua, got, "2.34.0")
+		if got := AntigravityVersionFromUserAgent(ua); got != "2.35.1" {
+			t.Fatalf("AntigravityVersionFromUserAgent(%q) = %q, want %q", ua, got, "2.35.1")
 		}
 	}
 }
