@@ -195,7 +195,7 @@ func TestAntigravityStreamDoesNotEmitClaudeMessageStopOnReadError(t *testing.T) 
 	}
 }
 
-func TestAntigravityStreamDoesNotFinalizeEmptyUpstreamStream(t *testing.T) {
+func TestAntigravityStreamRejectsEmptyUpstreamStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -244,15 +244,13 @@ func TestAntigravityStreamDoesNotFinalizeEmptyUpstreamStream(t *testing.T) {
 				if chunk.Err != nil {
 					streamErr = chunk.Err
 				}
-				if finish := ojson.GetBytes(chunk.Payload, "candidates.0.finishReason").String(); finish != "" {
-					t.Fatalf("empty upstream stream must not synthesize a terminal chunk: %s", chunk.Payload)
-				}
-				if finish := ojson.GetBytes(chunk.Payload, "choices.0.finish_reason").String(); finish != "" {
-					t.Fatalf("empty upstream stream must not synthesize a terminal chunk: %s", chunk.Payload)
+				if len(chunk.Payload) != 0 {
+					t.Fatalf("empty upstream stream emitted payload: %s", chunk.Payload)
 				}
 			}
-			if streamErr == nil {
-				t.Fatal("empty upstream stream must report an error rather than successful completion")
+			statusError, ok := streamErr.(interface{ StatusCode() int })
+			if !ok || statusError.StatusCode() != http.StatusBadGateway {
+				t.Fatalf("empty upstream stream error = %v, want 502", streamErr)
 			}
 		})
 	}

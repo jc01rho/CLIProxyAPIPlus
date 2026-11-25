@@ -7,11 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	antigravitygemini "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/antigravity/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -49,6 +51,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	}
 	e.obfuscateSensitiveWordsDoc(doc)
 	helps.PrepareAntigravityClaudeStructuredOutputDoc(selection.ID, doc)
+	antigravitygemini.NormalizeAntigravityRequestDoc(doc)
 	sanitizeAntigravityGeminiRequestSignaturesDoc(selection.ID, doc)
 	if _, errReplay := prepareAntigravityGeminiCountTokensReasoningReplayPayloadDoc(ctx, selection.ID, req, opts, doc); errReplay != nil {
 		return cliproxyexecutor.Response{}, errReplay
@@ -57,7 +60,8 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 
 	if selection.MaxOutputTokens > 0 {
 		_ = doc.Set("request.model", formatAntigravityCountTokensModel(selection.ID))
-		_ = doc.Set("request.generationConfig.maxOutputTokens", selection.MaxOutputTokens)
+		_, isClaudeModel := antigravitySchemaSanitizationFlags(selection.ID)
+		helps.CapAntigravityMaxOutputTokensDoc(doc, selection.MaxOutputTokens, isClaudeModel)
 	} else {
 		populateAntigravityCountTokensModelDoc(doc, baseModel)
 	}
@@ -150,11 +154,28 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 			helps.RecordAPIResponseError(ctx, e.cfg, errOversize)
 			return cliproxyexecutor.Response{}, errOversize
 		}
-		if errorResult := ojson.GetBytesNoCopy(bodyBytes, "error"); errorResult.Exists() && errorResult.Type != ojson.Null {
+		trimmedBody := bytes.TrimSpace(bodyBytes)
+		if len(trimmedBody) == 0 || trimmedBody[0] != '{' || !ojson.ValidBytes(bodyBytes) {
+			errInvalid := statusErr{code: http.StatusBadGateway, msg: "antigravity count_tokens response is not a valid JSON object"}
+			helps.RecordAPIResponseError(ctx, e.cfg, errInvalid)
+			return cliproxyexecutor.Response{}, errInvalid
+		}
+		if errorResult := ojson.GetBytesNoCopy(trimmedBody, "error"); errorResult.Exists() && errorResult.Type != ojson.Null {
 			statusCode = antigravityInBandErrorStatusCode(errorResult)
 		} else {
-			count := ojson.GetBytesNoCopy(bodyBytes, "totalTokens").Int()
-			translated := sdktranslator.TranslateTokenCount(respCtx, to, responseFormat, count, bodyBytes)
+			totalTokens := ojson.GetBytesNoCopy(trimmedBody, "totalTokens")
+			if !totalTokens.Exists() || totalTokens.Type != ojson.Number {
+				errMissing := statusErr{code: http.StatusBadGateway, msg: "antigravity count_tokens response missing numeric totalTokens"}
+				helps.RecordAPIResponseError(ctx, e.cfg, errMissing)
+				return cliproxyexecutor.Response{}, errMissing
+			}
+			parsedCount, errParse := strconv.ParseUint(totalTokens.Raw, 10, 63)
+			if errParse != nil {
+				errInvalidCount := statusErr{code: http.StatusBadGateway, msg: "antigravity count_tokens response has invalid totalTokens"}
+				helps.RecordAPIResponseError(ctx, e.cfg, errInvalidCount)
+				return cliproxyexecutor.Response{}, errInvalidCount
+			}
+			translated := sdktranslator.TranslateTokenCount(respCtx, to, responseFormat, int64(parsedCount), bodyBytes)
 			return cliproxyexecutor.Response{Payload: translated, Headers: httpResp.Header.Clone()}, nil
 		}
 	}

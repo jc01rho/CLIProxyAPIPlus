@@ -129,6 +129,7 @@ func TestAntigravityThinkingGroupsProtocols(t *testing.T) {
 		{"Claude ultra suffix wins on stream", "claude-demo-ultra-xhigh(low)", claudeInput, antigravityStreamPath, sdktranslator.FormatClaude, "claude-demo-ultra-low", "M30", "LOW", 90000},
 		{"OpenAI snake-case generation", "gemini-demo-ultra-low", `{"generation_config":{"thinking_config":{"thinking_level":"xhigh"}},"messages":[{"role":"user","content":"hi"}]}`, antigravityGeneratePath, sdktranslator.FormatOpenAI, "gemini-demo-ultra-xhigh", "M11", "XHIGH", 80000},
 		{"OpenAI nested snake level overrides effort", "gemini-demo-ultra-xhigh", `{"reasoning_effort":"xhigh","generation_config":{"thinking_config":{"thinking_level":"low"}},"messages":[{"role":"user","content":"hi"}]}`, antigravityGeneratePath, sdktranslator.FormatOpenAI, "gemini-demo-ultra-low", "M10", "LOW", 70000},
+		{"OpenAI extra_body google thinking_config", "gemini-demo-ultra-low", `{"extra_body":{"google":{"thinking_config":{"include_thoughts":true,"thinking_level":"xhigh"}}},"messages":[{"role":"user","content":"hi"}]}`, antigravityGeneratePath, sdktranslator.FormatOpenAI, "gemini-demo-ultra-xhigh", "M11", "XHIGH", 80000},
 		{"Interactions reasoning overrides generation", "gemini-demo-ultra-low", `{"reasoning":{"effort":"xhigh"},"generation_config":{"thinking_level":"low"},"input":"hi"}`, antigravityGeneratePath, sdktranslator.FormatInteractions, "gemini-demo-ultra-xhigh", "M11", "XHIGH", 80000},
 		{"Interactions compatibility spelling", "gemini-demo-ultra-low", `{"reasoning":{"thinking_level":"xhigh"},"input":"hi"}`, antigravityGeneratePath, sdktranslator.FormatInteractions, "gemini-demo-ultra-xhigh", "M11", "XHIGH", 80000},
 		{"Responses original input on stream", "gemini-demo-ultra-low", `{"reasoning":{"effort":"xhigh"},"input":"hi"}`, antigravityStreamPath, sdktranslator.FormatOpenAIResponse, "gemini-demo-ultra-xhigh", "M11", "XHIGH", 80000},
@@ -149,6 +150,29 @@ func TestAntigravityThinkingGroupsProtocols(t *testing.T) {
 				t.Errorf("legacy Claude thinking budget changed: %s", got.Raw)
 			}
 		})
+	}
+}
+
+func TestAntigravityThinkingGroupsCountTokensPreservesSmallerMaxOutputTokens(t *testing.T) {
+	client := newFakeAntigravityKVClient()
+	useFakeAntigravityKVClient(t, client, true, nil)
+	auth := newIssue7865TestAuth("thinking-groups-count-tokens-cap")
+	scope := strings.Repeat("d", 64)
+	auth.Attributes = map[string]string{cliproxyauth.AntigravityModelEnumHomeScopeAttribute: scope}
+	key := "antigravity:model-enums:v1:" + kvstore.HashKeyPart(auth.ID) + ":" + scope
+	client.values[key] = []byte(`{
+		"scope":"` + scope + `",
+		"models":{"claude-demo-low":"M20"},
+		"thinkingGroups":{"claude-demo":{"low":65536}}
+	}`)
+	payload := `{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"max_output_tokens":32000,"thinkingConfig":{"thinkingLevel":"LOW"}}}}`
+
+	got := captureAntigravityThinkingGroupRequest(t, &config.Config{}, auth, "claude-demo-low", sdktranslator.FromString("antigravity"), payload, antigravityCountTokensPath)
+	if got.Get("request.generationConfig.max_output_tokens").Exists() {
+		t.Fatalf("max_output_tokens alias remains in final payload: %s", got.Raw)
+	}
+	if maxOutputTokens := got.Get("request.generationConfig.maxOutputTokens").Int(); maxOutputTokens != 32000 {
+		t.Fatalf("maxOutputTokens = %d, want 32000; body=%s", maxOutputTokens, got.Raw)
 	}
 }
 

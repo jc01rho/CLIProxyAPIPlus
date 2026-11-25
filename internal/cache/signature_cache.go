@@ -220,6 +220,9 @@ func getCachedSignatureRequired(ctx context.Context, modelName, text string, all
 	scope, scopeBound := signatureCacheScope(ctx)
 	modelGroup := GetModelGroup(modelName)
 	if scopeBound && scope == "" && !allowLegacyScope {
+		if modelGroup == "gemini" {
+			return "skip_thought_signature_validator", nil
+		}
 		return "", nil
 	}
 	groupKey := signatureCacheGroupKey(modelName, scope)
@@ -349,11 +352,12 @@ func HasValidSignature(modelName, signature string) bool {
 }
 
 func GetModelGroup(modelName string) string {
-	if strings.Contains(modelName, "gpt") {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	if strings.Contains(normalized, "gpt") {
 		return "gpt"
-	} else if strings.Contains(modelName, "claude") {
+	} else if strings.Contains(normalized, "claude") {
 		return "claude"
-	} else if strings.Contains(modelName, "gemini") {
+	} else if strings.Contains(normalized, "gemini") {
 		return "gemini"
 	}
 	return modelName

@@ -368,7 +368,7 @@ func TestFixCLIToolResponse_PreservesFunctionResponseParts(t *testing.T) {
 		t.Errorf("Expected data 'iVBOR', got '%s'", inlineParts[0].Get("inlineData.data").String())
 	}
 
-	// Verify response.result is also preserved
+	// Verify the input response.result field is preserved by the grouping helper.
 	if funcResp.Get("response.result").String() != "Screenshot taken" {
 		t.Errorf("Expected response.result 'Screenshot taken', got '%s'", funcResp.Get("response.result").String())
 	}
@@ -1332,7 +1332,7 @@ func TestConvertGeminiRequestToAntigravity_PreservesSiblingToolImageOnUserRole(t
 	if got := funcResp.Get("id").String(); got != "call_1" {
 		t.Fatalf("id = %q, want call_1", got)
 	}
-	if got := funcResp.Get("response.result").String(); got != "Read image file [image/png]" {
+	if got := funcResp.Get("response.output").String(); got != "Read image file [image/png]" {
 		t.Fatalf("result = %q", got)
 	}
 	inlineData := funcResp.Get("parts.0.inlineData")
@@ -1608,5 +1608,44 @@ func TestConvertGeminiRequestToAntigravity_NormalizesParametersNumericConstraint
 	}
 	if got := schema.Get("properties.Message.default"); got.Type != ojson.String || got.String() != "1" {
 		t.Errorf("default = %s (type %v), want string \"1\"", got.Raw, got.Type)
+	}
+}
+
+func TestConvertGeminiRequestToAntigravity_NormalizesNumericProtoSchemaTypes_Issue8032(t *testing.T) {
+	inputJSON := []byte(`{
+		"contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+		"tools": [{
+			"functionDeclarations": [{
+				"name": "search",
+				"parameters": {
+					"type": 6,
+					"properties": {
+						"query": {"type": 1},
+						"tags": {"type": 5, "items": {"type": 1}}
+					}
+				}
+			}]
+		}]
+	}`)
+
+	out, err := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
+	if err != nil {
+		t.Fatalf("ConvertGeminiRequestToAntigravity returned error: %v", err)
+	}
+
+	schema := ojson.GetBytesNoCopy(out, "request.tools.0.functionDeclarations.0.parametersJsonSchema")
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{"type", "object"},
+		{"properties.query.type", "string"},
+		{"properties.tags.type", "array"},
+		{"properties.tags.items.type", "string"},
+	} {
+		got := schema.Get(tc.path)
+		if got.Type != ojson.String || got.String() != tc.want {
+			t.Errorf("parametersJsonSchema.%s = %s (type %v), want string %q", tc.path, got.Raw, got.Type, tc.want)
+		}
 	}
 }
