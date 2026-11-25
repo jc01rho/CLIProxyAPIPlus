@@ -1147,7 +1147,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 			}
 			return
 		}
-		if scanner.Err() == nil && len(pendingFilterLine) > 0 {
+		if (scanner == nil || scanner.Err() == nil) && len(pendingFilterLine) > 0 {
 			if !guardAndEmitLine(pendingFilterLine) {
 				return
 			}
@@ -1564,7 +1564,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 			}
 			return
 		}
-		if scanner.Err() == nil && len(pendingFilterLine) > 0 {
+		if (scanner == nil || scanner.Err() == nil) && len(pendingFilterLine) > 0 {
 			if !guardAndEmitLine(pendingFilterLine) {
 				return
 			}

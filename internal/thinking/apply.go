@@ -936,7 +936,7 @@ func reasoningEffortFromConfig(config ThinkingConfig) string {
 	case ModeAuto:
 		return string(LevelAuto)
 	case ModeLevel:
-		return strings.ToLower(strings.TrimSpace(string(config.Level)))
+		return strings.Clone(strings.ToLower(strings.TrimSpace(string(config.Level))))
 	case ModeBudget:
 		level, ok := ConvertBudgetToLevel(config.Budget)
 		if !ok {
@@ -1029,19 +1029,30 @@ func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 }
 
 func extractGeminiConfigFromGetter(get func(string) ojson.Result, provider string) ThinkingConfig {
-	// Try the provider's native prefix first, then the cross-format fallback.
-	// Cross-provider paths (gemini <-> gemini-cli) may carry the other format
-	// when no translator rewrites the body.
+	base := []string{
+		"generationConfig",
+		"generation_config",
+	}
+	var nested []string
+	for _, b := range base {
+		nested = append(nested, b+".thinkingConfig", b+".thinking_config")
+	}
 	var prefixes []string
 	switch provider {
 	case "gemini-cli", "antigravity":
-		prefixes = []string{"request.generationConfig.thinkingConfig",
-			"generationConfig.thinkingConfig"}
+		// Cross-provider paths (gemini <-> gemini-cli) may carry the request-wrapped
+		// format when no translator rewrites the body, so the wrapped prefix goes first.
+		for _, p := range nested {
+			prefixes = append(prefixes, "request."+p)
+		}
+		prefixes = append(prefixes, nested...)
 	case "gemini":
-		prefixes = []string{"generationConfig.thinkingConfig",
-			"request.generationConfig.thinkingConfig"}
+		prefixes = append(prefixes, nested...)
+		for _, p := range nested {
+			prefixes = append(prefixes, "request."+p)
+		}
 	default:
-		prefixes = []string{"generationConfig.thinkingConfig"}
+		prefixes = nested
 	}
 
 	for _, prefix := range prefixes {
@@ -1063,18 +1074,20 @@ func extractGeminiConfigFromGetter(get func(string) ojson.Result, provider strin
 }
 
 func geminiThinkingConfigFromValues(level, budget ojson.Result) ThinkingConfig {
-	if level.Exists() {
-		value := level.String()
-		switch value {
-		case "none":
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		case "auto":
-			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-		default:
-			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+	if level.Type == ojson.String {
+		value := strings.TrimSpace(level.String())
+		if value != "" {
+			switch strings.ToLower(value) {
+			case "none":
+				return ThinkingConfig{Mode: ModeNone, Budget: 0}
+			case "auto":
+				return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+			default:
+				return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+			}
 		}
 	}
-	if budget.Exists() {
+	if budget.Type == ojson.Number {
 		value := int(budget.Int())
 		switch value {
 		case 0:
