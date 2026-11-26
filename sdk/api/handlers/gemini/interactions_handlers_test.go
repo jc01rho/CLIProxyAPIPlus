@@ -390,20 +390,18 @@ func TestForwardInteractionsChunksStopsWhenDownstreamCancels(t *testing.T) {
 	chunks <- handlers.ModelExecutionChunk{Payload: []byte("first")}
 	chunks <- handlers.ModelExecutionChunk{Payload: []byte("second")}
 	close(chunks)
-	data := make(chan []byte)
-	errs := make(chan *interfaces.ErrorMessage, 1)
-	done := make(chan struct{})
-	go func() {
-		forwardInteractionsChunks(ctx, chunks, data, errs)
-		close(done)
-	}()
+	data, _ := forwardInteractionsChunks(ctx, chunks, nil)
 
 	cancel()
 
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("interaction stream converter did not stop after cancellation")
+	timeout := time.After(time.Second)
+	for open := true; open; {
+		select {
+		case _, ok := <-data:
+			open = ok
+		case <-timeout:
+			t.Fatal("interaction stream converter did not stop after cancellation")
+		}
 	}
 }
 
@@ -456,8 +454,11 @@ func TestInteractionsStreamSendKeepAliveBeforeFTWritesSSEErrorOnFailure(t *testi
 		t.Fatalf("status = %d, want 200 after keepalive commits SSE; body=%q", recorder.Code, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	if !strings.Contains(body, ": keep-alive\n\n") {
-		t.Fatalf("missing keep-alive comment: %q", body)
+	if strings.Contains(body, ": keep-alive") {
+		t.Fatalf("unexpected SSE keep-alive comment: %q", body)
+	}
+	if !strings.HasPrefix(body, "\n\n") {
+		t.Fatalf("missing empty SSE keep-alive frame: %q", body)
 	}
 	if !strings.Contains(body, "event: error\ndata: ") || !strings.Contains(body, "interactions upstream failed after keepalive") {
 		t.Fatalf("missing Interactions SSE JSON error event after keepalive: %q", body)

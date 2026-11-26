@@ -23,7 +23,7 @@ const (
 	// manifest has not been fetched yet or cannot be reached. Cloud Code rejects
 	// newer models for clients below 2.23.0, so this floor must stay at or above
 	// that version.
-	antigravityFallbackVersion = "2.35.1"
+	antigravityFallbackVersion = "2.35.2"
 	// AntigravityCLIVersion and AntigravityCLIChangeList are the agy CLI build the
 	// reference client (cortexkit/antigravity-auth fingerprint.ts AGY_CLI_VERSION,
 	// AGY_CLI_CHANGE_LIST) reports in every User-Agent.
@@ -55,6 +55,7 @@ var antigravityHubChangelists = map[string]string{
 	"2.34.0": "1026637980",
 	"2.35.0": "1028447422",
 	"2.35.1": "1029194470",
+	"2.35.2": "1029311855",
 }
 
 type antigravityHubUpdaterManifest struct {

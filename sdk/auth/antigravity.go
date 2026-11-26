@@ -116,6 +116,8 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 waitForCallback:
 	for {
 		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		case res := <-cbChan:
 			cbRes = res
 			break waitForCallback
@@ -125,6 +127,8 @@ waitForCallback:
 				manualPromptTimer.Stop()
 			}
 			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
 			case res := <-cbChan:
 				cbRes = res
 				break waitForCallback
@@ -252,7 +256,10 @@ func startAntigravityCallbackServer(port int) (*http.Server, int, <-chan callbac
 			Error: strings.TrimSpace(q.Get("error")),
 			State: strings.TrimSpace(q.Get("state")),
 		}
-		resultCh <- res
+		select {
+		case resultCh <- res:
+		default:
+		}
 		if res.Code != "" && res.Error == "" {
 			_, _ = w.Write([]byte("<h1>Login successful</h1><p>You can close this window.</p>"))
 		} else {
