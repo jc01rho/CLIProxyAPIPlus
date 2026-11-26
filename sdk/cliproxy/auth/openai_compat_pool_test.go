@@ -410,7 +410,7 @@ func TestManagerExecute_OpenAICompatAliasPoolKeepsSameUpstreamForSessionAcrossAu
 			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: authID}, true, nil
 		},
 	})
-	m.nextModelPoolOffset(openAICompatModelPoolKey(secondAuth, alias), 2)
+	m.nextModelPoolOffset(secondAuth, openAICompatModelPoolKey(secondAuth, alias), 2)
 
 	headers := http.Header{}
 	headers.Set("X-Session-ID", "session-model-affinity-cross-auth")

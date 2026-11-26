@@ -179,7 +179,7 @@ func (h *GeminiAPIHandler) handleInteractionsStream(c *gin.Context, cliCtx conte
 				waiting = false
 			case <-keepAliveC:
 				commitSSE()
-				_, _ = c.Writer.Write([]byte(": keep-alive\n\n"))
+				_, _ = c.Writer.Write(geminiSSEKeepAliveFrame)
 				flusher.Flush()
 			}
 		}
@@ -199,35 +199,60 @@ func (h *GeminiAPIHandler) handleInteractionsStream(c *gin.Context, cliCtx conte
 	}
 	upstreamHeaders = stream.Headers
 	commitSSE()
-	data := make(chan []byte)
-	errs := make(chan *interfaces.ErrorMessage, 1)
-	go forwardInteractionsChunks(cliCtx, stream.Chunks, data, errs)
+	done := make(chan struct{})
+	defer close(done)
+	data, errs := forwardInteractionsChunks(cliCtx, stream.Chunks, done)
 	h.forwardInteractionsStream(c, flusher, func(err error) { cliCancel(err) }, data, errs)
 }
 
-func forwardInteractionsChunks(ctx context.Context, chunks <-chan handlers.ModelExecutionChunk, data chan<- []byte, errs chan<- *interfaces.ErrorMessage) {
-	defer close(data)
-	defer close(errs)
-	for chunk := range chunks {
-		if chunk.Err != nil {
-			select {
-			case errs <- &interfaces.ErrorMessage{StatusCode: chunk.Err.StatusCode, Error: chunk.Err}:
-			case <-ctx.Done():
-			}
-			return
-		}
-		if len(chunk.Payload) > 0 {
-			select {
-			case data <- chunk.Payload:
-			case <-ctx.Done():
-				return
-			}
-		}
+func forwardInteractionsChunks(cliCtx context.Context, chunks <-chan handlers.ModelExecutionChunk, done <-chan struct{}) (<-chan []byte, <-chan *interfaces.ErrorMessage) {
+	data := make(chan []byte)
+	errs := make(chan *interfaces.ErrorMessage, 1)
+	var cliDone <-chan struct{}
+	if cliCtx != nil {
+		cliDone = cliCtx.Done()
 	}
+	go func() {
+		defer close(data)
+		defer close(errs)
+		for {
+			select {
+			case <-done:
+				return
+			case <-cliDone:
+				return
+			case chunk, okChunk := <-chunks:
+				if !okChunk {
+					return
+				}
+				if chunk.Err != nil {
+					select {
+					case errs <- &interfaces.ErrorMessage{StatusCode: chunk.Err.StatusCode, Error: chunk.Err}:
+					case <-done:
+					case <-cliDone:
+					}
+					return
+				}
+				if len(chunk.Payload) > 0 {
+					select {
+					case data <- chunk.Payload:
+					case <-done:
+						return
+					case <-cliDone:
+						return
+					}
+				}
+			}
+		}
+	}()
+	return data, errs
 }
 
 func (h *GeminiAPIHandler) forwardInteractionsStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
+		WriteKeepAlive: func() {
+			_, _ = c.Writer.Write(geminiSSEKeepAliveFrame)
+		},
 		WriteChunk: func(chunk []byte) {
 			if len(chunk) == 0 {
 				return
