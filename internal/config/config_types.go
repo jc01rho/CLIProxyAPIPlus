@@ -1619,6 +1619,11 @@ type OpenAICompatibility struct {
 	// gateway that silently swaps in another model never reaches the client.
 	RejectModelSubstitution bool `yaml:"reject-model-substitution,omitempty" json:"reject-model-substitution,omitempty"`
 
+	// StreamOnly marks an upstream that serves every model exclusively over SSE and
+	// rejects buffered requests. Non-streaming client calls are sent with
+	// stream:true and folded back into one completion body.
+	StreamOnly bool `yaml:"stream-only,omitempty" json:"stream-only,omitempty"`
+
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
 }

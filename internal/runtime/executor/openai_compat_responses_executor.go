@@ -48,6 +48,39 @@ func (e *OpenAICompatExecutor) useNativeResponses(auth *cliproxyauth.Auth, req c
 	return helps.CompatModelResponsesOnly(compat, thinking.ParseSuffix(req.Model).ModelName, thinking.ParseSuffix(helps.PayloadRequestedModel(opts, req.Model)).ModelName, opencodeDefaultsToNativeResponses(compat.BaseURL))
 }
 
+// streamOnlyProvider reports whether the credential's provider serves every
+// model exclusively over SSE.
+func (e *OpenAICompatExecutor) streamOnlyProvider(auth *cliproxyauth.Auth, req cliproxyexecutor.Request) bool {
+	compat := e.resolveCompatConfig(auth, req)
+	return compat != nil && compat.StreamOnly
+}
+
+// readCompatResponsesStream folds a Responses event stream into the single
+// response object carried by its terminal event. The returned body is what a
+// buffered upstream would have answered, so the caller needs no other change.
+// A body that is not an event stream is returned untouched.
+func readCompatResponsesStream(body io.Reader) ([]byte, error) {
+	raw, errRead := io.ReadAll(body)
+	if errRead != nil {
+		return nil, errRead
+	}
+	reader := helps.NewResponsesEventReader(bytes.NewReader(raw))
+	for {
+		event, data, errNext := reader.Next()
+		if errNext != nil {
+			return raw, nil
+		}
+		switch event {
+		case "response.completed", "response.incomplete", "response.failed":
+			if response := gjson.GetBytes(data, "response"); response.IsObject() {
+				return []byte(response.Raw), nil
+			}
+		case "error":
+			return data, nil
+		}
+	}
+}
+
 // openNativeResponses shares request preparation and transport for both modes,
 // without running chat sanitizers or Codex native request normalization.
 // When relaxToolChoice is set, a forced tool_choice is downgraded to "auto".
@@ -73,6 +106,11 @@ func (e *OpenAICompatExecutor) openNativeResponses(ctx context.Context, auth *cl
 		if err != nil {
 			return nil, nil, err
 		}
+	}
+	if compat := e.resolveCompatConfig(auth, req); compat != nil && compat.StreamOnly {
+		// A stream-only upstream rejects buffered requests; the non-streaming caller
+		// folds the event stream back into one response object.
+		stream = true
 	}
 	body = helps.ApplyPayloadConfigWithRequest(cfg, baseModel, "openai-response", opts.SourceFormat.String(), "", body, baseline, helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers)
 	body, err = e.applyPromptCacheKey(ctx, auth, opts.SourceFormat, baseModel, req, opts, body)
@@ -139,6 +177,7 @@ func (e *OpenAICompatExecutor) executeNativeResponses(ctx context.Context, auth 
 	)
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	rejectSubstitution := e.rejectModelSubstitution(auth, req)
+	streamOnly := e.streamOnlyProvider(auth, req)
 	substitutions := 0
 	relax := false
 	for {
@@ -151,7 +190,11 @@ func (e *OpenAICompatExecutor) executeNativeResponses(ctx context.Context, auth 
 			}
 			return cliproxyexecutor.Response{}, err
 		}
-		data, err = io.ReadAll(httpResp.Body)
+		if streamOnly {
+			data, err = readCompatResponsesStream(httpResp.Body)
+		} else {
+			data, err = io.ReadAll(httpResp.Body)
+		}
 		closeCompatResponsesBody(httpResp.Body)
 		if err != nil {
 			return cliproxyexecutor.Response{}, err
@@ -199,7 +242,11 @@ func (e *OpenAICompatExecutor) executeNativeResponses(ctx context.Context, auth 
 	if responseFormat == sdktranslator.FormatOpenAIResponse {
 		out = helps.EnsureResponsesUsageDetails(out)
 	}
-	return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
+	headers := httpResp.Header.Clone()
+	if streamOnly {
+		headers = foldedCompatHeaders(headers)
+	}
+	return cliproxyexecutor.Response{Payload: out, Headers: headers}, nil
 }
 
 // frameEntry preserves upstream order for replay after buffering.

@@ -1000,6 +1000,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		SupportPromptCacheKey   *bool                               `json:"support-prompt-cache-key"`
 		SystemContentAsString   *bool                               `json:"system-content-as-string"`
 		RejectModelSubstitution *bool                               `json:"reject-model-substitution"`
+		StreamOnly              *bool                               `json:"stream-only"`
 		RequestRetry            *int                                `json:"request-retry"`
 		RequestScopedErrors     *[]config.RequestScopedErrorRule    `json:"request-scoped-errors"`
 	}
@@ -1088,6 +1089,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.RejectModelSubstitution != nil {
 		entry.RejectModelSubstitution = *body.Value.RejectModelSubstitution
+	}
+	if body.Value.StreamOnly != nil {
+		entry.StreamOnly = *body.Value.StreamOnly
 	}
 	if body.Value.RequestScopedErrors != nil {
 		entry.RequestScopedErrors = append([]config.RequestScopedErrorRule(nil), *body.Value.RequestScopedErrors...)

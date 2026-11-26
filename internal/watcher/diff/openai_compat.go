@@ -92,6 +92,9 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if oldEntry.RejectModelSubstitution != newEntry.RejectModelSubstitution {
 		details = append(details, fmt.Sprintf("reject-model-substitution %t -> %t", oldEntry.RejectModelSubstitution, newEntry.RejectModelSubstitution))
 	}
+	if oldEntry.StreamOnly != newEntry.StreamOnly {
+		details = append(details, fmt.Sprintf("stream-only %t -> %t", oldEntry.StreamOnly, newEntry.StreamOnly))
+	}
 	if !optionalBoolEqual(oldEntry.DisableCooling, newEntry.DisableCooling) {
 		details = append(details, fmt.Sprintf("disable-cooling %s -> %s", formatOptionalBool(oldEntry.DisableCooling), formatOptionalBool(newEntry.DisableCooling)))
 	}
