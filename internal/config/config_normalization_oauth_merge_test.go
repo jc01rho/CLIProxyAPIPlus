@@ -41,8 +41,14 @@ func TestSanitizeOAuthModelAlias_MergesCollidingKeysDeterministically(t *testing
 
 		cfg.SanitizeOAuthModelAlias()
 
-		if len(cfg.OAuthModelAlias) != 1 {
-			t.Fatalf("iteration %d: len(OAuthModelAlias) = %d, want 1 (%#v)", i, len(cfg.OAuthModelAlias), cfg.OAuthModelAlias)
+		// Fork contract: default kiro and github-copilot aliases are always injected
+		// when absent, so those channels exist alongside the merged one. Assert the
+		// colliding raw keys produced exactly one gemini channel and that no raw key
+		// survived normalization.
+		for _, rawChannel := range []string{" gemini ", "Gemini", "GEMINI"} {
+			if _, ok := cfg.OAuthModelAlias[rawChannel]; ok {
+				t.Fatalf("iteration %d: raw key %q survived normalization (%#v)", i, rawChannel, cfg.OAuthModelAlias)
+			}
 		}
 		got := cfg.OAuthModelAlias["gemini"]
 		if !reflect.DeepEqual(got, expected) {
