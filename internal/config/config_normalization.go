@@ -194,6 +194,11 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			seenByChannel[channel] = seenAlias
 		}
 		clean := out[channel]
+		// Aliases added by this raw key are recorded only after the key is done, so
+		// duplicates inside a single configured list stay preserved (fork contract:
+		// the management UI list editor allows them, first-entry-wins at runtime)
+		// while aliases colliding across raw keys are dropped deterministically.
+		contributed := make([]string, 0, len(aliases))
 		for _, entry := range aliases {
 			name := strings.TrimSpace(entry.Name)
 			alias := strings.TrimSpace(entry.Alias)
@@ -207,7 +212,7 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			if _, ok := seenAlias[aliasKey]; ok {
 				continue
 			}
-			seenAlias[aliasKey] = struct{}{}
+			contributed = append(contributed, aliasKey)
 			var openAPI *bool
 			if entry.OpenAPI != nil {
 				value := *entry.OpenAPI
@@ -224,6 +229,9 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 		}
 		if len(clean) > 0 {
 			out[channel] = clean
+		}
+		for _, aliasKey := range contributed {
+			seenAlias[aliasKey] = struct{}{}
 		}
 	}
 	cfg.OAuthModelAlias = out
