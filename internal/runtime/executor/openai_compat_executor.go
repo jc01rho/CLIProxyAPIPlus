@@ -276,6 +276,12 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
+	// A stream-only upstream rejects buffered requests, so a non-streaming client
+	// call is sent with stream:true and folded back into one completion body below.
+	streamOnly := compat != nil && compat.StreamOnly && opts.Alt != "responses/compact" && endpoint == "/chat/completions"
+	if streamOnly {
+		helps.SetBoolIfDifferentDoc(doc, "stream", true)
+	}
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
 	translated = doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
@@ -288,6 +294,9 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	ensureOpenAICompatUserAgent(httpReq, opts.Headers)
+	if streamOnly {
+		httpReq.Header.Set("Accept", "text/event-stream")
+	}
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -380,6 +389,21 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	if retriedDeveloperRole {
 		e.rememberDeveloperRoleFallback(developerRoleKey)
 	}
+	if streamOnly {
+		folded, foldedUsage, errFold := aggregateOpenAIChatCompletionStream(body)
+		switch {
+		case errFold != nil:
+			// An upstream that already answered with a buffered completion body needs no
+			// folding; anything else is a real failure.
+			if !ojson.ValidBytes(body) || !ojson.NewDoc(body).Get("choices").IsArray() {
+				helps.RecordAPIResponseError(ctx, e.cfg, errFold)
+				return resp, statusErr{code: http.StatusBadGateway, msg: errFold.Error()}
+			}
+		case len(folded) > 0:
+			body = folded
+			reporter.Publish(ctx, foldedUsage)
+		}
+	}
 	reporter.ObserveResponseModel(body)
 	// Ensure we at least record the request even if upstream doesn't return usage
 	// MiniMax-M3 and Grok use their provider-specific tag protocol, while
@@ -401,8 +425,23 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	if responseFormat == sdktranslator.FormatOpenAIResponse {
 		out = helps.EnsureResponsesUsageDetails(out)
 	}
-	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+	headers := httpResp.Header.Clone()
+	if streamOnly {
+		headers = foldedCompatHeaders(headers)
+	}
+	resp = cliproxyexecutor.Response{Payload: out, Headers: headers}
 	return resp, nil
+}
+
+// foldedCompatHeaders drops the event-stream framing a stream-only upstream
+// answers with, so the client sees the buffered completion the folded body is.
+func foldedCompatHeaders(headers http.Header) http.Header {
+	out := headers.Clone()
+	out.Del("Content-Length")
+	if strings.Contains(strings.ToLower(out.Get("Content-Type")), "text/event-stream") {
+		out.Set("Content-Type", "application/json")
+	}
+	return out
 }
 
 // executeSystemOne forwards a native TypeSafe SystemOne decision payload to
